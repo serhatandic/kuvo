@@ -47,6 +47,50 @@ pub async fn confirm(service: &Service, agents: &ResidentAgents) {
     service.confirm_accounts(&accounts, limits::now());
 }
 
+/// Account admission is cheap local work, not a quota refresh. In particular a
+/// signed-out CLI can keep all of its transcripts and no longer has live rings.
+pub async fn verify_sign_ins(
+    service: &Service,
+    agents: Option<&ResidentAgents>,
+    standalone: Option<&kuvo_services::usage::standalone::Readers>,
+    engine: &kuvo_engine::Engine,
+    home: &std::path::Path,
+) {
+    let native = async {
+        if let Some(agents) = agents {
+            confirm(service, agents).await;
+        } else {
+            service.confirm_accounts(&[], limits::now());
+        }
+    };
+    let standalone = async {
+        if let Some(readers) = standalone {
+            readers.confirm(service).await;
+        } else {
+            service.confirm_standalone_accounts(&[], &Default::default(), limits::now());
+        }
+    };
+    let engine = async {
+        if !service.has_engine_accounts() {
+            return;
+        }
+        match kuvo_services::usage::engine_readers::kept_credentials(home.to_owned()).await {
+            Ok(Some(credentials)) => {
+                if let Some(accounts) =
+                    kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+                {
+                    service.confirm_engine_sign_ins(&accounts, limits::now());
+                }
+            }
+            Ok(None) if engine.running_bot_engine().await.is_none() => {
+                service.confirm_engine_sign_ins(&[], limits::now());
+            }
+            _ => {} // A running legacy engine's next refresh confirms its own credentials.
+        }
+    };
+    tokio::join!(native, standalone, engine);
+}
+
 fn windows(reading: PlanLimitReading, at: u64, source: Source) -> Vec<Window> {
     reading
         .windows
@@ -98,7 +142,7 @@ pub async fn refresh(
                     if only_resets {
                         service.observe_reset_facts(account, facts, at)
                     } else {
-                        service.observe_facts(account, windows, Some(facts), at)
+                        service.observe_confirmed_facts(account, windows, facts, at)
                     }
                 })
                 .await
@@ -246,30 +290,65 @@ pub async fn refresh_engine(
     home: std::path::PathBuf,
     selected: Option<String>,
 ) -> bool {
-    // Never wake the engine solely to poll quota. If it hasn't opened its credential
-    // store, the last readings stay as of when their makers supplied them.
+    // Never wake the engine solely to poll quota. A saved reading is usable only
+    // when the engine still has the matching active credential.
     if selected
         .as_deref()
         .is_some_and(|p| Provider::parse(p).is_some())
     {
         return false;
     }
-    let credentials = match engine_credentials(&engine, home).await {
+    let credentials = match engine_credentials(&engine, home.clone()).await {
         Ok(Some(credentials)) => credentials,
-        Ok(None) => return false,
+        Ok(None) => {
+            service.confirm_engine_sign_ins(&[], limits::now());
+            return false;
+        }
         Err(error) => {
             eprintln!("Could not read engine plan accounts: {error}");
             return true;
         }
     };
     let at = limits::now();
+    if let Some(accounts) = kuvo_services::usage::engine_readers::admitted_accounts(&credentials) {
+        service.confirm_engine_sign_ins(&accounts, at);
+    }
     let held = service.held_engine_providers(at);
-    let Some(batch) = reader
+    let Some(mut batch) = reader
         .read(credentials, at, &held, selected.as_deref())
         .await
     else {
         return true;
     };
+    // A maker's reply can arrive after the user has changed or removed a key.
+    // The current SQLite credential is authoritative, never the old response.
+    match kuvo_services::usage::engine_readers::kept_credentials(home).await {
+        Ok(Some(credentials)) => {
+            let Some(accounts) =
+                kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+            else {
+                return true;
+            };
+            service.confirm_engine_sign_ins(&accounts, limits::now());
+            batch.plans.retain(|p| {
+                accounts
+                    .iter()
+                    .any(|a| a.provider == p.account.provider && a.sign_in == p.account.sign_in)
+            });
+            batch
+                .providers
+                .retain(|p| accounts.iter().any(|a| &a.provider == p));
+        }
+        Ok(None) if engine.running_bot_engine().await.is_none() => {
+            service.confirm_engine_sign_ins(&[], limits::now());
+            return false;
+        }
+        Err(error) => {
+            eprintln!("Could not recheck engine plan accounts: {error}");
+            return true;
+        }
+        _ => {}
+    }
     match tokio::task::spawn_blocking(move || {
         let mut failed = false;
         for plan in batch.plans {
@@ -305,7 +384,11 @@ pub struct Turns {
     queue: tokio::sync::mpsc::UnboundedSender<(String, PlanLimitReading, u64)>,
 }
 impl Turns {
-    pub async fn follow(service: Service, agents: ResidentAgents) {
+    pub async fn follow(
+        service: Service,
+        agents: ResidentAgents,
+        standalone: Option<kuvo_services::usage::standalone::Readers>,
+    ) {
         let mut feed = agents.feed().subscribe();
 
         loop {
@@ -316,6 +399,9 @@ impl Turns {
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
             confirm(&service, &agents).await;
+            if let Some(readers) = &standalone {
+                readers.confirm(&service).await;
+            }
         }
     }
 

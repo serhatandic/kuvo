@@ -124,6 +124,7 @@ struct Google {
 enum Credential {
     Grok {
         home: PathBuf,
+        api_key: bool,
     },
     Cursor {
         key: String,
@@ -198,6 +199,64 @@ fn google(folder: &Path) -> std::io::Result<Option<Google>> {
         client_secret: str_at(&v["client_secret"]).map(str::to_owned),
     }))
 }
+async fn watch_credential(
+    path: PathBuf,
+    hub: kuvo_os::watch::WatchHub,
+    changed: tokio::sync::watch::Sender<u64>,
+) {
+    use kuvo_os::watch::{Notice, Options};
+    loop {
+        // Missing provider folders are never created merely to watch a login.
+        let Some(folder) = path
+            .ancestors()
+            .skip(1)
+            .find(|p| p.is_dir())
+            .map(Path::to_owned)
+        else {
+            return;
+        };
+        let Some(next) = path
+            .strip_prefix(&folder)
+            .ok()
+            .and_then(|p| p.iter().next())
+            .map(ToOwned::to_owned)
+        else {
+            return;
+        };
+        let Ok(mut watch) = hub.subscribe(&folder, Options::default()).await else {
+            return;
+        };
+        loop {
+            let Some(notice) = watch.recv().await else {
+                return;
+            };
+            let relevant = match notice {
+                Notice::Changed { paths } => paths
+                    .iter()
+                    .any(|p| p.as_os_str().is_empty() || p.iter().next() == Some(next.as_os_str())),
+                Notice::Rescan => true,
+                Notice::Failed(_) => {
+                    changed.send_modify(|n| *n = n.wrapping_add(1));
+                    if !folder.is_dir() {
+                        break;
+                    }
+                    return;
+                }
+            };
+            if !relevant {
+                continue;
+            }
+            changed.send_modify(|n| *n = n.wrapping_add(1));
+            // Move down as the provider creates its folder, or back up on removal.
+            if !folder.is_dir()
+                || path.ancestors().skip(1).find(|p| p.is_dir()) != Some(folder.as_path())
+            {
+                break;
+            }
+        }
+    }
+}
+
 impl Readers {
     pub fn for_home(home: &Path, personal: &Path) -> Option<Self> {
         let isolated = std::env::var("KUVO_TEST_PATH_ONLY").as_deref() == Ok("1");
@@ -236,18 +295,31 @@ impl Readers {
         let provider = record.provider().to_string();
         let (service, sign_in, who, credential) = match record.kind {
             AgentKind::Grok => {
-                let home = grok_native::folder(managed, &self.env, &self.personal);
-                let Some((key, id_token)) = grok_native::credential(&home)? else {
+                use kuvo_agents::acp::{GrokSecret, grok_installed, grok_secret};
+                // Exactly the credential and installed check Accounts uses. The
+                // transcript index does not participate in sign-in admission.
+                let Some(secret) = grok_secret(managed.as_deref()) else {
                     return Ok(None);
                 };
-                let who = jwt_subject(&key)
-                    .or_else(|| id_token.as_deref().and_then(jwt_subject))
-                    .map(|id| identity("xai", &id));
+                if !grok_installed() {
+                    return Ok(None);
+                }
+                let mark = secret.credential();
+                let (who, api_key) = match secret {
+                    GrokSecret::ApiKey(_) => (None, true),
+                    GrokSecret::SignedIn { key, id_token } => (
+                        jwt_subject(&key)
+                            .or_else(|| id_token.as_deref().and_then(jwt_subject))
+                            .map(|id| identity("xai", &id)),
+                        false,
+                    ),
+                };
+                let home = grok_native::folder(managed, &self.env, &self.personal);
                 (
                     Provider::Grok,
-                    sign_mark(&key),
+                    mark,
                     who,
-                    Credential::Grok { home },
+                    Credential::Grok { home, api_key },
                 )
             }
             AgentKind::Cursor if !self.isolated || self.fixture.is_some() => {
@@ -371,6 +443,72 @@ impl Readers {
         })
         .await;
     }
+    /// Watch credentials, not transcripts. A CLI sign-out on an otherwise idle
+    /// computer must withdraw its peer row even before a local client opens Usage.
+    pub fn follow_sign_ins(
+        &self,
+        hub: kuvo_os::watch::WatchHub,
+        service: Service,
+    ) -> tokio::task::JoinHandle<()> {
+        use kuvo_os::watch::{Notice, Options};
+        let readers = self.clone();
+        tokio::spawn(async move {
+            let Ok(mut roster) = hub
+                .subscribe(
+                    &readers.root,
+                    Options {
+                        recursive: false,
+                        create: true,
+                    },
+                )
+                .await
+            else {
+                return;
+            };
+            let (changed, mut changes) = tokio::sync::watch::channel(0u64);
+            struct Watches(BTreeMap<PathBuf, tokio::task::JoinHandle<()>>);
+            impl Drop for Watches {
+                fn drop(&mut self) {
+                    for task in self.0.values() {
+                        task.abort();
+                    }
+                }
+            }
+            let mut watches = Watches(BTreeMap::new());
+            loop {
+                tokio::select! {
+                    notice=roster.recv()=>{
+                        let Some(notice)=notice else {return;};
+                        if matches!(&notice,Notice::Changed{paths} if !paths.iter().any(|p|p==Path::new("accounts.json"))) {continue;}
+                        let Ok(records)=readers.accounts.all().await else{continue;};
+                        let mut wanted=BTreeSet::new();
+                        for record in records {
+                            let managed=readers.accounts.home(&record);
+                            match record.kind {
+                                AgentKind::Grok=>{wanted.insert(grok_native::folder(managed,&readers.env,&readers.personal).join("auth.json"));},
+                                AgentKind::Cursor if !readers.isolated||readers.fixture.is_some()=>{wanted.insert(managed.unwrap_or_else(||readers.root.join("cursor")).join("auth.json"));},
+                                AgentKind::Antigravity if !readers.isolated||readers.fixture.is_some()=>{
+                                    let folder=managed.unwrap_or_else(||readers.root.join("antigravity")).join("profile/antigravity-acp");
+                                    for name in ["acp_token.json","kuvo-sign-in.json"] {wanted.insert(folder.join(name));}
+                                },
+                                _=>{},
+                            }
+                        }
+                        watches.0.retain(|path,task|{let keep=wanted.contains(path)&&!task.is_finished();if !keep{task.abort();}keep});
+                        for path in wanted {
+                            watches.0.entry(path.clone()).or_insert_with(||tokio::spawn(watch_credential(path,hub.clone(),changed.clone())));
+                        }
+                        readers.confirm(&service).await;
+                    },
+                    result=changes.changed()=>{
+                        if result.is_err(){return;}
+                        readers.confirm(&service).await;
+                    },
+                }
+            }
+        })
+    }
+
     pub async fn confirm(&self, service: &Service) {
         if let Ok((found, unreadable)) = self.candidates(now()).await {
             self.prune_google(&found, &unreadable).await;
@@ -403,11 +541,11 @@ impl Readers {
                 continue;
             }
             let result = match &source.credential {
-                Credential::Grok { home } => {
+                Credential::Grok { home, api_key } => {
                     if !explicit {
                         continue;
                     }
-                    match grok_native::read(home.clone(), self.isolated).await {
+                    match grok_native::read(home.clone(), self.isolated, *api_key).await {
                         Ok(grok_native::Answer::Billing(body)) => grok(&body, at),
                         Ok(grok_native::Answer::Expired) => Err(problem(
                             ProblemKind::Expired,
@@ -483,7 +621,7 @@ impl Readers {
             }
             let service = service.clone();
             let kept = tokio::task::spawn_blocking(move || {
-                service.observe_facts(source.account, windows, Some(facts), at)
+                service.observe_confirmed_facts(source.account, windows, facts, at)
             })
             .await;
             if !matches!(kept, Ok(Ok(()))) {
@@ -1145,19 +1283,23 @@ impl Readers {
                         "Antigravity's quota summary has no readable buckets.",
                     ));
                 }
-                let plan = match self
+                let (plan, waiting) = match self
                     .google_local_call(state, &client, &endpoint, "GetUserStatus", at)
                     .await
                 {
                     Ok((status, body, _)) if (200..300).contains(&status) => {
-                        local_google_plan(&body)
+                        (local_google_plan(&body), false)
                     }
-                    _ => None,
+                    Ok((429, _, _)) => (None, true),
+                    _ => (None, false),
                 };
+                let partial =
+                    waiting || windows.iter().filter(|w| w.id != "argon-weekly").count() < 4;
                 return Ok(Some((
                     windows,
                     Facts {
                         plan,
+                        partial,
                         ..Default::default()
                     },
                     who,
@@ -1208,6 +1350,7 @@ impl Readers {
                     windows,
                     Facts {
                         plan: local_google_plan(&status),
+                        partial: true,
                         ..Default::default()
                     },
                     who,
@@ -1396,16 +1539,22 @@ impl Readers {
             )
         })?;
         let mut plan = None;
-        if let Ok((status,value,_))=self.google_held_call(state,main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await&& (200..300).contains(&status){
+        let mut partial =
+            held.is_some() || windows.iter().filter(|w| w.id != "argon-weekly").count() < 4;
+        if let Ok((status,value,_))=self.google_held_call(state,main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await {
+            partial |= status == 429;
+            if (200..300).contains(&status) {
             plan=match value["paidTier"]["id"].as_str(){
                 Some("g1-pro-tier")=>Some("Pro".into()),Some("g1-ultra-tier")=>Some("Ultra".into()),Some("g1-ultra-lite-tier")=>Some("Ultra Lite".into()),
                 _=>str_at(&value["paidTier"]["name"]).or_else(||str_at(&value["currentTier"]["name"])).map(google_plan)
+            }
             }
         }
         Ok((
             windows,
             Facts {
                 plan,
+                partial,
                 ..Default::default()
             },
             credential.identity.clone(),
