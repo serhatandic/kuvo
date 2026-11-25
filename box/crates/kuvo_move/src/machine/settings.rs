@@ -25,7 +25,7 @@ pub(super) fn take(disk: &Disk, account_home: Option<&Path>) -> Result<(), Error
         || files::text_of(&launch).is_some_and(|launch| launch.lines().any(settings_line));
     let mut current = settings_at(&saved)?;
     if matches!(current, Settings::Missing) && eligible {
-        current = Settings::Plain(adopt(disk, &saved, &global, &legacy, &shown)?);
+        current = Settings::Plain(adopt(disk, &saved, &global, &legacy, &shown, None)?.0);
     }
     if eligible && let Settings::Plain(settings) = &mut current {
         default_permissions(disk, &saved, settings)?;
@@ -84,11 +84,22 @@ fn adopt(
     global: &Path,
     legacy: &Path,
     shown: &str,
-) -> Result<Fields, Error> {
+    seed: Option<&Value>,
+) -> Result<(Fields, bool), Error> {
     let global_settings = settings_at(global)?;
     let global_readable = !matches!(global_settings, Settings::Unreadable);
     let mut merged = global_settings.into_fields();
     merge(&mut merged, settings_at(legacy)?.into_fields());
+    let seeded = merged.is_empty()
+        && seed
+            .and_then(|value| value.get("settings"))
+            .is_some_and(Value::is_object);
+    if seeded {
+        merged = seed
+            .and_then(|value| value["settings"].as_object())
+            .cloned()
+            .unwrap_or_default();
+    }
     let root = disk.0.to_string_lossy();
     for value in merged.values_mut() {
         key_paths(value, &root, shown);
@@ -96,14 +107,24 @@ fn adopt(
 
     files::create_private_dirs(&disk.path("box/keys")?)?;
     let keys = disk.path("keys")?;
-    if metadata(&keys)?.is_some_and(|meta| meta.is_dir()) {
+    if seeded {
+        if let Some(keys) = seed.and_then(|value| value["keys"].as_object()) {
+            for (name, value) in keys {
+                if valid_key(name)
+                    && let Some(value) = value.as_str()
+                {
+                    files::write_secret(
+                        &disk.path(Path::new("box/keys").join(name))?,
+                        value.as_bytes(),
+                    )?;
+                }
+            }
+        }
+    } else if metadata(&keys)?.is_some_and(|meta| meta.is_dir()) {
         for entry in entries(&keys)? {
             let name = entry.file_name();
             let kept = name.to_string_lossy();
-            let valid = kept.strip_prefix("KUVO_KEY_").is_some_and(|part| {
-                !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            });
-            if valid
+            if valid_key(&kept)
                 && !kept.contains("__")
                 && entry.file_type()?.is_file()
                 && let Some(bytes) = files::read(&entry.path())?
@@ -126,7 +147,44 @@ fn adopt(
     // Publish the settings before retiring the old launch overrides. The
     // caller also retires them on replay once the settings exist.
     save_settings(saved, &merged)?;
-    Ok(merged)
+    Ok((merged, seeded))
+}
+
+fn valid_key(name: &str) -> bool {
+    name.strip_prefix("KUVO_KEY_").is_some_and(|part| {
+        !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
+}
+
+/// The released Mac can seed settings once, even after the machine layout has opened.
+pub fn adopt_legacy_settings(home: &Path, shown: &str, seed: &Value) -> Result<Value, Error> {
+    let disk = Disk(home.to_owned());
+    #[cfg(unix)]
+    let _launch = kuvo_store::locks::ReleasedLaunch::acquire(&disk.path("run")?)?;
+    #[cfg(windows)]
+    let _launch = kuvo_store::locks::OwnedLock::acquire(
+        &disk.path("run/.launching")?,
+        std::time::Duration::from_secs(15),
+    )?;
+    let _settings = kuvo_store::locks::OwnedLock::acquire(
+        &disk.path("run/.config.lock")?,
+        std::time::Duration::from_secs(15),
+    )?;
+    let saved = disk.path("box/opencode.json")?;
+    if metadata(&saved)?.is_some() {
+        return Ok(json!({"status":"own","settings":settings_at(&saved)?.into_fields()}));
+    }
+    let (mut settings, seeded) = adopt(
+        &disk,
+        &saved,
+        &disk.path("config/opencode/opencode.json")?,
+        &disk.path("keys/settings.json")?,
+        shown,
+        Some(seed),
+    )?;
+    default_permissions(&disk, &saved, &mut settings)?;
+    clear_launch_settings(&disk.path("run/launch.env")?)?;
+    Ok(json!({"status":"adopted","seeded":seeded,"settings":settings}))
 }
 
 fn settings_line(line: &str) -> bool {

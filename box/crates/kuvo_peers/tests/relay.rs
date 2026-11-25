@@ -50,6 +50,7 @@ fn config(url: String) -> Config {
             engine: None,
         },
         grants: HashMap::from([(public(PEER_KEY), "first".into())]),
+        legacy_enrollers: vec![],
         peers: vec![Host {
             key: public(PEER_KEY),
             address: PEER_ADDRESS,

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{io, path::Path};
 
-mod settings;
+pub(crate) mod settings;
 
 const LINK: ObjectFormat = ObjectFormat::additive("Link state");
 const EXISTING_MACHINE: &[&str] = &[
