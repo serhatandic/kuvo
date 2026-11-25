@@ -18,6 +18,8 @@ use crate::{
     read_record, retirement, staging, update_status,
 };
 
+mod offer;
+
 const STAGE_WAIT: i64 = 300_000;
 const MAX_BRIDGE_ENVELOPE: usize = 8192;
 
@@ -167,6 +169,14 @@ impl Candidate {
         files::write_secret(&folder.join("boxes.json"), self.envelope.as_bytes())
     }
 
+    pub fn receive_offer(home: &Home, source: &Path, key: &str) -> io::Result<()> {
+        offer::receive(home, source, key)
+    }
+
+    pub fn offered(home: &Home, key: &str) -> Option<Self> {
+        offer::latest(home, key)
+    }
+
     pub fn kept(home: &Home, key: &str) -> Option<Self> {
         let envelope = files::text_of(&home.updates().join("release/boxes.json"))?;
         Self::verify(envelope, key).ok()
@@ -195,6 +205,31 @@ impl Candidate {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
+        }
+    }
+
+    pub async fn download_or_held(
+        &self,
+        home: &Home,
+        key: &str,
+        fetcher: &Fetcher,
+    ) -> io::Result<Vec<u8>> {
+        let (home, key, reference) = (home.clone(), key.to_owned(), self.local()?);
+        let held = tokio::task::spawn_blocking(move || {
+            let held =
+                HeldPack::find(&home, &key, &reference.version, Some(&reference.sha256)).ok()??;
+            let mut bytes = Vec::with_capacity(held.size);
+            held.file
+                .take(staging::MAX_PACK + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            reference.matches_bytes(&bytes).then_some(bytes)
+        })
+        .await
+        .map_err(io::Error::other)?;
+        match held {
+            Some(bytes) => Ok(bytes),
+            None => self.download(fetcher).await,
         }
     }
 
@@ -353,16 +388,22 @@ impl Candidate {
 }
 
 fn bridge_folder(home: &Home) -> io::Result<PathBuf> {
+    update_folder(
+        home,
+        "bridge",
+        "The TypeScript bridge folder is not a directory.",
+    )
+}
+
+fn update_folder(home: &Home, name: &str, message: &str) -> io::Result<PathBuf> {
     let updates = home.updates();
-    let folder = updates.join("bridge");
+    let folder = updates.join(name);
     for path in [&updates, &folder] {
         match fs::symlink_metadata(path) {
             Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Ok(_) => {
-                return Err(io::Error::other(
-                    "The TypeScript bridge folder is not a directory.",
-                ));
+                return Err(io::Error::other(message.to_owned()));
             }
             Err(error) => return Err(error),
         }
@@ -377,6 +418,7 @@ pub struct HeldPack {
     pub reference: ReleaseRef,
     pub size: usize,
     file: File,
+    folder: PathBuf,
     _lease: Option<File>,
 }
 
@@ -406,6 +448,7 @@ impl HeldPack {
             .flatten()
             .filter(|target| target.version() == version)
             .map(|target| (target.folder(home.root()), Some(target)))
+            .chain(offer::folders(home, version))
             .chain(std::iter::once(bridge))
         {
             let manifest = folder.join("boxes.json");
@@ -469,6 +512,7 @@ impl HeldPack {
                     candidate,
                     reference,
                     file,
+                    folder,
                     size: size as usize,
                     _lease: lease,
                 }));
@@ -499,11 +543,7 @@ impl HeldPack {
             return Ok(None);
         }
         let reference = source.candidate.signed.reference(pack);
-        let path = source
-            .reference
-            .target()?
-            .folder(home.root())
-            .join(format!("relay-pack-{hash}"));
+        let path = source.folder.join(format!("relay-pack-{hash}"));
         let bytes = download(
             &fetcher.0,
             &pack.url,
@@ -522,6 +562,7 @@ impl HeldPack {
                 reference,
                 size: bytes.len(),
                 file,
+                folder: source.folder,
                 _lease: source._lease,
             }))
         })

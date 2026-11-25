@@ -185,19 +185,35 @@ impl Mail {
                 });
                 let installed = facts.kuvo.as_deref() == Some(&release.version)
                     && facts.installed_sha256.as_deref() == Some(&release.sha256);
-                let exact = installing || installed;
-                if exact || self.can_mirror(&facts, release) {
-                    Some((member.host()?, !exact))
+                let offered = facts
+                    .release_manifest
+                    .as_ref()
+                    .filter(|_| facts.candidate.as_deref() == Some(&release.version))
+                    .and_then(|envelope| Candidate::verify(envelope.clone(), &self.key).ok())
+                    .filter(|candidate| candidate.local().ok().as_ref() == Some(release))
+                    .and_then(|candidate| {
+                        Some(
+                            candidate.pack_digest(facts.release_target.as_deref()?)?
+                                == release.sha256,
+                        )
+                    });
+                let priority = if installing || installed {
+                    0
+                } else if offered == Some(true) {
+                    1
+                } else if offered.is_some() || self.can_mirror(&facts, release) {
+                    2
                 } else {
-                    None
-                }
+                    return None;
+                };
+                Some((member.host()?, priority))
             })
             .collect();
-        peers.sort_by_key(|(_, mirror)| *mirror);
-        for (peer, mirror) in peers {
+        peers.sort_by_key(|(_, priority)| *priority);
+        for (peer, priority) in peers {
             if let Ok(Ok(pack)) = timeout(
                 kuvo_keeper::fleet::peer_transfer_limit(),
-                self.pull_from(&mut events, &peer, release, progress, mirror),
+                self.pull_from(&mut events, &peer, release, progress, priority == 2),
             )
             .await
             {

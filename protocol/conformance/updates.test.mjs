@@ -304,6 +304,231 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
   return { version, hash, signed, updateEnv, downloaded: () => downloads };
 }
 
+test("only the local app can offer a release from a full folder path", async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Local release offer");
+  const resident = await here.start().ready();
+  const denied = await request(resident, "POST", "kuvo/box/update", { from: "relative" });
+  assert.equal(denied.status, 403, denied.text);
+  assert.deepEqual(denied.json, { message: "Only Kuvo Code offers Kuvo on this computer a release." });
+  for (const origin of ["app", "mac"]) {
+    for (const body of [{ from: "relative" }, {}]) {
+      const answer = await request(resident, "POST", "kuvo/box/update", body, { "x-kuvo-from": origin });
+      assert.equal(answer.status, 400, answer.text);
+      assert.deepEqual(answer.json, { message: "Send the full path to the release folder." });
+    }
+    const missing = await request(resident, "POST", "kuvo/box/update", { from: path.join(here.env.HOME, "no-release") }, { "x-kuvo-from": origin });
+    assert.equal(missing.status, 422, missing.text);
+    assert.deepEqual(missing.json, { message: "That release can't be read." });
+  }
+});
+
+test("the local app's exact signed target offer survives restart and is used without downloading the pack", { timeout: releaseReturnMs + firstPreparationMs }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Rust target-specific local release media; the TS signed-offer reference uses receiveRelease.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("App offered release");
+  const home = path.join(here.env.HOME, ".kuvo-code");
+  fs.renameSync(here.home, home);
+  const version = "0.8.0", previous = "0.8.0-beta.1", engineVersion = "2.2.6";
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const key = keypair();
+  const oldBytes = Buffer.from("installed signed pack");
+  const oldHash = digest(oldBytes), old = `versions/${previous}-${oldHash.slice(0,12)}/bin`;
+  const native = fs.readFileSync(binary.file);
+  write(path.join(home, old, program), native, { mode: 0o700 });
+  write(path.join(home, old, "box-version"), previous + "\n");
+  write(path.join(home, path.dirname(old), "box.json"), encode({ kuvo: "box/1", version: previous, launch: "rust", engine: engineVersion }));
+  write(path.join(home, "active-release"), old);
+  write(path.join(home, "run/engine.json"), encode({ ...here.engine.record, version: engineVersion }));
+  const release = path.join(here.env.HOME, "release-material"), tree = path.join(release, "tree");
+  const files = { [`bin/${program}`]: native, "bin/box-version": Buffer.from(version + "\n") };
+  if (process.platform !== "win32") {
+    for (const name of ["kuvo-start", "kuvo-setsid"]) files[`bin/${name}`] = fs.readFileSync(new URL(`../../box/src/keeper/${name}`, import.meta.url));
+  }
+  for (const [file, bytes] of Object.entries(files)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  fs.mkdirSync(path.join(tree, "bin/opencode-plugins"));
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", version, launch: "rust", engine: engineVersion,
+    files: Object.fromEntries(Object.entries(files).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const tar = path.join(release, "signed.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+  const packBytes = gzipSync(fs.readFileSync(tar), { level: 1 });
+  const engine = await engineFeed(t, path.join(release, "engine"), undefined, { damageFirst: false });
+  const system = process.platform === "win32" ? "windows" : process.platform;
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  let packRequests = 0;
+  const feed = createServer((req, res) => {
+    if (req.url !== "/boxes.json") packRequests++;
+    res.writeHead(404).end();
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const local = { url: `${url}/local.tar.gz`, sha256: digest(packBytes) };
+  const foreignTarget = target === "x86_64-unknown-linux-musl" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-musl";
+  const foreign = { url: `${url}/foreign.tar.gz`, sha256: digest("foreign target") };
+  const base = { kuvo: "box/1", engine: engineVersion, spreads: true, launch: "rust" };
+  const manifest = { ...base, version, pack: foreign, packs: { [target]: local, [foreignTarget]: foreign },
+    [system]: { [arch]: engine.build } };
+  const signed = encode(envelope(manifest, key));
+  const oldPack = { url: `${url}/old.tar.gz`, sha256: oldHash };
+  write(path.join(home, path.dirname(old), "boxes.json"), encode(envelope({ ...base, version: previous, pack: oldPack, packs: { [target]: oldPack } }, key)));
+  write(path.join(home, path.dirname(old), "pack"), oldBytes);
+  const media = path.join(here.env.HOME, "app-offer-media");
+  const source = (name, body, signer = key) => {
+    const folder = path.join(media, name);
+    write(path.join(folder, "boxes.json"), encode(envelope(body, signer)));
+    return folder;
+  };
+  const offer = source("valid", manifest);
+  write(path.join(offer, "local.tar.gz"), packBytes);
+  // Deliberately no foreign or legacy pack file: the local target is authoritative.
+  const damaged = source("damaged", manifest);
+  write(path.join(damaged, "local.tar.gz"), "changed bytes");
+  const stranger = source("stranger", manifest, keypair());
+  const privateRelease = source("private", { ...manifest, spreads: false });
+  const missing = source("missing", manifest);
+  const older = source("older", { ...manifest, version: "0.7.2" });
+  const conflict = source("same-version-conflict", { ...manifest, version: previous });
+  const env = { ...here.env, KUVO_HOME: home, KUVO_TEST_RELAY: relay.url, KUVO_RELAY_URL: relay.url,
+    KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  const start = () => startBox({ binary, home, relay, env });
+  const keep = (...args) => {
+    const done = spawnSync(binary.file, ["keep", ...args], { env, cwd: home, encoding: "utf8", timeout: 15000 });
+    assert.equal(done.status, 0, done.error?.message ?? done.stderr);
+  };
+  let child = start(), keeper;
+  try {
+    const resident = await child.ready();
+    const share = from => request(resident, "POST", "kuvo/box/update", { from }, { "x-kuvo-from": "app" }, firstPreparationMs);
+    const refused = await share(stranger);
+    assert.equal(refused.status, 422, refused.text);
+    assert.deepEqual(refused.json, { message: "It isn't signed with a key this machine trusts." });
+    const restricted = await share(privateRelease);
+    assert.equal(restricted.status, 422, restricted.text);
+    assert.deepEqual(restricted.json, { message: "This release cannot be shared with your setup." });
+    const unreadable = await share(missing);
+    assert.equal(unreadable.status, 422, unreadable.text);
+    assert.deepEqual(unreadable.json, { message: "That release can't be read." });
+    const changed = await share(damaged);
+    assert.equal(changed.status, 422, changed.text);
+    assert.deepEqual(changed.json, { message: "The release's files aren't what it says." });
+    for (const folder of [older, conflict]) {
+      const ignored = await share(folder);
+      assert.equal(ignored.status, 202, ignored.text);
+      assert.equal(ignored.json.version, previous);
+    }
+    const accepted = await share(offer);
+    assert.equal(accepted.status, 202, accepted.text);
+    assert.equal(accepted.json.version, previous);
+    assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8").trim(), old);
+    await child.stop();
+    child = undefined;
+    // The app's original media can disappear after its accepted handoff.
+    fs.rmSync(media, { recursive: true, force: true });
+    keeper = launch(binary.file, ["keep"], env, home);
+    const selected = `versions/${version}-${local.sha256.slice(0,12)}/bin`;
+    await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8").trim() === selected && !fs.existsSync(path.join(home, "run/previous")),
+      () => "the keeper did not confirm the signed local offer\n" + keeper.log(), releaseReturnMs);
+    const retained = path.join(home, path.dirname(selected));
+    assert.equal(digest(fs.readFileSync(path.join(retained, "pack"))), local.sha256);
+    assert.deepEqual(readJSON(path.join(retained, "boxes.json")), JSON.parse(signed));
+    assert.equal(packRequests, 0, "the accepted local bytes, not a pack URL, must be used");
+    assert.equal((await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/update")).json.version, version);
+  } finally {
+    await child?.stop();
+    if (keeper) {
+      try { keep("off"); await until(() => keeper.child.exitCode !== null, () => keeper.log(), 15000); }
+      finally { await keeper.stop(); }
+    }
+  }
+});
+
+test("a member shares its newer app offer while following the main's earlier signed choice", { timeout: releaseReturnMs }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || !fs.existsSync(fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url)))) return t.skip("Rust target-specific release media and reference relay codec.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Member with app media");
+  const { main, member } = seedPeerSetup(here.home, relay.url, 2);
+  const old = "0.8.0-beta.1", chosen = "0.8.0-beta.2", version = "0.8.0";
+  const key = keypair();
+  let downloads = 0;
+  const feed = createServer((req, res) => {
+    if (req.url !== "/boxes.json") downloads++;
+    res.writeHead(404).end();
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const bytes = Buffer.from("app's retained newer signed archive");
+  const pack = { url: `${url}/app.tar.gz`, sha256: digest(bytes) };
+  const priorBytes = Buffer.from("main chosen archive");
+  const prior = { url: `${url}/chosen.tar.gz`, sha256: digest(priorBytes) };
+  const base = { kuvo: "box/1", engine: "2.2.6", launch: "rust", spreads: true };
+  const signed = encode(envelope({ ...base, version, pack, packs: { [target]: pack } }, key));
+  const earlier = encode(envelope({ ...base, version: chosen, pack: prior, packs: { [target]: prior } }, key));
+  const source = path.join(here.env.HOME, "app-offer");
+  write(path.join(source, "boxes.json"), signed);
+  write(path.join(source, "app.tar.gz"), bytes);
+  const earlierSource = path.join(here.env.HOME, "earlier-app-media");
+  write(path.join(earlierSource, "boxes.json"), earlier);
+  write(path.join(earlierSource, "chosen.tar.gz"), priorBytes);
+  write(path.join(here.home, "bin/box-version"), old + "\n");
+  const options = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  let child = here.start(binary, options);
+  const peer = await releaseMailPeer(t, relay, member, 1);
+  try {
+    const resident = await child.ready();
+    await peer.ready();
+    peer.announce({ kuvo: old, releaseTarget: target });
+    const share = from => request(resident, "POST", "kuvo/box/update", { from }, { "x-kuvo-from": "app" });
+    const older = await share(earlierSource);
+    assert.equal(older.status, 202, older.text);
+    await peer.receiveComputer(facts => facts.candidate === chosen);
+    peer.send({ want: chosen, sha256: prior.sha256 });
+    const held = await peer.receive(value => value.version === chosen && (value.boxes || value.none));
+    assert.equal(held.size, priorBytes.length);
+    const olderFolder = path.join(here.home, "updates/app-offers", `${chosen}-${prior.sha256}`);
+    const accepted = await share(source);
+    assert.equal(accepted.status, 202, accepted.text);
+    const first = await peer.receiveComputer(facts => facts.candidate === version);
+    assert.equal(first.releaseManifest, signed.toString());
+    assert.equal(first.staged, undefined, "the member does not choose its own offer");
+    assert.equal(downloads, 0);
+    assert.ok(fs.existsSync(olderFolder), "the active transfer protects superseded media");
+    peer.send({ version: chosen, sha256: prior.sha256, part: 0 });
+    const oldPart = await peer.receive(value => value.version === chosen && value.i === 0);
+    assert.deepEqual(Buffer.from(oldPart.d, "base64"), priorBytes);
+    peer.send({ want: version, sha256: pack.sha256 });
+    const newHeader = await peer.receive(value => value.version === version && (value.boxes || value.none));
+    assert.equal(newHeader.size, bytes.length);
+    assert.equal((await share(source)).status, 202);
+    assert.equal(fs.existsSync(olderFolder), false, "unleased superseded media is retired");
+    peer.announce({ kuvo: old, releaseTarget: target, candidate: chosen, releaseManifest: earlier.toString() });
+    const choice = path.join(here.home, "updates/release/boxes.json");
+    await until(() => fs.existsSync(choice) && fs.readFileSync(choice, "utf8") === earlier.toString(), "the member follows its main's earlier offer");
+    fs.rmSync(source, { recursive: true, force: true });
+    fs.rmSync(earlierSource, { recursive: true, force: true });
+    await child.stop();
+    child = here.start(binary, options);
+    await child.ready();
+    await peer.ready();
+    peer.announce({ kuvo: old, releaseTarget: target, candidate: chosen, releaseManifest: earlier.toString() });
+    const after = await peer.receiveComputer(facts => facts.candidate === version);
+    assert.equal(after.releaseManifest, signed.toString());
+    peer.send({ want: version, sha256: pack.sha256 });
+    const header = await peer.receive(value => value.version === version && (value.boxes || value.none));
+    assert.equal(header.boxes, signed.toString());
+    assert.equal(header.size, bytes.length);
+    peer.send({ version, sha256: pack.sha256, part: 0 });
+    const part = await peer.receive(value => value.version === version && value.i === 0);
+    assert.deepEqual(Buffer.from(part.d, "base64"), bytes);
+    assert.equal(fs.readFileSync(path.join(here.home, "bin/box-version"), "utf8").trim(), old);
+  } finally { await child.stop(); }
+});
+
 test("a six-hour release round survives restart and Update Now admits a fresh release", { timeout: releaseReturnMs + firstPreparationMs }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("The TypeScript reference checks the six-hour round and immediate offer.");
@@ -1688,22 +1913,24 @@ async function releaseMailPeer(t, relay, observer, seed) {
   t.after(() => wire.leave());
   const address = Buffer.from(observer.address, "base64url");
   const key = Buffer.from(observer.key, "base64url"), secret = Buffer.alloc(32, seed);
+  async function receiveField(field, match) {
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      const packet = readFrame((await wire.next(Math.max(1, deadline - Date.now()))).subarray(17));
+      if (packet?.kind !== Frame.mail) continue;
+      const value = field(JSON.parse(openOneWay(packet.body, secret, key).payload));
+      if (value && match(value)) return value;
+    }
+    assert.fail("the expected signed peer mail did not arrive");
+  }
   return {
     ready: () => until(() => relay.has(address), "the resident must connect"),
     offline: () => until(() => !relay.has(address), "the earlier resident must disconnect"),
 
     send: release => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), release }), secret, key).message)),
     announce: computer => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), agents: { at: Date.now(), list: [], computer } }), secret, key).message)),
-    async receive(match) {
-      const deadline = Date.now() + 12000;
-      while (Date.now() < deadline) {
-        const packet = readFrame((await wire.next(Math.max(1, deadline - Date.now()))).subarray(17));
-        if (packet?.kind !== Frame.mail) continue;
-        const value = JSON.parse(openOneWay(packet.body, secret, key).payload).release;
-        if (value && match(value)) return value;
-      }
-      assert.fail("the expected signed release mail did not arrive");
-    },
+    receive: match => receiveField(payload => payload.release, match),
+    receiveComputer: match => receiveField(payload => payload.agents?.computer, match),
   };
 }
 
@@ -1801,13 +2028,16 @@ test("release mail sends the signed pack for a computer with a different target"
   assert.equal(fs.readFileSync(path.join(here.home, "active-release"), "utf8").trim(), selected);
   assert.deepEqual(fs.readFileSync(path.join(folder, "pack")), localBytes);
 });
-test("a computer prepares its own signed pack from a holder on another target", { timeout: releaseReturnMs + firstPreparationMs }, async t => {
+for (const appOffer of [false, true]) test(appOffer
+  ? "a main prepares its own signed pack from a member that has only offered it"
+  : "a computer prepares its own signed pack from a holder on another target",
+{ timeout: releaseReturnMs + firstPreparationMs }, async t => {
   const binary = boxBinary();
   const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
   if (binary.typescript || !fs.existsSync(wireFixture)) return t.skip("Uses Rust target-pack mail with a reference wire peer.");
   const { computer, relay } = await bench(t);
   const here = await computer("Mixed target recipient");
-  const { member } = seedPeerSetup(here.home, relay.url, 2);
+  const { main, member } = seedPeerSetup(here.home, relay.url, appOffer ? 1 : 2);
   const version = "0.8.0", previous = "0.8.0-beta.1";
   const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
   const release = path.join(here.env.HOME, "release");
@@ -1840,11 +2070,11 @@ test("a computer prepares its own signed pack from a holder on another target", 
   write(path.join(here.home, "bin/box-version"), previous + "\n");
   write(path.join(here.home, "run/engine.json"), encode({ ...here.engine.record, version: "2.2.6" }));
   const child = here.start(binary, { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key });
-  const donor = await releaseMailPeer(t, relay, member, 1);
+  const donor = await releaseMailPeer(t, relay, appOffer ? main : member, appOffer ? 2 : 1);
   await child.ready();
   await donor.ready();
   donor.announce({ kuvo: previous, releaseTarget: foreignTarget, candidate: version, releaseManifest: signed,
-    staged: { version, sha256: foreign.sha256 } });
+    ...(!appOffer && { staged: { version, sha256: foreign.sha256 } }) });
   const asked = await donor.receive(value => value.want === version);
   assert.deepEqual(asked, { want: version, sha256: local.sha256 });
   donor.send({ version, sha256: local.sha256, boxes: signed, size: pack.length });

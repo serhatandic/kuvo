@@ -62,6 +62,7 @@ impl Drop for Worker {
 enum Check {
     Local(oneshot::Sender<io::Result<CheckReply>>),
     Peer,
+    Offered,
     Retry(
         retry::Request,
         oneshot::Sender<Result<retry::Answer, kuvo_server::Refusal>>,
@@ -187,6 +188,7 @@ pub fn start(
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
+                    Some(Check::Offered) => {}
                     Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given).await); }
                     Some(Check::PeerRetry(release)) => { let _ = fleet.retry_local(&release.version, Some(&release.sha256)); }
                     None => return,
@@ -211,6 +213,7 @@ pub fn register_check(
 
     let checks = worker.map(|worker| worker.checks.clone());
     retry::register(routes, checks.clone());
+    register_offer(routes, home.clone(), profile.clone(), checks.clone());
     routes.register_decoded::<update::Spec, _, _, _>(
         Access::Any,
         |body| {
@@ -243,6 +246,77 @@ pub fn register_check(
             }
         },
     );
+}
+
+fn register_offer(
+    routes: &mut kuvo_server::Registry,
+    home: Home,
+    profile: PathBuf,
+    checks: Option<mpsc::Sender<Check>>,
+) {
+    use http::StatusCode;
+    use kuvo_protocol::routes::post_kuvo_box_update as offer;
+    use kuvo_server::{Access, Caller, LocalOrigin, Refusal, RouteReply, Transport};
+
+    let key = feed(&home, &profile).map_or_else(|| UPDATE_KEY.into(), |(_, key, _)| key);
+    let accepting = Arc::new(tokio::sync::Mutex::new(()));
+    routes.register::<offer::Spec, _, _>(Access::Any, move |call| {
+        let (home, profile, checks, key, accepting) = (
+            home.clone(),
+            profile.clone(),
+            checks.clone(),
+            key.clone(),
+            accepting.clone(),
+        );
+        async move {
+            if !matches!(
+                call.request.caller,
+                Caller::Local(Transport::Http {
+                    origin: LocalOrigin::App | LocalOrigin::Mac,
+                    ..
+                })
+            ) {
+                return Err(Refusal::new(
+                    StatusCode::FORBIDDEN,
+                    "Only Kuvo Code offers Kuvo on this computer a release.",
+                ));
+            }
+            let body = serde_json::from_slice::<Value>(&call.request.body).unwrap_or_default();
+            let source = body["from"]
+                .as_str()
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| {
+                    Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Send the full path to the release folder.",
+                    )
+                })?;
+            let guard = accepting.lock_owned().await;
+            let offered_home = home.clone();
+            tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                Candidate::receive_offer(&offered_home, &source, &key)
+            })
+            .await
+            .map_err(|_| {
+                Refusal::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Couldn’t keep the signed release.",
+                )
+            })?
+            .map_err(|error| Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string()))?;
+            if let Some(checks) = checks {
+                let _ = checks.try_send(Check::Offered);
+            }
+            let status = update_status::read(&home, &profile).map_err(|error| {
+                Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })?;
+            serde_json::from_value(status)
+                .map(RouteReply::json::<202>)
+                .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+        }
+    });
 }
 
 pub fn register_helper_stop(routes: &mut kuvo_server::Registry, home: Home, mac: bool) {
@@ -434,8 +508,17 @@ impl Fleet {
         }
         let mut candidate =
             Candidate::kept(&self.home, &self.key).filter(|next| next.newer_than(Some(&version)));
+        let offered = Candidate::offered(&self.home, &self.key)
+            .filter(|next| next.newer_than(Some(&version)));
         let mut committed = false;
         if standalone || local_main {
+            if let Some(offer) = &offered
+                && !candidate
+                    .as_ref()
+                    .is_some_and(|chosen| chosen.newer_than(Some(offer.version())))
+            {
+                candidate = Some(offer.clone());
+            }
             for peer in &view.roster.members {
                 let (away, facts) = view.peer_updates(&peer.key, now);
                 if !away {
@@ -604,7 +687,7 @@ impl Fleet {
                 let progress = progress.clone();
                 let prepared = prepared.clone();
                 self.pending = Some(tokio::spawn(async move {
-                    let pack = match candidate.download(&fetcher).await {
+                    let pack = match candidate.download_or_held(&home, &key, &fetcher).await {
                         Ok(pack) => pack,
                         Err(error) => {
                             let Some(mail) = mail else {
@@ -636,6 +719,17 @@ impl Fleet {
                     fill,
                 });
             }
+        }
+        if !standalone
+            && !local_main
+            && let Some(offered) = offered
+            && (facts.staged.is_none()
+                || !candidate
+                    .as_ref()
+                    .is_some_and(|chosen| chosen.newer_than(Some(offered.version()))))
+        {
+            facts.candidate = Some(offered.version().into());
+            facts.release_manifest = Some(offered.envelope().into());
         }
         let prepared = facts.staged.is_some();
         let bridge = if local_main && let Some(running) = &running {
