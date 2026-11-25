@@ -1,5 +1,8 @@
 //! The last headless computer can erase its own installation after its signed
 //! removal decision and process shutdown. The journal follows the old inode.
+//! On Windows a folder can't be renamed while the box holds files in it, so the
+//! resident hands the erase to a copy of itself outside the folder, and the next
+//! box to start deletes that copy.
 
 use std::{
     fs, io,
@@ -73,10 +76,9 @@ impl LocalWipe {
 
 fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
     let platform = Platform::current();
-    if platform == Platform::Windows
-        || std::env::var_os("KUVO_BOX")
-            .as_deref()
-            .is_some_and(|v| v == "mac")
+    if std::env::var_os("KUVO_BOX")
+        .as_deref()
+        .is_some_and(|v| v == "mac")
         || home.file_name().is_none_or(|part| part != ".kuvo-code")
     {
         return Ok(None);
@@ -114,6 +116,12 @@ pub(crate) fn check(home: &Path) -> io::Result<()> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => (),
             Err(error) => return Err(error),
         }
+    }
+    #[cfg(windows)]
+    if kuvo_keeper::windows::StartupTask::for_home(&root)?.registered()? {
+        return Err(io::Error::other(
+            "Kuvo Code couldn’t confirm its startup entries were removed.",
+        ));
     }
     if std::env::var_os("KUVO_KEYS_ON_HOST").is_some_and(|value| value == "1")
         || std::env::var_os("KUVO_HOST_URL").is_some()
@@ -188,6 +196,8 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     let parent = parent(&root)?;
     let receipts = parent.join(".kuvo-code-removal-receipts");
     let marker = receipts.join("last-setup-wipe");
+    #[cfg(windows)]
+    forget_erasers(&receipts);
     let records = Files::new(root.clone());
     let pending = || pending_link(&records);
     let read = || -> io::Result<Option<Journal>> {
@@ -226,6 +236,9 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     let mut kept = read()?;
     let save = |journal: &Journal| -> io::Result<()> {
         files::create_private_dirs(&receipts)?;
+        // Windows makes the folder with the profile's ACL; close it as Unix makes it 0700.
+        #[cfg(windows)]
+        files::private_folder(&receipts)?;
         private(&receipts, true)?;
         files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent)
     };
@@ -284,6 +297,10 @@ pub fn finish(home: &Path) -> io::Result<bool> {
             if identity(&root)? != journal.source {
                 return Err(io::Error::other("The folder to erase has changed."));
             }
+            // Windows can't rename a folder holding open files, these locks included.
+            // The wipe lock beside the folder still keeps other boxes out.
+            #[cfg(windows)]
+            drop(guard.take());
             files::replace_synced(&root, &target)?;
         }
         journal.phase = Some(Phase::Detached);
@@ -309,17 +326,14 @@ fn identity(path: &Path) -> io::Result<Option<String>> {
     Ok(files::file_stamp(path)?.map(|stamp| format!("{}:{}", stamp.device, stamp.file)))
 }
 
-#[cfg(unix)]
 fn private(path: &Path, directory: bool) -> io::Result<bool> {
-    use std::os::unix::fs::MetadataExt as _;
     match fs::symlink_metadata(path) {
         Ok(info)
             if (if directory {
                 info.is_dir()
             } else {
                 info.is_file()
-            }) && info.mode() & 0o077 == 0
-                && info.uid() == fs::metadata(parent(path)?)?.uid() =>
+            }) && closed(path, &info)? =>
         {
             Ok(true)
         }
@@ -331,12 +345,98 @@ fn private(path: &Path, directory: bool) -> io::Result<bool> {
     }
 }
 
+#[cfg(unix)]
+fn closed(path: &Path, info: &fs::Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(info.mode() & 0o077 == 0 && info.uid() == fs::metadata(parent(path)?)?.uid())
+}
+
 #[cfg(windows)]
-fn private(_path: &Path, _directory: bool) -> io::Result<bool> {
-    // A native keeper must perform the detach after the executable releases it.
-    Err(io::Error::other(UNSUPPORTED))
+fn closed(path: &Path, _info: &fs::Metadata) -> io::Result<bool> {
+    kuvo_os::windows::is_private(path)
 }
 
 fn parent(path: &Path) -> io::Result<&Path> {
     path.parent().ok_or_else(|| io::Error::other(UNSUPPORTED))
+}
+
+/// Hand an authorized wipe to a copy of this program outside the folder it erases, which
+/// starts once this process has exited. Its own copy is deleted by the next box to start.
+#[cfg(windows)]
+pub fn hand_over(home: &Path) -> io::Result<bool> {
+    use std::os::windows::process::CommandExt as _;
+    let Some(root) = boundary(home)? else {
+        return Ok(false);
+    };
+    let receipts = parent(&root)?.join(".kuvo-code-removal-receipts");
+    files::create_private_dirs(&receipts)?;
+    files::private_folder(&receipts)?;
+    let eraser = receipts.join(format!("{ERASER}{}", std::process::id()));
+    fs::create_dir_all(&eraser)?;
+    let program = std::env::current_exe()?;
+    for entry in fs::read_dir(parent(&program)?)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
+        {
+            fs::copy(&path, eraser.join(path.file_name().unwrap_or_default()))?;
+        }
+    }
+    let copy = eraser.join("kuvo-box.exe");
+    fs::copy(&program, &copy)?;
+    let mut command = std::process::Command::new(copy);
+    command
+        .arg("wipe-member")
+        .env("KUVO_HOME", &root)
+        .env(AFTER, std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    use windows_sys::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, DETACHED_PROCESS,
+    };
+    // Outlive this process's job when it allows that; a test harness may not.
+    let flags = CREATE_NO_WINDOW | DETACHED_PROCESS;
+    command
+        .creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .or_else(|_| command.creation_flags(flags).spawn())?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+const ERASER: &str = "eraser-";
+/// The process an eraser waits for before it starts.
+#[cfg(windows)]
+pub const AFTER: &str = "KUVO_WIPE_AFTER";
+
+/// Wait for the resident that handed over the erase to exit.
+#[cfg(windows)]
+pub fn wait_for_hand_over() {
+    use kuvo_os::process::ProcessIdentity;
+    let Some(pid) = std::env::var(AFTER).ok().and_then(|pid| pid.parse().ok()) else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while ProcessIdentity::read(pid).is_ok_and(|live| live.is_some())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Erasers that have finished: each one's program is free once it has exited.
+#[cfg(windows)]
+fn forget_erasers(receipts: &Path) {
+    let own = format!("{ERASER}{}", std::process::id());
+    for entry in fs::read_dir(receipts).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(ERASER) && name != own)
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }

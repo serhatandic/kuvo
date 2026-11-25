@@ -1546,6 +1546,7 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "jiff",
+ "kuvo_keeper",
  "kuvo_os",
  "kuvo_peers",
  "kuvo_protocol",
@@ -1564,6 +1565,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

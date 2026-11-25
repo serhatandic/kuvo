@@ -218,11 +218,16 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     #[cfg(not(windows))]
     let home = Home::new(home)?;
+    #[cfg(windows)]
+    if wipe {
+        kuvo_setup::wipe::wait_for_hand_over();
+    }
     if wipe || serve {
         match kuvo_setup::wipe::finish(home.root())? {
-            true => return Ok(ExitCode::SUCCESS),
+            // A new installation at the path starts after the old one's erase.
+            true if wipe || !home.root().exists() => return Ok(ExitCode::SUCCESS),
             false if wipe => return Ok(ExitCode::FAILURE),
-            false => {}
+            _ => {}
         }
     }
     if let Some(check) = uninstall {
@@ -365,9 +370,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
         // Let resident tasks and blocking file writers finish before detaching their home.
         drop(runtime);
-        return Ok(ExitCode::from(u8::from(!kuvo_setup::wipe::finish(
-            home.root(),
-        )?)));
+        // Windows: the folder stays open while this process lives; a copy erases it after.
+        #[cfg(windows)]
+        let finished = kuvo_setup::wipe::hand_over(home.root())?;
+        #[cfg(not(windows))]
+        let finished = kuvo_setup::wipe::finish(home.root())?;
+        return Ok(ExitCode::from(u8::from(!finished)));
     }
     // An addressed SSH exchange can finish while its stdin is still open. The
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
