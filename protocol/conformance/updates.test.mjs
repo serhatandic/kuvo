@@ -767,7 +767,9 @@ test("the update status reports the installed release and a keeper's failed tria
 test("a member asks its main to check the release feed now or when it returns", async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform === "win32") return t.skip("This uses the Rust resident in a disposable Unix account.");
-  const { computer, relay, leases } = await bench(t);
+  // With no lease poll to send incidental mail, the actual relay's departure push
+  // is the source of timely reach changes.
+  const { computer, relay, leases } = await bench(t, { presenceEvents: true });
   const [main, member] = await Promise.all([computer("Main"), computer("Member")]);
   const old = main.start();
   let mainKey, mainAddress;
@@ -777,9 +779,9 @@ test("a member asks its main to check the release feed now or when it returns", 
     mainKey = setup.json.you.key;
     const identity = readJSON(path.join(main.home, "run/link.json"));
     mainAddress = relayAddress(Buffer.from(identity.secret, "base64url"));
-    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
     const invite = await request(ready, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
     assert.equal((await member.join(invite.json.code)).code, 0);
   } finally {
     await old.stop();
@@ -823,6 +825,18 @@ test("a member asks its main to check the release feed now or when it returns", 
     const memberLink = readJSON(path.join(run, "link.json"));
     const memberAddress = relayAddress(Buffer.from(memberLink.secret, "base64url"));
     const resume = relay.pause(mainAddress, memberAddress);
+    // The pause prevents new traffic but cannot recall messages already on the socket.
+    // Append one authenticated fixture announcement, and wait until the member has
+    // filed it. Its actor processes the previous mail before this precise marker.
+    const codec = await referenceMailCodec(t);
+    const announcements = path.join(run, "peer-agents.json");
+    const previous = await until(() => fs.existsSync(announcements) && readJSON(announcements)[mainKey], "the member must have the main's announcement");
+    const at = Math.max(Date.now(), previous.at + 1);
+    const mainLink = readJSON(path.join(main.env.HOME, ".kuvo-code/run/link.json"));
+    const marker = codec.frame(codec.Frame.mail, 0, codec.sealOneWay(encode({ at, agents: { ...previous, at } }),
+      Buffer.from(mainLink.key, "base64url"), Buffer.from((await request(second, "GET", "kuvo/setup")).json.you.key, "base64url")).message);
+    relay.replay({ from: mainAddress, to: memberAddress, payload: marker });
+    await until(() => readJSON(announcements)[mainKey]?.at === at, "the member must file the ordered relay marker");
     const beforeReach = fs.existsSync(reach) ? readJSON(reach) : {};
     try {
       // Preserve the interval after the peer receiver writes the observation
@@ -1500,9 +1514,9 @@ async function pairedUpdateComputers(t) {
   const old = main.start();
   const previous = await old.ready();
   const setup = await request(previous, "GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
   const invite = await request(previous, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
   const joined = await member.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   await old.stop();
@@ -1566,7 +1580,10 @@ test("the returning bridge stays out of work placement during its Rust trial", {
       said.installedSha256 === bridgePack.sha256 && said.switching?.sha256 === pack.sha256;
   }, "the Rust resident should announce its trial while the bridge remains current");
   const row = async () => (await runsOn(observer)).computers.find(item => item.computer.id === peerKey);
-  const waiting = await until(row, "the returning computer should have a placement row");
+  const waiting = await until(async () => {
+    const current = await row();
+    return current?.away === true && current?.updating === true && current;
+  }, "the returning computer should have a placement row held for its trial");
   assert.deepEqual([waiting.away, waiting.updating], [true, true]);
   const mainKey = (await request(observer, "GET", "kuvo/setup")).json.you.key;
   await until(() => {
@@ -1863,7 +1880,12 @@ test("a quiet member keeps preparing or shows its staged release switching", { t
 
   await until(() => downloaded() >= 2 && facts()?.kuvo === installed,
     "the main must have heard from its member while both pack downloads are held");
-  const preparing = await rowIn(first, "getting-ready");
+  // The event-driven worker may publish a preparing row before the peer has sent its
+  // target. Compare settled signed facts rather than the intermediate no-digest row.
+  const preparing = await until(async () => {
+    const row = await rowIn(first, "getting-ready");
+    return row.targetSha256 === hash && row;
+  }, "the member's preparing row must name the signed target");
   assert.deepEqual(await rowIn(await quiet(5_000), "getting-ready"), preparing);
 
   // Resume with the normal preparation receipt already written, before any trial.
@@ -3167,10 +3189,10 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
   const before = main.connect(await old.ready());
   const setup = await before("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a relay lease");
   for (const peer of [member, away]) {
     const invite = await before("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a relay lease");
     const joined = await peer.join(invite.json.code);
     assert.equal(joined.code, 0, joined.log);
   }
@@ -3625,7 +3647,7 @@ Buffer.from = function (value, encoding, ...args) {
     const released = performance.now();
     for (const res of waiting) res.end(pack);
     await until(() => confirmed(leader), diagnose, shellKeepers ? releaseReturnMs : failover ? keeperTrialMs : 75000);
-    if (failover) assert.ok(heldChecks > 0, "the new main checks the feed without waiting to activate");
+    if (failover) assert.ok(heldChecks > 0, `the new main checks the feed without waiting to activate\n${diagnose()}`);
     if (!stageDeadline) t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
     await until(() => confirmed(member), diagnose, shellKeepers ? releaseReturnMs : 75000);
     await shellOutcome(leader);
@@ -3737,7 +3759,11 @@ Buffer.from = function (value, encoding, ...args) {
     const returnMs = failover || bridgeBeta || shellKeepers ? releaseReturnMs : peerOnly ? 120000 : 65000;
     await until(() => {
       const failure = (failover || bridgeBeta) && refused();
-      if (failure?.version === version) throw new Error(failure.reason);
+      if (failure?.version === version) {
+        const announcements = path.join(away.home, "run/peer-agents.json");
+        const peers = fs.existsSync(announcements) ? Object.values(readJSON(announcements)).map(({ computer, heard }) => ({ computer, heard })) : [];
+        throw new Error(`${failure.reason}\nReturning peer facts: ${JSON.stringify(peers)}\n${diagnose()}`);
+      }
       return confirmed(away);
     }, diagnose, returnMs);
     await until(async () => {

@@ -96,6 +96,12 @@ struct Writer {
     engine: Engine,
     reads: PeerReads,
     forward: Forward,
+    archives: Arc<
+        tokio::sync::OnceCell<(
+            kuvo_services::settings::ArchiveHandle,
+            kuvo_server::WeakDispatcher,
+        )>,
+    >,
     owners: ownership::Handle,
     revisions: Arc<offline::Revisions>,
     retell: told::Retell,
@@ -123,6 +129,7 @@ pub(super) fn register(
         numbers: Numbers::new(store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
         forward: Forward::new(store.clone(), owners.clone(), relay.clone()),
+        archives: Default::default(),
         owners,
         sessions: sessions.clone(),
         engine: engine.clone(),
@@ -225,6 +232,13 @@ pub struct Runtime {
     pub(super) link: session_links::StartLink,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
     pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
+    pub(super) archives: Arc<
+        tokio::sync::OnceCell<(
+            kuvo_services::settings::ArchiveHandle,
+            kuvo_server::WeakDispatcher,
+        )>,
+    >,
+    pub(super) archive_forward: Arc<dyn kuvo_services::settings::ArchiveForward>,
 }
 
 impl Drop for Runtime {
@@ -250,6 +264,8 @@ impl Writer {
         let edits = Arc::new(offline::Routes(self.clone()));
         let review = Arc::new(self.clone());
         let link = session_links::StartLink(self.clone());
+        let archives = self.archives.clone();
+        let archive_forward = Arc::new(self.forward.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -274,6 +290,8 @@ impl Writer {
             link,
             edits,
             review,
+            archives,
+            archive_forward,
         }
     }
 

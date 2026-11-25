@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     sync::{broadcast, watch},
     task::{JoinHandle, JoinSet},
-    time::{self, Instant, MissedTickBehavior},
+    time::{self, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -123,29 +123,71 @@ struct ToolReply {
     name: Option<String>,
 }
 
+// A tool writes its letter and then its wait/give-up marker in separate operations. Coalesce
+// that short cluster before delivering it, rather than racing the sibling file's writer.
+fn schedule_letters(next: &mut Option<Instant>) {
+    if next.is_none() {
+        *next = Some(Instant::now() + Duration::from_millis(150));
+    }
+}
+
 impl Letters {
     async fn run(mut self, mut events: broadcast::Receiver<Arc<RelayEvent>>) {
-        let mut tick = time::interval(Duration::from_secs(3));
-        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        let run = self.reader.run.clone();
+        files.set_targets(
+            Vec::new(),
+            vec![
+                (run.join("outbox/sending"), false),
+                (run.join("replies"), false),
+                (run.join("moves"), false),
+            ],
+        );
+        let mut scheduled = Some(Instant::now());
         loop {
+            // Only outstanding letters or unrecovered replies have a retry/expiry deadline.
+            let outstanding = [
+                ("outbox/sending", &["json", "failed"][..]),
+                ("replies", &["json", "gaveup"][..]),
+            ]
+            .iter()
+            .any(|(folder, extensions)| {
+                std::fs::read_dir(run.join(folder))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|entry| {
+                        entry
+                            .path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(|ext| extensions.contains(&ext))
+                    })
+            });
             let result = tokio::select! {
                 event = events.recv() => match event {
                     Ok(event) => match event.as_ref() {
                         RelayEvent::Mail { key, envelope, .. } => self.receive(*key, envelope).await,
-                        RelayEvent::Connected(_) => self.send_due().await,
+                        RelayEvent::Connected(_) => { schedule_letters(&mut scheduled); Ok(()) },
                         _ => Ok(()),
                     },
-                    Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
+                    Err(broadcast::error::RecvError::Lagged(_)) => { schedule_letters(&mut scheduled); Ok(()) },
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
                 result = self.answers.join_next(), if !self.answers.is_empty() => {
                     match result {
-                        Some(Ok(Some((id, letter)))) => self.leave_answer(&id, letter),
+                        Some(Ok(Some((id, letter)))) => { schedule_letters(&mut scheduled); self.leave_answer(&id, letter) },
                         Some(Err(error)) => Err(io::Error::other(error)),
                         _ => Ok(()),
                     }
                 }
-                _ = tick.tick() => self.send_due().await,
+                _ = files.changed() => { schedule_letters(&mut scheduled); Ok(()) },
+                changed = self.reader.changed() => if changed.is_err() { return } else { schedule_letters(&mut scheduled); Ok(()) },
+                _ = async { match scheduled { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                    scheduled = None;
+                    self.send_due().await
+                },
+                _ = time::sleep(Duration::from_secs(3)), if outstanding && scheduled.is_none() => self.send_due().await,
             };
             if let Err(error) = result {
                 eprintln!("Keeping letters: {error}");
@@ -244,7 +286,10 @@ impl Letters {
                 .then(|| view.roster.member(&key).and_then(|peer| peer.host()))
                 .flatten();
             if !here
-                && (!view.relay_connected || host.is_none() || !view.work_admitted(&encode(&key)))
+                && (!view.relay_connected
+                    || host.is_none()
+                    || !view.work_admitted(&encode(&key))
+                    || !self.reader.work_announced_to(&key))
             {
                 continue;
             }
@@ -477,9 +522,10 @@ impl Letters {
         // named this sender, give the directory time to publish that precise list.
         let view = match self.incoming_lists.get(&key) {
             Some(list)
-                if letter.letter.from.as_ref().is_some_and(|sender| {
-                    list.list.iter().any(|agent| &agent.session == sender)
-                }) =>
+                if !view.work_admitted(&key_text)
+                    || letter.letter.from.as_ref().is_some_and(|sender| {
+                        list.list.iter().any(|agent| &agent.session == sender)
+                    }) =>
             {
                 self.after_announcement(&key_text, list.at).await
             }

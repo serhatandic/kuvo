@@ -196,20 +196,35 @@ fn upgrade(args: &[OsString]) -> Result<bool, Box<dyn std::error::Error>> {
         staging::select_initial(&home, &selection)?;
     }
     drop(launch);
-    let launched = Command::new("/bin/sh")
-        .arg(home.bin().join("kuvo-start"))
-        .arg("box")
-        .env("HOME", &profile)
-        .current_dir(home.root())
-        .stdin(Stdio::null())
-        .status()?;
-    if !launched.success() {
-        return Err(io::Error::other("The installed keeper couldn’t start.").into());
-    }
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()?
-        .block_on(wait_for_resident(&home))?;
+        .build()?;
+    // A WSL machine's keeper is its Windows task's: registered again for the saved keeper.
+    #[cfg(target_os = "linux")]
+    let task = if home.run().join("wsl-task").exists() {
+        runtime.block_on(kuvo_keeper::wsl_task::WslTask::for_home(&home))?
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let task: Option<std::convert::Infallible> = None;
+    #[cfg(target_os = "linux")]
+    if let Some(task) = &task {
+        runtime.block_on(task.register(&home))?;
+    }
+    if task.is_none() {
+        let launched = Command::new("/bin/sh")
+            .arg(kuvo_keeper::shell_keeper(&home.bin()))
+            .arg("box")
+            .env("HOME", &profile)
+            .current_dir(home.root())
+            .stdin(Stdio::null())
+            .status()?;
+        if !launched.success() {
+            return Err(io::Error::other("The installed keeper couldn’t start.").into());
+        }
+    }
+    runtime.block_on(wait_for_resident(&home))?;
     files::remove_file_synced(&journal)?;
     if let Err(error) = files::remove_empty_dir_synced(&installer)
         && error.kind() != io::ErrorKind::DirectoryNotEmpty

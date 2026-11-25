@@ -9,7 +9,7 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::config::{ConfigPaths, SERVERS, SettingsChanged, SettingsRead, UNOWNED_SETTINGS, change_settings_file, map_value_at, problem_refusal, read_settings_file};
+use crate::config::{ConfigPaths, SERVERS, SettingsChanged, SettingsRead, UNOWNED_SETTINGS, change_settings_recorded, map_value_at, problem_refusal, read_settings_file};
 
 pub const FEATURES: &[&str] = &["mcp.catalog"];
 const MCP_ACCESS: &[&str] = &["signIn", "open", "local"];
@@ -63,6 +63,10 @@ pub fn catalog_settings(id: &str, file: &Path, is_mac: bool) -> Option<Value> {
 pub enum AddCatalogResult { Ok(Map<String, Value>), NotFound, Err { status: u16, message: String, problem: Option<String> } }
 
 pub fn add_from_catalog(id: &str, config_file: &Path, catalog_file: &Path, lock_file: &Path, keys_named: &str, is_mac: bool) -> AddCatalogResult {
+    add_recorded(id,config_file,catalog_file,lock_file,keys_named,is_mac,|_,_,_|{})
+}
+fn add_recorded(id: &str, config_file: &Path, catalog_file: &Path, lock_file: &Path, keys_named: &str, is_mac: bool,
+    record: impl FnOnce(&Map<String, Value>,&Map<String,Value>,&[crate::config::SettingChange])) -> AddCatalogResult {
     let Some(value) = catalog_settings(id, catalog_file, is_mac) else { return AddCatalogResult::NotFound };
     let settings = match read_settings_file(config_file) {
         SettingsRead::Ok(s) => s,
@@ -70,7 +74,7 @@ pub fn add_from_catalog(id: &str, config_file: &Path, catalog_file: &Path, lock_
     };
     let path_refs = [SERVERS[0], SERVERS[1], id];
     if map_value_at(&settings, &path_refs).is_some() { return AddCatalogResult::Ok(settings); }
-    match change_settings_file(&json!([{ "path": [SERVERS[0], SERVERS[1], id], "value": value, "was": Value::Null }]), config_file, lock_file, keys_named) {
+    match change_settings_recorded(&json!([{ "path": [SERVERS[0], SERVERS[1], id], "value": value, "was": Value::Null }]), config_file, lock_file, keys_named,record) {
         SettingsChanged::Ok(next) => AddCatalogResult::Ok(next),
         SettingsChanged::Err { status: 409, message, problem } => {
             if let SettingsRead::Ok(latest) = read_settings_file(config_file) && map_value_at(&latest, &path_refs).is_some() {
@@ -84,7 +88,7 @@ pub fn add_from_catalog(id: &str, config_file: &Path, catalog_file: &Path, lock_
 
 pub fn catalog_file_for(home: &Path) -> PathBuf { home.join("bin/mcp-catalog.json") }
 
-pub fn register(routes: &mut Registry, config: ConfigPaths) {
+pub fn register(routes: &mut Registry, config: ConfigPaths, setup: kuvo_setup::SetupHandle) {
     let cat_path = catalog_file_for(&config.home);
     let (gc, gp) = (config.clone(), cat_path.clone());
     routes.register::<get_kuvo_mcp_catalog::Spec, _, _>(Access::Any, move |_| {
@@ -97,13 +101,20 @@ pub fn register(routes: &mut Registry, config: ConfigPaths) {
     });
     routes.register::<post_kuvo_mcp_catalog_id::Spec, _, _>(Access::Any, move |call| {
         let (cfg, cat, raw) = (config.clone(), cat_path.clone(), call.param("id").unwrap_or("").to_owned());
+        let setup=setup.clone();
+        let receipt=form_urlencoded::parse(call.request.path.split_once('?').map(|(_,q)|q).unwrap_or_default().as_bytes()).any(|(k,v)|k=="receipt"&&v=="1");
         async move {
             if !cfg.owns_settings() { return Err(Refusal::new(StatusCode::CONFLICT, UNOWNED_SETTINGS)); }
             let id = percent_decode_str(&raw).decode_utf8().map(|s| s.into_owned()).unwrap_or_default();
-            match tokio::task::spawn_blocking(move || add_from_catalog(&id, &cfg.config_file, &cat, &cfg.lock_file, &cfg.keys_named, cfg.is_mac)).await
-                .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            {
-                AddCatalogResult::Ok(s) => Ok(RouteReply::json_as_kept::<200>(Value::Object(s))),
+            let (result,receipts)=tokio::task::spawn_blocking(move ||{
+                let mut receipts=Vec::new();
+                let result=add_recorded(&id,&cfg.config_file,&cat,&cfg.lock_file,&cfg.keys_named,cfg.is_mac,|before,after,changes|{
+                    if receipt && let Some(scope)=setup.config_receipt_scope() && let Ok(Some(saved))=crate::config_receipts::record(&cfg.home,scope,before,after,changes,Some(&id)){receipts.push(saved);}
+                });
+                (result,receipts)
+            }).await.map_err(|e|Refusal::new(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?;
+            match result{
+                AddCatalogResult::Ok(s) => Ok(RouteReply::json_as_kept::<200>(if receipt{json!({"settings":s,"configChanges":receipts})}else{Value::Object(s)})),
                 AddCatalogResult::NotFound => Err(Refusal::json(StatusCode::NOT_FOUND, json!({}))),
                 AddCatalogResult::Err { status, message, problem } => Err(SettingsChanged::into_refusal(status, message, problem)),
             }

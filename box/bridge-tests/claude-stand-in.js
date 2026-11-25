@@ -23,9 +23,16 @@ export function standInClaude({ root, agents, stands = "opus", signedIn = true, 
     { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Opus 5.5 · Most capable" },
     { value: "sonnet", resolvedModel: "claude-sonnet-5-5", displayName: "Sonnet 5.5", description: "Sonnet 5.5 · Everyday" },
   ];
+  if (signedIn) seedClaudeAuth(root, undefined, authMethod);
   const program = `const args = process.argv.slice(2);
 const fs = require("node:fs");
-const signIn = require("node:path").join(process.env.CLAUDE_CONFIG_DIR || process.env.HOME, "fixture-signed-in");
+const paths = require("node:path");
+const recordHome = process.env.CLAUDE_CONFIG_DIR || process.env.HOME;
+const credentialHome = process.env.CLAUDE_CONFIG_DIR || paths.join(process.env.HOME, ".claude");
+const signIn = paths.join(recordHome, "fixture-signed-in");
+const credential = paths.join(credentialHome, ".credentials.json");
+const record = paths.join(recordHome, ".claude.json");
+fs.appendFileSync(paths.join(${JSON.stringify(root)}, "claude-processes.jsonl"), JSON.stringify({pid:process.pid,args}) + String.fromCharCode(10));
 if (args[0] === "auth") {
   if (args[1] === "login") {
     console.log("Open https://claude.example.test/sign-in");
@@ -33,12 +40,17 @@ if (args[0] === "auth") {
     require("node:readline").createInterface({ input: process.stdin }).on("line", code => {
       if (code === "fixture-code") {
         fs.writeFileSync(signIn, args[2]);
+        fs.mkdirSync(credentialHome,{recursive:true});
+        fs.writeFileSync(credential, JSON.stringify({claudeAiOauth:{accessToken:"fixture",refreshToken:"fixture"}}));
+        fs.writeFileSync(record, JSON.stringify({oauthAccount:{accountUuid:"fixture-"+Date.now(),organizationType:args[2]==="--console"?"api":"claude_max"}}));
         process.exit(0);
       }
       process.stdout.write("Invalid code\\nPaste code here if prompted > ");
     });
   } else if (args[1] === "logout") {
     fs.rmSync(signIn, { force: true });
+    fs.rmSync(credential, { force: true });
+    fs.rmSync(record, { force: true });
   } else {
     const loggedIn = ${signedIn} || fs.existsSync(signIn);
     console.log(JSON.stringify({ loggedIn, authMethod: loggedIn ? ${JSON.stringify(authMethod)} : "none" }));
@@ -206,6 +218,10 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       finish(held);
       held = undefined;
     }
+  } else if (subtype === "get_usage") {
+    const usage = ${JSON.stringify(path.join(root, "claude-usage.json"))};
+    if (fs.existsSync(usage)) answer(message.request_id, { subtype: "success", response: JSON.parse(fs.readFileSync(usage, "utf8")) });
+    else answer(message.request_id, { subtype: "error", error: "No fixture usage." });
   } else if (!native && ["set_model", "get_context_usage"].includes(subtype)) {
     // A probe asking how much each model holds: as the test says (\`windows\` in
     // \`<root>/claude-catalog.json\`, by model), or, as an older Claude Code, it doesn't say.
@@ -244,4 +260,15 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   fs.mkdirSync(runtime, { recursive: true });
   if (!fs.existsSync(path.join(runtime, "node_modules"))) fs.symlinkSync(boxModules, path.join(runtime, "node_modules"));
   return bin;
+}
+
+/** Native sign-in metadata for the stand-in only; never use real credentials. */
+export function seedClaudeAuth(root, config, method = "claude.ai") {
+  const credential = config ?? path.join(root, ".claude");
+  const record = config ?? root;
+  fs.mkdirSync(credential, { recursive: true });
+  fs.writeFileSync(path.join(credential,".credentials.json"), JSON.stringify({claudeAiOauth:{accessToken:"fixture",refreshToken:"fixture"}}));
+  const content=JSON.stringify({oauthAccount:{accountUuid:"fixture",organizationType:method==="claude.ai"?"claude_max":"api"}});
+  fs.writeFileSync(path.join(record,".claude.json"), content);
+  if (!config) fs.writeFileSync(path.join(credential,".claude.json"), content);
 }

@@ -51,6 +51,8 @@ pub struct Outcome {
 pub struct StartupEntries {
     pub launch_agent: Option<bool>,
     pub crontab: Option<bool>,
+    /// WSL 2's Windows sign-in task.
+    pub windows_task: Option<bool>,
 }
 
 pub fn run(
@@ -121,11 +123,6 @@ fn stopped_machine(
         ));
     }
     let mac = fs::read_to_string(files.path("box/kind")).is_ok_and(|kind| kind.trim() == "mac");
-    if files.path("run/wsl-task").exists() {
-        return Ok(refusal(
-            "Kuvo Code couldn’t confirm its startup entries were removed.",
-        ));
-    }
     let link: Option<Link> = files.read(LINK)?;
     if let Some(link) = link {
         if let Ok(setup) = link.setup() {
@@ -171,6 +168,12 @@ fn stopped_machine(
         ));
     }
     let entries = startup(false).map_err(|source| at(root, source))?;
+    // WSL 2's Windows sign-in task removes its record once it's gone.
+    if files.path("run/wsl-task").exists() {
+        return Ok(refusal(
+            "Kuvo Code couldn’t confirm its startup entries were removed.",
+        ));
+    }
     if mac && entries.launch_agent.is_none() {
         return Ok(refusal(
             "Kuvo Code couldn’t confirm it had stopped this Mac’s background work.",
@@ -230,10 +233,20 @@ fn run_check(files: &Files, home: &Path, entries: StartupEntries) -> Result<Valu
     let (bots, wakes) = scheduled_work(files)?;
     Ok(
         json!({"folder": home, "kind": kind.as_deref().map(str::trim).unwrap_or("machine"),
-        "running": running, "starts": {"launchAgent": entries.launch_agent.unwrap_or(false),
-            "crontab": entries.crontab.unwrap_or(false), "checked": entries.launch_agent.is_some() || entries.crontab.is_some()},
+        "running": running, "starts": starts(&entries),
         "bots": bots, "wakes": wakes, "phones": phones, "computers": computers}),
     )
+}
+
+fn starts(entries: &StartupEntries) -> Value {
+    let task = entries.windows_task == Some(true);
+    let mut starts = json!({"launchAgent": entries.launch_agent.unwrap_or(false),
+        "crontab": entries.crontab.unwrap_or(false),
+        "checked": entries.launch_agent.is_some() || entries.crontab.is_some() || task});
+    if task {
+        starts["windowsTask"] = json!(true);
+    }
+    starts
 }
 
 #[derive(Deserialize)]

@@ -11,7 +11,7 @@ import {
   assertMatch, askFirst, idles, keptListener, steps, stopFixtureHolders, stopPids, texts, toolCalls,
   transcript, twoReleases,
 } from "./claude.mjs";
-import { provider, scriptedCodex, seedCodexSession, standInCodex } from "./codex.mjs";
+import { provider, scriptedCodex, seedCodexAuth, seedCodexSession, standInCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
 const picker = "kuvo/models/offered?refresh=1";
@@ -39,8 +39,32 @@ async function withCodex(fixture, check, prepare = () => {}) {
 }
 
 describe("Codex's account and models", { skip }, () => {
+  test("opening the app reads the signed-in account and cached models without starting Codex", { timeout: 60000, skip: boxBinary().typescript }, async () => {
+    await withCodex({}, async (codex) => {
+      const answer = await request(codex.listener, "GET", "kuvo/models/offered", undefined, headers);
+      assert.equal(answer.status, 200, answer.text);
+      const accounts = await request(codex.listener, "GET", "kuvo/agents/api/integration", undefined, headers);
+      assert.equal(accounts.status, 200, accounts.text);
+      const row = accounts.json.data.find(row => row.id === provider);
+      assert.equal(row.metadata.account, "you@example.test · ChatGPT Pro");
+      assert.equal(codex.heard().filter(line => line.argv).length, 0, "Reading the catalog started the app-server");
+      assert.deepEqual(answer.json.models.filter(model => model.providerID === provider).map(model => model.id), ["gpt-test"]);
+    }, codex => {
+      write(path.join(codex.root, ".codex", "models_cache.json"), JSON.stringify({models:[{slug:"gpt-test",display_name:"GPT Test",visibility:"list",priority:0}]}));
+    });
+  });
+
+  // A real turn is what starts the app-server. The picker then reads its catalog.
+  const modelSession = "ses_codex_catalog";
+  const startForModels = async codex => {
+    await codex.prompt(modelSession, "List models.");
+    await codex.idles(modelSession);
+  };
+  const seedModelSession = codex => codex.seed(modelSession, { directory: codex.root });
+
   test("its models as it lists them: its default first, with its speeds, and one it hides from its picker", { timeout: 60000 }, async () => {
     await withCodex({}, async (codex) => {
+      await startForModels(codex);
       const models = await offered(codex.listener);
       // (One it hides from its picker is listed too, as Codex still runs it.)
       assert.deepEqual(models.map((model) => model.id), ["gpt-test", "gpt-mini"]);
@@ -52,7 +76,21 @@ describe("Codex's account and models", { skip }, () => {
       assert.deepEqual(started.argv.slice(0, 1), ["app-server"]);
       assert.ok(started.argv.includes("plugins.computer-use@openai-bundled.enabled=false"), JSON.stringify(started.argv));
       assert.equal(started.env.originator, "kuvo-code");
-    });
+    }, seedModelSession);
+  });
+
+  test("the definitive catalog survives a restart without starting another app-server", { timeout:60000, skip:boxBinary().typescript }, async () => {
+    await withCodex({}, async codex => {
+      await startForModels(codex);
+      const before = await offered(codex.listener);
+      const launched = codex.heard().filter(line=>line.argv).length;
+      await codex.stop();
+      await stopFixtureHolders(codex.home);
+      await codex.start();
+      const after = await offered(codex.listener);
+      assert.deepEqual(after, before);
+      assert.equal(codex.heard().filter(line=>line.argv).length, launched);
+    }, seedModelSession);
   });
 
   test("a model list in pages is read whole, in Codex's order with its default first", { timeout: 60000 }, async () => {
@@ -61,10 +99,11 @@ describe("Codex's account and models", { skip }, () => {
         [{ id: "gpt-a", model: "gpt-a", displayName: "GPT A" }],
         [{ id: "gpt-b", model: "gpt-b", displayName: "GPT B", isDefault: true }, { id: "gpt-c", model: "gpt-c", displayName: "GPT C" }],
       ]));
+      await startForModels(codex);
       const models = await offered(codex.listener);
       assert.deepEqual(models.map((model) => model.id).sort(), ["gpt-a", "gpt-b", "gpt-c"]);
       assert.equal(codex.sent("model/list").filter((message) => message.params.cursor === "1").length >= 1, true);
-    });
+    }, seedModelSession);
   });
 
   test("a signed-out Codex offers no models", { timeout: 60000 }, async () => {
@@ -945,7 +984,7 @@ test("its account removed while it works (Settings › Accounts): the turn ends 
   }, (codex) => {
     // An added account (its own Codex home, signed in), and a session on it.
     write(path.join(codex.home, "agents", "accounts.json"), JSON.stringify([{ formatVersion: 1 }, { kind: "codex", id: "work", label: "Work" }]));
-    write(path.join(codex.home, "agents", "codex", "accounts", "work", "fixture-auth.json"), JSON.stringify({ type: "chatgpt", email: "work@example.test", planType: "pro" }));
+    seedCodexAuth(path.join(codex.home, "agents", "codex", "accounts", "work"), { type: "chatgpt", email: "work@example.test", planType: "pro" });
     codex.seed(id, { directory: codex.root });
     const file = path.join(codex.home, "agents/sessions", id, "session.json");
     write(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), model: { providerID: added, id: "gpt-test" } }));

@@ -1446,7 +1446,7 @@ impl Actor {
     ) -> io::Result<()> {
         let thread = params["threadId"].as_str();
         if thread.is_none_or(|thread| self.native.as_deref() == Some(thread)) {
-            self.terminals.heard(method, params);
+            self.terminals.heard(method, params, sequence);
         }
         if method == "serverRequest/resolved" {
             // Codex settled an ask itself: its card goes.

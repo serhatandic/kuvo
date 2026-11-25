@@ -160,9 +160,9 @@ test("setup search merges two residents, keeps the latest duplicate, and reports
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
   const primaryKey = setup.json.you.key;
-  await until(() => leases.leaseFor(setup.json.setup), "The searching computer did not claim its setup.");
   const invitation = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invitation.status, 201, invitation.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The searching computer did not claim its setup.");
   const joined = await second.join(invitation.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = second.connect(await second.start().ready());

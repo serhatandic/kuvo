@@ -62,7 +62,23 @@ function normalise(value, name, home, enginePort, field = "") {
     return "<number: relay observation timestamp>";
   if (name === "GET kuvo/models/offered" && /^generations\/[^/]+$/.test(field) && typeof value === "string")
     return "<string: model catalog generation>";
+  // A config receipt is a random 128-bit ID and expires an hour after the write.
+  // The conformance scenario checks that the returned ID points to the actual receipt.
+  if (/^(PATCH kuvo\/settings\/|POST kuvo\/settings\/|PATCH kuvo\/config$|POST kuvo\/mcp\/catalog\/)/.test(name)
+      && /^configChanges\/\d+$/.test(field) && typeof value === "string" && /^[a-f0-9]{32}$/.test(value))
+    return "<string: config change receipt ID>";
+  if (name === "box/config-apply/receipts.json") {
+    if (/^\/\d+\/id$/.test(field) && typeof value === "string" && /^[a-f0-9]{32}$/.test(value)) return "<string: config change receipt ID>";
+    if (/^\/\d+\/expires$/.test(field) && typeof value === "number") return "<number: config change receipt expiry>";
+  }
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
+  // Both boxes really read these fixture logs, at different instants. The
+  // conformance cases require present, numeric timestamps and the same rows.
+  const usageAnswerTime = /^(GET kuvo\/agents\/api\/kuvo\/usage|POST kuvo\/agents\/api\/kuvo\/usage\/refresh)$/.test(name)
+    && /^(data\/scanned|data\/rows\/\d+\/(boxes\/\d+\/)?scanned)$/.test(field)
+    || name === "GET kuvo/agents/api/kuvo/insights/summary" && field === "data/countedAt";
+  if (usageAnswerTime && typeof value === "number") return "<number: usage index observation time>";
+
   const conversation = conversationTime(name, field);
   if (conversation && typeof value === "number") return `<number: ${conversation}>`;
   if (/^agents\/sessions\/[^/]+\/agent\.json$/.test(name) && field === "threads/claude-code/state/claudeSession" && typeof value === "string")

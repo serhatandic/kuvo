@@ -18,6 +18,8 @@ use kuvo_store::home::Home;
 const TAG: &[u8] = b"# kuvo-code: starts its engine again after a restart";
 #[cfg(target_os = "linux")]
 const START: &[u8] = b"@reboot sh \"$HOME/.kuvo-code/bin/kuvo-start\" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n";
+#[cfg(target_os = "linux")]
+const SAVED_START: &[u8] = b"@reboot sh \"$HOME/.kuvo-code/bin/.kuvo-start-keeper\" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n";
 const MAX_TABLE: u64 = 2_000_000;
 
 enum Change {
@@ -82,9 +84,24 @@ fn edit(home: &Home, change: Change) -> io::Result<Option<bool>> {
     }
     let mut kept = Vec::with_capacity(listed.stdout.len());
     let mut found = false;
+    #[cfg(target_os = "linux")]
+    let desired = if crate::shell_keeper(&home.bin())
+        .file_name()
+        .is_some_and(|name| name == ".kuvo-start-keeper")
+    {
+        SAVED_START
+    } else {
+        START
+    };
+    #[cfg(target_os = "linux")]
+    let mut current = false;
     for line in listed.stdout.split_inclusive(|byte| *byte == b'\n') {
         if line.windows(TAG.len()).any(|part| part == TAG) {
             found = true;
+            #[cfg(target_os = "linux")]
+            {
+                current |= line == desired;
+            }
         } else {
             kept.extend_from_slice(line);
         }
@@ -92,9 +109,9 @@ fn edit(home: &Home, change: Change) -> io::Result<Option<bool>> {
     match change {
         Change::Remove if found => write_table(&mut task, kept, "remove its line in")?,
         #[cfg(target_os = "linux")]
-        Change::Install if !found => {
+        Change::Install if !current => {
             end_line(&mut kept);
-            kept.extend_from_slice(START);
+            kept.extend_from_slice(desired);
             write_table(&mut task, kept, "add its line to")?;
         }
         _ => {}

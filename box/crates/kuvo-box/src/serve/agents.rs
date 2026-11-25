@@ -55,9 +55,10 @@ pub(super) async fn hand_over(
 ) {
     let result = async {
         let held = runtime.held_sessions().await?;
-        let handover = tokio::time::timeout(std::time::Duration::from_secs(2), runs.hand_over(held))
-            .await
-            .map_err(io::Error::other)??;
+        let handover =
+            tokio::time::timeout(std::time::Duration::from_secs(2), runs.hand_over(held))
+                .await
+                .map_err(io::Error::other)??;
         if handover.sessions.is_empty() {
             return Ok(());
         }
@@ -91,9 +92,11 @@ pub(super) async fn factories(
         return HashMap::new();
     };
     let codex: Arc<dyn Factory> = Arc::new(
-        CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone())).with_feed(feed.clone()),
+        CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone()))
+            .with_feed(feed.clone()),
     );
-    let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home, binary));
+    let claude: Arc<dyn Factory> =
+        Arc::new(ClaudeFactory::new(home, binary).with_feed(feed.clone()));
     HashMap::from([(AgentKind::Claude, claude), (AgentKind::Codex, codex)])
 }
 

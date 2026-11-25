@@ -89,7 +89,7 @@ export const actionsOf = (at: SettingItem): SettingAction[] => [...(at.actions ?
  * the same phone): its status and its JSON. */
 export async function asked(context: RouteContext, answer: (context: RouteContext) => AsyncIterable<AnswerPiece>, method: string, path: string, body?: unknown): Promise<{ status: number; value: any }> {
   const request = {
-    method, path, headers: {},
+    method, path, headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }),
     ...(context.request.fromApp ? { fromApp: true } : {}),
     ...(context.request.fromMac ? { fromMac: true } : {}),

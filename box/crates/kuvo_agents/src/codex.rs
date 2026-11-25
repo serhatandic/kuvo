@@ -152,6 +152,197 @@ impl Codex {
 }
 
 impl Agent for Codex {
+    fn plan_sign_in(&self) -> BoxFuture<'_, Option<(String, String)>> {
+        Box::pin(async {
+            let credentials = self.shared.program.credentials().await?;
+            let mark = program::fingerprint(&credentials.token);
+            let identity =
+                program::chatgpt_identity(&credentials.token, credentials.account.as_deref())?;
+            Some((mark, identity))
+        })
+    }
+
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
+            let Some((_, identity)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            let server = if explicit {
+                self.shared.server().await?
+            } else if let Some(server) = self.shared.current().await {
+                server
+            } else {
+                return Ok(None);
+            };
+            if server
+                .signed_in_as
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .as_deref()
+                != Some(identity.as_str())
+            {
+                return Ok(None);
+            }
+            let value = server
+                .rpc
+                .request(
+                    "account/rateLimits/read",
+                    Some(serde_json::json!({})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await
+                .map_err(io::Error::other)?;
+            let Some((mark, current)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            if current != identity {
+                return Ok(None);
+            }
+            let mut windows = vec![];
+            if let Some(by_id) = value["rateLimitsByLimitId"].as_object() {
+                for (id, snapshot) in by_id {
+                    let mut snapshot = snapshot.clone();
+                    if !snapshot.is_object() {
+                        continue;
+                    }
+                    snapshot["limitId"] = serde_json::json!(id);
+                    windows.extend(account::windows(&snapshot));
+                }
+                if !by_id.contains_key("codex") {
+                    windows.extend(account::windows(&value["rateLimits"]));
+                }
+            } else {
+                windows.extend(account::windows(&value["rateLimits"]));
+            }
+            let mut direct =
+                crate::session::DirectPlanReading::windows(crate::session::PlanLimitReading {
+                    windows,
+                    sign_in: Some(mark),
+                });
+            let main = value["rateLimitsByLimitId"]
+                .get("codex")
+                .unwrap_or(&value["rateLimits"]);
+            direct.plan = main["planType"].as_str().map(account::plan_name);
+            if main["credits"]["hasCredits"] == true {
+                let balance = &main["credits"]["balance"];
+                direct.credits = balance
+                    .as_f64()
+                    .or_else(|| balance.as_str()?.parse().ok())
+                    .filter(|n| n.is_finite())
+                    .map(|n| n.max(0.0).floor());
+            }
+            if let Some(count) = value["rateLimitResetCredits"]["availableCount"].as_u64() {
+                let now = jiff::Timestamp::now().as_millisecond().max(0) as u64;
+                let mut targets = value["rateLimitResetCredits"]["credits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|credit| {
+                        if credit["status"].as_str().is_some_and(|s| s != "available") {
+                            return None;
+                        }
+                        let id = credit["id"].as_str()?.to_owned();
+                        if id.is_empty()
+                            || id.len() > 100
+                            || !id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                        {
+                            return None;
+                        }
+                        let expires_at =
+                            credit["expiresAt"].as_u64().map(|n| n.saturating_mul(1000));
+                        if expires_at.is_some_and(|at| at <= now) {
+                            return None;
+                        }
+                        Some(crate::session::ResetTarget { id, expires_at })
+                    })
+                    .collect::<Vec<_>>();
+                targets.sort_by_key(|t| t.expires_at.unwrap_or(u64::MAX));
+                direct.resets = Some(crate::session::ResetInventory {
+                    count: count.min(u64::from(u32::MAX)) as u32,
+                    targets,
+                    refills: vec![],
+                    display_expiries: None,
+                });
+            }
+            Ok(Some(direct))
+        })
+    }
+
+    fn consume_plan_reset<'a>(
+        &'a self,
+        identity: &'a str,
+        request: &'a str,
+        target: &'a str,
+    ) -> AdapterCall<'a, crate::session::ResetOutcome> {
+        Box::pin(async move {
+            use crate::session::ResetOutcome;
+            let server = match self.shared.server().await {
+                Ok(server) => server,
+                Err(_) => return Ok(ResetOutcome::Failed),
+            };
+            if server
+                .signed_in_as
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .as_deref()
+                != Some(identity)
+            {
+                return Ok(ResetOutcome::NotNow);
+            }
+            // The server may have kept the previous login in memory. Ask it, not just
+            // the credential file, before a request can spend an account's credit.
+            let maker = server
+                .rpc
+                .request(
+                    "account/rateLimits/read",
+                    Some(serde_json::json!({"excludeResetCreditDetails":true})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await;
+            let Some(maker) = maker
+                .ok()
+                .and_then(|m| m["accountId"].as_str().map(str::to_ascii_lowercase))
+            else {
+                return Ok(ResetOutcome::NotNow);
+            };
+            let expected = identity
+                .strip_prefix("chatgpt:")
+                .and_then(|id| id.split('/').next());
+            if expected != Some(maker.as_str())
+                || self
+                    .plan_sign_in()
+                    .await
+                    .is_none_or(|(_, raw)| raw != identity)
+            {
+                return Ok(ResetOutcome::NoReset);
+            }
+            let answer = server
+                .rpc
+                .request(
+                    "account/rateLimitResetCredit/consume",
+                    Some(serde_json::json!({"idempotencyKey":request,"creditId":target})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await;
+            Ok(
+                match answer.as_ref().ok().and_then(|a| a["outcome"].as_str()) {
+                    Some("reset") => ResetOutcome::Reset,
+                    Some("alreadyRedeemed") => ResetOutcome::AlreadyRedeemed,
+                    Some("nothingToReset") => ResetOutcome::NothingToReset,
+                    Some("noCredit") => ResetOutcome::NoReset,
+                    _ => ResetOutcome::Unknown,
+                },
+            )
+        })
+    }
+
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {
         Box::pin(self.shared.account.probe(&self.shared))
     }
@@ -187,7 +378,7 @@ impl Agent for Codex {
         Box::pin(async {
             self.shared.program.logout().await?;
             self.stop_all(true).await;
-            self.shared.account.forget_models();
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }
@@ -200,6 +391,7 @@ impl Agent for Codex {
             if self.shared.program.added() {
                 let _ = self.shared.program.logout().await;
             }
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }

@@ -33,3 +33,12 @@ undocumented_unsafe_blocks = "deny"
 opt-level = 3
 lto = "thin"
 strip = "symbols"
+
+# Release packs are hashed and unpacked in debug test runs too; at debug speed a
+# debug-size executable takes most of a minute.
+[profile.dev.package]
+sha2 = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+zlib-rs = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+adler2 = { opt-level = 3 }

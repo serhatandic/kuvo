@@ -47,10 +47,13 @@ mod work_queue;
 pub(crate) use removal::Unlink;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
-pub use work_queue::{AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup};
 use handover::{Handover, HandoverReply};
 pub use marketplace::MarketplaceSetup;
 pub use model_stars::ModelStar;
+pub use work_queue::{
+    AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease,
+    QueueSetup,
+};
 
 pub(crate) const LINK: &str = "run/link.json";
 const CARD: &str = "run/setup-card.json";
@@ -91,8 +94,42 @@ impl SetupHandle {
         decision.await.is_ok_and(|result| result.is_ok())
     }
 
+    /// Settings and setup-wide installations changed. Followers compare the part they use.
+    pub async fn changed(&mut self) -> bool {
+        self.views.changed().await.is_ok()
+    }
+
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    /// Historical computer keys come only from verified setup membership.
+    pub fn insight_origins(&self) -> std::collections::BTreeMap<String, String> {
+        if self.config_receipt_scope().is_none() {
+            return Default::default();
+        }
+        self.views.borrow().insight_origins.clone()
+    }
+
+    /// The current accepted setup position for a local settings change receipt.
+    pub fn config_receipt_scope(&self) -> Option<(String, u64)> {
+        let view = self.views.borrow();
+        let setup = &view.setup;
+        let key = setup["you"]["key"].as_str()?;
+        if view.local_wipe
+            || view.ownership.grants_disabled
+            || setup.get("conflict").is_some()
+            || !setup["computers"]
+                .as_array()?
+                .iter()
+                .any(|computer| computer["key"] == key)
+        {
+            return None;
+        }
+        Some((
+            setup["setup"].as_str()?.to_owned(),
+            setup["epoch"].as_u64()?,
+        ))
     }
 
     /// Your time zone, with its rules (TZif) where they were given with it; none where you set none.
@@ -178,6 +215,7 @@ pub(crate) struct View {
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
+    insight_origins: std::collections::BTreeMap<String, String>,
 }
 
 pub(crate) struct Request {
@@ -417,8 +455,8 @@ impl PreparedSetup {
             forwarding: computer_requests::Forwarding::default(),
             ssh,
             forwarded_handover: None,
-            next: Instant::now(),
-            next_edits: Instant::now(),
+            next: Some(Instant::now()),
+            next_edits: Some(Instant::now()),
             next_digest: Instant::now(),
             activity: activity.clone(),
         };
@@ -827,9 +865,18 @@ fn make_view(
             .as_ref()
             .is_none_or(|l| l.holder == setup.position.primary)
         {
-            let warning = if setup.role == Role::Primary && !lease.holds(link) {
+            let warning = if setup.role == Role::Primary
+                && link
+                    .member_list()
+                    .is_ok_and(|roster| roster.boxes.len() > 1)
+                && !lease.holds(link)
+            {
                 Some(Error::Fenced.to_string())
-            } else if lease.seen.as_ref().is_some_and(|l| l.relay_host) {
+            } else if link
+                .member_list()
+                .is_ok_and(|roster| roster.boxes.len() > 1)
+                && lease.seen.as_ref().is_some_and(|l| l.relay_host)
+            {
                 Some("The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.".into())
             } else {
                 None
@@ -901,6 +948,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        insight_origins: link.historical_insight_origins().unwrap_or_default(),
         model_stars: link
             .value(SharedKind::SetupStarredModels)
             .map(|value| model_stars::list(Some(value))),
@@ -948,16 +996,50 @@ struct Owner {
     forwarding: computer_requests::Forwarding,
     ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
-    next: Instant,
-    next_edits: Instant,
+    next: Option<Instant>,
+    next_edits: Option<Instant>,
     next_digest: Instant,
     activity: activity::Sender,
 }
 
 impl Owner {
+    fn pending_maintenance(&self) -> bool {
+        self.link.extra.contains_key("localUnlink")
+            || self.pending_unlinks()
+            || self.pending_handover.is_some()
+            || self.forwarded_handover.is_some()
+            || !self.pending_devices.is_empty()
+            || !self.pending_queue_labels.is_empty()
+            || !self.pending_stars.is_empty()
+            || self.forwarding.has_pending()
+    }
+
     async fn run(mut self) {
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+        files.set_targets(
+            [
+                "bots/kit.json",
+                "box/time-zone.json",
+                "wakes/timezone",
+                "wakes/zoneinfo",
+                "run/launch.env",
+                "box/models.json",
+            ]
+            .map(|name| self.files.path(name))
+            .to_vec(),
+            vec![(self.files.path("run/owned-data/edit-outbox"), false)],
+        );
+        let mut lease_files = kuvo_os::watch::FileSet::new(hub.clone());
+        lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        let mut number_files = kuvo_os::watch::FileSet::new(hub);
+        number_files.set_files(vec![self.files.path("run/work-queue/numbers.json")]);
+        let mut maintenance = Some(Instant::now());
         loop {
-            let until = self.next.min(self.next_edits);
+            let until = [self.next, self.next_edits, maintenance]
+                .into_iter()
+                .flatten()
+                .min();
             let event = self.network.as_mut().map(|relay| &mut relay.events);
             let adding = !self.forwarding.jobs.is_empty();
             tokio::select! {
@@ -966,58 +1048,63 @@ impl Owner {
                     self.request(request).await;
                 }
                 finished = self.forwarding.jobs.join_next(), if adding => {
-                    if let Some(Ok(finished)) = finished {
-                        self.finish_add_request(finished).await;
-                    }
+                    if let Some(Ok(finished)) = finished { self.finish_add_request(finished).await; }
                 }
-                incoming = async {
-                    match event {
-                        Some(events) => events.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => match incoming {
+                incoming = async { match event { Some(events) => events.recv().await, None => std::future::pending().await } } => match incoming {
                     Ok(event) => {
-                        if let Err(error) = self.receive(&event).await {
-                            eprintln!("setup relay message: {error}");
-                        }
+                        if let Err(error) = self.receive(&event).await { eprintln!("setup relay message: {error}"); }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // The lease and the next availability round recover missed state.
-                        self.next = Instant::now();
+                        self.next = Some(Instant::now());
+                        self.next_edits = Some(Instant::now());
+                        maintenance = Some(Instant::now());
                     }
                     Err(broadcast::error::RecvError::Closed) => self.network = None,
                 },
-                () = time::sleep_until(until) => {
-                    if self.next <= Instant::now() {
-                        self.next = Instant::now() + Duration::from_secs(2);
-                        if let Err(error) = self.resume_local_unlink().await {
-                            eprintln!("setup unlink cleanup: {error}");
-                        }
-                        if let Err(error) = self.offer_unlinks().await {
-                            eprintln!("setup removal delivery: {error}");
-                        }
-                        if let Err(error) = self.tick().await
-                            && !matches!(error, Error::Relay(_) | Error::Conflict) {
-                            eprintln!("setup heartbeat: {error}");
-                        }
+                _ = files.changed() => {
+                    self.next_edits = Some(Instant::now());
+                    self.next_stars_offer = Instant::now();
+                    maintenance = Some(Instant::now());
+                    self.refresh();
+                },
+                _ = lease_files.changed() => {
+                    if self.lease_needed() { self.next = Some(Instant::now()); }
+                },
+                _ = number_files.changed() => {
+                    if self.lease_needed() && self.lease.needs_number_reserve(&self.files, &self.link) { self.next = Some(Instant::now()); }
+                },
+                () = async { match until { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                    if self.next.is_some_and(|at| at <= Instant::now()) {
+                        self.next = Some(Instant::now() + Duration::from_secs(2));
+                        if let Err(error) = self.tick().await && !matches!(error, Error::Relay(_) | Error::Conflict) { eprintln!("setup heartbeat: {error}"); }
                     }
-                    if self.next_edits <= Instant::now() {
-                        self.next_edits = Instant::now() + Duration::from_secs(5);
-                        if let Err(error) = self.flush_edits().await {
-                            eprintln!("setup edit delivery: {error}");
-                        }
+                    if self.next_edits.is_some_and(|at| at <= Instant::now()) {
+                        if let Err(error) = self.flush_edits().await { eprintln!("setup edit delivery: {error}"); }
+                        self.next_edits = edits::rows(&self.files).ok().filter(|rows| rows.iter().any(|row| row.queued_edit.is_some())).map(|_| Instant::now() + Duration::from_secs(5));
                     }
-                    self.expire_handover().await;
-                    self.expire_device_changes();
-                    self.expire_model_stars();
-                    if let Err(error) = self.offer_model_stars().await
-                        && !matches!(error, Error::Fenced | Error::Conflict)
-                    {
-                        eprintln!("checking existing model stars: {error}");
+                    if maintenance.is_some_and(|at| at <= Instant::now()) {
+                        if let Err(error) = self.resume_local_unlink().await { eprintln!("setup unlink cleanup: {error}"); }
+                        if let Err(error) = self.offer_unlinks().await { eprintln!("setup removal delivery: {error}"); }
+                        self.expire_handover().await;
+                        self.expire_device_changes();
+                        self.expire_model_stars();
+                        if let Err(error) = self.offer_model_stars().await && !matches!(error, Error::Fenced | Error::Conflict) { eprintln!("checking existing model stars: {error}"); }
+                        self.retry_computer_requests().await;
+                        maintenance = if self.pending_maintenance() { Some(Instant::now() + Duration::from_secs(2)) }
+                            else if self.model_stars_pending() { Some(self.next_stars_offer) } else { None };
                     }
-                    self.retry_computer_requests().await;
                     self.refresh();
                 }
+            }
+            if self.pending_maintenance() && maintenance.is_none() {
+                maintenance = Some(Instant::now() + Duration::from_secs(2));
+            }
+            if self.lease_needed() {
+                if self.next.is_none() {
+                    self.next = Some(Instant::now());
+                }
+            } else {
+                self.next = None;
             }
         }
     }
@@ -1113,7 +1200,8 @@ impl Owner {
             || ["macRotation", "setupMerge", "localWipe"]
                 .iter()
                 .any(|field| self.link.extra.get(*field).is_some_and(|v| !v.is_null()))
-            || (roster.boxes.len() > 1 && !self.lease.holds(&self.link))
+            || ((roster.boxes.len() > 1 || self.relay_roster_dirty())
+                && !self.lease.holds(&self.link))
         {
             return Err(Error::Fenced);
         }
@@ -1183,7 +1271,24 @@ impl Owner {
         })
         .await
         .map_err(|_| Error::Invalid("setup write task"))??;
+        let relay_membership_changed = self.link.member_list().ok().map(|roster| {
+            roster
+                .boxes
+                .into_iter()
+                .map(|peer| (peer.key, peer.sign))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        }) != written.member_list().ok().map(|roster| {
+            roster
+                .boxes
+                .into_iter()
+                .map(|peer| (peer.key, peer.sign))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        });
         self.link = written;
+        if position_changed || relay_membership_changed {
+            self.next = Some(Instant::now());
+            self.next_edits = Some(Instant::now());
+        }
         if last_device_gone {
             activity::record(&self.activity, activity::Activity::Forget).await;
         }
@@ -1391,6 +1496,7 @@ impl Owner {
             Command::Personalities(change) => {
                 let before = preferences::library(&self.files, &self.link)?;
                 let managed = self.link.setup().is_ok();
+                let exchange = matches!(change, preferences::PersonalityChange::Exchange(_));
                 let (after, response) = before.change(change, managed);
                 if response.status != 200 {
                     return Ok(response);
@@ -1403,6 +1509,13 @@ impl Owner {
                 let receipt = self
                     .save(SharedKind::SetupPersonalities, after.shared(), None, None)
                     .await?;
+                if exchange {
+                    // As the released Mac's command answered: the library, and its save apart.
+                    let mut value = response.value;
+                    value["operation"] = json!(receipt.operation);
+                    value["save"] = json!(receipt);
+                    return Ok(Response::ok(value));
+                }
                 Ok(Response::ok(with_receipt(response.value, receipt)))
             }
             Command::Zone { zone, revision } => {

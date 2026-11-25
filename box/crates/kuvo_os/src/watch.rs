@@ -3,13 +3,14 @@
 use crate::platform::{Platform, is_wsl_windows_drive};
 use notify::{Config, Event, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch as state_watch},
+    task::JoinHandle,
     time::Instant,
 };
 
@@ -449,4 +450,150 @@ fn network_filesystem(path: &Path) -> bool {
         .collect();
     // SAFETY: root is a NUL-terminated drive root. DRIVE_REMOTE is 4.
     unsafe { GetDriveTypeW(root.as_ptr()) == 4 }
+}
+
+/// Watch the parents of specific files, not the files' inodes (an atomic replacement is a change).
+/// For a missing directory watch the first existing ancestor, then rebind when it appears. This
+/// has no timer apart from the watcher backend's platform fallback. Dropping the set releases
+/// every subscription.
+pub struct FileSet {
+    hub: WatchHub,
+    paths: Vec<PathBuf>,
+    folders: Vec<(PathBuf, bool)>,
+    watches: BTreeMap<PathBuf, (Targets, JoinHandle<()>)>,
+    tx: mpsc::UnboundedSender<()>,
+    rx: mpsc::UnboundedReceiver<()>,
+}
+#[derive(Default, PartialEq, Eq, Clone)]
+struct Targets {
+    names: BTreeSet<PathBuf>,
+    all: bool,
+    recursive: bool,
+}
+
+impl FileSet {
+    pub fn new(hub: WatchHub) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            hub,
+            paths: Vec::new(),
+            folders: Vec::new(),
+            watches: BTreeMap::new(),
+            tx,
+            rx,
+        }
+    }
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        self.folders.clear();
+        for (_, (_, task)) in std::mem::take(&mut self.watches) {
+            task.abort();
+        }
+    }
+    pub async fn changed(&mut self) {
+        let _ = self.rx.recv().await;
+        while self.rx.try_recv().is_ok() {}
+        self.bind();
+    }
+    pub fn set_files(&mut self, paths: Vec<PathBuf>) {
+        self.set_targets(paths, Vec::new());
+    }
+    /// Watch named files and directory contents. A folder receives its own shallow or recursive
+    /// watch when present; until then, it is watched as a name in its nearest existing ancestor.
+    pub fn set_targets(&mut self, paths: Vec<PathBuf>, folders: Vec<(PathBuf, bool)>) {
+        self.paths = paths;
+        self.folders = folders;
+        self.bind();
+    }
+    fn bind(&mut self) {
+        let mut wanted = BTreeMap::<PathBuf, Targets>::new();
+        fn named(wanted: &mut BTreeMap<PathBuf, Targets>, mut path: PathBuf) {
+            while let Some(parent) = path.parent() {
+                if parent.is_dir() {
+                    if let Some(name) = path.file_name() {
+                        wanted
+                            .entry(parent.to_owned())
+                            .or_default()
+                            .names
+                            .insert(name.into());
+                    }
+                    break;
+                }
+                path = parent.to_owned();
+            }
+        }
+        for path in &self.paths {
+            named(&mut wanted, path.clone());
+            if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                if let Ok(target) = path.canonicalize() {
+                    named(&mut wanted, target);
+                }
+            }
+        }
+        for (folder, recursive) in &self.folders {
+            // Watch both its name (for replacement/removal) and its contents while it exists.
+            named(&mut wanted, folder.clone());
+            if folder.is_dir() {
+                let target = wanted.entry(folder.clone()).or_default();
+                target.all = true;
+                target.recursive |= *recursive;
+            }
+        }
+        self.watches.retain(|folder, (names, task)| {
+            let same = wanted.get(folder) == Some(names) && !task.is_finished();
+            if !same {
+                task.abort();
+            }
+            same
+        });
+        for (folder, names) in wanted {
+            if self.watches.contains_key(&folder) {
+                continue;
+            }
+            let (hub, tx, target, names_for_task) = (
+                self.hub.clone(),
+                self.tx.clone(),
+                folder.clone(),
+                names.clone(),
+            );
+            let task = tokio::spawn(async move {
+                let Ok(mut sub) = hub
+                    .subscribe(
+                        target,
+                        Options {
+                            recursive: names_for_task.recursive,
+                            create: false,
+                        },
+                    )
+                    .await
+                else {
+                    return;
+                };
+                // Re-read once the actual watch is armed, closing the registration/read race.
+                let _ = tx.send(());
+                while let Some(notice) = sub.recv().await {
+                    match notice {
+                        Notice::Changed { paths }
+                            if !paths.iter().any(|path| {
+                                names_for_task.all
+                                    || path.as_os_str().is_empty()
+                                    || names_for_task.names.contains(path)
+                            }) =>
+                        {
+                            continue;
+                        }
+                        _ => {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            });
+            self.watches.insert(folder, (names, task));
+        }
+    }
+}
+impl Drop for FileSet {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }

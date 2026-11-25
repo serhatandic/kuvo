@@ -23,7 +23,7 @@ use kuvo_keeper::{
 use kuvo_peers::{
     directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
     reach::UpdatePresence,
-    setup_lists::{BridgeAdmission, BridgeUpdate, ResidentPeers, UpdatePublication, View},
+    setup_lists::{BridgeAdmission, BridgeUpdate, Reader, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
@@ -36,6 +36,8 @@ use tokio::{
 };
 
 const FEED: &str = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
+/// Each release's own files, by `v<version>/`, for repairing the one a computer runs.
+pub(crate) const RELEASES: &str = "https://github.com/serhatandic/kuvo-code/releases/download";
 const CHECK_EVERY_MS: i64 = 6 * 3_600_000;
 const CHECK_POLL: Duration = Duration::from_secs(10 * 60);
 const CHECK_KEPT: i64 = 24 * 60 * 60_000;
@@ -78,6 +80,7 @@ enum CheckReply {
 }
 
 struct FeedCheck {
+    started: Instant,
     manual: bool,
     round: Option<String>,
     task: JoinHandle<io::Result<Option<FeedRelease>>>,
@@ -214,11 +217,35 @@ pub fn start(
         pack_server,
     };
     let task = tokio::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut peers = fleet.peers.reader();
+        let mut update_view = peers.view();
+        let mut setup = fleet.setup.clone();
+        let mut engine = fleet.engine.states();
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        let home = &fleet.home;
+        files.set_files(vec![
+            home.root().join(kuvo_keeper::SELECTOR),
+            home.root().join("machines.json"),
+            home.updates().join("release/boxes.json"),
+            home.run().join("off"),
+            home.run().join("paused"),
+            home.run().join("stopped"),
+            home.run().join("previous"),
+            home.run().join("fleet-ready.json"),
+            home.run().join("fleet-check.json"),
+            home.run().join("engine.json"),
+        ]);
         loop {
+            if let Err(error) = fleet.round().await {
+                eprintln!("Kuvo updates: {error}");
+            }
+            let deadline = fleet.next_round();
             tokio::select! {
-                _ = ticks.tick() => {},
+                _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {},
+                changed = update_peers_changed(&mut peers, &mut update_view) => if changed.is_err() { return },
+                changed = setup.changed() => if !changed { return },
+                changed = engine.changed() => if changed.is_err() { return },
+                _ = files.changed() => {},
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
@@ -228,12 +255,44 @@ pub fn start(
                     None => return,
                 }
             }
-            if let Err(error) = fleet.round().await {
-                eprintln!("Kuvo updates: {error}");
-            }
         }
     });
     Some(Worker { checks, step, task })
+}
+
+/// Transfer chunks, conversation mail and local publications also advance the shared
+/// peer watch. Do not run a fleet round for every chunk; only changes to the inputs
+/// of the release barrier and its rows need an immediate round.
+async fn update_peers_changed(
+    peers: &mut Reader,
+    before: &mut Arc<View>,
+) -> Result<(), watch::error::RecvError> {
+    loop {
+        peers.changed().await?;
+        let now = peers.now();
+        let after = peers.view();
+        let changed = before.relay_connected != after.relay_connected
+            || before.roster.here != after.roster.here
+            || before.roster.main != after.roster.main
+            || before.roster.name != after.roster.name
+            || before.roster.members.len() != after.roster.members.len()
+            || before
+                .roster
+                .members
+                .iter()
+                .zip(&after.roster.members)
+                .any(|(a, b)| {
+                    a.key != b.key
+                        || a.address != b.address
+                        || a.name != b.name
+                        || a.kind != b.kind
+                        || before.peer_updates(&a.key, now) != after.peer_updates(&b.key, now)
+                });
+        *before = after;
+        if changed {
+            return Ok(());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -473,6 +532,45 @@ impl Drop for Fleet {
 }
 
 impl Fleet {
+    /// An idle fleet waits for its next check. An actual release in flight still needs a
+    /// short deadline for progress, waiting for the engine to drain and the switch barrier.
+    fn next_round(&self) -> Option<Instant> {
+        let view = self.peers.reader().view();
+        let primary = view.roster.main.is_none() && view.roster.members.is_empty()
+            || view.roster.main.is_some() && view.roster.main == view.roster.here;
+        let active = self.checking.is_some()
+            || self.bridge_fetch.is_some()
+            || self.pending.is_some()
+            || self
+                .last_sent
+                .as_ref()
+                .is_some_and(|sent| sent.facts.candidate.is_some())
+            || self.home.run().join("previous").exists();
+        let now = Instant::now();
+        if active {
+            return Some(now + Duration::from_secs(2));
+        }
+        let check = primary.then(|| self.next_check.max(now + Duration::from_secs(30)));
+        let installed_release = self
+            .last_sent
+            .as_ref()
+            .is_some_and(|sent| sent.facts.running_manifest.is_some());
+        let machines =
+            (primary && installed_release && self.home.root().join("machines.json").is_file())
+                .then(|| self.released_machines.deadline());
+        let bridge = self
+            .last_sent
+            .as_ref()
+            .and_then(|sent| sent.bridge.as_ref())
+            .filter(|bridge| bridge.facts.kuvo.is_none())
+            .map(|_| self.next_bridge);
+        [check, machines, bridge]
+            .into_iter()
+            .flatten()
+            .map(|at| at.max(now + Duration::from_secs(2)))
+            .min()
+    }
+
     fn request_check(&mut self, local: bool) -> io::Result<CheckReply> {
         let reader = self.peers.reader();
         let view = reader.view();
@@ -763,6 +861,7 @@ impl Fleet {
                         (self.fetcher.clone(), self.url.clone(), self.key.clone());
                     self.step.send_replace(Some(Step::Checking));
                     self.checking = Some(FeedCheck {
+                        started: Instant::now(),
                         manual,
                         round: (!manual).then_some(round),
                         task: tokio::spawn(async move { fetcher.check(&url, &key).await }),
@@ -885,9 +984,10 @@ impl Fleet {
                             let Some(mail) = mail else {
                                 return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&local, &progress)
-                                .await
-                                .map_err(|_| retry::Failure::download(prepared.clone(), error))?
+                            mail.pull(&local, &progress).await.map_err(|peer_error| {
+                                eprintln!("Peer release fallback: {peer_error}");
+                                retry::Failure::download(prepared.clone(), error)
+                            })?
                         }
                     };
                     if !local.matches_bytes(&pack) {
@@ -979,6 +1079,26 @@ impl Fleet {
         }
 
         if let Some(candidate) = candidate {
+            // Preparation publishes fleet-ready just before its task returns. A native
+            // file notification can get here before the task's completion has been
+            // recorded, particularly on a newly elected main. Settle that result
+            // before activation so the same round can start its due feed check.
+            if prepared && self.pending.is_some() {
+                return Ok(());
+            }
+            // A promoted main can finish preparation and start its feed check in
+            // the same event round. Give that actual request one old-round grace
+            // to get on the wire before replacing this resident; don't wait for
+            // its response (the feed may be unavailable).
+            if (standalone || local_main)
+                && prepared
+                && self
+                    .checking
+                    .as_ref()
+                    .is_some_and(|check| check.started.elapsed() < Duration::from_secs(2))
+            {
+                return Ok(());
+            }
             let authorized = if standalone || local_main {
                 let (ready, reachable) = barrier(&view, now, &candidate);
                 candidate.primary_may_switch(&self.home, now, ready, reachable)?

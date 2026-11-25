@@ -11,7 +11,6 @@ use std::{
     io,
     path::Path,
     sync::Arc,
-    time::Duration,
 };
 
 use http::{Method, StatusCode};
@@ -119,6 +118,24 @@ impl LocalSessions {
             .collect()
     }
 
+    /// Only changes to the archived inventory need another owner-menu read.
+    pub fn archive_revision(&self) -> Option<ArchiveRevision> {
+        let snapshot = self.snapshot.borrow();
+        let snapshot = snapshot.as_deref()?;
+        let rows = snapshot
+            .archived
+            .iter()
+            .flat_map(|group| group["sessions"].as_array().into_iter().flatten())
+            .filter_map(|id| snapshot.sessions.get(id.as_str()?).map(|row| row.seq))
+            .collect();
+        Some(ArchiveRevision {
+            groups: snapshot.archived.clone(),
+            rows,
+            pending: snapshot.pending.clone(),
+            epoch: snapshot.epoch.clone(),
+        })
+    }
+
     /// The compatible on-disk representation, passed in memory to the peer publisher.
     pub fn latest_record(&self) -> Option<Value> {
         serde_json::to_value(self.snapshot.borrow().as_deref().as_ref()?).ok()
@@ -220,12 +237,18 @@ impl LocalSessions {
             } else {
                 None
             };
+            // Each subscription begins with a synthetic Rescan. The initial inventory is
+            // taken after the watches are armed, so that notice is already accounted for.
+            // Later rescan/failure notices really do mean a possibly missed change.
+            for subscription in [&mut edits, &mut background_edits, &mut agent_edits]
+                .into_iter()
+                .flatten()
+            {
+                let _ = subscription.recv().await;
+            }
             let mut inventory: Option<(u64, Inventory, EngineFacts)> = None;
             let mut reads = JoinSet::new();
             let mut read_again = true;
-            let period = Duration::from_secs(60);
-            let mut check = time::interval_at(time::Instant::now() + period, period);
-            check.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
                 if read_again && reads.is_empty() {
                     read_again = false;
@@ -275,17 +298,15 @@ impl LocalSessions {
                         read_again = true;
                         continue;
                     },
-                    changed = project_changes(&mut edits) => {
-                        if !changed {
-                            edits = None;
-                            continue;
-                        }
+                    changed = project_changes(&mut edits) => match changed {
+                        None => { edits = None; continue; },
+                        Some(true) => { read_again = true; continue; },
+                        Some(false) => {},
                     },
-                    changed = background_changes(&mut background_edits) => {
-                        if !changed {
-                            background_edits = None;
-                            continue;
-                        }
+                    changed = background_changes(&mut background_edits) => match changed {
+                        None => { background_edits = None; continue; },
+                        Some(true) => { read_again = true; continue; },
+                        Some(false) => {},
                     },
                     changed = agent_changes(&mut agent_edits) => {
                         if changed {
@@ -308,10 +329,6 @@ impl LocalSessions {
                         } else {
                             agent_runs = None;
                         }
-                        continue;
-                    },
-                    _ = check.tick() => {
-                        read_again = true;
                         continue;
                     },
                     finished = reads.join_next(), if !reads.is_empty() => {
@@ -421,6 +438,14 @@ fn publish(updates: &watch::Sender<Option<Arc<Snapshot>>>, snapshot: &Snapshot) 
 async fn save(home: &Path, snapshot: Arc<Snapshot>) {
     let path = home.join("run/lists/sessions.json");
     let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, snapshot.as_ref())).await;
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ArchiveRevision {
+    groups: Vec<Value>,
+    rows: Vec<u64>,
+    pending: Vec<String>,
+    epoch: String,
 }
 
 type Sessions = BTreeMap<String, Facts>;
@@ -1027,45 +1052,45 @@ pub(crate) async fn read_inventory(
         .collect())
 }
 
-async fn project_changes(edits: &mut Option<Subscription>) -> bool {
+async fn project_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan => return true,
+            Notice::Rescan | Notice::Failed(_) => return Some(true),
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path == Path::new("projects.json")
                         || path == Path::new(crate::worktree_notes::FILE)
                 }) =>
             {
-                return true;
+                return Some(false);
             }
             _ => {}
         }
     }
-    false
+    None
 }
 
-async fn background_changes(edits: &mut Option<Subscription>) -> bool {
+async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan => return true,
+            Notice::Rescan | Notice::Failed(_) => return Some(true),
             Notice::Changed { paths }
                 if paths
                     .iter()
                     .any(|path| path == Path::new("background.json")) =>
             {
-                return true;
+                return Some(false);
             }
             _ => {}
         }
     }
-    false
+    None
 }
 
 async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
@@ -1074,7 +1099,7 @@ async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan => return true,
+            Notice::Rescan | Notice::Failed(_) => return true,
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path.file_name().is_some_and(|name| name == "session.json")

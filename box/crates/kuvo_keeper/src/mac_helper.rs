@@ -22,7 +22,7 @@ const HELPER: &str = "Kuvo Helper.app";
 const AT_LOGIN: &str = "Kuvo Helper starts Kuvo on this Mac at login.";
 
 pub fn pause(home: &Home) -> io::Result<()> {
-    let keeper = home.bin().join("kuvo-start");
+    let keeper = crate::shell_keeper(&home.bin());
     if !keeper.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,

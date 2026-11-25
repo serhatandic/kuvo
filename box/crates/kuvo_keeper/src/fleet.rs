@@ -676,6 +676,9 @@ pub struct Fetcher(reqwest::Client);
 pub struct FeedRelease(Candidate);
 
 impl FeedRelease {
+    pub(crate) fn for_repair(self) -> Candidate {
+        self.0
+    }
     pub fn version(&self) -> &str {
         self.0.version()
     }
@@ -806,7 +809,7 @@ async fn shell_switch(home: &Home, target: Release) -> io::Result<()> {
     if current == target {
         return Ok(());
     }
-    let keeper = home.root().join(target.to_string()).join("kuvo-start");
+    let keeper = crate::shell_keeper(&home.root().join(target.to_string()));
     let checked = std::process::Command::new("/bin/sh")
         .arg(&keeper)
         .args(["switch-engine", &target.to_string()])

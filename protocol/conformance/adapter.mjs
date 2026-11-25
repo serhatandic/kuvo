@@ -10,8 +10,12 @@ import { relayStandIn } from "../../box/bridge-tests/relay-stand-in.js";
 import { createHash } from "node:crypto";
 
 export function scratch() {
-  // Keep Unix socket paths short even under macOS's long default TMPDIR.
-  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
+  // Keep Unix socket paths short even under macOS's long default TMPDIR. A local
+  // runner may choose its own short prefix so it can identify exactly the fixture
+  // processes it owns after the run, even if a child was reparented.
+  const prefix = process.env.KUVO_CONFORMANCE_SCRATCH_PREFIX ?? "kc-";
+  assert.match(prefix, /^[a-z0-9-]{1,12}$/i, "Use a short scratch-folder prefix");
+  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", prefix));
 }
 
 /** A box's home made private before anything's written in it: on Windows the Rust box takes only a
@@ -50,6 +54,11 @@ export function isolatedEnv(root) {
     GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Tests", GIT_AUTHOR_EMAIL: "tests@example.com",
     GIT_COMMITTER_NAME: "Tests", GIT_COMMITTER_EMAIL: "tests@example.com",
+    ...(["usage", "engine-sessions"].includes(process.env.KUVO_CONFORMANCE_AREA) ? {
+      CODEX_HOME: path.join(account, ".codex"), GROK_HOME: path.join(account, ".grok"),
+      CLAUDE_CONFIG_DIR: path.join(account, ".claude"), KUVO_TEST_PRICE_FEEDS: "off",
+      KUVO_TEST_PATH_ONLY: "1",
+    } : {}),
   };
 }
 

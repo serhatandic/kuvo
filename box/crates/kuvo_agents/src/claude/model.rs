@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, BufRead, BufReader, Write},
+    path::PathBuf,
     sync::{Arc, mpsc},
     thread,
     time::Duration,
@@ -22,24 +23,37 @@ type Loading = Shared<BoxFuture<'static, Result<Models, Arc<io::Error>>>>;
 pub(super) struct Catalog {
     prefix: Arc<str>,
     cache: Arc<Mutex<Cache>>,
+    path: PathBuf,
+    feed: Option<crate::feed::Feed>,
 }
 
 #[derive(Default)]
 struct Cache {
     generation: u64,
+    identity: Option<String>,
+    initialized: bool,
     loading: Option<Loading>,
     models: Option<Models>,
     /// How much each model holds, as Claude Code said: by its value (`default`, `opus`, or an id).
     heard: HashMap<String, u64>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    identity: Option<String>,
+    models: Models,
+    heard: HashMap<String, u64>,
+}
+
 impl Catalog {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(path: PathBuf, feed: Option<crate::feed::Feed>) -> io::Result<Self> {
         let mut bytes = [0; 16];
         getrandom::fill(&mut bytes).map_err(io::Error::other)?;
         Ok(Self {
             prefix: hex::encode(bytes).into(),
             cache: Arc::default(),
+            path,
+            feed,
         })
     }
 
@@ -81,7 +95,10 @@ impl Catalog {
     /// What Claude Code said `model` holds, as a turn ended.
     pub async fn note(&self, model: &str, size: u64) {
         if size > 0 {
-            self.cache.lock().await.heard.insert(model.to_owned(), size);
+            let mut cache = self.cache.lock().await;
+            if cache.heard.insert(model.to_owned(), size) != Some(size) {
+                self.save(&cache).await;
+            }
         }
     }
 
@@ -91,13 +108,62 @@ impl Catalog {
             generation: cache.generation + 1,
             ..Cache::default()
         };
+        let _ = tokio::fs::remove_file(&self.path).await;
     }
 
-    pub async fn read(&self, program: Program, refresh: bool) -> io::Result<Models> {
+    async fn save(&self, cache: &Cache) {
+        let Some(models) = cache.models.clone() else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(&Saved {
+            identity: cache.identity.clone(),
+            models,
+            heard: cache.heard.clone(),
+        }) else {
+            return;
+        };
+        let path = self.path.clone();
+        let _ = tokio::task::spawn_blocking(move || kuvo_store::files::write_atomic(&path, &bytes))
+            .await;
+    }
+
+    async fn prepare(&self, program: &Program) {
+        let identity = program.sign_in_mark().await;
+        let mut cache = self.cache.lock().await;
+        if cache.initialized && cache.identity == identity {
+            return;
+        }
+        *cache = Cache {
+            generation: cache.generation + 1,
+            identity: identity.clone(),
+            initialized: true,
+            ..Cache::default()
+        };
+        if let Ok(bytes) = tokio::fs::read(&self.path).await
+            && let Ok(saved) = serde_json::from_slice::<Saved>(&bytes)
+            && saved.identity == identity
+        {
+            cache.models = Some(self.stamp(saved.models, cache.generation));
+            cache.heard = saved.heard;
+        }
+    }
+
+    pub async fn read(&self, program: Program, _refresh: bool) -> io::Result<Models> {
+        self.prepare(&program).await;
+        let cache = self.cache.lock().await;
+        Ok(cache
+            .models
+            .clone()
+            .unwrap_or_else(|| self.stamp(fallback(), cache.generation)))
+    }
+
+    /// A real turn or sign-in, not a read, can discover models and their actual windows.
+    pub async fn refresh(&self, program: Program) -> io::Result<Models> {
+        self.prepare(&program).await;
         loop {
-            let (generation, loading, previous) = {
+            let (generation, loading) = {
                 let mut cache = self.cache.lock().await;
-                if !refresh && let Some(models) = &cache.models {
+                if let Some(models) = &cache.models {
                     return Ok(models.clone());
                 }
                 let generation = cache.generation;
@@ -116,6 +182,10 @@ impl Catalog {
                                     cache
                                         .heard
                                         .extend(heard.iter().map(|(k, v)| (k.clone(), *v)));
+                                    catalog.save(&cache).await;
+                                    if let Some(feed) = &catalog.feed {
+                                        feed.emit("model.updated", json!({"program":"claude"}));
+                                    }
                                 }
                             }
                             result.map(|(models, _)| catalog.stamp(models, generation))
@@ -126,15 +196,16 @@ impl Catalog {
                         task
                     })
                     .clone();
-                (generation, loading, cache.models.clone())
+                (generation, loading)
             };
-            if !refresh {
-                return Ok(previous.unwrap_or_else(|| self.stamp(fallback(), generation)));
-            }
             let answer = loading.await;
             if self.cache.lock().await.generation == generation {
                 return answer.map_err(|error| io::Error::new(error.kind(), error));
             }
+            // The sign-in changed while this probe ran. It belongs to that old turn.
+            return Err(io::Error::other(
+                "Claude's sign-in changed while listing models.",
+            ));
         }
     }
 }
@@ -154,7 +225,46 @@ async fn load(program: Program) -> io::Result<(Models, HashMap<String, u64>)> {
 /// `/context` says once a model is chosen (an older Claude Code that doesn't say leaves them to its
 /// list's word).
 fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
-    let env = program.environment(true);
+    ask_native(program, true, Asking::models)
+}
+
+/// A plan read asks Claude itself; it never extracts the Mac's OAuth token.
+pub(super) async fn usage(program: Program) -> io::Result<Value> {
+    tokio::task::spawn_blocking(move || {
+        ask_native(program, false, |asking| {
+            if !matches!(
+                asking.ask(
+                    "usage-init",
+                    json!({"subtype":"initialize"}),
+                    Duration::from_secs(20)
+                )?,
+                wire::ReplyBody::Success { .. }
+            ) {
+                return Err(io::Error::other(
+                    "Claude Code didn't initialize for its plan reading.",
+                ));
+            }
+            match asking.ask(
+                "usage",
+                json!({"subtype":"get_usage","skip_behaviors":true}),
+                Duration::from_secs(20),
+            )? {
+                wire::ReplyBody::Success { response, .. } => Ok(response),
+                _ => Err(io::Error::other("Claude Code couldn't say its plan usage.")),
+            }
+        })
+    })
+    .await?
+}
+fn ask_native<T>(
+    program: Program,
+    legacy: bool,
+    call: impl FnOnce(&mut Asking) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut env = program.environment(legacy);
+    if !legacy {
+        env.insert("DISABLE_AUTOUPDATER".into(), "1".into());
+    }
     let executable = program
         .executable(&env)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Claude Code isn't installed."))?;
@@ -189,7 +299,7 @@ fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
         .name("claude-models".into())
         .spawn(move || read_replies(BufReader::new(stdout), &send))?;
     let mut asking = Asking { stdin, replies };
-    let result = asking.models();
+    let result = call(&mut asking);
     drop(asking);
     child.stop(Duration::from_secs(1), |_| {})?;
     let _ = reader.join();

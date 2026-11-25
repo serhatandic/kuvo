@@ -2657,16 +2657,23 @@ test("a conversation stays home while its background work is running", { timeout
   const id = "ses_backgroundMove", child = "ses_backgroundChild", directory = path.join(here.home, "chats");
   fs.mkdirSync(directory, { recursive: true });
   here.engine.sessions.push(sessionOf({ id, title: "Trip plans", directory }), sessionOf({ id: child, directory, parent: id }));
+  here.engine.shells = [{ id: "cmd_background", status: "running", command: "npm run dev", folder: directory,
+    metadata: { sessionID: id }, time: { started: Date.now() } }];
   const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
   await readyToMove(source, id, member);
   const working = path.join(here.home, "run/work/background.json");
+  // A second background publisher owns this fixture part; the engine may independently
+  // finish its initial scan and rewrite only its own part.
   const running = (session, started) => ({
-    engine: { sessions: { [session]: { commands: [{ id: "cmd_background", command: "npm run dev", started }],
+    fixture: { sessions: { [session]: { commands: [{ id: "cmd_background", command: "npm run dev", started }],
       subagents: [], tasks: [] } }, folders: [] },
   });
-  write(working, JSON.stringify(running(id, Date.now())));
+  here.engine.emit({ type: "shell.created", data: { info: { cwd: directory } }, location: { directory } });
   const why = "“Trip plans” has a command running. Wait for it to finish, or stop it, then move “Trip plans”.";
-  const places = await request(source, "GET", "kuvo/moves/places?kind=chat&id=" + id);
+  const places = await until(async () => {
+    const reply = await request(source, "GET", "kuvo/moves/places?kind=chat&id=" + id);
+    return reply.json.places?.find(place => place.key === member.key)?.why === why && reply;
+  }, "The real background watcher must report the running command");
   assert.equal(places.status, 200, places.text);
   const place = places.json.places.find(place => place.key === member.key);
   assert.equal(place.ok, false, places.text);
@@ -2679,9 +2686,13 @@ test("a conversation stays home while its background work is running", { timeout
   const moves = path.join(here.home, "run/moves");
   assert.ok(!fs.existsSync(moves) || !fs.readdirSync(moves).some(name => /^mov_/.test(name)));
 
+  here.engine.shells = [];
+  here.engine.emit({ type: "shell.exited", data: { info: { cwd: directory } }, location: { directory } });
+  await until(() => fs.existsSync(working) && !readJSON(working).engine?.sessions?.[id],
+    "The engine must finish its own background projection before another publisher writes.");
   const rootOld = running(id, Date.now() - 7 * 3600_000);
-  Object.assign(rootOld.engine.sessions, running(child, Date.now()).engine.sessions);
-  write(working, JSON.stringify(rootOld));
+  Object.assign(rootOld.fixture.sessions, running(child, Date.now()).fixture.sessions);
+  write(working, JSON.stringify({ ...readJSON(working), ...rootOld }));
   const started = await move();
   assert.equal(started.status, 202, started.text);
   const file = path.join(moves, started.json.move.id + ".outcome.json");

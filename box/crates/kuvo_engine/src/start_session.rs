@@ -262,14 +262,8 @@ async fn create_as(
         .unwrap_or_else(|| json!({}));
     let allows_full = approvals["fullAccess"] == true;
     let default = from_approval(&approvals["last"])
-        .filter(|last| allows_full || *last != Approval::FullAccess)
-        .unwrap_or(
-            if kuvo_os::platform::Platform::current().is_windows_host() {
-                Approval::AskFirst
-            } else {
-                Approval::Auto
-            },
-        );
+        .filter(|last| *last != Approval::Auto && (allows_full || *last != Approval::FullAccess))
+        .unwrap_or(Approval::AskFirst);
     let requested = match given.get("approval").filter(|value| !value.is_null()) {
         Some(value) if value == "ask" => Some(Approval::AskFirst),
         Some(value) if value == "approveAll" => Some(default),
@@ -300,7 +294,8 @@ async fn create_as(
     } else {
         requested.unwrap_or(default)
     };
-    // The engine supervisor does not yet install the sandbox policy from the settings port.
+    // New conversations never start in the postponed mode.
+    let wanted = if wanted == Approval::Auto { Approval::AskFirst } else { wanted };
     let applied = match wanted {
         Approval::Auto => Approval::AskFirst,
         Approval::FullAccess if !allows_full => Approval::AskFirst,
@@ -528,7 +523,7 @@ async fn create_as(
     // (Kept, for a lead on another computer, as no more than this computer gives it now: Full
     // Access only where it's confirmed here.)
     let kept = match remote {
-        Some(_) if wanted == Approval::FullAccess && !allows_full => Approval::Auto,
+        Some(_) if wanted == Approval::FullAccess && !allows_full => Approval::AskFirst,
         _ => wanted,
     };
     let mut notes = json!({ "approval": kept, "applied": applied });
@@ -1282,13 +1277,10 @@ fn lead_model(
 }
 
 /// Why a lead on another computer got less than `wanted` here (`applied`), in words for it.
-fn held_there(wanted: Approval, applied: Approval, allows_full: bool) -> String {
+fn held_there(wanted: Approval, _applied: Approval, allows_full: bool) -> String {
     let mut why = Vec::new();
     if wanted == Approval::FullAccess && !allows_full {
         why.push("Full Access hasn't been allowed on that computer yet: only the user can allow it, by picking Full Access once in a session there.");
-    }
-    if matches!(wanted, Approval::FullAccess | Approval::Auto) && applied == Approval::AskFirst {
-        why.push("Auto needs the sandbox, which isn't running on that computer.");
     }
     why.join(" ")
 }

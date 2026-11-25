@@ -17,6 +17,8 @@ mod retirement;
 pub mod staging;
 pub mod update_status;
 mod worker;
+#[cfg(target_os = "linux")]
+pub mod wsl_task;
 
 #[cfg(windows)]
 pub mod windows;
@@ -48,6 +50,17 @@ use worker::Worker;
 /// Native installations use a plain file. It can be replaced even while a reader
 /// opened with FILE_SHARE_DELETE still holds the old contents.
 pub const SELECTOR: &str = "active-release";
+
+/// Rust packs keep a second signed keeper that released Macs never replace.
+#[cfg(unix)]
+pub fn shell_keeper(bin: &std::path::Path) -> PathBuf {
+    let saved = bin.join(".kuvo-start-keeper");
+    if bin.join("kuvo-box").is_file() && saved.is_file() {
+        saved
+    } else {
+        bin.join("kuvo-start")
+    }
+}
 
 #[derive(Debug)]
 pub enum Command {
@@ -371,13 +384,26 @@ impl Installation {
         let mut trial_deadline = Instant::now();
         let mut selected = None;
         let mut next_start = Instant::now();
-        let mut interval = time::interval(ROUND);
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_files(vec![
+            self.selector.clone(),
+            self.previous.clone(),
+            self.reverting.clone(),
+            self.run.join("off"),
+            self.run.join("paused"),
+            self.run.join("keeper-handover"),
+            self.run.join("serve.json"),
+        ]);
+        let mut watched = None;
+        let mut exited = None;
+        let mut deadline = Some(Instant::now());
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
-                _ = interval.tick() => {}
+                _ = files.changed() => {},
+                _ = async { match deadline { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {},
+                _ = async { match &mut exited { Some(exit) => { let _ = exit.await; }, None => std::future::pending().await } } => { watched = None; exited = None; },
             }
             if self.run.join("off").try_exists()? || self.run.join("paused").try_exists()? {
                 self.stop(&mut worker, false).await?;
@@ -423,6 +449,7 @@ impl Installation {
                 if let Some(previous) = trial.previous_to_restore(trial_deadline) {
                     self.stop(&mut worker, true).await?;
                     self.rollback(&current, previous).await?;
+                    deadline = Some(Instant::now());
                     continue;
                 }
                 if let Some(resident) = &worker
@@ -443,6 +470,20 @@ impl Installation {
                     }
                 }
             }
+            let id = worker.as_ref().map(|worker| worker.identity().clone());
+            if watched != id {
+                exited = id.as_ref().and_then(|id| id.watch_exit().ok());
+                watched = id;
+            }
+            // Trial probes and restart backoff have real deadlines. A healthy resident needs
+            // neither; only kernels without a process-wait facility use the old fallback.
+            deadline = if worker.is_none() {
+                Some(next_start)
+            } else if trial.is_some() || exited.is_none() {
+                Some(Instant::now() + ROUND)
+            } else {
+                None
+            };
         }
     }
 

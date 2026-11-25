@@ -49,9 +49,9 @@ test("each computer lists the bots the other told it of, with their look, job an
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const near = { color: "coral", shape: "pebble", face: "happy" };

@@ -6,11 +6,38 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
+
+- Usage history includes Cursor account-wide events and ChatGPT subscription calls made through the engine; Claude file-owned accounts can spend reset grants, and usage warnings do not repeat when another computer takes over the same window.
+
+- Usage history and Insights combine saved readings from your other computers, keep them when a computer is away, and group the same model under one name. Insights opens from compact indexed totals instead of re-reading each call.
+
+- A Rust computer on its own no longer contacts the relay to renew a setup lease or number its Work Queue; adding another computer establishes the shared number reservation first.
+
+- Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
+
+- Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
+
+- Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.
+- Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
+
+- Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.
+
+- Rust computers show Archived Sessions from other computers with the owner’s confirmation and follow their changes. Opening Settings does not start OpenCode.
+
+- Rust computers keep Agents, Vault and Custom Auto list settings, and carry older Git preferences into their own settings.
+
+- Rust computers serve Settings pages and keep individual changes with their own revisions. New conversations start in Ask First when no supported mode has been chosen.
+- Rust computers keep usage notice settings and use accepted Claude Code and Codex turn readings for the menu rings and in-app usage warnings.
+- Rust computers read Claude Code, Codex, Grok, Cursor, Antigravity and supported engine plan limits, offer Codex resets through the existing confirmation cards, and keep the portable Insights index ready by reading changed transcript projections.
+- Rust computers share plan limit readings and keep one consistent ring per account. Codex rings and Insights update from watched native logs without starting an idle coding agent.
+
 - Rust computers support editing projects and using Changes to view, stage, discard, commit, switch branches, merge worktrees and create pull requests.
 - Changes and project edits accept Windows folder paths.
 - On Rust computers, Mac Git commands reuse a recent login environment and the native Trash command stops waiting after 30 seconds.
 
 - Released beta.1 Macs' machine settings commands and peer lists work with Rust computers.
+- A Rust computer puts back its own files when an older Mac copies its files over them, from the signed release it runs. Released beta.1 Macs can still change its settings and personalities over SSH.
 
 - Background commands that Codex or Claude Code leave running stay visible and stoppable through a Rust computer update. The installer also refuses release receipts it cannot read.
 

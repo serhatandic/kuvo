@@ -20,8 +20,14 @@ use super::{
 
 pub(super) const CLIENTS_ONLY: &str = "Only Kuvo Code on your Mac or iPhone can do this.";
 
+/// A vault client proved by the original authenticated request. It can only
+/// be constructed inside the vault, never from a transport field.
+#[derive(Clone)]
+pub(crate) struct VerifiedVaultClient(String);
+
 pub struct Resident {
     local: Mutex<Local>,
+    changes: tokio::sync::watch::Sender<u64>,
     pub(super) broker: super::broker::Broker,
 }
 
@@ -47,6 +53,7 @@ impl Resident {
             .unwrap_or_else(|| home.join("bots"));
         let broker = super::broker::Broker::new(home, &bots, account, os_account, machine);
         Arc::new(Self {
+            changes: tokio::sync::watch::channel(0).0,
             local: Mutex::new(Local {
                 vault: Vault::open(home, mac, launch),
                 activity: Activity::new(home),
@@ -57,6 +64,8 @@ impl Resident {
             broker,
         })
     }
+
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> { self.changes.subscribe() }
 
     pub(crate) fn with_vault<T>(&self, work: impl FnOnce(&mut Vault) -> Result<T>) -> Result<T> {
         self.with(|local| work(&mut local.vault))
@@ -85,12 +94,16 @@ impl Resident {
             .is_ok_and(|local| local.vault.proves_unlock("client", covered, proof))
     }
 
+    pub(crate) fn settings_client(&self, request: &DispatchRequest) -> Result<VerifiedVaultClient> {
+        self.with(|local| local.client(request).map(VerifiedVaultClient))
+    }
+
     pub fn register(self: &Arc<Self>, routes: &mut Registry) {
         super::ask_routes::register(self, routes);
         super::fill::register(self, routes);
         super::tools::register(self, routes);
-        self.route::<get_kuvo_vault::Spec>(routes, |local, request, _| {
-            local.client(request)?;
+        self.route::<get_kuvo_vault::Spec>(routes, |local, request, _, verified| {
+            local.client_as(request, verified)?;
             let items = if local.vault.locked() {
                 Vec::new()
             } else {
@@ -100,7 +113,7 @@ impl Resident {
             let state = local.state()?;
             Ok(json!({ "state": state, "items": items, "grants": grants }))
         });
-        self.route::<post_kuvo_vault_unlock::Spec>(routes, |local, request, _| {
+        self.route::<post_kuvo_vault_unlock::Spec>(routes, |local, request, _, _verified| {
             if local.vault.made() && !local.vault.on_host() {
                 let body = body(request);
                 if !body
@@ -113,14 +126,16 @@ impl Resident {
             }
             Ok(json!(local.state()?))
         });
-        self.route::<post_kuvo_vault_key::Spec>(routes, |local, request, _| {
+        self.route::<post_kuvo_vault_key::Spec>(routes, |local, request, _, verified| {
             if local.vault.on_host() {
                 return Err(Error::refused(
                     409,
                     "This Mac's vault is its Keychain: it has no key to give.",
                 ));
             }
-            if local.client(request).is_err() && !local.clients.key_request(body(request)) {
+            if local.client_as(request, verified).is_err()
+                && !local.clients.key_request(body(request))
+            {
                 return Err(Error::refused(403, CLIENTS_ONLY));
             }
             let key = if local.vault.made() {
@@ -133,8 +148,8 @@ impl Resident {
             };
             Ok(json!({ "key": key.expose() }))
         });
-        self.route::<post_kuvo_vault_items::Spec>(routes, |local, request, _| {
-            let by = local.client(request)?;
+        self.route::<post_kuvo_vault_items::Spec>(routes, |local, request, _, verified| {
+            let by = local.client_as(request, verified)?;
             let key = (!local.vault.made())
                 .then(|| local.vault.make())
                 .transpose()?;
@@ -147,57 +162,60 @@ impl Resident {
             }
             Ok(answer)
         });
-        self.route::<patch_kuvo_vault_items_id::Spec>(routes, |local, request, id| {
-            let by = local.client(request)?;
+        self.route::<patch_kuvo_vault_items_id::Spec>(routes, |local, request, id, verified| {
+            let by = local.client_as(request, verified)?;
             local.require_unlocked()?;
             let item = local.vault.change(id, body(request), millis())?;
             local.note(Action::Changed, Some(&item), None, None, by)?;
             Ok(json!({ "item": item }))
         });
-        self.route::<delete_kuvo_vault_items_id::Spec>(routes, |local, request, id| {
-            let by = local.client(request)?;
+        self.route::<delete_kuvo_vault_items_id::Spec>(routes, |local, request, id, verified| {
+            let by = local.client_as(request, verified)?;
             local.require_unlocked()?;
             let item = local.vault.remove(id)?;
             local.note(Action::Removed, Some(&item), None, None, by)?;
             Ok(json!({}))
         });
-        self.route::<get_kuvo_vault_items_id_values::Spec>(routes, |local, request, id| {
-            let by = local.client(request)?;
+        self.route::<get_kuvo_vault_items_id_values::Spec>(routes, |local, request, id, verified| {
+            let by = local.client_as(request,verified)?;
             local.require_unlocked()?;
             let item = local.vault.item(id)?.ok_or_else(missing)?;
             let values = local.vault.values(id)?;
             local.note(Action::Shown, Some(&item), None, None, by)?;
             Ok(json!({ "values": values.iter().map(|(field, value)| (field.clone(), json!(value.expose()))).collect::<Map<String, Value>>() }))
         });
-        self.route::<post_kuvo_vault_items_id_same::Spec>(routes, |local, request, id| {
-            local.client(request)?;
-            local.require_unlocked()?;
-            local.vault.item(id)?.ok_or_else(missing)?;
-            let given = body(request);
-            let asked = given
-                .get("values")
-                .and_then(Value::as_object)
-                .filter(|asked| !asked.is_empty() && asked.values().all(Value::is_string))
-                .ok_or_else(|| Error::refused(400, "Send {\"values\": {…}}."))?;
-            let values = local.vault.values(id)?;
-            let same = asked.iter().all(|(field, asked)| {
-                values.get(field).is_some_and(|value| {
-                    bool::from(
-                        value
-                            .expose()
-                            .as_bytes()
-                            .ct_eq(asked.as_str().unwrap_or_default().as_bytes()),
-                    )
-                })
-            });
-            Ok(json!({ "same": same }))
-        });
-        self.route::<get_kuvo_vault_grants::Spec>(routes, |local, request, _| {
-            local.client(request)?;
+        self.route::<post_kuvo_vault_items_id_same::Spec>(
+            routes,
+            |local, request, id, verified| {
+                local.client_as(request, verified)?;
+                local.require_unlocked()?;
+                local.vault.item(id)?.ok_or_else(missing)?;
+                let given = body(request);
+                let asked = given
+                    .get("values")
+                    .and_then(Value::as_object)
+                    .filter(|asked| !asked.is_empty() && asked.values().all(Value::is_string))
+                    .ok_or_else(|| Error::refused(400, "Send {\"values\": {…}}."))?;
+                let values = local.vault.values(id)?;
+                let same = asked.iter().all(|(field, asked)| {
+                    values.get(field).is_some_and(|value| {
+                        bool::from(
+                            value
+                                .expose()
+                                .as_bytes()
+                                .ct_eq(asked.as_str().unwrap_or_default().as_bytes()),
+                        )
+                    })
+                });
+                Ok(json!({ "same": same }))
+            },
+        );
+        self.route::<get_kuvo_vault_grants::Spec>(routes, |local, request, _, verified| {
+            local.client_as(request, verified)?;
             Ok(json!({ "grants": local.grants()? }))
         });
-        self.route::<post_kuvo_vault_grants::Spec>(routes, |local, request, _| {
-            let by = local.client(request)?;
+        self.route::<post_kuvo_vault_grants::Spec>(routes, |local, request, _, verified| {
+            let by = local.client_as(request,verified)?;
             let given = body(request);
             let (id, who) = given.get("item").and_then(Value::as_str).zip(given.get("who").and_then(who))
                 .ok_or_else(|| Error::refused(400, "Send {\"item\", \"who\": {\"bot\"} or {\"project\"} or {\"everyone\": true}, \"how\": \"own\" | \"ask\" | null}."))?;
@@ -211,8 +229,8 @@ impl Resident {
             local.note(if how.is_some() { Action::Granted } else { Action::Ungranted }, Some(&item), bot, given.get("how").and_then(Value::as_str).map(str::to_owned), by)?;
             Ok(json!({ "grants": local.grants()? }))
         });
-        self.route::<post_kuvo_vault_pause::Spec>(routes, |local, request, _| {
-            let by = local.client(request)?;
+        self.route::<post_kuvo_vault_pause::Spec>(routes, |local, request, _, verified| {
+            let by = local.client_as(request, verified)?;
             let given = body(request);
             let paused = given.get("paused").and_then(Value::as_bool) == Some(true);
             let bot = given
@@ -241,8 +259,8 @@ impl Resident {
             )?;
             Ok(json!(local.state()?))
         });
-        self.route::<get_kuvo_vault_activity::Spec>(routes, |local, request, _| {
-            let by = local.client(request)?;
+        self.route::<get_kuvo_vault_activity::Spec>(routes, |local, request, _, verified| {
+            let by = local.client_as(request, verified)?;
             let query = request.path.split_once('?').map_or("", |(_, query)| query);
             let mut filter = Filter::default();
             for (key, value) in form_urlencoded::parse(query.as_bytes()) {
@@ -268,7 +286,12 @@ impl Resident {
     fn route<R>(
         self: &Arc<Self>,
         routes: &mut Registry,
-        handle: fn(&mut Local, &DispatchRequest, &str) -> Result<Value>,
+        handle: fn(
+            &mut Local,
+            &DispatchRequest,
+            &str,
+            Option<&VerifiedVaultClient>,
+        ) -> Result<Value>,
     ) where
         R: RouteSpec + JsonStatus<200>,
         <R as JsonStatus<200>>::Body: DeserializeOwned,
@@ -282,7 +305,17 @@ impl Resident {
                 .map_or_else(String::new, std::borrow::Cow::into_owned);
             async move {
                 tokio::task::spawn_blocking(move || {
-                    let value = resident.with(|local| handle(local, &call.request, &id))?;
+                    let value = resident.with(|local| {
+                        handle(
+                            local,
+                            &call.request,
+                            &id,
+                            call.extension::<VerifiedVaultClient>(),
+                        )
+                    })?;
+                    if call.request.method != http::Method::GET {
+                        resident.changes.send_modify(|revision| *revision += 1);
+                    }
                     typed::<R, 200>(value)
                 })
                 .await
@@ -362,6 +395,18 @@ impl Local {
         self.clients
             .client(&mut self.vault, request)
             .ok_or_else(|| Error::refused(403, CLIENTS_ONLY))
+    }
+
+    pub(super) fn client_as(
+        &mut self,
+        request: &DispatchRequest,
+        verified: Option<&VerifiedVaultClient>,
+    ) -> Result<String> {
+        if let Some(client) = verified {
+            Ok(client.0.clone())
+        } else {
+            self.client(request)
+        }
     }
 
     fn require_unlocked(&self) -> Result<()> {
