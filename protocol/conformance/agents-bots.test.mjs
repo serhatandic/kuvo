@@ -62,6 +62,9 @@ for (const [name, providerID, id, scripted] of agents) {
       const changed = await ask("PATCH", `kuvo/bots/${bot.id}`, { name: "Scout Two", jobLine: "Watch the build" });
       assert.equal(changed.status, 200, changed.text);
       assert.equal(changed.json.bot.name, "Scout Two");
+      // A 0.7 Mac reads the job's line in the bot's description; the job itself is its own file.
+      assert.equal(readJSON(path.join(folder, "bot.json")).job, "Watch the build");
+      assert.equal(readJSON(path.join(folder, "job.json")).line, "Watch the build");
       assert.equal(readJSON(path.join(harness.home, "agents", "sessions", session, "session.json")).title, "Scout Two");
       const told = () => readJSON(path.join(harness.home, "agents", "sessions", session, "agent.json")).kuvoInstructions["kuvo.bot"];
       assert.match(told(), /Scout Two/);
