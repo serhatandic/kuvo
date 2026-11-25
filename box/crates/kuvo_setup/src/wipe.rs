@@ -187,6 +187,122 @@ fn pending_link(records: &Files) -> io::Result<Option<LocalWipe>> {
     Ok(LocalWipe::from(&link))
 }
 
+fn read_journal(receipts: &Path) -> io::Result<Option<Journal>> {
+    let marker = receipts.join("last-setup-wipe");
+    if !private(receipts, true)? || !private(&marker, false)? {
+        return Ok(None);
+    }
+    let bytes = fs::read(&marker)?;
+    if bytes.len() > 220 {
+        return Err(io::Error::other("Invalid directory wipe receipt"));
+    }
+    let kept: Journal = serde_json::from_slice(&bytes)?;
+    let setup = kept
+        .setup
+        .strip_prefix("set_")
+        .is_some_and(|part| model::safe_token(part, 22, 22));
+    let source = kept
+        .source
+        .as_deref()
+        .and_then(|id| id.split_once(':'))
+        .is_some_and(|(dev, file)| dev.parse::<u64>().is_ok() && file.parse::<u128>().is_ok());
+    if kept.format_version > 1
+        || !setup
+        || !model::safe_token(&kept.operation, 22, 43)
+        || kept.phase.is_some() != source
+        || kept.phase.is_some() != kept.source.is_some()
+    {
+        return Err(io::Error::other("Invalid directory wipe receipt"));
+    }
+    Ok(Some(kept))
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ReinstallReceipt {
+    setup: String,
+    operation: String,
+}
+
+pub enum InstallerWipe {
+    None,
+    Waiting,
+    Complete(ReinstallReceipt),
+}
+
+impl InstallerWipe {
+    pub fn waiting(&self) -> bool {
+        matches!(self, Self::Waiting)
+    }
+
+    pub fn receipt(&self) -> Option<&ReinstallReceipt> {
+        match self {
+            Self::Complete(receipt) => Some(receipt),
+            _ => None,
+        }
+    }
+}
+
+/// Installer status can resume the existing erase. The recorded operation and
+/// directory identity remain the sole authority in `finish`; a marker alone
+/// can make the installer wait, but cannot authorize deletion.
+pub fn installer_wipe(home: &Path, resume: bool) -> io::Result<InstallerWipe> {
+    let Some(root) = boundary(home)? else {
+        return Ok(InstallerWipe::None);
+    };
+    let receipts = parent(&root)?.join(".kuvo-code-removal-receipts");
+    if resume {
+        // A live owner or an incomplete erase leaves its receipt for retry.
+        let _ = finish(&root);
+    }
+    let kept = read_journal(&receipts)?;
+    let records = Files::new(root);
+    let pending = records
+        .read::<Value>(LINK)
+        .ok()
+        .flatten()
+        .is_some_and(|link| {
+            let setup = &link["setup"];
+            let wipe = &link["localWipe"];
+            setup["role"] == "primary"
+                && wipe.get("primary").is_none()
+                && setup["id"].as_str().is_some_and(|id| {
+                    id.strip_prefix("set_")
+                        .is_some_and(|part| model::safe_token(part, 22, 22))
+                        && wipe["setup"] == id
+                })
+                && wipe["operation"]
+                    .as_str()
+                    .is_some_and(|operation| model::safe_token(operation, 22, 43))
+        });
+    if pending || kept.as_ref().is_some_and(|journal| journal.phase.is_some()) {
+        return Ok(InstallerWipe::Waiting);
+    }
+    Ok(kept.map_or(InstallerWipe::None, |journal| {
+        InstallerWipe::Complete(ReinstallReceipt {
+            setup: journal.setup,
+            operation: journal.operation,
+        })
+    }))
+}
+
+/// Only a successful reinstall consumes the completed receipt it observed.
+pub fn finish_reinstall(home: &Path, receipt: &ReinstallReceipt) -> io::Result<()> {
+    let Some(root) = boundary(home)? else {
+        return Ok(());
+    };
+    let parent = parent(&root)?;
+    let receipts = parent.join(".kuvo-code-removal-receipts");
+    let _lock = OwnedLock::acquire(&parent.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
+    if read_journal(&receipts)?.is_some_and(|journal| {
+        journal.phase.is_none()
+            && journal.setup == receipt.setup
+            && journal.operation == receipt.operation
+    }) {
+        files::remove_file_synced(&receipts.join("last-setup-wipe"))?;
+    }
+    Ok(())
+}
+
 /// Complete an already-authorized wipe when no other resident owns the home.
 /// Returning true tells startup that it should leave the erased home alone.
 pub fn finish(home: &Path) -> io::Result<bool> {
@@ -200,34 +316,7 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     forget_erasers(&receipts);
     let records = Files::new(root.clone());
     let pending = || pending_link(&records);
-    let read = || -> io::Result<Option<Journal>> {
-        if !private(&receipts, true)? || !private(&marker, false)? {
-            return Ok(None);
-        }
-        let bytes = fs::read(&marker)?;
-        if bytes.len() > 220 {
-            return Err(io::Error::other("Invalid directory wipe receipt"));
-        }
-        let kept: Journal = serde_json::from_slice(&bytes)?;
-        let setup = kept
-            .setup
-            .strip_prefix("set_")
-            .is_some_and(|part| model::safe_token(part, 22, 22));
-        let source = kept
-            .source
-            .as_deref()
-            .and_then(|id| id.split_once(':'))
-            .is_some_and(|(dev, file)| dev.parse::<u64>().is_ok() && file.parse::<u128>().is_ok());
-        if kept.format_version > 1
-            || !setup
-            || !model::safe_token(&kept.operation, 22, 43)
-            || kept.phase.is_some() != source
-            || kept.phase.is_some() != kept.source.is_some()
-        {
-            return Err(io::Error::other("Invalid directory wipe receipt"));
-        }
-        Ok(Some(kept))
-    };
+    let read = || read_journal(&receipts);
     let current = read()?;
     if current.as_ref().is_none_or(|kept| kept.phase.is_none()) && pending()?.is_none() {
         return Ok(current.is_some() && !root.exists());
