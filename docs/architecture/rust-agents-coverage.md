@@ -850,16 +850,26 @@ failed one, a timed-out hold and one a next resident takes up. The routes
 (`kuvo/agents/api/kuvo/updates`) and the rows' `programUpdate` go with the
 Accounts rows that list versions, which the Rust box doesn't have yet (4.1b).
 
-Also still open for 4.2: the live GPT-6-Luna run.
+The live case (`agents-codex-live`) ran once on macOS with Codex CLI 0.171.0 on
+GPT-6-Luna, picked from the box's own model list. Its turn ran a command for 25
+seconds across a release switch. The next resident took up the same app-server
+(the same holder and child) and finished the turn, and the command's file was
+there. Codex asked no approval for it. The case used a scratch HOME,
+CODEX_HOME and PATH, and dropped every inherited variable. The sign-in was a
+read-only copy in the scratch Codex home, made minutes after its last refresh,
+so Codex had no reason to refresh it. It went with the scratch folder.
+
+By non-whitespace characters, the adapter (`codex` and its modules, without
+tests) is 1.10× `codex.ts` and `codex-citations.ts`.
 
 ### Verification
 
-| Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
-|---|---:|---:|---:|
-| macOS | 94/94 | 78/78, 2 skipped (Rust-only) | 6/6 |
-| Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
-| WSL2, Ubuntu 24.04 (musl) | 94/94 | — | 6/6 |
-| Native Windows x64 | 94/94 | — | 6/6 |
+| Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture | Live GPT-6-Luna keeper switch |
+|---|---:|---:|---:|---|
+| macOS | 94/94 | 78/78, 2 skipped (Rust-only) | 6/6 | Passed |
+| Linux x86-64, lokum (musl) | 94/94 | — | 6/6 | — |
+| WSL2, Ubuntu 24.04 (musl) | 94/94 | — | 6/6 | — |
+| Native Windows x64 | 94/94 | — | 6/6 | — |
 
 "Two asked in one turn" answered before Codex began the sleep it asked from, on WSL, and that answer was told again as the sleep began, as the reference does. The case now waits for the sleep, as the next case does.
 
