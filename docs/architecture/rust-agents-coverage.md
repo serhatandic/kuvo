@@ -794,7 +794,7 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
 | 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 is ported on both boxes: Stop on what it left running (`DELETE kuvo/agents/api/session/:id/background`) ends each command through Codex. The reference cleans the thread's terminals, `thread/backgroundTerminals/clean`; a terminal without a command (a task) isn't stopped by Rust, which stops commands only. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
-| 11–12 | Ported to agents-codex on both boxes: a Codex that refuses `initialize` is stopped each time it's tried, and one stopped while it starts (its account signed out) is stopped at once, not after the 30 s it's given. A stop now cuts a start short (`Shared::halt`), and signing out halts a start before closing the threads that wait on it. A start that fails or is halted waits (at most 10 s) for its holder to end (`Rpc::ended`). Shutdown waits for a start under way, so no holder is left starting as the resident goes: on Windows one outlived the resident by about 2 s with its journal open. The case's cleanup waits for every stand-in Codex to end, and on a failure it shows the holders' records and lifecycle. |
+| 11–12 | Ported to agents-codex on both boxes: a Codex that refuses `initialize` is stopped each time it's tried, and one stopped while it starts (its account signed out) is stopped at once, not after the 30 s it's given. A stop now cuts a start short (`Shared::halt`), and signing out halts a start before closing the threads that wait on it. A start that fails or is halted waits (at most 10 s) for its holder to end (`Rpc::ended`). Shutdown waits for a start under way, so no holder is left starting as the resident goes: on Windows one outlived the resident by about 2 s with its journal open. An app-server's holder notes it `initialized` once it is (launched with `initialized: false`). A next resident stops one left uninitialized, its resident gone mid-start, rather than take it up: Codex would refuse a second `initialize`. That case is Rust-only, because the reference doesn't mark it. The fixture cleanup (`stopFixtureHolders`) stops holders whose records appear late and waits for those still starting. The case's cleanup waits for every stand-in Codex to end, and on a failure it shows the holders' records and lifecycle. On native Windows the case passed 10 runs in a row. |
 | 13–14 | Rust: a stop while the holder starts, or while its sign-in is read, fails that start once the holder answers, and stops it (the same `Shared::halt`); a holder is never dropped half-started. |
 | 15 | Not applicable: a conversation's actor handles one command at a time, so closing it waits for its start. The app-server it started is the account's, shared, and stops when idle. |
 | 16 | 6.1 (vault and the sandbox). |
@@ -831,10 +831,12 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 57/57 | 56/56, 1 skipped (Rust-only) | 6/6 |
+| macOS | 60/60 | 58/58, 2 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
-| WSL2, Ubuntu 24.04 (musl) | 57/57 | — | 6/6 |
-| Native Windows x64 | 57/57 | — | 6/6 |
+| WSL2, Ubuntu 24.04 (musl) | 60/60 | — | 6/6 |
+| Native Windows x64 | 60/60 | — | 6/6 |
+
+Seen once: one case of agents-codex failed against the reference on macOS after the merge of main at c8d59d9da and passed on two reruns (unnamed in that run's output).
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
