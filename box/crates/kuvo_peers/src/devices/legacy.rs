@@ -108,6 +108,65 @@ pub(super) fn members(fields: &Map<String, Value>, here: Option<ComputerKey>) ->
         .collect()
 }
 
+/// Who keeps this computer's machine records outside a setup: the one
+/// released Mac that enrolled it, as that Mac's own peer list names it.
+pub enum Writer {
+    /// In a setup: its main computer keeps them.
+    Setup,
+    /// No released Mac, or more than one, enrolled it.
+    Unknown,
+    Mac(Mac),
+}
+
+pub struct Mac {
+    pub key: ComputerKey,
+    pub name: String,
+    /// The machines in that Mac's peer list.
+    pub machines: Vec<ComputerKey>,
+    /// Every computer this one lists from it, itself excluded.
+    pub listed: Vec<Member>,
+}
+
+pub(super) fn writer(fields: &Map<String, Value>, here: Option<ComputerKey>) -> Writer {
+    if fields.get("setup").is_some_and(|setup| !setup.is_null()) {
+        return Writer::Setup;
+    }
+    let [mac] = enrollers(fields)[..] else {
+        return Writer::Unknown;
+    };
+    let text = encode(&mac);
+    let rows: Vec<_> = fields
+        .get("legacy")
+        .and_then(|legacy| legacy.get(&text)?.get("peers")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(peer)
+        .collect();
+    let own = rows
+        .iter()
+        .find(|row| row["key"] == text.as_str())
+        .and_then(|row| row["name"].as_str());
+    let saved = fields
+        .get("macNames")
+        .and_then(|names| names.get(&text)?.as_str());
+    let name = [own, saved]
+        .into_iter()
+        .flatten()
+        .find(|name| !name.is_empty())
+        .map_or_else(|| "the Mac that set it up".into(), |name| name.chars().take(100).collect());
+    let machines = rows
+        .iter()
+        .filter(|row| row["kind"] == "machine")
+        .filter_map(|row| decode_exact(row["key"].as_str()?))
+        .collect();
+    Writer::Mac(Mac {
+        key: mac,
+        name,
+        machines,
+        listed: members(fields, here),
+    })
+}
+
 pub(super) fn take(
     fields: &mut Map<String, Value>,
     mac: ComputerKey,

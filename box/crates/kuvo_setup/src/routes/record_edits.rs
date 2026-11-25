@@ -9,6 +9,14 @@ pub enum RecordEditCall {
     Submit(Value),
     Outbox,
     Receipt(String),
+    /// Rename `key` on the released Mac that keeps it (`mac`).
+    ReleasedRename {
+        mac: [u8; 32],
+        computer: Value,
+        named: String,
+        key: String,
+        name: String,
+    },
 }
 
 pub struct RecordEditAnswer {

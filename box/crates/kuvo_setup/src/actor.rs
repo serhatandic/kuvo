@@ -73,6 +73,7 @@ pub struct SetupHandle {
     pub(crate) ssh_routes: watch::Sender<Option<std::sync::Weak<crate::ssh::Adding>>>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
     activity: activity::Sender,
+    pub(crate) files: Files,
 }
 
 impl SetupHandle {
@@ -525,6 +526,7 @@ impl PreparedSetup {
             rosters: roster_rx,
             ssh_routes,
             activity: activity.clone(),
+            files: files.clone(),
         };
         let actor = Owner {
             handle: handle.clone(),

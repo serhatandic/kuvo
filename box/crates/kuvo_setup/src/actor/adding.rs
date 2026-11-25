@@ -280,10 +280,9 @@ impl Owner {
         if !self.roster()?.boxes.iter().any(|peer| peer.key == key) {
             return Ok(refused(404, "That isn't one of your computers."));
         }
-        let name = crate::preferences::short_name(&name, 101);
-        if name.is_empty() || name.encode_utf16().count() > 100 {
+        let Some(name) = crate::routes::given_name(&name) else {
             return Ok(refused(400, "Give it a name of up to 100 characters."));
-        }
+        };
         let mut names = self
             .link
             .value(SharedKind::SetupNames)

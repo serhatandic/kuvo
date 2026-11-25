@@ -1,4 +1,6 @@
 mod record_edits;
+mod released_rename;
+pub(crate) use released_rename::given_name;
 
 pub use record_edits::{RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
 
@@ -259,10 +261,12 @@ impl SetupHandle {
             }
         });
         let setup = self.clone();
+        let released = records.clone();
         routes.register::<patch_kuvo_computers_key::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
                 let setup = setup.clone();
+                let released = released.clone();
                 async move {
                     let by = submitter(&call.request.caller)?;
                     let key = call.param("key").unwrap_or_default().to_owned();
@@ -270,6 +274,12 @@ impl SetupHandle {
                         .ok()
                         .and_then(|body| body["name"].as_str().map(ToOwned::to_owned))
                         .unwrap_or_default();
+                    if let Some(answer) = setup
+                        .released_rename(&key, &name, &call.request.caller, released.as_ref())
+                        .await?
+                    {
+                        return respond(answer);
+                    }
                     let answer = setup
                         .request(Command::RenameComputer(key, name, by))
                         .await?;

@@ -25,6 +25,17 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 mod legacy;
 
+pub use legacy::{Mac as ReleasedMac, Writer as RecordWriter};
+
+/// Who keeps the machine records of a computer with this link outside a
+/// setup; `static_key` is the link's own private key.
+pub fn record_writer(fields: &serde_json::Map<String, Value>, static_key: Option<&str>) -> RecordWriter {
+    let here = static_key
+        .and_then(decode_exact)
+        .map(|private| Identity::from_bytes(private, [0; 32]).public());
+    legacy::writer(fields, here)
+}
+
 use crate::{
     directory::{ComputerKey, Member, Roster},
     kept,
