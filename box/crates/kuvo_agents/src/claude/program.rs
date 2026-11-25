@@ -42,6 +42,13 @@ pub(super) struct Program {
     /// Counts updates of Claude Code: a conversation's Claude Code started before the last one
     /// starts again at its next message.
     updates: Arc<AtomicU64>,
+    identity: Arc<tokio::sync::Mutex<Option<IdentityCache>>>,
+}
+
+struct IdentityCache {
+    path: PathBuf,
+    stamp: (u64, Option<SystemTime>),
+    value: Option<(String, String)>,
 }
 
 const UNKNOWN: u8 = 0;
@@ -79,6 +86,7 @@ impl Program {
             turned_away: Arc::default(),
             uses_key: Arc::default(),
             updates: Arc::default(),
+            identity: Arc::default(),
         }
     }
 
@@ -237,24 +245,38 @@ impl Program {
     }
 
     pub async fn plan_sign_in(&self) -> Option<(String, String)> {
-        let file = self.record_home()?.join(".claude.json");
-        let record: serde_json::Value =
-            serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()?;
-        let account = &record["oauthAccount"];
-        let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
-        if uuid.is_empty() {
-            return None;
+        let path = self.record_home()?.join(".claude.json");
+        let stamp = tokio::fs::metadata(&path).await.ok()?;
+        let stamp = (stamp.len(), stamp.modified().ok());
+        let mut cache = self.identity.lock().await;
+        if let Some(kept) = cache
+            .as_ref()
+            .filter(|c| c.path == path && c.stamp == stamp)
+        {
+            return kept.value.clone();
         }
-        let organization = account["organizationUuid"]
-            .as_str()
-            .map(|id| id.trim().to_lowercase())
-            .unwrap_or_default();
-        let raw = format!("anthropic:{uuid}|{organization}");
-        let mark = Sha256::digest(&raw);
-        Some((
-            mark[..8].iter().map(|byte| format!("{byte:02x}")).collect(),
-            raw,
-        ))
+        let raw = tokio::fs::read(&path).await.ok()?;
+        let parsed = (|| {
+            let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+            let account = &record["oauthAccount"];
+            let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
+            if uuid.is_empty() {
+                return None;
+            }
+            let organization = account["organizationUuid"]
+                .as_str()
+                .map(|id| id.trim().to_lowercase())
+                .unwrap_or_default();
+            let raw = format!("anthropic:{uuid}|{organization}");
+            let mark = hex::encode(&Sha256::digest(&raw)[..8]);
+            Some((mark, raw))
+        })();
+        *cache = Some(IdentityCache {
+            path,
+            stamp,
+            value: parsed.clone(),
+        });
+        parsed
     }
 
     pub fn scratch(&self) -> PathBuf {
@@ -277,6 +299,15 @@ impl Program {
             folders.extend(["/opt/homebrew/bin".into(), "/usr/local/bin".into()]);
         }
         which(OsStr::new("claude"), env, &folders)
+    }
+
+    pub fn kept_version(&self) -> Option<String> {
+        let env = self.environment(false);
+        let executable = self.executable(&env)?;
+        crate::program_updates::kept_installed_version(
+            executable.path(),
+            &self.home.run().join("agents/program-cache"),
+        )
     }
 
     /// The catalog is produced only during a turn or sign-in, not by the picker.

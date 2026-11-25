@@ -267,6 +267,7 @@ impl Agent for Codex {
                     count: count.min(u64::from(u32::MAX)) as u32,
                     targets,
                     refills: vec![],
+                    display_expiries: None,
                 });
             }
             Ok(Some(direct))

@@ -91,10 +91,15 @@ pub async fn refresh(
                 let account = account_of(entry, &provider, mark, identity);
                 let at = limits::now();
                 let facts = direct_facts(&reading, at, provider.kind);
+                let only_resets = reading.only_resets;
                 let windows = windows(reading.reading, at, Source::Usage);
                 let service = service.clone();
                 match tokio::task::spawn_blocking(move || {
-                    service.observe_facts(account, windows, Some(facts), at)
+                    if only_resets {
+                        service.observe_reset_facts(account, facts, at)
+                    } else {
+                        service.observe_facts(account, windows, Some(facts), at)
+                    }
                 })
                 .await
                 {
@@ -173,12 +178,14 @@ fn direct_facts(
             id: "resets".into(),
             name: "Rate Limit Resets".into(),
             count: resets.count,
-            expiries: resets
-                .targets
-                .iter()
-                .filter_map(|t| t.expires_at)
-                .take(50)
-                .collect(),
+            expiries: resets.display_expiries.clone().unwrap_or_else(|| {
+                resets
+                    .targets
+                    .iter()
+                    .filter_map(|t| t.expires_at)
+                    .take(50)
+                    .collect()
+            }),
             refills: resets.refills.clone(),
             usable: resets.count > 0 && !resets.targets.is_empty(),
         });

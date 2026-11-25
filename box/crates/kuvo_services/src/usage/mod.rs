@@ -20,3 +20,6 @@ pub mod standalone;
 
 pub mod history_peers;
 pub mod insight_mail;
+
+pub mod cursor_history_store;
+pub mod engine_codex_history;

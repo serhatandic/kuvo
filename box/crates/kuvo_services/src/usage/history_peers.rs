@@ -440,6 +440,7 @@ impl Book {
         let Some(raw) = mail["accounts"].as_array() else {
             if let Some(peer) = self.peers.get_mut(id) {
                 peer.heard = now;
+                fresh(&mut peer.accounts, mail, off, now);
                 return Some(peer.digest.as_ref() != Some(&given));
             }
             return Some(true);
@@ -462,6 +463,7 @@ impl Book {
             }
         }
         let coherent = digest(&accounts) == given;
+        fresh(&mut accounts, mail, off, now);
         self.peers.insert(
             id.into(),
             Kept {
@@ -505,6 +507,16 @@ impl Book {
             .collect()
     }
 }
+fn fresh(accounts: &mut [Told], mail: &Value, off: i64, now: i64) {
+    for account in accounts.iter_mut().filter(|a| a.account_wide) {
+        if let Some(at) = mail["fresh"][&account.provider].as_i64() {
+            let at = at.saturating_add(off).min(now);
+            if account.scanned.is_none_or(|old| at > old) {
+                account.scanned = Some(at);
+            }
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub accounts: Vec<Told>,
@@ -534,6 +546,18 @@ impl Snapshot {
             fallback_revision,
         }
     }
+    fn with_fresh(&self, mut value: Value) -> Value {
+        let fresh = self
+            .accounts
+            .iter()
+            .filter(|a| a.account_wide)
+            .filter_map(|a| Some((&a.provider, a.scanned?)))
+            .collect::<BTreeMap<_, _>>();
+        if !fresh.is_empty() {
+            value["fresh"] = json!(fresh);
+        }
+        value
+    }
     pub fn full(&self, at: i64, ask: bool, refresh: bool) -> Value {
         let mut mail =
             json!({"kind":"usage","at":at,"accounts":self.accounts,"digest":self.digest});
@@ -543,7 +567,7 @@ impl Snapshot {
         if refresh {
             mail["refresh"] = json!(true);
         }
-        mail
+        self.with_fresh(mail)
     }
     pub fn recent(&self, at: i64) -> Value {
         let from = (at - 2 * 86_400_000).div_euclid(SLOT);
@@ -551,9 +575,11 @@ impl Snapshot {
         for account in &mut accounts {
             account.slots.recent(from);
         }
-        json!({"kind":"usage","at":at,"from":from,"accounts":accounts,"digest":self.digest})
+        self.with_fresh(
+            json!({"kind":"usage","at":at,"from":from,"accounts":accounts,"digest":self.digest}),
+        )
     }
     pub fn heartbeat(&self, at: i64) -> Value {
-        json!({"kind":"usage","at":at,"digest":self.digest})
+        self.with_fresh(json!({"kind":"usage","at":at,"digest":self.digest}))
     }
 }

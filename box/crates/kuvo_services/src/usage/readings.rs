@@ -1,7 +1,7 @@
 //! One accepted reading drives both notice transitions and the menu. Rejected observations
 //! never affect either, including the pace trail.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MINUTE: u64 = 60_000;
 const JITTER: u64 = 5 * MINUTE;
@@ -67,6 +67,32 @@ enum Pace {
     Healthy,
     Close,
     RunsOut,
+}
+/// The TypeScript peer state carries decisions even after their notice facts
+/// are no longer within the ten-minute catch-up window.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoticeBucket {
+    Untracked,
+    Healthy,
+    Close,
+    RunningOut,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoticeState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+    pub fired: BTreeSet<Milestone>,
+    pub previous: NoticeBucket,
+    pub under: bool,
+    pub primed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub counts: BTreeMap<Milestone, u32>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Sample {
@@ -273,6 +299,32 @@ impl Trail {
     }
     /// Wake only for a known reset or an estimate of the 90% crossing.
     /// A wake confirms with the maker; it is not itself a new reading.
+    pub fn notice_state(&self) -> NoticeState {
+        let previous = match self.pace {
+            Pace::Unknown => NoticeBucket::Untracked,
+            Pace::Healthy => NoticeBucket::Healthy,
+            Pace::Close => NoticeBucket::Close,
+            Pace::RunsOut => NoticeBucket::RunningOut,
+        };
+        NoticeState {
+            resets_at: self.current.resets_at,
+            fired: self.fired.clone(),
+            previous,
+            under: self.current.used > 0.9,
+            primed: true,
+            read: Some(self.current.read),
+            anchor: self.current.resets_at.map(|at| (at + 500) / 1000),
+            counts: self.fired.iter().map(|m| (*m, 1)).collect(),
+        }
+    }
+    pub fn take_notice_state(&mut self, state: &NoticeState) {
+        if state.primed && state.resets_at == self.current.resets_at {
+            self.fired.extend(state.fired.iter().copied());
+        }
+    }
+    pub fn clear_fired(&mut self) {
+        self.fired.clear();
+    }
     pub fn mark_fired(&mut self, milestone: Milestone) {
         self.fired.insert(milestone);
     }

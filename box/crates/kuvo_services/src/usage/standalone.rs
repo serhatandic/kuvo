@@ -20,6 +20,9 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+#[path = "cursor_history_reader.rs"]
+mod cursor_history;
+
 type Plan = (Vec<Window>, Facts, Option<String>);
 const MINUTE: u64 = 60_000;
 const DAY: u64 = 24 * 60 * MINUTE;
@@ -71,7 +74,7 @@ pub struct Readers {
     client: reqwest::Client,
     fixture: Option<url::Url>,
     isolated: bool,
-    cursor: Arc<Mutex<BTreeMap<String, CursorSignIn>>>,
+    cursor: Arc<Mutex<BTreeMap<String, Arc<Mutex<CursorSignIn>>>>>,
     antigravity: Arc<Mutex<BTreeMap<String, GoogleSignIn>>>,
 }
 #[derive(Clone, Default)]
@@ -571,20 +574,14 @@ impl Readers {
         }
     }
     async fn cursor_read(&self, account: &Account, key: &str, at: u64) -> Result<Plan, Problem> {
-        let mut slots = self.cursor.lock().await;
-        let state = slots.entry(account.provider.clone()).or_default();
-        if state.mark != account.sign_in {
-            *state = CursorSignIn {
-                mark: account.sign_in.clone(),
-                ..Default::default()
-            };
-        }
-        let mut access = self.cursor_access(state, key, at, false).await?;
+        let sign = self.cursor_sign_in_state(account).await;
+        let mut state = sign.lock().await;
+        let mut access = self.cursor_access(&mut state, key, at, false).await?;
         let (mut status, mut usage, mut retry) = self
             .cursor_call("GetCurrentPeriodUsage", &access, at)
             .await?;
         if matches!(status, 401 | 403) {
-            access = self.cursor_access(state, key, at, true).await?;
+            access = self.cursor_access(&mut state, key, at, true).await?;
             (status, usage, retry) = self
                 .cursor_call("GetCurrentPeriodUsage", &access, at)
                 .await?;
@@ -596,7 +593,7 @@ impl Readers {
             }
         }
         if status == 429 {
-            return Err(Self::cursor_hold(state, retry, at));
+            return Err(Self::cursor_hold(&mut state, retry, at));
         }
         if !(200..300).contains(&status) {
             return Err(problem(
@@ -613,7 +610,7 @@ impl Readers {
         let user = jwt_subject(&access).map(|s| s.split('|').nth(1).unwrap_or(&s).to_owned());
         let who = user.as_deref().map(|s| identity("cursor", s));
         let info = self
-            .cursor_optional(state, "GetPlanInfo", &access, at)
+            .cursor_optional(&mut state, "GetPlanInfo", &access, at)
             .await?;
         let name = str_at(&info["planInfo"]["planName"]);
         if usage["enabled"] == false {
@@ -653,10 +650,10 @@ impl Readers {
         if fallback {
             if let Some(user) = user.as_deref() {
                 let summary = self
-                    .cursor_website(state, "/api/usage-summary", user, &access, at, false)
+                    .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
                     .await?;
                 let requests = self
-                    .cursor_website(state, "/api/usage", user, &access, at, true)
+                    .cursor_website(&mut state, "/api/usage", user, &access, at, true)
                     .await?;
                 windows = cursor_summary(&summary, &requests, at, &mut facts)?;
             } else {
@@ -741,7 +738,7 @@ impl Readers {
                 });
             }
             let grants = self
-                .cursor_optional(state, "GetCreditGrantsBalance", &access, at)
+                .cursor_optional(&mut state, "GetCreditGrantsBalance", &access, at)
                 .await?;
             let mut credit = if grants["hasCreditGrants"] == true {
                 positive(&grants["totalCents"])
@@ -752,14 +749,14 @@ impl Readers {
             };
             if let Some(user) = user.as_deref() {
                 let stripe = self
-                    .cursor_website(state, "/api/auth/stripe", user, &access, at, false)
+                    .cursor_website(&mut state, "/api/auth/stripe", user, &access, at, false)
                     .await?;
                 credit += number(&stripe["customerBalance"])
                     .filter(|n| *n < 0.0)
                     .map_or(0.0, f64::abs);
                 if team && !windows.iter().any(|w| w.id == "on_demand") && facts.extras.is_empty() {
                     let summary = self
-                        .cursor_website(state, "/api/usage-summary", user, &access, at, false)
+                        .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
                         .await?;
                     summary_on_demand(&summary, &mut windows, &mut facts, minutes, reset, at);
                     if facts.plan.is_none() {
@@ -776,7 +773,7 @@ impl Readers {
             }
         }
         let bot = self
-            .cursor_optional(state, "GetSandUsageStatus", &access, at)
+            .cursor_optional(&mut state, "GetSandUsageStatus", &access, at)
             .await?;
         if bot["usesPooledEnterpriseAllowance"] != true
             && bot["hasNonZeroIncludedLimit"] != false

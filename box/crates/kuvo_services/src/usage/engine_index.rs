@@ -43,6 +43,10 @@ pub struct Checkpoint {
     pub watermarks: BTreeMap<String, i64>,
     #[serde(default)]
     pub headers: u64,
+    #[serde(default)]
+    pub auth_revision: Option<String>,
+    #[serde(default)]
+    pub sign_in: super::engine_codex_history::SignIn,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -94,7 +98,8 @@ pub fn databases(root: &Path) -> Result<Vec<PathBuf>> {
 pub fn changed_databases(root: &Path, paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     let mut files = BTreeSet::new();
     for relative in paths {
-        if relative.as_os_str().is_empty() {
+        if relative.as_os_str().is_empty() || relative.file_name().is_some_and(|n| n == "auth.json")
+        {
             return databases(root);
         }
         let Some(name) = relative.file_name().and_then(|s| s.to_str()) else {
@@ -167,6 +172,8 @@ pub struct Record {
     pub origin: Option<String>,
     pub observed_account: Option<String>,
     pub cost: Option<f64>,
+    pub version: i64,
+    pub codex_history: bool,
 }
 /// A channel is read in a snapshot. A watermark uses the maker's indexed change
 /// column and an overlap for concurrent writes with the same clock tick.
@@ -179,11 +186,21 @@ pub fn read(
     let Some(stamp) = stamp(path)? else {
         return Ok(None);
     };
-    if previous.stamp.as_ref() == Some(&stamp) {
+    let folder = path.parent().ok_or("Engine database has no folder")?;
+    let auth_revision = kuvo_store::files::file_stamp(&folder.join("auth.json"))
+        .ok()
+        .flatten()
+        .as_ref()
+        .map(signature);
+    if previous.stamp.as_ref() == Some(&stamp) && previous.auth_revision == auth_revision {
         return Ok(None);
     }
     let db = open_maker(path)?;
     let read = db.unchecked_transaction()?;
+    let sign_in = super::engine_codex_history::sign_in(&read, folder).unwrap_or_else(|error| {
+        eprintln!("Couldn't read the engine's ChatGPT history sign-in: {error}");
+        previous.sign_in
+    });
     let mut sessions = BTreeMap::new();
     let mut missing = BTreeSet::new();
     let mut headers = vec![];
@@ -213,6 +230,8 @@ pub fn read(
         stamp: Some(stamp.clone()),
         watermarks: BTreeMap::new(),
         headers: 0,
+        auth_revision,
+        sign_in,
     };
     for (table, role) in [
         ("message", "json_extract(data,'$.role')"),
@@ -242,6 +261,7 @@ pub fn read(
                     .as_ref()
                     .is_some_and(|old| old.identity == stamp.identity)
                     && last.is_some_and(|last| last >= *before)
+                    && previous.sign_in == sign_in
             });
             before.map(|old| old.saturating_sub(3_600_000))
         } else {
@@ -258,7 +278,7 @@ pub fn read(
         COALESCE(json_extract(data,'$.model.id'),json_extract(data,'$.modelID')),
         json_extract(data,'$.agent'),json_extract(data,'$.tokens'),
         json_extract(data,'$.metadata.source'),json_extract(data,'$.time.origin'),json_extract(data,'$.time.usageAccount'),
-        json_extract(data,'$.cost') FROM {table}
+        json_extract(data,'$.cost'),json_type(data,'$.finish') FROM {table}
         WHERE time_created>=?1 {changed} AND json_valid(data)
         AND ({role} IN ('user','assistant') OR ({role}='compaction' AND json_extract(data,'$.status')='completed'))"#
         );
@@ -266,7 +286,7 @@ pub fn read(
         let mut rows = query.query(params![since, after])?;
         while let Some(row) = rows.next()? {
             let usage: Option<String> = row.get(8).ok().flatten();
-            let record = Record {
+            let mut record = Record {
                 session: row.get(0)?,
                 call: row.get(1)?,
                 role: row.get(2)?,
@@ -280,7 +300,21 @@ pub fn read(
                 origin: row.get(10)?,
                 observed_account: row.get(11)?,
                 cost: row.get(12).ok().flatten(),
+                version: if table == "message" { 1 } else { 2 },
+                codex_history: false,
             };
+            let finished = record.completed.is_some()
+                || row.get::<_, Option<String>>(13)?.as_deref() == Some("text")
+                || record.role == "compaction";
+            record.codex_history = sign_in.active()
+                && record.provider.as_deref() == Some("openai")
+                && record.cost == Some(0.)
+                && matches!(record.role.as_str(), "assistant" | "compaction")
+                && finished
+                && (record.version == 1
+                    || sign_in
+                        .since()
+                        .is_none_or(|at| record.completed.unwrap_or(record.created) >= at));
             // Only a changed call's session and parent lineage are read. A
             // channel with many inactive headers does not walk them for one call.
             let mut id = Some(record.session.clone());
@@ -359,6 +393,7 @@ pub async fn follow(root: PathBuf, hub: WatchHub, send: tokio::sync::mpsc::Sende
         if exists {
             if let Some(live) = live.as_mut() {
                 let _ = live.track(&root);
+                let _ = live.track(&root.join("auth.json"));
             }
         }
         loop {

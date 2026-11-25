@@ -96,6 +96,7 @@ pub struct Service {
     key: String,
     alias: Arc<std::sync::OnceLock<String>>,
     hostname: String,
+    machine_identity: Arc<std::sync::OnceLock<String>>,
     gate: Arc<Mutex<()>>,
     caught_up: Arc<std::sync::atomic::AtomicBool>,
     prices: Arc<Mutex<Option<PriceBook>>>,
@@ -109,6 +110,8 @@ pub struct Service {
     manual_refresh: tokio::sync::broadcast::Sender<()>,
     summary_revision: Arc<std::sync::atomic::AtomicU64>,
     summary_cache: Arc<Mutex<BTreeMap<String, summary::Kept>>>,
+    cursor_reader: Option<super::standalone::Readers>,
+    cursor_busy: Arc<tokio::sync::Mutex<()>>,
 }
 #[derive(Clone)]
 struct HistoryContext {
@@ -123,6 +126,7 @@ impl Service {
             name,
             key,
             hostname: hostname.to_owned(),
+            machine_identity: Arc::default(),
             alias: Arc::default(),
             gate: Arc::default(),
             caught_up: Arc::default(),
@@ -137,6 +141,8 @@ impl Service {
             manual_refresh: tokio::sync::broadcast::channel(4).0,
             summary_revision: Arc::default(),
             summary_cache: Arc::default(),
+            cursor_reader: None,
+            cursor_busy: Arc::default(),
         }
     }
     pub fn with_history(
@@ -146,6 +152,46 @@ impl Service {
     ) -> Self {
         self.history = Some(HistoryContext { settings, limits });
         self
+    }
+    pub fn with_cursor(mut self, reader: Option<super::standalone::Readers>) -> Self {
+        self.cursor_reader = reader.filter(super::standalone::Readers::cursor_history_available);
+        self
+    }
+    pub async fn refresh_usage(&self) {
+        self.recount().await;
+        self.refresh_cursor().await;
+    }
+    pub async fn refresh_cursor(&self) {
+        let Some(reader) = self.cursor_reader.as_ref() else {
+            return;
+        };
+        let Ok(_busy) = self.cursor_busy.try_lock() else {
+            return;
+        };
+        reader.refresh_cursor_history(self).await;
+    }
+    pub fn follow_cursor(
+        &self,
+        mut clients: tokio::sync::watch::Receiver<usize>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        self.cursor_reader.as_ref()?;
+        let service = self.clone();
+        Some(tokio::spawn(async move {
+            service.refresh_cursor().await;
+            loop {
+                if clients.wait_for(|n| *n > 0).await.is_err() {
+                    break;
+                }
+                let mut delay = tokio::time::interval(std::time::Duration::from_secs(300));
+                delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        change=clients.changed()=>{if change.is_err(){return;}if *clients.borrow()==0{break;}},
+                        _=delay.tick()=>{if *clients.borrow()==0{break;}service.refresh_cursor().await;}
+                    }
+                }
+            }
+        }))
     }
     fn fallback(&self) -> (Option<String>, bool) {
         self.history
@@ -204,6 +250,10 @@ impl Service {
         }
         Ok((pricing, fallback, chosen))
     }
+    fn machine_identity(&self) -> &str {
+        self.machine_identity
+            .get_or_init(|| kuvo_os::usage_computer::identity(&self.hostname))
+    }
     fn alias(&self) -> &str {
         self.alias.get_or_init(|| {
             kuvo_store::files::text_of(&self.home.join("backup/restore.json"))
@@ -215,10 +265,7 @@ impl Service {
                         .map(str::to_owned)
                 })
                 .unwrap_or_else(|| {
-                    hash(&json!([
-                        "kuvo insight computer",
-                        kuvo_os::usage_computer::identity(&self.hostname)
-                    ]))[..32]
+                    hash(&json!(["kuvo insight computer", self.machine_identity()]))[..32]
                         .to_owned()
                 })
         })
@@ -652,12 +699,8 @@ impl Service {
             native_index::Change::Roster(roots) => {
                 let _gate = self.gate.lock().expect("insights gate");
                 let mut db = self.open()?;
-                affected = native_index::reconcile_roots(
-                    &mut db,
-                    &roots,
-                    &kuvo_os::usage_computer::identity(&self.hostname),
-                    now,
-                )?;
+                affected =
+                    native_index::reconcile_roots(&mut db, &roots, self.machine_identity(), now)?;
             }
             native_index::Change::Removed(root) => {
                 let _gate = self.gate.lock().expect("insights gate");
@@ -906,6 +949,7 @@ impl Service {
     fn fold_engine(&self, paths: Vec<PathBuf>) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
         let prices = self.pricing()?;
+        let place = native_index::place_of(self.machine_identity(), &self.engine_folder(), None);
         let mut failed = false;
         for path in paths {
             let _gate = self.gate.lock().expect("insights gate");
@@ -927,10 +971,12 @@ impl Service {
                     &checkpoint,
                     |record, sessions| {
                         decoded += 1;
+                        super::engine_codex_history::observe(&tx, &key, &record, &prices)?;
                         self.accept_engine(&tx, &mut seq, now, &prices, record, sessions)
                     },
                 )?;
                 if let Some(next) = next {
+                    super::engine_codex_history::source(&tx, &key, next.sign_in, now, &place)?;
                     set(&tx, &key, &serde_json::to_value(next)?)?;
                     set(&tx, &format!("{key}/decoded"), &json!(decoded))?;
                     set(&tx, "sequence", &json!(seq))?;
@@ -1507,7 +1553,7 @@ fn register_history(routes: &mut Registry, service: Service) {
         async move {
             let reader = service.clone();
             let task = tokio::spawn(async move {
-                reader.recount().await;
+                reader.refresh_usage().await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
             service.request_peer_refresh();

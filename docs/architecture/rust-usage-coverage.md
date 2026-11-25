@@ -49,6 +49,11 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | History/Insights peers | `usage and Insights merge only admitted peer records, retain them across restart and filter by computer` | Both boxes, including mixed Rust/TS in each direction; Rust live delta without a request |
 | Insights summary | `Insights groups model aliases and ranks named sessions from indexed usage` | Both boxes; names, filtering, cache rate, prior period, highest-cost standout |
 
+| Cursor history | `Cursor keeps complete account-wide UTC days, reprices saved counts and refuses an incomplete page` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
+| Engine subscription history | `engine ChatGPT history uses read-only OAuth windows, not paid API calls or duplicate channels` | Rust read-only maker fixture; TS scratch bridge disables engine credentials (Mac, Lokum, WSL and native Windows verified) |
+| Claude grants | `Claude file-owned reset grants spend the maker’s named next grant once, with a saved request` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
+| Notice handoff | `a peer remembers a crossing even after its visible notice expires` | Rust correction (Mac, Lokum, WSL and native Windows verified) |
+
 ## Deliberate work-timing changes
 
 The user's revised rule is to keep frequently viewed data ready, incrementally, and to
@@ -120,6 +125,27 @@ start rarely used work only on demand.
   counts on a changed catalog, not the source logs. The client history queries
   aggregate index rows into UTC quarter-hour slots, then convert to requested local
   dates. Explicit refresh catches up the saved cursors.
+- Cursor account-wide history is read in complete UTC-day pages, four at a
+  time with one shared access exchange and a 20-second round budget. Completed
+  old days are kept as raw compact token counts in SQLite; only today, yesterday
+  and missing/incomplete days are requested again. It catches up at startup and
+  on explicit refresh, or every five minutes with a connected client; another
+  fresh account-wide peer reader suppresses maker reads. Changing the price
+  catalog reprices the saved counts, with no maker calls. The Cursor fixture
+  verifies 32 initial days, the two recent days after restart, a failed page
+  preserving the former complete day, and repricing without new requests.
+- Engine ChatGPT history is read from its own SQLite credential metadata without
+  starting the engine, including the legacy auth-file fallback. It counts only
+  zero-cost completed calls from OpenAI, bounds v2 usage by OAuth sign-in,
+  deduplicates copied channels and prices saved counts locally. Credential
+  changes invalidate the channel cursor, not the log history of other channels.
+  TS scratch mode deliberately disables the engine credential call, so its
+  reference scenario cannot exercise this signed-in path; the Rust test removes
+  the engine rendezvous and checks sign-out invalidation.
+- Claude's file-owned grant inventory is cached for one hour per token fingerprint;
+  a failed inventory read keeps the last answer. Its normal passive refresh does
+  not start Claude Code. The profile must identify the same account before a
+  journaled grant is consumed. Production Mac Keychain remains unread.
 - Remaining lightness risk: the platform watch fallback (`kuvo_os/src/watch.rs`,
   `start_watcher`) can compare contents on a polling filesystem when a native
   watch cannot start; avoid a history-wide fallback on large provider roots.
@@ -300,12 +326,30 @@ the compact 35-day SQLite counts once per changed source batch (not per peer
 or heartbeat); a persistent quarter-hour delta index would avoid even that
 aggregate on very large histories.
 
+## Verification of the seventh port slice
+
+Mac Rust usage 35/35, followed by the expanded Cursor repricing scenario;
+TypeScript 13/13 applicable and 22 intentional skips. The four new Rust cases
+failed on the prior binary and pass on the new one. The initial TS engine
+ChatGPT fixture did not produce a row because scratch bridges deliberately
+return empty engine credentials; that path is tested on the Rust read-only
+maker fixture instead. All eight seeded route differential answers match.
+Static musl on Lokum (one capped container), WSL2 Ubuntu 24.04, and native
+Windows gnullvm with libunwind each passed 35/35, including the expanded
+Cursor repricing fixture. All platform scratch and cross target folders were
+removed. The shared PC was returned after confirming no test processes remained.
+Engine-sessions 81/81; workspace check and Bun check pass, apart from the
+existing unused wake helper warning.
+
+Cumulative non-test size: 437,241 new-module characters plus 34,202 added
+existing production characters (471,443 total, 0.686× the 687,546 TS characters).
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state parity.
-- Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
-- Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT subscription history, Cursor account-wide history, remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
+- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
+- Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, extended notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -454,7 +498,7 @@ aggregate on very large histories.
 - L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — partial — local off decision rejects an unasked confirmation; peer behavior open.
 - L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — open.
 - L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — open.
-- L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — open.
+- L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — covered by Claude grant profile mismatch fixture.
 - L976: an agent's reset under Always Allow got no answer, then Always Allow is turned off: the user confirming it is theirs, and it goes through as the same request — open.
 - L998: Claude on Linux whose record of the sign-in leaves out its organization: its token's account matches by the account itself, and a reset goes — open.
 - L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — open.
@@ -484,7 +528,7 @@ aggregate on very large histories.
 - L157: an older Claude Code's event, with only the window that limits it, keeps that one — open.
 - L165: Claude Code's warning of a limit says how much of which one is used, and close only from 90% (#257) — open.
 - L200: each login is its own row with what Claude Code says of it (its windows, plan and extra usage), its resets say they show only from Linux, and Anthropic is never asked with its sign-in — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L248: its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L248: its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none — partial — Claude grant fixture proves no repeat inventory read on confirmation; failed hourly read and extra usage timing remain open.
 - L294: each login is its own row, asked of Claude Code in its own folder, one a minute — open.
 - L318: an added account's usage is asked of Claude Code with that account's folder, and never with a token — open.
 - L339: a read under way is kept before it's answered: a restart meanwhile doesn't ask again — open.
@@ -605,7 +649,7 @@ aggregate on very large histories.
 
 - L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — partial — native JSONL parser running-total/tier test; pricing and full fixture integration open.
 - L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — open.
-- L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — open.
+- L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — partial — engine OAuth history route fixture; full UsageKit corpus open.
 - L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — open.
 - L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — open.
 - L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
@@ -613,9 +657,9 @@ aggregate on very large histories.
 - L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — open.
 - L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — open.
 - L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — open.
-- L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — open.
+- L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — partial — v1/v2, zero-price and sign-in cutoff verified; compaction fixture open.
 - L371: a database that can't be read, and none that could: not known now (never none); one the engine left without its -wal and -shm is read as it is — open.
-- L386: an API key's sign-in, or none: nothing of it; before opencode 2 took its sign-ins in, the auth.json beside it says — open.
+- L386: an API key's sign-in, or none: nothing of it; before opencode 2 took its sign-ins in, the auth.json beside it says — partial — sign-out verified; API-key credential and legacy auth-file scenario open.
 - L400: its row is Codex's: the same ChatGPT account as a Codex account here is one row, both added up; read again only when a database changed — open.
 - L456: one database that can't be read while another can: not known now (what was read stays), never kept as whole; one that keeps failing doesn't hold up the rest — open.
 
@@ -631,11 +675,11 @@ aggregate on very large histories.
 - L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — open.
 - L222: a request-based plan: its requests as its total, said once; the summary's on-demand — open.
 - L238: a test's box never asks Cursor itself, whatever sign-in its folder holds — open.
-- L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — open.
-- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — open.
+- L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — covered by Cursor 32-day initial and two-day restart fixture.
+- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — partial — incomplete second page preserves the previous complete day; changed total and never-known day tests open.
 - L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — open.
 - L351: out of time in the middle of a day of many pages: no page after it is asked — open.
-- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — open.
+- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — partial — Cursor history route UTC, prior complete data retained, repricing without page reads; non-UTC and idle round scenarios open.
 - L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — open.
 - L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — open.
 - L445: signed out of Cursor here: no Cursor row from this box — open.
@@ -703,7 +747,7 @@ aggregate on very large histories.
 - L102: exact ten percent remaining does not trigger Almost Out — open.
 - L108: parallel readers use the same occurrence IDs and recovery receives a new one — open.
 - L116: peer handoff timestamps are normalized to the receiver clock — open.
-- L128: one direct account holder forwards even a received peer decision — open.
+- L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
 - L142: provider hide and re-enable resets baseline but preserves occurrence counters — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L152: notice facts stay in their setup — open.
 - L173: setup changes invalidate notice caches while preserving ordinary limit readings — open.

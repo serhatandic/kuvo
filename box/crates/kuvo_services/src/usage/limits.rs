@@ -271,6 +271,7 @@ impl Service {
     pub fn peer_snapshot(&self, scope: Option<String>, now: u64) -> Reading {
         let state = self.state.lock().expect("limits lock");
         let allowed = self.reset_permission.lock().expect("reset permissions");
+        let book = self.peer_book.lock().expect("peer limits");
         let accounts = state
             .ordered()
             .into_iter()
@@ -305,6 +306,22 @@ impl Service {
                             .collect()
                     } else {
                         vec![]
+                    },
+                    notice_state: if scope.is_some() {
+                        let shared = book.groups.get(&acc.row(&self.key));
+                        entry
+                            .trails
+                            .iter()
+                            .map(|(id, trail)| {
+                                let mut trail = trail.clone();
+                                if let Some(other) = shared.and_then(|group| group.get(id)) {
+                                    trail.merge_fired(other);
+                                }
+                                (id.clone(), trail.notice_state())
+                            })
+                            .collect()
+                    } else {
+                        BTreeMap::new()
                     },
                     agents_reset: allowed.get(&acc.row(&self.key)) == Some(&true),
                 }
@@ -420,7 +437,7 @@ impl Service {
             });
             if fresh {
                 if let Err(error) =
-                    self.observe_facts_inner(account.clone(), vec![window], None, now, true)
+                    self.observe_facts_inner(account.clone(), vec![window], None, now, true, false)
                 {
                     eprintln!("Couldn't keep logged plan limits: {error}");
                 }
@@ -440,7 +457,15 @@ impl Service {
         facts: Option<super::plan_facts::Facts>,
         now: u64,
     ) -> std::io::Result<()> {
-        self.observe_facts_inner(account, windows, facts, now, false)
+        self.observe_facts_inner(account, windows, facts, now, false, false)
+    }
+    pub fn observe_reset_facts(
+        &self,
+        account: Account,
+        facts: super::plan_facts::Facts,
+        now: u64,
+    ) -> std::io::Result<()> {
+        self.observe_facts_inner(account, vec![], Some(facts), now, false, true)
     }
     fn observe_facts_inner(
         &self,
@@ -449,6 +474,7 @@ impl Service {
         facts: Option<super::plan_facts::Facts>,
         now: u64,
         require_current: bool,
+        only_resets: bool,
     ) -> std::io::Result<()> {
         use super::plan_facts::ProblemKind;
         if let Some(error) = &self.cache_error {
@@ -506,7 +532,18 @@ impl Service {
         }
         entry.account = account;
         if let Some(facts) = facts {
-            if let Some(problem) = facts.problem.as_ref() {
+            if only_resets {
+                entry.facts.extras.retain(|extra| match extra {
+                    super::plan_facts::Extra::Resets { .. } => false,
+                    super::plan_facts::Extra::Unreadable { id, .. } if id == "resets" => false,
+                    _ => true,
+                });
+                entry.facts.extras.extend(facts.extras);
+                if entry.facts.checked.is_none() {
+                    entry.facts.checked = facts.checked;
+                    entry.facts.next = facts.next;
+                }
+            } else if let Some(problem) = facts.problem.as_ref() {
                 if matches!(problem.kind, ProblemKind::Ended | ProblemKind::None) {
                     entry.trails.clear();
                     entry.notices.clear();
@@ -783,7 +820,10 @@ impl Service {
         state
             .ordered()
             .into_iter()
-            .filter(|e| e.account.service == Provider::Codex && e.account.account.is_some())
+            .filter(|e| {
+                matches!(e.account.service, Provider::Codex | Provider::Claude)
+                    && e.account.account.is_some()
+            })
             .map(|e| (e.account.clone(), e.account.row(&self.key)))
             .collect()
     }
@@ -808,7 +848,8 @@ impl Service {
             .ordered()
             .into_iter()
             .filter(|entry| {
-                entry.account.service == Provider::Codex && entry.account.account.is_some()
+                matches!(entry.account.service, Provider::Codex | Provider::Claude)
+                    && entry.account.account.is_some()
             })
             .filter(|entry| provider.is_none_or(|p| p == entry.account.provider))
             .find_map(|entry| {
