@@ -1,6 +1,7 @@
 //! Local skills folder (`config/opencode/skills`), Recently Deleted (`trash/skills`), atomic
 //! skill package staging, and `kuvo/skills*` + `kuvo/skill-trash*` routes.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashSet},
     fs, io::{self, Read}, path::{Path, PathBuf}, sync::Arc,
@@ -263,7 +264,7 @@ impl SkillStore {
         let s = self.clone();
         s.clear_skill_trash(now_secs());
         tokio::spawn(async move {
-            let mut iv = tokio::time::interval(Duration::from_secs(86_400));
+            let mut iv = timer_fires::interval(Timer::SkillsDaily, Duration::from_secs(86_400));
             iv.tick().await;
             loop {
                 iv.tick().await;

@@ -1,4 +1,5 @@
 //! Resident entry points. Requests carrying paths or keys require the local app.
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -813,7 +814,7 @@ pub fn register(
     register_local::<VaultImport>(routes, &service, Action::VaultImport);
     let daily = service.clone();
     let task = tokio::spawn(async move {
-        let mut check = tokio::time::interval_at(
+        let mut check = timer_fires::interval_at(Timer::BackupDaily,
             tokio::time::Instant::now() + std::time::Duration::from_secs(60),
             std::time::Duration::from_secs(15 * 60),
         );

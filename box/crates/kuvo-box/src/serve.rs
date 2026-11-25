@@ -5,6 +5,7 @@ mod usage;
 mod usage_history_peers;
 mod usage_peers;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
@@ -887,7 +888,7 @@ async fn publish_peer_waiting(
     mut peers: kuvo_peers::setup_lists::Reader,
     waiting: tokio::sync::watch::Sender<Arc<Vec<kuvo_engine::PeerWaiting>>>,
 ) {
-    let mut refresh = tokio::time::interval(std::time::Duration::from_secs(15));
+    let mut refresh = timer_fires::interval(Timer::PeerWaiting, std::time::Duration::from_secs(15));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let current = peers.view().peer_waiting(peers.now());

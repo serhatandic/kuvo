@@ -1,6 +1,7 @@
 //! Wire Library and Artifacts into the resident (`serve.rs`), including peer snapshots,
 //! memory-read answering, bot folder watches, and passive engine event recording.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -494,7 +495,7 @@ type Content = Vec<(&'static str, Value, [u8; 32])>;
 
 async fn legacy_due(at: Option<tokio::time::Instant>) {
     match at {
-        Some(at) => tokio::time::sleep_until(at).await,
+        Some(at) => timer_fires::sleep_until(Timer::LibraryLegacyCopy, at).await,
         None => std::future::pending().await,
     }
 }

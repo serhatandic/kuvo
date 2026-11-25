@@ -1,4 +1,5 @@
 //! The holder owns one agent socket per registered conversation or folder.
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
@@ -57,7 +58,7 @@ impl Agents {
         Ok(Some(Self(tokio::spawn(async move {
             let mut agents = HashMap::new();
             let mut changes = Some(changes);
-            let mut tick = time::interval(Duration::from_secs(1));
+            let mut tick = timer_fires::interval(Timer::VaultSshAgents, Duration::from_secs(1));
             tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {

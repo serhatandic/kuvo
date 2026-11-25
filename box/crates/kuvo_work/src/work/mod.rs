@@ -16,6 +16,7 @@ pub mod starts;
 pub mod unanswering;
 pub mod watch;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use http::StatusCode;
@@ -229,7 +230,7 @@ impl Work {
                 tokio::select! {
                     () = cancel.cancelled() => break,
                     _ = sessions.changed() => {}
-                    () = tokio::time::sleep(LOOK) => {}
+                    () = timer_fires::sleep(Timer::WorkFollow, LOOK) => {}
                 }
             }
         }

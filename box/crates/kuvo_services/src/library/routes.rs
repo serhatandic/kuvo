@@ -1,6 +1,7 @@
 //! HTTP and line routes for the Library (`kuvo/library…`, `kuvo/setup/library/events`),
 //! matching `box/src/link/library/routes.ts` and `box/src/link/areas/library.ts`.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -149,7 +150,7 @@ pub fn register(registry: &mut Registry, handle: LibraryHandle, peers: Option<Ar
                     loop {
                         if cancel.is_cancelled() { return None; }
                         if !first {
-                            let refresh = tokio::time::sleep(Duration::from_secs(20));
+                            let refresh = timer_fires::sleep(Timer::LibraryFollow, Duration::from_secs(20));
                             tokio::pin!(refresh);
                             let mut refresh_peers = false;
                             tokio::select! {
@@ -159,7 +160,7 @@ pub fn register(registry: &mut Registry, handle: LibraryHandle, peers: Option<Ar
                                     if !ok { continue; }
                                     tokio::select! {
                                         () = cancel.cancelled() => return None,
-                                        () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                        () = timer_fires::sleep(Timer::LibraryFollow, Duration::from_millis(100)) => {}
                                     }
                                     if let Some(rx) = &mut local_rx { while rx.try_recv().is_ok() {} }
                                 }

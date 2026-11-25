@@ -1,5 +1,6 @@
 pub(super) mod records;
 
+use kuvo_os::timer_fires::{self, Timer};
 use super::{
     routes::{internal, storage_refusal},
     store::Store,
@@ -285,7 +286,7 @@ impl Forward {
             id: id.clone(),
         };
         let deadline = Instant::now() + WAIT;
-        let mut retry = tokio::time::interval(RETRY);
+        let mut retry = timer_fires::interval(Timer::NumberForwardWait, RETRY);
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {

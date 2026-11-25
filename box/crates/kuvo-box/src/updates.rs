@@ -6,6 +6,7 @@ mod released_machines;
 mod retry;
 mod summary;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::BTreeMap,
     io,
@@ -152,7 +153,7 @@ pub fn sweep_backups(home: Home, own_mac: bool) -> JoinHandle<()> {
         CHECK_POLL
     };
     tokio::spawn(async move {
-        let mut ticks = tokio::time::interval_at(Instant::now() + delay, every);
+        let mut ticks = timer_fires::interval_at(Timer::BackupPrune, Instant::now() + delay, every);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticks.tick().await;
@@ -241,7 +242,7 @@ pub fn start(
             }
             let deadline = fleet.next_round();
             tokio::select! {
-                _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {},
+                _ = async { match deadline { Some(at) => timer_fires::sleep_until(Timer::UpdateDeadline, at).await, None => std::future::pending().await } } => {},
                 changed = update_peers_changed(&mut peers, &mut update_view) => if changed.is_err() { return },
                 changed = setup.changed() => if !changed { return },
                 changed = engine.changed() => if changed.is_err() { return },

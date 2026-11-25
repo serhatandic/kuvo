@@ -1,5 +1,6 @@
 //! The local composer's durable handoff and receipt feed.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -652,7 +653,7 @@ impl Delivery {
         let worker_updates = updates.clone();
         let (active, handing_off) = watch::channel(None);
         let task = tokio::spawn(async move {
-            let mut tick = time::interval(Duration::from_secs(5));
+            let mut tick = timer_fires::interval(Timer::DeliveryRecovery, Duration::from_secs(5));
             tick.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
@@ -1372,7 +1373,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut current = initial;
                 let mut last = Value::Null;
-                let mut tick = time::interval(Duration::from_secs(1));
+                let mut tick = timer_fires::interval(Timer::DeliveryFollow, Duration::from_secs(1));
                 loop {
                     let value = serde_json::to_value(&current).map_err(io::Error::other)?;
                     if value != last {
@@ -1413,7 +1414,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut fresh = store.queue(None, &session, &target).await.map_err(|error| io::Error::other(error.reply().status.to_string()))?;
                 let mut last = Value::Null;
-                let mut tick = time::interval(Duration::from_secs(1));
+                let mut tick = timer_fires::interval(Timer::DeliveryFollow, Duration::from_secs(1));
                 loop {
                     if fresh != last {
                         yield JsonLine::new(serde_json::from_value(fresh.clone()).map_err(io::Error::other)?)?;

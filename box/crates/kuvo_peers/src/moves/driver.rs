@@ -1,6 +1,7 @@
 //! The resident transfer owner. An accepted command outlives its caller.
 //! The durable journal separates a complete copy from an ownership decision.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io,
@@ -180,7 +181,7 @@ impl Driver {
         if let Err(error) = wake_folder::release_orphans(self.run_dir()) {
             eprintln!("Keeping orphaned wake-up holds: {error}");
         }
-        let mut tick = time::interval(Duration::from_secs(1));
+        let mut tick = timer_fires::interval(Timer::MoveRound, Duration::from_secs(1));
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         loop {
             let result = tokio::select! {
@@ -1817,7 +1818,7 @@ impl Driver {
         let id = row.id.clone();
         let identity = row.bundle.clone();
         let every = Duration::from_millis(STEP_AGAIN as u64);
-        let mut beat = time::interval_at(Instant::now() + every, every);
+        let mut beat = timer_fires::interval_at(Timer::MoveTransferHeartbeat, Instant::now() + every, every);
         beat.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let placement = time::timeout(SET_UP_AT_MOST, self.place(row));
         tokio::pin!(placement);

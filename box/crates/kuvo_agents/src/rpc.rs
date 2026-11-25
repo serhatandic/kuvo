@@ -8,12 +8,13 @@
 //! request IDs, pending answers, acknowledgements and the stderr tail have a
 //! single owner. Adapters hold cheap [`Rpc`] handles.
 
+use kuvo_os::timer_fires::{self, Timer};
 use crate::hold::{Controller, Metadata, Output};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fmt, io, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot, watch},
-    time::{Instant, sleep_until},
+    time::Instant,
 };
 
 /// Whether each message carries `"jsonrpc": "2.0"`.
@@ -425,7 +426,7 @@ impl Connection {
                         }
                     }
                 },
-                () = async { sleep_until(ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
+                () = async { timer_fires::sleep_until(Timer::AgentAck, ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
                     ack_at = None;
                     self.acknowledge().await;
                 }

@@ -1,5 +1,6 @@
 //! One watcher per folder, with a short grace period for reconnecting subscribers.
 
+use crate::timer_fires::{self, Timer};
 use crate::platform::{Platform, is_wsl_windows_drive};
 use notify::{Config, Event, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
@@ -281,7 +282,7 @@ impl Worker {
         let deadline = at + self.grace;
         let commands = self.commands.clone();
         tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
+            timer_fires::sleep_until(Timer::FileWatchGrace, deadline).await;
             if let Some(commands) = commands.upgrade() {
                 let _ = commands.send(Command::Expire { folder, id, expiry });
             }

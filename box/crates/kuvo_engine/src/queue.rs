@@ -1,5 +1,6 @@
 //! Local queue state and its ordering across the resident and OpenCode inbox.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashSet},
     io::{self, Read},
@@ -1652,7 +1653,7 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
             let mut updates = engine.queues.changes.subscribe();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut previous = None;
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                let mut tick = timer_fires::interval(Timer::EngineQueueFollow, std::time::Duration::from_secs(2));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     updates.borrow_and_update();

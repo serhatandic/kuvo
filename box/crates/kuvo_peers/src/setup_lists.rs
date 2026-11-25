@@ -1,6 +1,7 @@
 //! The resident owns peer copies, independently from local engine state. Readers subscribe to
 //! immutable views. Loading the kept copies precedes publishing the first view.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
@@ -977,7 +978,7 @@ impl Resident {
         if let Err(error) = self.refresh_move_ownership().await {
             eprintln!("Refreshing move ownership: {error}");
         }
-        let mut heartbeat = tokio::time::interval(COPY_HEARTBEAT);
+        let mut heartbeat = timer_fires::interval(Timer::PeerCopyHeartbeat, COPY_HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
@@ -1173,7 +1174,7 @@ impl Resident {
                     }
                     if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
                 },
-                _ = async { match expiry { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                _ = async { match expiry { Some(delay) => timer_fires::sleep(Timer::PeerMoveExpiry, delay).await, None => std::future::pending().await } } => {
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, clock()) {
                         eprintln!("Keeping moves on other computers: {error}");
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1351,7 +1352,7 @@ impl Resident {
 
 async fn wait_for_trust(until: Option<tokio::time::Instant>) {
     if let Some(until) = until {
-        tokio::time::sleep_until(until).await;
+        timer_fires::sleep_until(Timer::PeerTrust, until).await;
     } else {
         std::future::pending::<()>().await;
     }

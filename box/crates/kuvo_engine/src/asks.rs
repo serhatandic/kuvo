@@ -1,5 +1,6 @@
 //! Live questions and permissions from a conversation and its local descendants.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeSet, io, time::Duration};
 
 use http::{Method, StatusCode};
@@ -931,7 +932,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                                 }
                             } => if changed.is_err() { external = None; },
                             () = call.cancel.cancelled() => return,
-                            () = tokio::time::sleep(Duration::from_secs(2)) => {},
+                            () = timer_fires::sleep(Timer::EngineAsksFollow, Duration::from_secs(2)) => {},
                         }
                         let next = match reading(&here, &session, &call.request).await {
                             Ok(next) => next,

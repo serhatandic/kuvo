@@ -1,6 +1,7 @@
 //! HTTP and line routes for artifacts (`kuvo/artifacts…`) and merged setup outputs
 //! (`kuvo/setup/outputs…`), matching `box/src/link/artifacts/routes.ts` and `areas/setup-outputs.ts`.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
@@ -204,7 +205,7 @@ where
             loop {
                 if cancel.is_cancelled() { return None; }
                 if !first {
-                    let sleep = tokio::time::sleep(Duration::from_secs(3));
+                    let sleep = timer_fires::sleep(Timer::ArtifactsFollow, Duration::from_secs(3));
                     tokio::pin!(sleep);
                     tokio::select! {
                         () = cancel.cancelled() => return None,
@@ -521,7 +522,7 @@ where
                     }
                     tokio::select! {
                         () = cancel.cancelled() => return None,
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        () = timer_fires::sleep(Timer::ArtifactsFollow, Duration::from_millis(100)) => {}
                     }
                     while rx.try_recv().is_ok() {}
                 }

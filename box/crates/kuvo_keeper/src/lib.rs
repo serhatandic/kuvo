@@ -29,6 +29,7 @@ pub use release::Release;
 pub use retirement::lease_running_release;
 pub use worker::{next_resident_coming, wait_for_stop};
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     fs::{self, File},
     future::Future,
@@ -402,7 +403,7 @@ impl Installation {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 _ = files.changed() => {},
-                _ = async { match deadline { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {},
+                _ = async { match deadline { Some(at) => timer_fires::sleep_until(Timer::KeeperDeadline, at).await, None => std::future::pending().await } } => {},
                 _ = async { match &mut exited { Some(exit) => { let _ = exit.await; }, None => std::future::pending().await } } => { watched = None; exited = None; },
             }
             if self.run.join("off").try_exists()? || self.run.join("paused").try_exists()? {

@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use super::{
     HANDSHAKE, PROTOCOL, RUST_HOLDER, SAFE_INTEGER, endpoint, invalid,
     journal::Journal,
@@ -380,7 +381,7 @@ impl State {
         let (waiting, mut handshakes) = mpsc::channel(8);
         let handshake_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
         let (commands, mut input) = mpsc::channel(16);
-        let mut tick = tokio::time::interval(Duration::from_millis(25));
+        let mut tick = timer_fires::interval(Timer::AgentHolderOutput, Duration::from_millis(25));
         let mut pending_input = None;
         let mut stdout_closed = false;
         let mut stderr_closed = false;
@@ -831,7 +832,7 @@ fn termination(
     request: PathBuf,
 ) -> io::Result<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> {
     let asked = async move {
-        let mut look = tokio::time::interval(Duration::from_millis(250));
+        let mut look = timer_fires::interval(Timer::AgentHolderLiveness, Duration::from_millis(250));
         while !request.exists() {
             look.tick().await;
         }

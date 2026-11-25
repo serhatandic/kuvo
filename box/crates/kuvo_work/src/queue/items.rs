@@ -13,6 +13,7 @@ pub use session_links::StartLink;
 mod started;
 mod tools;
 
+use kuvo_os::timer_fires::{self, Timer};
 use super::{
     assignees::Assignees,
     attachments::staging::{ClientFiles, Staged},
@@ -259,7 +260,7 @@ struct Exchange {
 impl Writer {
     fn start(self, relay: Option<RelayHandle>) -> Runtime {
         let mut incoming = relay.as_ref().and_then(RelayHandle::subscribe);
-        let mut upkeep = tokio::time::interval(Duration::from_secs(2));
+        let mut upkeep = timer_fires::interval(Timer::WorkQueueExchange, Duration::from_secs(2));
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
         let review = Arc::new(self.clone());

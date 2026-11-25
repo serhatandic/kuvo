@@ -1,5 +1,6 @@
 //! Counts derived from the same local snapshot as the session list.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use kuvo_protocol::routes::{get_kuvo_waiting as read, get_kuvo_waiting_events as events};
@@ -274,7 +275,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             let _ = engine.waiting_list(&mut list, &call.cancel).await;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
-                let mut next = tokio::time::interval(Duration::from_secs(1));
+                let mut next = timer_fires::interval(Timer::EngineWaitingFollow, Duration::from_secs(1));
                 next.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     let snapshot = list.snapshot_now();

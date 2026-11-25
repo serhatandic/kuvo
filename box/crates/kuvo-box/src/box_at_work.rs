@@ -1,5 +1,6 @@
 //! What's at work here and on the other enrolled computers, for the Helper menu.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -224,7 +225,7 @@ pub fn register(
             menu.limits.requested();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
-                let mut refresh = tokio::time::interval(Duration::from_secs(1));
+                let mut refresh = timer_fires::interval(Timer::WorkAtWorkFollow, Duration::from_secs(1));
                 refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut stamps = menu.stamps();
                 let mut read_at = tokio::time::Instant::now();

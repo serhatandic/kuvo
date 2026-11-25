@@ -1,5 +1,6 @@
 //! A session actor owns the Claude process pipe and correlates control requests.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -513,7 +514,7 @@ impl Actor {
             };
             let timer = async {
                 match self.deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTurnDeadline, at).await,
                     None => pending().await,
                 }
             };

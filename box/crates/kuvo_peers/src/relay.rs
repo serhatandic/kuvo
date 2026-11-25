@@ -1,6 +1,7 @@
 //! The Tokio owner of one reconnecting relay socket. An accepted send has been written to the
 //! socket. Peer mail still needs an authenticated application receipt before it can be retired.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
@@ -423,7 +424,7 @@ impl Owner {
             }
             let healthy = since.is_some_and(|since| since.elapsed() >= Duration::from_secs(60));
             let wait = next_try(&mut attempts, healthy);
-            if self.while_offline(time::sleep(wait)).await.is_none() {
+            if self.while_offline(timer_fires::sleep(Timer::RelayReconnect, wait)).await.is_none() {
                 return;
             }
         }
@@ -444,7 +445,7 @@ impl Owner {
         let address = address_of(&self.config.secret);
         self.quiet = Fences::default();
         let mut last_heard = Instant::now();
-        let mut heartbeat = time::interval_at(last_heard + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
+        let mut heartbeat = timer_fires::interval_at(Timer::RelayHeartbeat, last_heard + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
         heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

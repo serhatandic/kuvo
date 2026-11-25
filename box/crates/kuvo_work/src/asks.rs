@@ -2,6 +2,7 @@
 //! sign-in, a code or a step only you can do, as the browser keeps them (`run/browser-asks.json`),
 //! listed, followed, and answered over the browser's socket.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -290,7 +291,7 @@ impl Asks {
                         }
                         tokio::select! {
                             () = call.cancel.cancelled() => break,
-                            () = tokio::time::sleep(EVERY) => {}
+                            () = timer_fires::sleep(Timer::WorkAsksFollow, EVERY) => {}
                         }
                     }
                 }))

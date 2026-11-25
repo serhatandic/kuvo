@@ -1,4 +1,5 @@
 //! One followed read per folder, with index checks and filesystem notifications where available.
+use kuvo_os::timer_fires::{self, Timer};
 use super::{changes, list};
 use kuvo_os::{
     platform::{Platform, is_wsl_windows_drive},
@@ -90,7 +91,7 @@ async fn follow(folder: PathBuf, tx: Arc<Sent>, watches: WatchHub) {
         }
         let earliest = Instant::now() + Duration::from_secs(1).max(started.elapsed() * 2);
         let deadline = Instant::now() + every;
-        let mut check = tokio::time::interval(Duration::from_secs(1));
+        let mut check = timer_fires::interval(Timer::GitFollow, Duration::from_secs(1));
         check.tick().await;
         loop {
             tokio::select! {

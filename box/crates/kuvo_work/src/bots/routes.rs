@@ -1,5 +1,6 @@
 //! `kuvo/bots` and its events: this box's bots, each with what it's doing now.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::time::Duration;
 
 use http::StatusCode;
@@ -205,9 +206,9 @@ pub(super) fn register(bots: Bots, routes: &mut Registry) {
                         () = call.cancel.cancelled() => break,
                         _ = mine.changed() => {}
                         _ = wakes.changed() => {}
-                        changed = sessions.changed() => tokio::time::sleep(if changed { SETTLES } else { EVERY }).await,
-                        changed = peers.changed() => if changed.is_err() { tokio::time::sleep(EVERY).await },
-                        () = tokio::time::sleep(turning) => {}
+                        changed = sessions.changed() => timer_fires::sleep(Timer::BotsFollow, if changed { SETTLES } else { EVERY }).await,
+                        changed = peers.changed() => if changed.is_err() { timer_fires::sleep(Timer::BotsFollow, EVERY).await },
+                        () = timer_fires::sleep(Timer::BotsFollow, turning) => {}
                     }
                 }
             }))

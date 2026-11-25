@@ -1,6 +1,7 @@
 //! `kuvo/wakes` and `kuvo/wakes/<session>/…`: a conversation's wake-ups and watches, listed,
 //! followed, added, held, cancelled and sent now, as the bar over a client's composer does.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -769,7 +770,7 @@ where
             tokio::select! {
                 () = call.cancel.cancelled() => break,
                 _ = changes.changed() => {}
-                () = tokio::time::sleep(Duration::from_secs(2)) => {}
+                () = timer_fires::sleep(Timer::WakesFollow, Duration::from_secs(2)) => {}
             }
         }
     }

@@ -9,6 +9,7 @@
 //! Bot or Delete Bot… would there, once for each edit, and answers; what it refuses is let go, and
 //! said, in plain words, to every client that follows this box's bots.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -687,7 +688,7 @@ impl Bots {
             let Some(mut events) = events else {
                 return;
             };
-            let mut round = tokio::time::interval(Duration::from_secs(15));
+            let mut round = timer_fires::interval(Timer::BotsHeld, Duration::from_secs(15));
             loop {
                 tokio::select! {
                     _ = round.tick() => bots.send_held(now_ms()).await,

@@ -4,6 +4,7 @@
 //! only, kept for a computer that's away) are the peers' (`kuvo_peers::remote_work`); what's here
 //! checks each against the sessions here and does it.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashSet,
     io,
@@ -369,7 +370,7 @@ impl Work {
                     looked = Some(Instant::now());
                 }
             }
-            tokio::time::sleep(LOOK).await;
+            timer_fires::sleep(Timer::RemoteWorkRows, LOOK).await;
         }
     }
 }

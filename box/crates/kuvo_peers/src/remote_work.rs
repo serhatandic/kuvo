@@ -1,5 +1,6 @@
 //! Work calls share the resident relay. The engine supplies local work facts and owns effects.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -150,7 +151,7 @@ impl Owner {
         mut events: broadcast::Receiver<Arc<RelayEvent>>,
         mut offers: mpsc::Receiver<Command>,
     ) {
-        let mut timer = tokio::time::interval(ROUND);
+        let mut timer = timer_fires::interval(Timer::RemoteWorkRound, ROUND);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             let result = tokio::select! {

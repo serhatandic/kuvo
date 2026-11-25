@@ -1,5 +1,6 @@
 //! The resident owns one roster and serializes changes to its accounts.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, io, sync::Arc};
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -42,7 +43,7 @@ impl ResidentAgents {
         let sign_ins = Arc::new(Mutex::new(SignIns::default()));
         let expiry = Arc::downgrade(&sign_ins);
         tokio::spawn(async move {
-            let mut clock = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut clock = timer_fires::interval(Timer::AgentSignInExpiry, std::time::Duration::from_secs(60));
             loop {
                 clock.tick().await;
                 let Some(sign_ins) = expiry.upgrade() else {

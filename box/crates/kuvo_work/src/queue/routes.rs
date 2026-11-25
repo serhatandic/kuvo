@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use super::{
     github::{self, Seen},
     items, labels, numbers,
@@ -370,7 +371,7 @@ fn follow(registry: &mut Registry, views: Views) {
                         () = call.cancel.cancelled() => break,
                         () = queue_change(&mut files) => {},
                         changed = catalog.changed() => if !changed { break },
-                        () = tokio::time::sleep(Duration::from_secs(3)) => {},
+                        () = timer_fires::sleep(Timer::WorkQueueFollow, Duration::from_secs(3)) => {},
                     }
                 }
             }))

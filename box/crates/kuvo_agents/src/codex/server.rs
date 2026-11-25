@@ -2,6 +2,7 @@
 //! needed and again after it stops, restarted once quiet when what it started with changed, and
 //! stopped after a while with nothing on it. What it says goes to the thread it names.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
@@ -552,7 +553,7 @@ impl Shared {
         let shared = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                timer_fires::sleep(Timer::CodexServerExpiry, Duration::from_secs(60)).await;
                 let Some(shared) = shared.upgrade() else {
                     return;
                 };

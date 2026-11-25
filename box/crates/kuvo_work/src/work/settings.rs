@@ -3,6 +3,7 @@
 //! a Mac's box keeps its Mac from falling asleep by itself while agents work there, as its setting
 //! says (`keepsAwake`, on unless you turn it off).
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -254,7 +255,7 @@ impl WorkSettings {
                 {
                     noted = now;
                 }
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                timer_fires::sleep(Timer::WorkKeepAwake, Duration::from_secs(10)).await;
             }
         }))
     }

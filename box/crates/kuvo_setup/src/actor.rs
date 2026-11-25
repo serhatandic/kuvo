@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
-    time::{self, Instant},
+    time::Instant,
 };
 
 use crate::{
@@ -1073,7 +1074,7 @@ impl Owner {
                 _ = number_files.changed() => {
                     if self.lease_needed() && self.lease.needs_number_reserve(&self.files, &self.link) { self.next = Some(Instant::now()); }
                 },
-                () = async { match until { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                () = async { match until { Some(at) => timer_fires::sleep_until(Timer::SetupDeadline, at).await, None => std::future::pending().await } } => {
                     if self.next.is_some_and(|at| at <= Instant::now()) {
                         self.next = Some(Instant::now() + Duration::from_secs(2));
                         if let Err(error) = self.tick().await && !matches!(error, Error::Relay(_) | Error::Conflict) { eprintln!("setup heartbeat: {error}"); }

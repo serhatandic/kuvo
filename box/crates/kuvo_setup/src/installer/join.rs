@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, time::Duration};
 
 use kuvo_peers::{
@@ -781,7 +782,7 @@ async fn exchange(
     } else {
         60
     });
-    let mut resend = tokio::time::interval(Duration::from_millis(1800));
+    let mut resend = timer_fires::interval(Timer::InstallerJoinRetry, Duration::from_millis(1800));
     resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut parts = Parts::default();
     let mut seed_parts = credentials::Parts::default();

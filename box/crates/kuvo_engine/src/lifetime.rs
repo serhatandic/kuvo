@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -302,7 +303,7 @@ impl Supervisor {
             eprintln!("Reading the engine record: {error}");
         }
         let mut probing = tokio::task::JoinSet::new();
-        let mut checks = time::interval_at(Instant::now() + self.timing.check, self.timing.check);
+        let mut checks = timer_fires::interval_at(Timer::EngineLifetime, Instant::now() + self.timing.check, self.timing.check);
         checks.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

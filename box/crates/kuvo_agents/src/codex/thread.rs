@@ -1,6 +1,7 @@
 //! A conversation's Codex thread: loaded in the account's app-server, its turns started and
 //! steered, what Codex says made its steps, and what it asks put to you.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashMap,
     io,
@@ -401,14 +402,14 @@ impl Actor {
         while !self.closing {
             let timer = async {
                 match self.deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTurnDeadline, at).await,
                     None => std::future::pending().await,
                 }
             };
             let list_at = self.list_at;
             let listing = async {
                 match list_at {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTerminalList, at).await,
                     None => std::future::pending().await,
                 }
             };
@@ -416,7 +417,7 @@ impl Actor {
             let retry_at = self.retries.iter().map(|retry| retry.at).min();
             let retrying = async {
                 match retry_at {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTurnRetry, at).await,
                     None => std::future::pending().await,
                 }
             };

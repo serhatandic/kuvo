@@ -3,6 +3,7 @@
 //! keeps what it has going (the coding agents here as `bridge`); and what a command a coding agent
 //! left running printed, read through the agents and cut here, so no client reads or cuts it.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -295,7 +296,7 @@ where
             tokio::select! {
                 () = cancel.cancelled() => break,
                 _ = changes.changed() => {}
-                () = tokio::time::sleep(LOOK) => {}
+                () = timer_fires::sleep(Timer::AgentBackground, LOOK) => {}
             }
         }
     }
@@ -391,7 +392,7 @@ pub(in crate::serve) fn register(
                     }
                     tokio::select! {
                         () = cancel.cancelled() => break,
-                        () = tokio::time::sleep(OUTPUT_EVERY) => {}
+                        () = timer_fires::sleep(Timer::AgentOutputFollow, OUTPUT_EVERY) => {}
                     }
                 }
             }))
