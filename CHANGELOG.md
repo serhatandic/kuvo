@@ -7,6 +7,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
+- Saved Work Queue attachments on Rust computers stay available while other work is being saved.
+
+- After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
 
 - A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
 

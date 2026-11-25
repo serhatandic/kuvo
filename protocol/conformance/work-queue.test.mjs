@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash, verify } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
@@ -4260,4 +4261,42 @@ test("an unchanged GitHub reading does not retell the Work Queue after acknowled
   }, "The changed GitHub reading was not told.", 30000);
   assert.notEqual(closed.id, first.id);
   assert.equal(closed.items.find(item => item.id === id).status, "done");
+});
+
+test("ordinary resident file writes do not make a saved queue attachment disappear", { timeout: 45000 }, async t => {
+  if (boxBinary().typescript) return t.skip("The frozen TypeScript box compares directory revisions and can refuse an unchanged file during unrelated writes.");
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const run = path.join(studio.home, "run");
+  const queue = path.join(run, "work-queue");
+  const id = "wqi_" + "A".repeat(20), name = "decision.txt", contents = "The saved decision.";
+  const stamp = { at: Date.now(), by: { user: true } };
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [{
+    id, owner: "usr_you", title: "Keep the decision", number: 81, status: "todo", order: 1, created: stamp, updated: stamp,
+    files: [{ name, type: "text/plain", size: Buffer.byteLength(contents), at: stamp.at }],
+  }] }));
+  write(path.join(queue, "files", id, name), contents);
+  const ask = studio.connect(await studio.start().ready());
+  const route = "kuvo/work-queue/items/" + id + "/files/" + name;
+  assert.equal((await ask("GET", route)).text, contents);
+  let finished = false;
+  const residentWrites = (async () => {
+    const sidecar = path.join(run, "queue-read-test.tmp");
+    // These writes represent unrelated resident bookkeeping in the same directory.
+    while (!finished) {
+      await fsPromises.writeFile(sidecar, "resident update");
+      await fsPromises.unlink(sidecar);
+    }
+  })();
+  try {
+    for (let pass = 0; pass < 80; pass++) {
+      const reply = await ask("GET", route);
+      assert.equal(reply.status, 200, reply.text);
+      assert.equal(reply.text, contents);
+    }
+  } finally {
+    finished = true;
+    await residentWrites;
+  }
 });

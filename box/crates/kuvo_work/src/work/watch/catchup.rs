@@ -347,7 +347,7 @@ impl Watcher {
 }
 
 /// A question as its lead is told it: its one field's words, else its title.
-fn question_text(form: &Value) -> String {
+pub(super) fn question_text(form: &Value) -> String {
     let shown = |field: &&Value| {
         field["hidden"] != true && field["when"].as_array().is_none_or(Vec::is_empty)
     };
@@ -434,21 +434,28 @@ pub(super) async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, V
             .call(Method::GET, &format!("{at}/permission"), None, WAIT)
             .await
             .unwrap_or_default();
+        // (Each with who asks it: the session, or a subagent of it.)
+        let asked = |mut each: Value| {
+            each["asker"] = Value::from(asker.as_str());
+            each
+        };
+        let listed = listed.as_array().cloned().unwrap_or_default();
         permissions.extend(
             listed
-                .as_array()
                 .into_iter()
-                .flatten()
                 .filter(|each| each["id"].is_string())
-                .cloned(),
+                .map(asked),
         );
         match engine
             .call(Method::GET, &format!("{at}/form"), None, WAIT)
             .await
         {
-            Ok(Value::Array(forms)) => {
-                questions.extend(forms.into_iter().filter(|each| each["id"].is_string()))
-            }
+            Ok(Value::Array(forms)) => questions.extend(
+                forms
+                    .into_iter()
+                    .filter(|each| each["id"].is_string())
+                    .map(asked),
+            ),
             _ => whole = false,
         }
     }

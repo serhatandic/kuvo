@@ -19,19 +19,20 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACE_HEADER,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
         },
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl,
-        GetTokenInformation, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID,
+        GetSecurityDescriptorDacl, GetTokenInformation, OBJECT_INHERIT_ACE,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
         SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
         CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        GetDriveTypeW, GetVolumeInformationByHandleW, READ_CONTROL,
+        GetDriveTypeW, GetVolumeInformationByHandleW, READ_CONTROL, WRITE_DAC,
     },
     System::{
-        SystemServices::ACCESS_ALLOWED_ACE_TYPE,
+        SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
         Threading::{GetCurrentProcess, OpenProcessToken},
         WindowsProgramming::DRIVE_FIXED,
     },
@@ -208,52 +209,151 @@ fn check_home(path: &Path, create: bool) -> io::Result<()> {
     verify_acl(&folder, &sid).and_then(|private| if private { Ok(()) } else { Err(invalid()) })
 }
 
-fn verify_acl(folder: &File, sid: &str) -> io::Result<bool> {
-    let mut descriptor = null_mut();
-    let mut owner = null_mut();
-    let mut acl = null_mut();
-    // SAFETY: folder is open with READ_CONTROL. All supplied outputs are writable.
+/// A folder for secrets, where it really is: refused when another account owns it, and closed
+/// to everyone but this account when it's open to others. The private home's inherited ACL
+/// already closes the folders inside it.
+pub fn private_folder(path: &Path) -> io::Result<()> {
+    let folder = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let sid = user_sid()?;
+    let security = Security::of(&folder)?;
+    // As root may on Unix, SYSTEM and Administrators can read anything here anyway.
+    if ![sid.as_str(), "S-1-5-18", "S-1-5-32-544"].contains(&security.owner.as_str()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the folder belongs to another account",
+        ));
+    }
+    let open = security.aces.as_ref().is_none_or(|aces| {
+        aces.iter().any(|ace| match ace.kind {
+            ACCESS_ALLOWED_ACE_TYPE => ace.sid != sid,
+            ACCESS_DENIED_ACE_TYPE => false,
+            _ => true,
+        })
+    });
+    if !open {
+        return Ok(());
+    }
+    let descriptor = SecurityDescriptor::parse(&format!("D:P(A;OICI;FA;;;{sid})"))?;
+    let (mut present, mut acl, mut defaulted) = (0, null_mut(), 0);
+    // SAFETY: the descriptor is live and every output is writable.
+    if unsafe {
+        GetSecurityDescriptorDacl(descriptor.as_ptr(), &mut present, &mut acl, &mut defaulted)
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the folder is open with WRITE_DAC and the ACL lives in the descriptor.
     let error = unsafe {
-        GetSecurityInfo(
+        SetSecurityInfo(
             folder.as_raw_handle(),
             SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            &mut owner,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             null_mut(),
-            &mut acl,
             null_mut(),
-            &mut descriptor,
+            acl,
+            null_mut(),
         )
     };
     if error != 0 {
         return Err(io::Error::from_raw_os_error(error as i32));
     }
-    let _descriptor = LocalAllocation(descriptor);
-    // SAFETY: all pointers below refer to the live descriptor returned by GetSecurityInfo.
-    unsafe {
-        if owner.is_null() || acl.is_null() || sid_text(owner)? != sid || (*acl).AceCount != 1 {
-            return Ok(false);
+    Ok(())
+}
+
+struct Ace {
+    kind: u32,
+    flags: u32,
+    mask: u32,
+    sid: String,
+}
+
+/// A file's owner and DACL; no entries for a NULL DACL, which lets everyone in.
+struct Security {
+    owner: String,
+    protected: bool,
+    aces: Option<Vec<Ace>>,
+}
+
+impl Security {
+    fn of(file: &File) -> io::Result<Self> {
+        let (mut descriptor, mut owner, mut acl) = (null_mut(), null_mut(), null_mut());
+        // SAFETY: the file is open with READ_CONTROL. All supplied outputs are writable.
+        let error = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                &mut acl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error as i32));
         }
-        let mut control = 0;
-        let mut revision = 0;
-        let mut ace = null_mut();
-        if GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) == 0
-            || GetAce(acl, 0, &mut ace) == 0
-        {
-            return Err(io::Error::last_os_error());
+        let _descriptor = LocalAllocation(descriptor);
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "an unreadable ACL");
+        // SAFETY: all pointers below refer to the live descriptor returned by GetSecurityInfo.
+        unsafe {
+            if owner.is_null() {
+                return Err(invalid());
+            }
+            let (mut control, mut revision) = (0, 0);
+            if GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let aces = if acl.is_null() {
+                None
+            } else {
+                let mut aces = Vec::new();
+                for index in 0..u32::from((*acl).AceCount) {
+                    let mut ace = null_mut();
+                    if GetAce(acl, index, &mut ace) == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let head = &*ace.cast::<ACE_HEADER>();
+                    let kind = u32::from(head.AceType);
+                    // Allowed and denied entries share one layout; others keep no SID here.
+                    let simple = matches!(kind, ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE);
+                    if simple && usize::from(head.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() {
+                        return Err(invalid());
+                    }
+                    let ace = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                    aces.push(Ace {
+                        kind,
+                        flags: u32::from(head.AceFlags),
+                        mask: if simple { ace.Mask } else { 0 },
+                        sid: if simple {
+                            sid_text((&raw const ace.SidStart).cast_mut().cast())?
+                        } else {
+                            String::new()
+                        },
+                    });
+                }
+                Some(aces)
+            };
+            Ok(Self {
+                owner: sid_text(owner)?,
+                protected: control & SE_DACL_PROTECTED != 0,
+                aces,
+            })
         }
-        let head = &*ace.cast::<ACE_HEADER>();
-        if control & SE_DACL_PROTECTED == 0
-            || u32::from(head.AceType) != ACCESS_ALLOWED_ACE_TYPE
-            || u32::from(head.AceFlags) != OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
-            || usize::from(head.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
-        {
-            return Ok(false);
-        }
-        let ace = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-        Ok(ace.Mask == FILE_ALL_ACCESS
-            && sid_text((&raw const ace.SidStart).cast_mut().cast())? == sid)
     }
+}
+
+fn verify_acl(folder: &File, sid: &str) -> io::Result<bool> {
+    let security = Security::of(folder)?;
+    Ok(security.owner == sid
+        && security.protected
+        && matches!(security.aces.as_deref(), Some([ace]) if ace.kind == ACCESS_ALLOWED_ACE_TYPE
+            && ace.flags == OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+            && ace.mask == FILE_ALL_ACCESS
+            && ace.sid == sid))
 }
 
 pub fn system_directory() -> io::Result<std::path::PathBuf> {
