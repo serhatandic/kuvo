@@ -21,6 +21,7 @@ pub(super) const AGENT_FEATURE: &str = "work-queue.forward.agent";
 
 struct Outgoing {
     item: String,
+    named: Option<String>,
     method: Method,
     action: Option<String>,
     area: Option<String>,
@@ -61,18 +62,18 @@ impl Forward {
 
     pub async fn call(
         &self,
-        peer: ComputerKey,
-        computer: Value,
-        item: String,
+        target: &super::peer_reads::QueueTarget,
+        named: String,
         method: Method,
         action: Option<String>,
         body: Option<Value>,
     ) -> Result<Value, Refusal> {
         self.request(
-            peer,
-            computer,
+            target.key,
+            target.computer.clone(),
             Outgoing {
-                item,
+                item: target.id.clone(),
+                named: Some(named),
                 method,
                 action,
                 area: None,
@@ -95,6 +96,7 @@ impl Forward {
             computer,
             Outgoing {
                 item: "offline-edit".into(),
+                named: None,
                 method: Method::Get,
                 action: None,
                 area: Some("ownership".into()),
@@ -131,6 +133,7 @@ impl Forward {
             computer,
             Outgoing {
                 item: path.into(),
+                named: None,
                 method: Method::Post,
                 action: None,
                 area: Some("ownership".into()),
@@ -168,6 +171,7 @@ impl Forward {
             computer,
             Outgoing {
                 item,
+                named: None,
                 method,
                 action: directive,
                 area: Some("queue-agent".into()),
@@ -191,6 +195,7 @@ impl Forward {
     ) -> Result<Value, Refusal> {
         let Outgoing {
             item,
+            named,
             method,
             action,
             area,
@@ -199,19 +204,20 @@ impl Forward {
             agent,
         } = outgoing;
         let display = computer["name"].as_str().unwrap_or_default();
+        let named = named.as_deref().unwrap_or(&item);
         let failed = |status, reason: String| {
             Refusal::json(status, json!({"message":reason,"computer":computer}))
         };
         let (view, setup, host) = self.owners.work_queue_destination(peer).map_err(|_| {
             failed(
                 StatusCode::CONFLICT,
-                format!("{item} is on {display}: change it there."),
+                format!("{named} is on {display}: change it there."),
             )
         })?;
         if !view.advertises(&peer, "work-queue.forward") {
             return Err(failed(
                 StatusCode::CONFLICT,
-                format!("{item} is on {display}: change it there."),
+                format!("{named} is on {display}: change it there."),
             ));
         }
         let away = || {

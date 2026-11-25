@@ -74,7 +74,9 @@ impl Writer {
         let existing = all.iter().find(|row| row.id == item.id);
         if let Some(previous) = existing.and_then(|row| row.saved.get("restoreReview")) {
             if keep && previous == marker {
-                return compaction.finish(self, now);
+                compaction.finish(self, now)?;
+                self.retell.again();
+                return Ok(());
             }
             return Err(bad("This item was already kept under another review."));
         }
@@ -96,6 +98,8 @@ impl Writer {
         let mut document = self.read_owner(&owner, now)?;
         document.items.push(row);
         document.save(&self.store).map_err(storage_refusal)?;
-        compaction.finish(self, now)
+        compaction.finish(self, now)?;
+        self.retell.again();
+        Ok(())
     }
 }

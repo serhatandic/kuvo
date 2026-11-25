@@ -25,7 +25,14 @@ impl Writer {
         .await
         .map_err(internal)?;
         match decision {
-            Ok(answer) => Ok(answer),
+            Ok(answer) => {
+                if answer.as_ref().is_some_and(|answer| {
+                    matches!(answer["status"].as_str(), Some("committed" | "choice"))
+                }) {
+                    self.retell.again();
+                }
+                Ok(answer)
+            }
             Err(error) => {
                 use http_body_util::BodyExt;
                 let reply = error.reply();

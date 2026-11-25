@@ -20,6 +20,10 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -113,6 +117,35 @@ pub(super) fn known_numbers(
                     found.insert(number as u64, title.into());
                 }
             }
+        }
+    }
+    Ok(found)
+}
+
+/// Previous tellings, including a retained older member, are evidence for legacy
+/// grants which did not record the recipient. An unseen member proves nothing.
+pub(super) fn known_tops(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
+    let mut found = BTreeMap::new();
+    for file in store::queue_files(&store.root.join("peers")) {
+        let Some(sender) = file
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .and_then(kuvo_wire::keys::decode_exact::<32>)
+        else {
+            continue;
+        };
+        if let Some(kept) = read(store, &sender)? {
+            let top = kept
+                .told
+                .items
+                .iter()
+                .filter_map(|item| number(&item["number"]))
+                .max()
+                .unwrap_or(0);
+            found.insert(
+                encode(&sender),
+                top.max(kept.told.numbering.top.unwrap_or(0)),
+            );
         }
     }
     Ok(found)
@@ -609,6 +642,19 @@ pub(super) fn items_elsewhere(
     Ok(merged)
 }
 
+/// Coalesce successful client writes until the next resident exchange tick.
+#[derive(Clone, Default)]
+pub(super) struct Retell(Arc<AtomicBool>);
+
+impl Retell {
+    pub fn again(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+    pub fn take(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
+}
+
 /// Editions of the local snapshot, sent on the normal peer-mail path.
 #[derive(Default)]
 pub(super) struct Delivery {
@@ -625,9 +671,20 @@ struct DeliveryTo {
     id: String,
     sent: i64,
     kept: bool,
+    soon: bool,
 }
 
 impl Delivery {
+    pub fn again(&mut self) {
+        for sent in self.sent.values_mut().filter(|sent| !sent.kept) {
+            sent.soon = true;
+        }
+    }
+
+    pub fn reset(&mut self, peer: &ComputerKey) {
+        self.sent.remove(peer);
+    }
+
     pub fn acknowledge(&mut self, peer: &ComputerKey, id: &str) {
         if let Some(sent) = self.sent.get_mut(peer).filter(|sent| sent.id == id) {
             sent.kept = true;
@@ -639,7 +696,8 @@ impl Delivery {
             return true;
         };
         now.saturating_sub(before.sent) >= 15_000
-            && (before.id != id || (!before.kept && now.saturating_sub(before.sent) >= 60_000))
+            && (before.id != id
+                || (!before.kept && (before.soon || now.saturating_sub(before.sent) >= 60_000)))
     }
 
     pub fn sent(&mut self, peer: ComputerKey, id: String, now: i64) {
@@ -649,6 +707,7 @@ impl Delivery {
                 id,
                 sent: now,
                 kept: false,
+                soon: false,
             },
         );
     }

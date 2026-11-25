@@ -101,6 +101,7 @@ impl Writer {
                 )?
             };
             compaction.finish(&writer, now)?;
+            writer.retell.again();
             Ok(answer)
         })
         .await

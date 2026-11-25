@@ -135,8 +135,25 @@ impl Numbers {
         local_max: u64,
         now: i64,
     ) -> Result<Option<Value>, Error> {
+        let peers = LegacyPeers {
+            store: Store {
+                root: self
+                    .file
+                    .parent()
+                    .expect("number ledger under queue")
+                    .to_owned(),
+            },
+            keys: self
+                .peers
+                .view()
+                .roster
+                .members
+                .iter()
+                .map(|peer| kuvo_wire::keys::encode(&peer.key))
+                .collect(),
+        };
         self.change(local_max, move |ledger, scope| {
-            ledger.give(scope, &by, &ask, now)
+            ledger.give(scope, &by, &ask, now, Some(&peers))
         })
         .await
     }
@@ -174,7 +191,7 @@ impl Numbers {
                 return Ok(None);
             };
             ask["own"] = true.into();
-            let reply = ledger.give(scope, &setup.primary, &ask, now)?;
+            let reply = ledger.give(scope, &setup.primary, &ask, now, None)?;
             Ok(reply.as_ref().and_then(|block| ledger.receive_block(block)))
         })
         .await
@@ -227,6 +244,11 @@ impl Numbers {
         .await
         .map_err(io::Error::other)?
     }
+}
+
+struct LegacyPeers {
+    store: Store,
+    keys: Vec<String>,
 }
 
 struct Scope {
@@ -333,7 +355,14 @@ impl Ledger {
             )
     }
 
-    fn give(&mut self, scope: Scope, by: &str, ask: &Value, now: i64) -> io::Result<Option<Value>> {
+    fn give(
+        &mut self,
+        scope: Scope,
+        by: &str,
+        ask: &Value,
+        now: i64,
+        peers: Option<&LegacyPeers>,
+    ) -> io::Result<Option<Value>> {
         let Some(setup) = scope
             .setup
             .as_ref()
@@ -376,8 +405,13 @@ impl Ledger {
         if !self.claim_room(&claims, count, ceiling) {
             return Ok(None);
         }
-        let owned = (ask["own"].as_bool() == Some(true)).then(|| ranges(ask.get("restores")));
-        let offered = self.grant_claims(by, &claims, owned.as_deref(), ceiling - count);
+        let own = ask["own"] == true;
+        let legacy = if let Some(peers) = peers.filter(|_| own) {
+            self.legacy_blocks(by, &intersect(&ranges(ask.get("restores")), &claims), peers)?
+        } else {
+            Vec::new()
+        };
+        let offered = self.grant_claims(by, &claims, own, &legacy, ceiling - count);
         let from = self.next();
         let to = from + count - 1;
         self.fields.insert("next".into(), (to + 1).into());
