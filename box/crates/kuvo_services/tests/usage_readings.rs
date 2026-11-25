@@ -12,6 +12,7 @@ fn reading(at: u64, used: f64, reset: u64) -> Window {
         resets_at: Some(reset),
         model: None,
         name: None,
+        amount: None,
         read: at,
         source: Source::Usage,
     }

@@ -58,6 +58,7 @@ fn windows(reading: PlanLimitReading, at: u64, source: Source) -> Vec<Window> {
             resets_at: w.resets_at,
             model: w.model,
             name: None,
+            amount: None,
             read: at,
             source,
         })
@@ -79,15 +80,18 @@ pub async fn refresh(service: Service, agents: ResidentAgents, selected: Option<
                 let Some((mark, identity)) = entry.agent.plan_sign_in().await else {
                     continue;
                 };
-                if reading.sign_in.as_deref() != Some(&mark) {
+                if reading.reading.sign_in.as_deref() != Some(&mark) {
                     continue;
                 }
                 let account = account_of(entry, &provider, mark, identity);
                 let at = limits::now();
-                let windows = windows(reading, at, Source::Usage);
+                let facts = direct_facts(&reading, at, provider.kind);
+                let windows = windows(reading.reading, at, Source::Usage);
                 let service = service.clone();
-                match tokio::task::spawn_blocking(move || service.observe(account, windows, at))
-                    .await
+                match tokio::task::spawn_blocking(move || {
+                    service.observe_facts(account, windows, Some(facts), at)
+                })
+                .await
                 {
                     Ok(Ok(())) => {}
                     error => {
@@ -104,6 +108,170 @@ pub async fn refresh(service: Service, agents: ResidentAgents, selected: Option<
         }
     }
     failed
+}
+
+fn direct_facts(
+    direct: &kuvo_agents::session::DirectPlanReading,
+    at: u64,
+    kind: AgentKind,
+) -> kuvo_services::usage::plan_facts::Facts {
+    use kuvo_services::usage::plan_facts::{Extra, Facts, Problem, ProblemKind, Unit};
+    let mut facts = Facts {
+        plan: direct.plan.clone(),
+        checked: Some(at),
+        next: Some(
+            at + if kind == AgentKind::Claude {
+                15 * 60_000
+            } else {
+                10 * 60_000
+            },
+        ),
+        ..Default::default()
+    };
+    if direct.no_plan {
+        facts.problem = Some(Problem::new(
+            ProblemKind::None,
+            "Not signed in to a plan here.",
+        ));
+    }
+    if let Some(spend) = &direct.extra_usage {
+        let (id, name) = ("extra_usage".to_owned(), "Extra Usage".to_owned());
+        facts.extras.push(if let Some(limit) = spend.limit {
+            Extra::Capped {
+                id,
+                name,
+                amount: spend.amount,
+                limit,
+                unit: Unit::Usd,
+                resets_at: spend.resets_at,
+            }
+        } else {
+            Extra::Spent {
+                id,
+                name,
+                amount: spend.amount,
+                unit: Unit::Usd,
+                resets_at: spend.resets_at,
+            }
+        });
+    }
+    if let Some(credits) = direct.credits {
+        facts.extras.push(Extra::Left {
+            id: "credits".into(),
+            name: "Extra Usage".into(),
+            amount: credits,
+            unit: Unit::Credits,
+        });
+    }
+    if let Some(resets) = &direct.resets {
+        facts.extras.push(Extra::Resets {
+            id: "resets".into(),
+            name: "Rate Limit Resets".into(),
+            count: resets.count,
+            expiries: resets
+                .targets
+                .iter()
+                .filter_map(|t| t.expires_at)
+                .take(50)
+                .collect(),
+            refills: resets.refills.clone(),
+            usable: resets.count > 0 && !resets.targets.is_empty(),
+        });
+    } else if let Some(message) = &direct.reset_unreadable {
+        facts.extras.push(Extra::Unreadable {
+            id: "resets".into(),
+            name: "Rate Limit Resets".into(),
+            message: message.clone(),
+        });
+    }
+    facts
+}
+
+pub fn engine_reader(
+    home: &std::path::Path,
+    account: &std::path::Path,
+) -> Option<kuvo_services::usage::engine_readers::Reader> {
+    use kuvo_services::usage::engine_readers::Reader;
+    if std::env::var("KUVO_TEST_PATH_ONLY").as_deref() == Ok("1") {
+        return Reader::fixture(std::env::var("KUVO_TEST_USAGE_BASE").ok()?.parse().ok()?).ok();
+    }
+    if home != account.join(".kuvo-code")
+        || std::env::var("KUVO_TEST_PRICE_FEEDS").as_deref() == Ok("off")
+    {
+        return None;
+    }
+    Reader::new().ok()
+}
+
+pub async fn refresh_engine(
+    service: Service,
+    engine: kuvo_engine::Engine,
+    reader: kuvo_services::usage::engine_readers::Reader,
+    selected: Option<String>,
+) -> bool {
+    // Never wake the engine solely to poll quota. If it hasn't opened its credential
+    // store, the last readings stay as of when their makers supplied them.
+    if selected
+        .as_deref()
+        .is_some_and(|p| Provider::parse(p).is_some())
+    {
+        return false;
+    }
+    let Some(engine) = engine.running_bot_engine().await else {
+        return false;
+    };
+    let credentials = match engine
+        .call(
+            http::Method::GET,
+            "api/credential",
+            None,
+            std::time::Duration::from_secs(15),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("Could not read engine plan accounts: {error}");
+            return true;
+        }
+    };
+    let at = limits::now();
+    let held = service.held_engine_providers(at);
+    let Some(batch) = reader
+        .read(credentials, at, &held, selected.as_deref())
+        .await
+    else {
+        return true;
+    };
+    match tokio::task::spawn_blocking(move || {
+        let mut failed = false;
+        for plan in batch.plans {
+            if plan
+                .facts
+                .problem
+                .as_ref()
+                .is_some_and(|p| p.kind == kuvo_services::usage::plan_facts::ProblemKind::Failed)
+            {
+                failed = true;
+            }
+            if let Err(error) =
+                service.observe_facts(plan.account, plan.windows, Some(plan.facts), at)
+            {
+                failed = true;
+                eprintln!("Could not keep engine plan limits: {error}");
+            }
+        }
+        service.confirm_engine_accounts(&batch.providers, at);
+        failed
+    })
+    .await
+    {
+        Ok(failed) => failed,
+        Err(error) => {
+            eprintln!("Could not keep engine plan accounts: {error}");
+            true
+        }
+    }
 }
 
 pub struct Turns {
@@ -208,4 +376,84 @@ pub fn notices(service: &Service, notices: Notices) {
                 .then(|| "Already told.".into())
         });
     }));
+}
+
+pub struct ResetPort {
+    pub agents: Option<ResidentAgents>,
+    pub limits: Service,
+}
+impl ResetPort {
+    async fn agent(
+        &self,
+        account: &Account,
+    ) -> Result<(Arc<dyn kuvo_agents::roster::Agent>, String), kuvo_services::usage::resets::Outcome>
+    {
+        use kuvo_services::usage::resets::Outcome;
+        let agents = self.agents.as_ref().ok_or(Outcome::NotNow)?;
+        let provider = Provider::parse(&account.provider).ok_or(Outcome::NoReset)?;
+        let roster = agents.roster();
+        let entry = roster.find(&provider).ok_or(Outcome::NotNow)?;
+        let (_, raw) = entry.agent.plan_sign_in().await.ok_or(Outcome::NotNow)?;
+        if account.identity.as_ref() != Some(&Account::identity_of(&raw)) {
+            return Err(Outcome::NoReset);
+        }
+        Ok((entry.agent.clone(), raw))
+    }
+}
+impl kuvo_services::usage::resets::Port for ResetPort {
+    fn choose<'a>(
+        &'a self,
+        account: &'a Account,
+    ) -> futures_core::future::BoxFuture<'a, Result<String, kuvo_services::usage::resets::Outcome>>
+    {
+        use kuvo_services::usage::resets::Outcome;
+        Box::pin(async move {
+            let (agent, _) = self.agent(account).await?;
+            let plan = agent
+                .read_plan_limits()
+                .await
+                .map_err(|_| Outcome::NotNow)?
+                .ok_or(Outcome::NotNow)?;
+            self.agent(account).await?;
+            plan.resets
+                .and_then(|r| r.targets.into_iter().next())
+                .map(|t| t.id)
+                .ok_or(Outcome::NoReset)
+        })
+    }
+    fn consume<'a>(
+        &'a self,
+        account: &'a Account,
+        request: &'a str,
+        target: &'a str,
+    ) -> futures_core::future::BoxFuture<'a, kuvo_services::usage::resets::Outcome> {
+        use kuvo_agents::session::ResetOutcome as Native;
+        use kuvo_services::usage::resets::Outcome;
+        Box::pin(async move {
+            let (agent, identity) = match self.agent(account).await {
+                Ok(a) => a,
+                Err(o) => return o,
+            };
+            match agent
+                .consume_plan_reset(&identity, request, target)
+                .await
+                .unwrap_or(Native::Unknown)
+            {
+                Native::Reset | Native::AlreadyRedeemed => Outcome::Reset,
+                Native::NothingToReset => Outcome::NothingToReset,
+                Native::NoReset => Outcome::NoReset,
+                Native::NotNow => Outcome::NotNow,
+                Native::Failed => Outcome::Failed,
+                Native::Unconfirmed => Outcome::Unconfirmed,
+                Native::Unknown => Outcome::Unknown,
+            }
+        })
+    }
+    fn refresh<'a>(&'a self, provider: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(agents) = self.agents.as_ref() {
+                refresh(self.limits.clone(), agents.clone(), Some(provider.into())).await;
+            }
+        })
+    }
 }

@@ -206,6 +206,10 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       finish(held);
       held = undefined;
     }
+  } else if (subtype === "get_usage") {
+    const usage = ${JSON.stringify(path.join(root, "claude-usage.json"))};
+    if (fs.existsSync(usage)) answer(message.request_id, { subtype: "success", response: JSON.parse(fs.readFileSync(usage, "utf8")) });
+    else answer(message.request_id, { subtype: "error", error: "No fixture usage." });
   } else if (!native && ["set_model", "get_context_usage"].includes(subtype)) {
     // A probe asking how much each model holds: as the test says (\`windows\` in
     // \`<root>/claude-catalog.json\`, by model), or, as an older Claude Code, it doesn't say.

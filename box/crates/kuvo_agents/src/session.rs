@@ -271,6 +271,59 @@ pub struct PlanLimitReading {
     pub sign_in: Option<String>,
 }
 
+/// Facts available from a direct account read, not a turn notification.
+#[derive(Clone, Debug)]
+pub struct DirectPlanReading {
+    pub reading: PlanLimitReading,
+    pub plan: Option<String>,
+    pub extra_usage: Option<PlanSpend>,
+    pub credits: Option<f64>,
+    pub resets: Option<ResetInventory>,
+    pub reset_unreadable: Option<String>,
+    pub no_plan: bool,
+}
+impl DirectPlanReading {
+    pub fn windows(reading: PlanLimitReading) -> Self {
+        Self {
+            reading,
+            plan: None,
+            extra_usage: None,
+            credits: None,
+            resets: None,
+            reset_unreadable: None,
+            no_plan: false,
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub struct PlanSpend {
+    pub amount: f64,
+    pub limit: Option<f64>,
+    pub resets_at: Option<u64>,
+}
+#[derive(Clone, Debug)]
+pub struct ResetInventory {
+    pub count: u32,
+    pub targets: Vec<ResetTarget>,
+    pub refills: Vec<String>,
+}
+#[derive(Clone, Debug)]
+pub struct ResetTarget {
+    pub id: String,
+    pub expires_at: Option<u64>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetOutcome {
+    Reset,
+    AlreadyRedeemed,
+    NothingToReset,
+    NoReset,
+    NotNow,
+    Failed,
+    Unknown,
+    Unconfirmed,
+}
+
 /// One of a plan's limits, as its maker says it stands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitWindow {

@@ -221,6 +221,7 @@ pub fn register(
         let mut peers = menu.peers.clone();
         let mut limits = menu.limits.subscribe();
         async move {
+            menu.limits.requested();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
                 let mut refresh = tokio::time::interval(Duration::from_secs(1));

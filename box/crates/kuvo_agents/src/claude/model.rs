@@ -154,7 +154,46 @@ async fn load(program: Program) -> io::Result<(Models, HashMap<String, u64>)> {
 /// `/context` says once a model is chosen (an older Claude Code that doesn't say leaves them to its
 /// list's word).
 fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
-    let env = program.environment(true);
+    ask_native(program, true, Asking::models)
+}
+
+/// A plan read asks Claude itself; it never extracts the Mac's OAuth token.
+pub(super) async fn usage(program: Program) -> io::Result<Value> {
+    tokio::task::spawn_blocking(move || {
+        ask_native(program, false, |asking| {
+            if !matches!(
+                asking.ask(
+                    "usage-init",
+                    json!({"subtype":"initialize"}),
+                    Duration::from_secs(20)
+                )?,
+                wire::ReplyBody::Success { .. }
+            ) {
+                return Err(io::Error::other(
+                    "Claude Code didn't initialize for its plan reading.",
+                ));
+            }
+            match asking.ask(
+                "usage",
+                json!({"subtype":"get_usage","skip_behaviors":true}),
+                Duration::from_secs(20),
+            )? {
+                wire::ReplyBody::Success { response, .. } => Ok(response),
+                _ => Err(io::Error::other("Claude Code couldn't say its plan usage.")),
+            }
+        })
+    })
+    .await?
+}
+fn ask_native<T>(
+    program: Program,
+    legacy: bool,
+    call: impl FnOnce(&mut Asking) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut env = program.environment(legacy);
+    if !legacy {
+        env.insert("DISABLE_AUTOUPDATER".into(), "1".into());
+    }
     let executable = program
         .executable(&env)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Claude Code isn't installed."))?;
@@ -189,7 +228,7 @@ fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
         .name("claude-models".into())
         .spawn(move || read_replies(BufReader::new(stdout), &send))?;
     let mut asking = Asking { stdin, replies };
-    let result = asking.models();
+    let result = call(&mut asking);
     drop(asking);
     child.stop(Duration::from_secs(1), |_| {})?;
     let _ = reader.join();

@@ -16,17 +16,46 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Menu | `the Helper menu and warning facts use the same accepted reading` | Rust-only correction |
 | Demand | `manual refresh reads Codex on demand, not on an idle startup` | Rust-only design change |
 | Demand | `a subscribed rail asks for a current reading without an idle polling loop` | Rust-only design change |
-| Insights | `Insights indexes portable usage metadata only when first opened and does not double-count a reread` | Rust-only design change |
+| Insights | `Insights catches up before first open and folds changed transcripts without double-counting` | Rust-only design change (supersedes first-slice demand-only index) |
 | Insights | `a portable transcript contributes its tokens and cache reads to Insights on either box` | Both boxes |
 | Limits | `the empty limits answer states every service and refresh state in the contract order` | Both boxes |
 | Cache | `an unreadable accepted-limit cache cannot prevent the resident from opening or be overwritten` | Rust-only format guard |
+| Engine plans | `engine credential plans are read with their own sign-ins and display bounded counts and credits` | Rust reader with a loopback maker fixture; TS scratch bridges deliberately disable these provider calls |
+| Claude | `Claude Code answers its plan via its own demand-started control process` | Rust native fixture |
+| Resets | `a Codex reset is offered without spending, journaled before the maker, and replayed once after restart` | Rust native fixture; account switch also refuses the old offer |
+| Resets | `an agent has to ask before spending a reset, and Always Allow is account-specific` | Rust native and engine fixtures through the existing work-ask routes |
+| Menu | `a connected Helper menu requests fresh rings and the same accepted reading reaches its feed` | Rust demand reader |
+| Resets | `reset routes refuse missing or unknown accounts without creating a spend` | Both boxes |
 | Pace | `usage_readings.rs` | Deterministic window regression, single false refill, same-window alert deduplication, previous-window pace exclusion |
 | Pricing | `usage_pricing.rs` | Bundled price resolution, exact fallback, cache writes and fast rates |
 
-## Deliberate idle-cost differences
+## Deliberate work-timing changes
 
-- Rust opens the Insights index on a query, using a per-transcript metadata checkpoint. It does not launch the previous background worker or scan the full history while nobody is looking. Native-file offset cursors and active view file watching remain open.
-- Rust reads Codex's native usage only on refresh, while a usage-event subscriber is present, or near an accepted reset/projected crossing. No minute-by-minute provider poll on an idle resident. Other providers' demand-driven readers and a deterministic deadline scenario remain open.
+The user's revised rule is to keep frequently viewed data ready, incrementally, and to
+start rarely used work only on demand.
+
+- Insights begins a catch-up at startup on a blocking worker, subscribing to the
+  platform's file watch before the catch-up. A burst of file changes folds the affected
+  portable transcript(s) into SQLite using their metadata checkpoint. Reads serve the
+  index, not a periodic history walk. A lost watcher event permits a checkpoint
+  recovery pass. There is no separate Insights process. The startup/file-change
+  conformance scenario checks SQLite before the first client query and before the next
+  query, as well as duplicate prevention. Native-file offset cursors and complete
+  native history coverage remain open.
+- Limits are refreshed on a rail/menu subscription, a manual refresh, turn readings,
+  when a reset/projected crossing becomes due, and on a one-minute wake while an
+  authenticated client request or stream is active (provider reads are throttled to
+  ten minutes between non-manual refreshes). When there are no connected clients and
+  no deadline, there is no periodic wake. The immediate rail/menu cases and the idle
+  startup case demonstrate the difference. A separately timed periodic/client-detach
+  and deadline scenario remains open.
+- Potential further improvements: `usage/insights.rs`'s `scan_changed` reparses
+  about 416 KiB of bundled price catalogs per change batch and re-reads compact
+  projections within a changed SQLite transcript; cache price resolution and add
+  a per-transcript mutation cursor when native log cursors are introduced. The
+  platform watch fallback (`kuvo_os/src/watch.rs`, `start_watcher`) can compare
+  contents on a polling filesystem when a native watch cannot start; avoid a
+  history-wide fallback on large provider roots.
 
 ## Verification of the first port slice
 
@@ -64,10 +93,37 @@ Size, non-test characters without leading indentation: TypeScript usage director
 new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing Rust files
 (94,523 total, about 0.14× the full TS directory). This is a partial port, not the final size ratio.
 
+## Verification of the second port slice
+
+Mac workspace check is clean; Rust usage 18/18, engine-sessions 81/81;
+TypeScript usage 5/5 applicable (13 fixture/correction/timing skips) and Bun check clean.
+The six-route seeded differential matches all answers including the missing/unknown
+reset refusals. Inventory differences remain; in this short startup-only run the Rust
+watch catch-up had not yet opened SQLite when the resident stopped, whereas a
+long-lived resident has its index ready before the first query (tested). Setup marker,
+legacy usage/attribution caches and unrelated startup records still differ.
+Cross-platform verification: static musl on Lokum (one capped container) 18/18,
+WSL2 Ubuntu 24.04 18/18, native Windows with the gnullvm binary and adjacent
+libunwind 18/18. Scratch was removed on all test computers. Both cross-target
+build folders were removed. Windows emitted existing target-specific keeper
+and work dead-code warnings; the workspace check remained clean.
+
+The first engine-provider fixture revealed a wire spelling mismatch (`integrationID`,
+not `integrationId`); corrected and passed. The first reset ask fixture used a
+conversation id with an underscore that is excluded by the existing tool contract;
+a valid id made the case pass. A stand-in provider connection remained open during
+test cleanup once; closing that stand-in's own connections fixed it, and the complete
+rerun passed 18/18 in 10.7 seconds. No real provider calls were made.
+
+Cumulative size (same measure as first slice): 151,146 characters in new Rust
+modules plus 21,012 added characters in existing Rust files (172,158 total,
+0.25× the 687,546-character TypeScript usage directory). The count includes the
+adapter and work-ask hooks, excludes tests and the unchanged bundled data.
+
 ## Remaining implementation gaps
 
-- Direct provider limits: Claude's direct usage source and extra usage/reset grants, Grok, Cursor, Antigravity, engine credential services, OpenCode Go, peer account merge/refresh and read hold/backoff parity.
-- Spending grants/credits through the provider, durable confirmation and idempotency journal, Always Allow, use_limit_reset, and spendReset asks.
+- Direct provider limits: Claude native readings and engine credential readers have local fixtures. Claude Linux reset grants, standalone Grok, Cursor, Antigravity, full engine-reader edge cases, and peer account merge/refresh and read hold/backoff parity remain open.
+- Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
 - Reading preservation across TS-to-Rust upgrade, multi-computer account identity and notice forwarder election, all card/rail/detail presentation and notice visibility cases.
 - Native provider histories and engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange and lineage, model naming and full summary readiness. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
@@ -76,13 +132,13 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 
 ### `box/test/usage/engine-limits.test.ts`
 
-- L50: each sign-in in Settings › Accounts is a row of its own, read with that sign-in — open.
+- L50: each sign-in in Settings › Accounts is a row of its own, read with that sign-in — partial — engine credential plan scenario (individual integration rows; full added-account cases open).
 - L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — open.
 - L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — open.
 - L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — open.
-- L152: ChatGPT's credits and reset credits, read with the engine's sign-in — open.
+- L152: ChatGPT's credits and reset credits, read with the engine's sign-in — partial — engine credential plan scenario (credits and zero reset inventory).
 - L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — open.
-- L173: SuperGrok's weekly pool, as the Grok CLI reads it — open.
+- L173: SuperGrok's weekly pool, as the Grok CLI reads it — partial — engine credential plan scenario (xAI weekly reading, not the standalone CLI).
 - L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — open.
 - L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — open.
 - L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — open.
@@ -95,7 +151,7 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 
 ### `box/test/usage/insights-checkpoints.test.ts`
 
-- L11: Insights checkpoints local history and counts only changed transcripts after restart — open — related portable checkpoint scenario above; this exact case not yet ported.
+- L11: Insights checkpoints local history and counts only changed transcripts after restart — partial — startup/file-change portable index scenario; native checkpoints and restart case open.
 - L41: Insights adds engine updates without replaying the older calls in the same database — open.
 - L74: learning the box's peer name leaves its unchanged local history checkpoint in place — open — related portable checkpoint scenario above; this exact case not yet ported.
 - L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — open.
@@ -193,12 +249,12 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 
 ### `box/test/usage/limits-resets.test.ts`
 
-- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — open.
+- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — partial — local Codex reset replay conformance; additional exact TS cases open.
 - L265: the box stops after the spend is written down and before its request goes: started again, the same confirmation goes as the same request, and one reset is spent — open.
-- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — open.
+- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — partial — Codex fixture reports unknown, resident restarts, then maker replies already redeemed under the same request.
 - L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — open.
 - L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
-- L358: an account with no resets left, or none at all, is refused before anything is offered — open.
+- L358: an account with no resets left, or none at all, is refused before anything is offered — partial — missing and unknown account refusal conformance; zero-inventory test remains open.
 - L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — open.
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — open.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — open.
@@ -207,7 +263,7 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 - L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
 - L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — open.
 - L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — open.
-- L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — open.
+- L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — partial — stale Codex offer refused and separate local Always Allow on/off case.
 - L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — open.
 - L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — open.
 - L776: a reset still open, asked again while its maker holds requests off: refused for now, and still open, never 'nothing was used' — open.
@@ -215,7 +271,7 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 - L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — open.
 - L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — open.
 - L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — open.
-- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — open.
+- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — partial — local off decision rejects an unasked confirmation; peer behavior open.
 - L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — open.
 - L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — open.
 - L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — open.
@@ -284,10 +340,10 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 
 ### `box/test/usage/native-usage.test.ts`
 
-- L44: each Codex account's plan is what Codex itself says in that account's own folder: windows, plan, credits and resets — open.
+- L44: each Codex account's plan is what Codex itself says in that account's own folder: windows, plan, credits and resets — partial — Codex native refresh and reset inventory scenarios; added slot and Spark exact case open.
 - L71: a Codex account signed out in its folder shows nothing to read, and Codex isn't started for it — open.
 - L81: Codex publishes its limits immediately after sign-in and reports the first later threshold crossing — open.
-- L127: a Codex reset credit is spent through Codex: the soonest to expire, once, as the journal's request, even confirmed twice — open.
+- L127: a Codex reset credit is spent through Codex: the soonest to expire, once, as the journal's request, even confirmed twice — covered by the local Codex reset replay scenario (including earliest expiry and duplicate confirmation).
 - L152: Grok's plan is what Grok itself says in the account's folder, signing in with the sign-in it keeps there — open.
 
 ### `box/test/usage/service.test.ts`
@@ -298,7 +354,7 @@ new Rust usage/OS/adapter modules 89,206 plus 5,317 added characters in existing
 - L267: a provider removed from the admitted accounts during a round is not read — open.
 - L285: a Codex login stored only in Keychain is read with the exact account for its home — open.
 - L302: Codex auto storage joins pending keyring lookups and prefers the keyring credential — open.
-- L326: a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself — open.
+- L326: a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself — partial — Codex reset replay scenario refuses changed sign-in; full maker/file divergence scenario open.
 
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
