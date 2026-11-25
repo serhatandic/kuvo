@@ -135,6 +135,37 @@ pub fn installed_bridge(home: &Home, profile: &Path) -> Option<BridgeAdmission> 
     })
 }
 
+/// The retained manual engine copies have their own lifetime, including on a
+/// machine that never checks a feed and a Mac whose Helper serves it.
+pub fn sweep_backups(home: Home, own_mac: bool) -> JoinHandle<()> {
+    let delay = if own_mac || is_scratch(&home).unwrap_or(false) {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(60)
+    };
+    let every = if own_mac {
+        Duration::from_secs(30 * 60)
+    } else {
+        CHECK_POLL
+    };
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval_at(Instant::now() + delay, every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticks.tick().await;
+            let home = home.clone();
+            if let Err(error) =
+                tokio::task::spawn_blocking(move || fleet::prune_engine_backups(&home))
+                    .await
+                    .map_err(io::Error::other)
+                    .and_then(|result| result)
+            {
+                eprintln!("Removing expired engine backup copies: {error}");
+            }
+        }
+    })
+}
+
 pub fn start(
     home: Home,
     profile: &Path,

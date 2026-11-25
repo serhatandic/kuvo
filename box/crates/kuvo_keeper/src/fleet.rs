@@ -5,7 +5,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::LazyLock,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use kuvo_store::{files, home::Home};
@@ -593,6 +593,42 @@ impl HeldPack {
         self.file.read_exact(&mut bytes)?;
         Ok(Some(bytes))
     }
+}
+
+/// The old updater kept a manual engine-data copy for thirty days. These
+/// are not rollback or release directories and are never used to launch.
+pub fn prune_engine_backups(home: &Home) -> io::Result<()> {
+    const RETIRED: &str = ".retired-engine-backup-";
+    const KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+    let folder = home.updates().join("backups");
+    let actual = match folder.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if actual != home.root().canonicalize()?.join("updates/backups") {
+        return Ok(());
+    }
+    let _lock = kuvo_store::locks::try_file_lock(&home.run().join(".engine-backups.lock"))?;
+    let now = SystemTime::now();
+    let entries = fs::read_dir(&folder)?.collect::<io::Result<Vec<_>>>()?;
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with(RETIRED) && entry.file_type()?.is_dir() {
+            files::remove_tree_synced(&path)?;
+            continue;
+        }
+        let modified = fs::symlink_metadata(&path)?.modified()?;
+        if now.duration_since(modified).is_ok_and(|age| age > KEEP) {
+            let retired = tempfile::Builder::new()
+                .prefix(RETIRED)
+                .tempdir_in(&folder)?
+                .keep();
+            files::replace_synced(&path, &retired.join("backup"))?;
+            files::remove_tree_synced(&retired)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn stopped(home: &Home) -> bool {
