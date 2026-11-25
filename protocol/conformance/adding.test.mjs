@@ -142,9 +142,10 @@ test("ordinary installer and SSH enrollment leave a used independent setup intac
   const ask = issuer.connect(await issuer.start().ready());
   const original = await ask("GET", "kuvo/setup");
   assert.notEqual(original.json.setup, own.json.setup);
-  await until(() => leases.leaseFor(original.json.setup), "Studio did not claim its lease.");
+  // The lease is claimed on demand: issuing the code starts it.
   const invite = await ask("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "app" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(original.json.setup), "Studio did not claim its lease.");
 
   const ts = boxBinary().typescript;
   const result = await independent.command(ts ? ["join"] : ["install", "--join"], invite.json.code + "\n");
@@ -480,9 +481,9 @@ for (const confirmed of [false, true]) {
     }
     const ask = main.connect(await main.start().ready());
     const original = (await ask("GET", "kuvo/setup")).json;
-    await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
     const invite = await ask("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
     const ticket = JSON.parse(Buffer.from(invite.json.code.split(".")[1], "base64url"));
     const id = createHash("sha256").update(ticket.token).digest("base64url");
     const issuer = Buffer.from(ticket.address, "base64url");
@@ -584,7 +585,6 @@ test("a new main can retire a provisional installer computer from its replicated
   const runningIssuer = issuer.start();
   const ask = issuer.connect(await runningIssuer.ready());
   const view = (await ask("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(view.setup), "The issuer did not acquire the initial lease.");
   const headers = { "x-kuvo-from": "mac" };
   const desktop = Buffer.alloc(32, 74).toString("base64url");
   const paired = await ask("POST", "kuvo/devices/pair", { key: desktop, kind: "desktop", name: "Retired desktop" },
@@ -598,7 +598,9 @@ test("a new main can retire a provisional installer computer from its replicated
     assert.equal(reply.status, 201, reply.text);
     return reply.json.code;
   };
-  const joined = await successor.join(await issue());
+  const first = await issue();
+  await until(() => leases.leaseFor(view.setup), "The issuer did not acquire the initial lease.");
+  const joined = await successor.join(first);
   assert.equal(joined.code, 0, joined.log);
   const runningSuccessor = successor.start();
   const receive = successor.connect(await runningSuccessor.ready());

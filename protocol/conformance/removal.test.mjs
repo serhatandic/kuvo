@@ -48,10 +48,10 @@ test("an offline wipe stays pending across a restart until a lost disk is record
   const running = studio.start();
   const primary = studio.connect(await running.ready());
   const setup = (await primary("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
   for (const member of [lab, workshop]) {
     const offer = await primary("POST", "kuvo/computers/add/code", {}, fromApp);
     assert.equal(offer.status, 201, offer.text);
+    await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
     const joined = await member.join(offer.json.code);
     assert.equal(joined.code, 0, joined.log);
   }
@@ -113,9 +113,9 @@ async function unixMemberWipe(t, { makesBackup = false, handover = false } = {})
   const lab = await computer("Lab", undefined, undefined, { canonical: true });
   let primary = studio.connect(await studio.start().ready());
   const accepted = (await primary("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(accepted.setup), "Studio did not obtain the relay lease.");
   const offer = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(offer.status, 201, offer.text);
+  await until(() => leases.leaseFor(accepted.setup), "Studio did not obtain the relay lease.");
   const joined = await lab.join(offer.json.code);
   assert.equal(joined.code, 0, joined.log);
   let observer, workshop;
@@ -256,9 +256,9 @@ async function cancelHeldWipe(t, { relayBackup = false } = {}) {
   const ask = studio.connect(await studio.start().ready());
   const accepted = (await ask("GET", "kuvo/setup")).json;
   const setup = accepted.setup;
-  await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
   const offer = await ask("POST", "kuvo/computers/add/code", {}, fromApp);
   assert.equal(offer.status, 201, offer.text);
+  await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
   const joined = await lab.join(offer.json.code);
   assert.equal(joined.code, 0, joined.log);
   const read = box => readJSON(path.join(box.home, "run", "link.json"));
@@ -354,9 +354,9 @@ test("a live Unix member uninstalls after its main revokes the local desktop", {
   const lab = await computer("Lab");
   const main = studio.connect(await studio.start().ready());
   const setup = (await main("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(setup.setup), "Studio did not acquire the relay lease.");
   const offer = await main("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(offer.status, 201, offer.text);
+  await until(() => leases.leaseFor(setup.setup), "Studio did not acquire the relay lease.");
   const joined = await lab.join(offer.json.code);
   assert.equal(joined.code, 0, joined.log);
   const live = lab.start();
@@ -485,9 +485,9 @@ test("local uninstall refuses a running main computer before clearing its identi
   const active = main.start();
   const ask = main.connect(await active.ready());
   const original = (await ask("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
   const invitation = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(invitation.status, 201, invitation.text);
+  await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
   const enrolled = await member.join(invitation.json.code);
   assert.equal(enrolled.code, 0, enrolled.log);
   const other = member.connect(await member.start().ready());

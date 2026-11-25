@@ -550,7 +550,7 @@ exec ${quote(process.execPath)} ${quote(fixture)} "$@"
 }
 
 async function addBench(t, options) {
-  const { computer, leases, relay } = await bench(t, options);
+  const { computer, relay } = await bench(t, options);
   const implementation = boxBinary();
   let fake, remote, account, releaseMarker;
   const main = await computer("Studio", implementation, folder => {
@@ -565,8 +565,6 @@ async function addBench(t, options) {
     return { KUVO_TEST_SSH: program, FAKE_SSH: fake, FAKE_SSH_HOME: remote };
   });
   const ask = main.connect(await main.start().ready());
-  const setup = (await ask("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "Studio did not claim a lease.");
   const headers = { "x-kuvo-from": "mac" };
   const page = async () => {
     const answer = await ask("GET", "kuvo/computers/add");
