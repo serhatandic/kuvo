@@ -465,7 +465,7 @@ impl Work {
                     format!("To answer, use send_message to {from}.")
                 };
                 let letter = format!("[Message from {sender} · {from}] ({hint})\n\n{words}");
-                let parts = json!({ "kuvo": { "parts": { "words": words, "mail": { "name": sender, "session": from, "hint": hint } } } });
+                let parts = kuvo_engine::parts_metadata(&letter);
                 let (Some(id), Ok(mover)) = (
                     self.new_message_id().await,
                     self.list.engine().session_move().await,

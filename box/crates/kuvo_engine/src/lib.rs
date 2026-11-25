@@ -22,6 +22,7 @@ mod naming;
 mod notes;
 mod ownership;
 mod parts;
+pub use parts::parts_metadata;
 mod proxy;
 mod queue;
 mod raw_prompts;

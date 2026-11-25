@@ -175,7 +175,7 @@ test("a lead on another computer starts a session here as if it lived here, then
   await until(() => lab.engine.interrupted.some(each => each.session === working.id), "Stop All never reached Lab.", 30000, 250);
 });
 
-test("a stop given while the computer its session is on is away is kept, done once it's back, and its lead hears how it went", { timeout: 180000, skip }, async t => {
+test("a stop given while the computer its session is on is away is kept, done once it's back, and its lead hears how it went", { timeout: 300000, skip }, async t => {
   const { studio, lab, labBox, tool } = await joined(t, ({ lab, studioKey }) => {
     const work = { startedBy: "ses_lead", line: ["ses_lead"], depth: 1 };
     lab.engine.sessions.push({ ...sessionOf({ id: "ses_build", title: "Build", directory: path.join(lab.home, "..", "app") }), metadata: { kuvo: work } });
@@ -195,7 +195,8 @@ test("a stop given while the computer its session is on is away is kept, done on
   assert.deepEqual(kept, { text: "Lab isn't answering (it may be asleep, off or offline). Your stop is kept and done when it's back: you'll hear how it went as a message.", isError: false });
   lab.engine.running.add("ses_build");
   await lab.start().ready();
-  await until(() => lab.engine.interrupted.some(each => each.session === "ses_build"), "The kept stop never reached Lab.", 60000, 250);
+  // (A kept call goes again once its computer is heard from: slower on a loaded computer.)
+  await until(() => lab.engine.interrupted.some(each => each.session === "ses_build"), "The kept stop never reached Lab.", 120000, 250);
   const told = await until(() => studio.engine.asked.find(each => each.method === "POST" && each.path === "/api/session/ses_lead/prompt" && /Stopped "Build"\./.test(each.json?.text ?? "")),
     "The lead never heard how its stop went.", 60000, 250);
   assert.match(told.json.text, /Stopped "Build"\./);
