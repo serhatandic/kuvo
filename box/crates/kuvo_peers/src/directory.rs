@@ -128,12 +128,100 @@ impl Roster {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnnouncedAgent {
     pub session: String,
     pub name: String,
     pub kind: AgentKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// A bot's look, as its computer has it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// A bot's job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marketplace_agent: Option<String>,
+}
+
+/// A bot's look: its colour, shape and face, each one of the words a bot can have.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Look {
+    pub color: String,
+    pub shape: String,
+    pub face: String,
+}
+
+const COLORS: &[&str] = &[
+    "mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite",
+];
+const SHAPES: &[&str] = &[
+    "round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome",
+];
+const FACES: &[&str] = &["calm", "happy", "sleepy", "wink", "curious", "bright"];
+
+impl Look {
+    /// A look as it was told: each part one of the words, else the plain one.
+    pub(crate) fn of(given: &serde_json::Value) -> Option<Self> {
+        let given = given.as_object()?;
+        let part = |name: &str, words: &[&str], plain: &str| {
+            given
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|word| words.contains(word))
+                .unwrap_or(plain)
+                .to_owned()
+        };
+        Some(Self {
+            color: part("color", COLORS, "graphite"),
+            shape: part("shape", SHAPES, "round"),
+            face: part("face", FACES, "calm"),
+        })
+    }
+}
+
+/// Text told of an agent, kept up to `most` characters; none when it's empty or not text.
+fn kept_text(given: Option<serde_json::Value>, most: usize) -> Option<serde_json::Value> {
+    let text = given?.as_str()?.chars().take(most).collect::<String>();
+    (!text.is_empty()).then(|| text.into())
+}
+
+/// A told agent's facts beyond its conversation, name and kind, kept as a box keeps them.
+fn keep_agent_facts(fields: &mut serde_json::Map<String, serde_json::Value>) {
+    let bot = fields.get("kind").and_then(serde_json::Value::as_str) == Some("bot");
+    let look = fields
+        .remove("look")
+        .filter(|_| bot)
+        .and_then(|look| Look::of(&look));
+    let agent = fields
+        .remove("marketplaceAgent")
+        .filter(|_| bot)
+        .filter(|agent| {
+            agent.as_str().is_some_and(|agent| {
+                let mut bytes = agent.bytes();
+                agent.len() <= 63
+                    && bytes
+                        .next()
+                        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+        });
+    let texts = [("project", 200), ("about", 500), ("machine", 200)]
+        .map(|(name, most)| (name, kept_text(fields.remove(name), most)));
+    let kept = [
+        ("look", look.map(|look| serde_json::json!(look))),
+        ("marketplaceAgent", agent),
+    ];
+    for (name, value) in kept.into_iter().chain(texts) {
+        if let Some(value) = value {
+            fields.insert(name.into(), value);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -471,6 +559,10 @@ pub struct Announcement {
     pub kind: Option<ComputerKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moved: Vec<MoveHint>,
+    /// Where a bot deleted there ends up: the Finder's Trash (`trash`) or Kuvo Code's own trash
+    /// folder (`kuvo`); none from a computer before it said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -547,6 +639,14 @@ impl Announcement {
             {
                 fields.remove("id");
             }
+            keep_agent_facts(fields);
+        }
+        // Where a bot deleted there ends up, as it said.
+        if !matches!(
+            input.get("trash").and_then(serde_json::Value::as_str),
+            Some("trash" | "kuvo")
+        ) {
+            input.remove("trash");
         }
         let features = input.remove("features").and_then(|value| {
             let mut names: Vec<_> = value
@@ -738,5 +838,57 @@ fn named(
         name: peer.map_or_else(|| text.clone(), |peer| peer.name.clone()),
         local: false,
         reachable: peer.is_some() && !reach.peer_is_away(&text, heard, now),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_told_agent_keeps_a_bots_look_job_and_where_its_deleted_bots_go() {
+        let peer = Member {
+            key: [7; 32],
+            address: None,
+            name: "Studio".into(),
+            kind: ComputerKind::Machine,
+        };
+        let told = Announcement::received(
+            json!({ "at": 5, "trash": "trash", "list": [
+                { "session": "ses_far1", "name": "Far", "kind": "bot", "id": "bot_far1",
+                  "look": { "color": "sky", "shape": "star", "face": "wink" }, "about": "x".repeat(600),
+                  "marketplaceAgent": "news-reader", "project": "" },
+                { "session": "ses_plans", "name": "Plans", "kind": "session", "look": { "color": "sky" },
+                  "marketplaceAgent": "news-reader", "project": "Trips" },
+            ] }),
+            &peer,
+            9,
+        )
+        .expect("taken");
+        assert_eq!(told.trash.as_deref(), Some("trash"));
+        let [far, plans] = &told.list[..] else {
+            panic!("two agents: {:?}", told.list);
+        };
+        // (A part that isn't one of the words is the plain one's.)
+        assert_eq!(
+            far.look,
+            Some(Look {
+                color: "sky".into(),
+                shape: "round".into(),
+                face: "wink".into()
+            })
+        );
+        assert_eq!(far.about.as_ref().map(|about| about.len()), Some(500));
+        assert_eq!(far.marketplace_agent.as_deref(), Some("news-reader"));
+        assert_eq!(far.project, None);
+        // (A look and a marketplace agent are a bot's alone.)
+        assert_eq!(plans.look, None);
+        assert_eq!(plans.marketplace_agent, None);
+        assert_eq!(plans.project.as_deref(), Some("Trips"));
+        let unsaid =
+            Announcement::received(json!({ "at": 5, "trash": "bin", "list": [] }), &peer, 9);
+        assert_eq!(unsaid.expect("taken").trash, None);
     }
 }

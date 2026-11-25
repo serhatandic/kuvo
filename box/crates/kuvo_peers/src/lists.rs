@@ -30,6 +30,18 @@ pub type Ask = GetKuvoSessionsListStatus200NeedsYouItemAsks;
 pub type Queue = GetKuvoSessionsQueuesEventsStatus200QueuesItem;
 type NeedsYou = GetKuvoSessionsListStatus200NeedsYouItem;
 
+/// One of your other computers' bots as it last told this box (`View::bots_told`).
+pub struct BotsTold<'a> {
+    pub computer: &'a crate::directory::Member,
+    /// When it was last heard from.
+    pub heard: Millis,
+    pub standing: Standing,
+    /// Where a bot deleted there ends up, as it said (`trash` or `kuvo`).
+    pub trash: Option<&'a str>,
+    pub bots: Vec<&'a crate::directory::AnnouncedAgent>,
+    pub activity: Option<&'a BTreeMap<String, BotActivity>>,
+}
+
 pub const FEATURE: &str = "line.setup-lists";
 pub const BOT_FEATURE: &str = "bots.peer-activity";
 pub const QUEUE_FEATURE: &str = "work-queue.elsewhere";
@@ -102,6 +114,12 @@ pub struct BotActivity {
     pub paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wakes: Option<Number>,
+    /// Its look and job, for what this computer tells the others its agents are (`agents`), not
+    /// sent with its lists.
+    #[serde(default, skip_serializing)]
+    pub look: Option<serde_json::Value>,
+    #[serde(default, skip_serializing)]
+    pub job: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -474,6 +492,44 @@ impl View {
                 .get(key)
                 .is_some_and(|copy| copy.value.bots.is_some())
         })
+    }
+
+    /// What each of your other computers last told this box of its bots, by computer as this box
+    /// knows them: each named, with what it was doing as its lists said it (`activity`). One with
+    /// no name isn't there: nothing to show it by.
+    pub fn bots_told(&self, now: Millis) -> Vec<BotsTold<'_>> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|member| {
+                let key = kuvo_wire::keys::encode(&member.key);
+                let told = self.announced.get(&key)?;
+                let seen = told.heard.unwrap_or(told.at);
+                let quiet = self.reach.peer_is_away(&key, told.heard, now);
+                let standing = self
+                    .reach
+                    .standing_of(&key, quiet, Some(seen), told.release(), now);
+                Some(BotsTold {
+                    computer: member,
+                    heard: seen,
+                    standing,
+                    trash: told.trash.as_deref(),
+                    bots: told
+                        .list
+                        .iter()
+                        .filter(|agent| {
+                            agent.kind == crate::directory::AgentKind::Bot
+                                && agent.id.is_some()
+                                && !agent.name.is_empty()
+                        })
+                        .collect(),
+                    activity: self
+                        .lists
+                        .get(&member.key)
+                        .and_then(|copy| copy.value.bots.as_ref()),
+                })
+            })
+            .collect()
     }
 
     pub fn sessions(&self, now: Millis) -> routes::get_kuvo_setup_sessions_events::Status200 {
