@@ -407,7 +407,15 @@ impl Link {
             }
             let given = history
                 .and_then(|h| h["retiredNames"][key].as_str())
-                .or_else(|| membership.extra["removals"][key]["peer"]["name"].as_str())
+                .or_else(|| {
+                    membership
+                        .extra
+                        .get("removals")
+                        .and_then(|removals| removals.get(key))
+                        .and_then(|record| record.get("peer"))
+                        .and_then(|peer| peer.get("name"))
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("")
                 .trim();
             let name = if given.is_empty() {
