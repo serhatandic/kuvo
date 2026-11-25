@@ -180,7 +180,7 @@ impl Owner {
             let _ = offer.reply.send(Ok(Outcome::Older));
             return Ok(());
         }
-        let wait = view.relay_connected && status != PeerState::Away;
+        let wait = view.relay_connected && status == PeerState::Online;
         let keep = offer.keep && !offer.request.tool.waits();
         if !wait && !keep {
             let _ = offer
@@ -416,10 +416,12 @@ fn unavailable(online: bool, kept: bool) -> Outcome {
     }
 }
 
-// A computer work isn't admitted with now counts as away: what's for it is kept until it is.
+// A release handoff keeps calls without sending the normal reach probe.
 fn admitted_state(view: &View, key: ComputerKey) -> PeerState {
     match peer_state(view, key) {
-        PeerState::Online if !view.work_admitted(&encode(&key)) => PeerState::Away,
+        PeerState::Online | PeerState::Away if !view.work_admitted(&encode(&key)) => {
+            PeerState::Held
+        }
         state => state,
     }
 }
