@@ -556,9 +556,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **start_session, list_models, list_projects and stop_work from another computer**: these go under
-  `work.elsewhere.start`, which isn't advertised yet. A lead's homes come from a start's call; the
-  case seeds `run/work/homes.json` meanwhile. 5.1f-2.
+- **A lead's homes before any start**: the first case seeds `run/work/homes.json`, as a start
+  from there would have noted it (5.1f-2 notes them).
 - **Answers to this computer's own calls** (`RemoteWork::deliver`): it makes none until its leads
   have the tools, 5.1e.
 - **The coding agents' sessions**: only the engine's sessions are listed and reached from another
@@ -601,3 +600,48 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **An allow given in a mode that lets it through**: no case gives a session such a mode; the
   checks are judged by the peers' `Permission::refusal`, which has its own tests. Open, with 5.1e's
   local answer_ask cases.
+
+## 5.1f-2 — starting work here for a lead on another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_engine::start_session::create_as` with a `RemoteLead` and `StartSteps`; `Engine::start_for_lead`. It's the one start: the client's start is `create_as` with neither. A remote lead brings: its approval as the ceiling (kept no higher than Full Access confirmed here), its Don't Allows kept with the session (`kuvo.held`), the `call` and `lead` marks, its line, its bot's `by` and `depth`, the task's letter from it "on" its computer with its bot's note, and why it got less (`held`). | `letters/start.ts` `startSessionHere`'s remote branches, `sessionNote`, `heldThere`, `composeLetter` |
+| `pick_model`, `lead_model`: the model it names, with its effort, from the models every picker offers; else its own where it runs here, else this computer's default, saying why; none at all is refused | `work/models.ts` `pickModel`; `startSessionHere`'s remote model choice |
+| `work::starts`: `take_start` (the journal at `run/calls/<id>.json`, the TypeScript box's file, finished from the step it got to when its call comes again), `start_call` (`as.start` checked whole, its line ending with its lead), `started_words`, `note_line_homes` | `letters/start-call.ts` `takeStart`, `finishStart`, `startAsOfMail`, `noteLineHomes`; `start.ts` `startedWords` |
+| `Work::list_models_tool` (from `Engine::offered_models`, the picker's own list), `list_projects_tool`, `stop_line_work`; the switch for work from other computers checked first | `work/tools.ts` `listModelsTool`, `listProjectsTool`; `start-call.ts` `readHere`, `stopLineWork`; `calls.ts` `isOpenTool` |
+| `work.elsewhere.start` advertised with `work.elsewhere` | `START_FEATURE` |
+
+### Proof
+
+- `work-elsewhere.test.mjs`, a new case. A TypeScript lead on Studio:
+  - lists Lab's projects;
+  - starts a session there in one of them, which is marked with its call, its lead and its line, and gets its task "from Lead on Studio";
+  - reads Lab's models;
+  - stops the session from Studio;
+  - has a model Lab has no account for refused with nothing made;
+  - starts one on a model it names;
+  - as a bot's conversation, runs Stop All on Studio, which reaches Lab and stops the session there
+    that's at work (`stop_work`).
+
+  It passes with Lab as either box on macOS, and as the Rust box on Linux (WSL); skipped on native
+  Windows until the Rust box has a lead (5.1e). `work` 15/15 and `bots` 40/40 on all three.
+- The client's own start stays as it was: `engine-sessions`, `engine-worktree` and `agent-sessions`
+  against both boxes.
+
+### Gaps and owners
+
+- **A bot's work limits and the start rate** (`heldByLimits`, `allowed`): neither box's Rust start
+  counts them yet. 5.1e, with the local start_session that needs them most.
+- **A Work Queue item linked at the start** (`given.item`, `linkStartedItem`): 5.2's hook, called
+  from the shared start in 5.1e.
+- **A start cut short, finished without its call coming again** (`resumeStarts`'s round): a start
+  is finished when its call is retried. The worktree a start cut short made isn't reused.
+- **What's done to a session as it's marked** (`markMade`: its project's other folders told to it,
+  Autopilot, Full Access outside the sandbox): as the client's start does it now. Autopilot 5.3,
+  the sandbox 6.1.
+- **The reason a lead's model can't run here**: retiring or no account, as the picker's list says.
+  TS also tells a sign-in, a key or an agent missing. 4.x, with the agents' account states.
+- **Stop All reaching your other computers** (`stopBotWorkElsewhere`, the sending side): 5.1e,
+  with this computer's own calls.

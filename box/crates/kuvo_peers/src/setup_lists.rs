@@ -245,7 +245,7 @@ impl View {
             features.push("box.backups.relay");
         }
         if self.work_calls {
-            features.push(crate::calls::FEATURE);
+            features.extend([crate::calls::FEATURE, "work.elsewhere.start"]);
         }
         if self.transfers {
             features.extend([

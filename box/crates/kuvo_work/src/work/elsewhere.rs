@@ -77,11 +77,30 @@ impl RemoteWork for Elsewhere {
             let tool = call.request.tool;
             if !matches!(
                 tool,
-                Tool::ListSessions | Tool::StopSession | Tool::CompactSession | Tool::AnswerAsk
+                Tool::ListSessions
+                    | Tool::StopSession
+                    | Tool::CompactSession
+                    | Tool::AnswerAsk
+                    | Tool::ListProjects
+                    | Tool::ListModels
+                    | Tool::StartSession
+                    | Tool::StopWork
             ) {
                 return Ok(Admission::Reject(
                     "That isn't something another computer can do here.".into(),
                 ));
+            }
+            // Work started here from your other computers only while you let them.
+            let approvals = crate::approval::Approvals::new(&work.home, work.settings.is_mac());
+            let open = matches!(
+                tool,
+                Tool::StartSession | Tool::ListModels | Tool::ListProjects
+            );
+            if open && !approvals.other_computers_allowed() {
+                let here = work.own_name();
+                return Ok(Admission::Reject(format!(
+                    "{here} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on {here}."
+                )));
             }
             let Some(engine) = work.list.engine().running_bot_engine().await else {
                 return Ok(Admission::Retry("The engine isn't running.".into()));
@@ -105,13 +124,19 @@ impl RemoteWork for Elsewhere {
             if tool == Tool::AnswerAsk {
                 return Ok(work.admit_answer(&engine, call).await);
             }
+            if tool == Tool::StartSession && !super::starts::start_call(call) {
+                return Ok(Admission::Reject("That isn't a call.".into()));
+            }
             Ok(Admission::Ready)
         })
     }
 
-    fn apply<'a>(&'a self, _: ComputerKey, call: &'a MailedCall) -> WorkFuture<'a, Answer> {
+    fn apply<'a>(&'a self, sender: ComputerKey, call: &'a MailedCall) -> WorkFuture<'a, Answer> {
         Box::pin(async move {
             let work = self.work()?;
+            if call.request.tool == Tool::StartSession {
+                return work.take_start(sender, call).await;
+            }
             let engine = work.list.engine().running_bot_engine().await;
             let engine = engine.ok_or_else(|| not_now("The engine isn't running."))?;
             let (lead, args) = (call.from.as_str(), &call.request.args);
@@ -122,6 +147,20 @@ impl RemoteWork for Elsewhere {
                     return Ok(Answer::rows(rows));
                 }
                 Tool::StopSession => work.stop_session_tool(&engine, lead, args).await,
+                Tool::ListProjects => work.list_projects_tool(&work.own_name()).await,
+                Tool::ListModels => work.list_models_tool(&work.own_name()).await,
+                Tool::StopWork => {
+                    // (On this computer's clock: the call was sealed as it went, on the other's.)
+                    let before = args.get("before").and_then(Value::as_f64);
+                    let skew = jiff::Timestamp::now().as_millisecond() - call.at;
+                    let before = before.unwrap_or(call.made as f64) + skew as f64;
+                    work.stop_line_work(&engine, lead, before).await;
+                    // (Nothing's said back: it would wake the bot.)
+                    return Ok(Answer {
+                        text: String::new(),
+                        refused: false,
+                    });
+                }
                 Tool::CompactSession => work.compact_session_tool(&engine, lead, args).await,
                 Tool::AnswerAsk => {
                     let as_lead = &call.request.lead;
@@ -160,6 +199,17 @@ impl RemoteWork for Elsewhere {
 }
 
 impl Work {
+    /// This computer, by its name, as the other computers know it.
+    pub fn own_name(&self) -> String {
+        let name = self.peers.view().roster.name.clone();
+        let name = kuvo_peers::calls::plain(&name, 100);
+        match name.as_str() {
+            "" if self.settings.is_mac() => "the Mac".into(),
+            "" => "a machine".into(),
+            _ => name,
+        }
+    }
+
     /// What an answer from a lead elsewhere may give: refused here as its own tool would refuse
     /// it, or, for an allow, what the peers judge it by (the lead's own rules where it lives and
     /// this computer's, each on its own).
