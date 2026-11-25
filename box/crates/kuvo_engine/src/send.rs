@@ -403,7 +403,7 @@ async fn deliver(
             .map_err(disk_failure)?
             .contains(&arrival.id)
     {
-        Some(delivery_target(engine, session, arrival.form).await?)
+        delivery_target(engine, list, session, arrival.form).await?
     } else {
         None
     };
@@ -428,22 +428,24 @@ async fn deliver(
     let mut delivered = false;
     let mut answer = json!({});
     if !admitted {
-        let lease = match lease {
-            Some(lease) => lease,
-            None => delivery_target(engine, session, request.form).await?,
+        let place = match lease {
+            Some(lease) => Some(lease),
+            None => delivery_target(engine, list, session, request.form).await?,
         };
         if interrupted {
-            delivered = queue::reached(engine, lease.target(), session, id)
-                .await
-                .map_err(|_| engine_busy())?;
+            if let Some(place) = &place {
+                delivered = queue::reached(engine, place.target(), session, id)
+                    .await
+                    .map_err(|_| engine_busy())?;
+            }
         } else {
             disk::durable(path.clone(), receipt.clone())
                 .await
                 .map_err(disk_failure)?;
         }
         if !delivered {
-            let inbox = if request.before.is_some() {
-                queue::inbox(engine, lease.target(), session)
+            let inbox = if let Some(place) = place.as_ref().filter(|_| request.before.is_some()) {
+                queue::inbox(engine, place.target(), session)
                     .await
                     .unwrap_or_default()
             } else {
@@ -456,17 +458,23 @@ async fn deliver(
                     &request.prompt,
                     request.words.as_deref(),
                     request.from.clone(),
-                    request.before.as_deref(),
-                    &inbox,
+                    request
+                        .before
+                        .as_deref()
+                        .map(|anchor| (anchor, inbox.as_slice())),
+                    place
+                        .as_ref()
+                        .is_none_or(|place| matches!(place, queue::Place::Engine(_))),
                 )
                 .await
                 .map_err(|error| waiting_failure(request.form, error))?;
             if !admitted {
+                let place = place.as_ref().ok_or_else(engine_busy)?;
                 let mut prompt = request.prompt.clone();
                 if arriving {
                     prompt.delivery = Delivery::Queue;
                 }
-                answer = post(engine, lease.target(), session, &prompt).await?;
+                answer = post(engine, place.target(), session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
                 if request.immediate
@@ -477,11 +485,14 @@ async fn deliver(
                         .map_err(disk_failure)?
                         .arriving(id)
                 {
-                    let _ = queue::advance(engine, lease.target(), session, id, queue::Advance::Now).await;
+                    let _ =
+                        queue::advance(engine, place.target(), session, id, queue::Advance::Now)
+                            .await;
                 }
             }
         }
-        if delivered
+        if let Some(place) = &place
+            && delivered
             && (arriving
                 || engine
                     .queues
@@ -490,7 +501,7 @@ async fn deliver(
                     .map_err(disk_failure)?
                     .arriving(id))
         {
-            queue::hold_arrival(engine, lease.target(), session, id)
+            queue::hold_arrival(engine, place.target(), session, id)
                 .await
                 .map_err(|_| engine_busy())?;
         }
@@ -524,13 +535,25 @@ async fn deliver(
 
 async fn delivery_target(
     engine: &Engine,
+    list: &crate::LocalSessions,
     session: &str,
     form: Form,
-) -> Result<queue::Place, Refusal> {
+) -> Result<Option<queue::Place>, Refusal> {
     if let Some(place) = queue::Place::agents(engine, session).await? {
-        return Ok(place);
+        return Ok(Some(place));
     }
-    let lease = api::start(engine).await?;
+    let lease = match api::start(engine).await {
+        Ok(lease) => lease,
+        Err(_)
+            if crate::release::holding(&engine.home.join("run"))
+                && list
+                    .snapshot_now()
+                    .is_some_and(|snapshot| snapshot.has_local(session)) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     if form == Form::Add {
         queue::check_add_target(engine, queue::Target::Engine(&lease), session).await?;
     } else {
@@ -548,7 +571,7 @@ async fn delivery_target(
             Err(_) => return Err(engine_busy()),
         }
     }
-    Ok(queue::Place::Engine(lease))
+    Ok(Some(queue::Place::Engine(lease)))
 }
 
 async fn apply(

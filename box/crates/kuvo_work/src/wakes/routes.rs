@@ -410,19 +410,7 @@ impl Wakes {
     /// A conversation archived (or brought back) elsewhere: its wake-ups wait while it's archived
     /// and come back with it. A hold of your own stays; a move's becomes archiving's.
     fn hold_archived(&self, session: &str, archived: bool) {
-        if !folder::session_id(session) {
-            return;
-        }
-        let folder = self.roots().sessions.join(session);
-        let file = folder.join("paused");
-        let held = folder::hold(&folder);
-        if archived {
-            if folder.exists() && held.as_deref().is_none_or(|held| held == "moving") {
-                let _ = fs::write(&file, "archived");
-            }
-        } else if matches!(held.as_deref(), Some("archived" | "")) {
-            let _ = fs::remove_file(&file);
-        }
+        folder::hold_archived(&self.roots().sessions, session, archived);
     }
 
     async fn post_cancel(

@@ -7,6 +7,7 @@ mod hand;
 mod importing;
 mod offline;
 mod peer_actions;
+mod review;
 mod session_links;
 mod started;
 mod tools;
@@ -215,6 +216,7 @@ pub(super) fn register(
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
+    pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
 }
 
 impl Drop for Runtime {
@@ -238,6 +240,7 @@ impl Writer {
         let mut upkeep = tokio::time::interval(Duration::from_secs(2));
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
+        let review = Arc::new(self.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -257,7 +260,11 @@ impl Writer {
                 }
             }
         });
-        Runtime { task, edits }
+        Runtime {
+            task,
+            edits,
+            review,
+        }
     }
 
     async fn upkeep(
@@ -763,20 +770,23 @@ impl Writer {
                     if agent {
                         edit::refuse_handing(item)?;
                     }
+                    let far = told::items_elsewhere(
+                        &writer.store, &all, &writer.peers.view(), "all",
+                        &super::sessions::Sessions::default(), &[], now,
+                    ).map_err(storage_refusal)?;
+                    if let Some(other) = far.items.iter().find(|other| other["id"] == item.id) {
+                        let computer = other["computer"]["name"].as_str().unwrap_or_default();
+                        return Err(bad(format!("{display} is on {computer} now (it got there before its hand-off was called off): change it there.")));
+                    }
                     if let Some(source) = item.source() {
-                        let ref_of = |value: &Value| {
-                            writer.refs.issue(value["ref"].as_str().unwrap_or_default())
-                                .map(|issue| issue.key())
-                                .unwrap_or_else(|| format!("{}:{}", value["kind"], value["ref"]).to_lowercase())
-                        };
-                        let source_key = ref_of(source);
-                        if let Some(other) = all.iter().find(|other| other.id != item.id && other.removed.is_none()
-                            && other.source().is_some_and(|other| {
-                                ref_of(other) == source_key || source.get("id").is_some_and(|id| other["id"] == *id)
-                            }))
-                        {
-                            return Err(bad(format!("Another item is {} now, in the queue of {}: one item for each issue, so this one stays deleted.",
-                                source["ref"].as_str().unwrap_or_default(), other.owner)));
+                        let twin = all.iter().find(|other| other.id != item.id && other.removed.is_none()
+                            && other.source().is_some_and(|other| writer.refs.same_source(source, other)))
+                            .map(|other| format!("in the queue of {}", other.owner))
+                            .or_else(|| far.items.iter().find(|other| other["id"] != item.id && writer.refs.same_source(source, &other["source"]))
+                                .map(|other| format!("on {}", other["computer"]["name"].as_str().unwrap_or_default())));
+                        if let Some(where_) = twin {
+                            return Err(bad(format!("Another item is {} now, {where_}: one item for each issue, so this one stays deleted.",
+                                source["ref"].as_str().unwrap_or_default())));
                         }
                     }
                     append_event(saved, json!({"at":now,"by":who,"kind":"restored"}));
@@ -844,30 +854,70 @@ impl Writer {
 
     async fn lock(&self) -> Result<OwnedLock, Refusal> {
         let root = self.store.root.clone();
-        blocking(move || {
-            files::create_private_dirs(&root)?;
-            migration::migrate(&root)?;
-            Ok(store::exclusive(
-                &root.join(".lock"),
-                Duration::from_secs(3),
-            )?)
-        })
-        .await
+        blocking(move || lock_queue(&root)).await
+    }
+
+    fn lock_here(&self) -> Result<OwnedLock, Refusal> {
+        lock_queue(&self.store.root).map_err(storage_refusal)
     }
 
     fn strict_items(&self, now: i64) -> Result<(Vec<String>, Vec<Item>), Refusal> {
         let mut owners = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut repeated = std::collections::HashSet::new();
         for file in queue_files(&self.store.root.join("queues")) {
             if let Some(owner) = file
                 .file_stem()
                 .and_then(|name| name.to_str())
                 .filter(|name| owner_id(name))
             {
-                self.read_owner(owner, now)?;
+                let document = self.read_owner(owner, now)?;
+                for row in &document.items {
+                    if let Some(id) = row["id"].as_str().filter(|id| store::item_id(id))
+                        && row["title"].is_string()
+                        && !seen.insert(id.to_owned())
+                    {
+                        repeated.insert(id.to_owned());
+                    }
+                }
                 owners.push(owner.to_owned());
             }
         }
-        Ok((owners, self.store.items().map_err(storage_refusal)?))
+        let items = self.store.items().map_err(storage_refusal)?;
+        // A handoff can leave the old row behind if the source write was interrupted.
+        // Remove only duplicate rows after all owner files have been validated,
+        // keeping the same winner as ordinary reads, before the next mutation.
+        if !repeated.is_empty() {
+            let winners = items
+                .iter()
+                .filter(|item| repeated.contains(&item.id))
+                .map(|item| (item.id.as_str(), item.owner.as_str()))
+                .collect::<std::collections::HashMap<_, _>>();
+            for owner in &owners {
+                let mut document = self.read_owner(owner, now)?;
+                let before = document.items.len();
+                let mut kept = std::collections::HashSet::new();
+                document.items.retain(|row| {
+                    let Some(id) = row["id"].as_str() else {
+                        return true;
+                    };
+                    !row["title"].is_string()
+                        || winners.get(id).is_none_or(|winner| {
+                            *winner == owner.as_str() && kept.insert(id.to_owned())
+                        })
+                });
+                if document.items.len() != before {
+                    if document.items.is_empty() {
+                        files::remove_file_synced(&document.path)
+                            .map_err(Error::from)
+                            .map_err(storage_refusal)?;
+                    } else {
+                        document.save(&self.store).map_err(storage_refusal)?;
+                    }
+                }
+            }
+        }
+        Ok((owners, items))
     }
 
     fn read_owner(&self, owner: &str, now: i64) -> Result<Document, Refusal> {
@@ -994,6 +1044,15 @@ impl Document {
         let run = store.root.parent().expect("Work Queue under run");
         files::write_atomic_through(&self.path, &bytes, run).map_err(Into::into)
     }
+}
+
+fn lock_queue(root: &Path) -> Result<OwnedLock, Error> {
+    files::create_private_dirs(root)?;
+    migration::migrate(root)?;
+    Ok(store::exclusive(
+        &root.join(".lock"),
+        Duration::from_secs(3),
+    )?)
 }
 
 fn aside(path: &Path, owner: &str, now: i64) -> Refusal {

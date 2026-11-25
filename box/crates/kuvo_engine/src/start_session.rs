@@ -607,7 +607,12 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         };
         let sent = match &agents {
             Some(source) => {
-                let Prompt { id: message, text, metadata, .. } = prompt;
+                let Prompt {
+                    id: message,
+                    text,
+                    metadata,
+                    ..
+                } = prompt;
                 source
                     .prompt(
                         id,
@@ -623,9 +628,33 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                     .await
                     .is_ok()
             }
-            None => send::post(engine, crate::queue::Target::Engine(lease.get().await?), id, &prompt)
-                .await
-                .is_ok(),
+            None => {
+                // A newly made conversation's first prompt observes the same
+                // release hold and writer fence as every later message.
+                let _turn = engine.turn(id).await;
+                match crate::session_move::admit(engine, id, None).await {
+                    Ok(_admitted) => match engine
+                        .queues
+                        .keep(id, &prompt, None, None, None, true)
+                        .await
+                    {
+                        Ok(true) => true,
+                        Ok(false) => send::post(
+                            engine,
+                            crate::queue::Target::Engine(lease.get().await?),
+                            id,
+                            &prompt,
+                        )
+                        .await
+                        .is_ok(),
+                        Err(error) => {
+                            eprintln!("Saving the conversation's first task: {error}");
+                            false
+                        }
+                    },
+                    Err(_) => false,
+                }
+            }
         };
         if !sent {
             return Err(Refusal::json(
@@ -741,7 +770,12 @@ async fn root(engine: &Engine, lease: &mut Engaged<'_>, id: Option<&str>) -> Opt
         let session = match engine.agent_session(&id).await.ok()? {
             Some((_, header)) => serde_json::from_value::<Session>(Value::Object(header)).ok(),
             None => engine
-                .call::<Session>(lease.get().await.ok()?, Method::GET, &sessions::path(&id), None)
+                .call::<Session>(
+                    lease.get().await.ok()?,
+                    Method::GET,
+                    &sessions::path(&id),
+                    None,
+                )
                 .await
                 .ok(),
         };

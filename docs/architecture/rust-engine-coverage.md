@@ -447,6 +447,7 @@ records or runtime endpoint they hold.
 | `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signed shared values and outcomes, and local checkpoint projection |
 | `run/link.seen`, `run/link.version` | 7.3 | Legacy Mac activity and link version markers |
 | `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
+| `run/fleet-engine-hold.json` | 7.2 | Rust release-drain record. The hold survives the keeper verdict and releases saved prompts before clearing; the five-minute deadline and one-minute defer use the fleet timing rules. |
 | `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
 | `run/prompt-receipts`, `run/prompt-receipts/*.json` | Unread by released readers | `rg -n -F prompt-receipts box/src box/crates gpui` finds only the Rust send journal. Released clients read the route, queue and transcript. Scoped and listing receipts use separate records. |
 | `run/queue-removals/spent/*` | Identical | Both boxes now write the same empty marker keyed by session, draft and edit receipt. An earlier queue differential compared empty bytes with Rust's JSON `null`. |

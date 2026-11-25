@@ -67,7 +67,8 @@ routes cover lease renewal, the one-minute cap and malformed requests.
   checks, and applies effects and queue delivery idempotently by ID. It must recheck authority
   during an effect. Phase 3.2 registers the local engine/bridge adapter, conversation reads
   and the open-work/start state machine. Phase 2.4 supplies switched-session and moved lead
-  delivery. The binary advertises `work.elsewhere` only after attachment.
+  delivery. The binary advertises `work.elsewhere` only after attachment. Attached in 5.1f-1:
+  `kuvo_work::work::elsewhere` (see rust-work-coverage.md); starts and answers are 5.1f-1b and 5.1f-2.
 - The peer task retains the TypeScript outbox call and kept work rows formats. It journals call
   results under `run/work/call-results` and accepted answer origins under `run/work/call-answers`.
   Engine effects and answer queue deliveries carry a stable ID across restart. An empty kept

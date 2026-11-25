@@ -330,6 +330,17 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/pty") return send({ data: engine.terminals.has(folderOf(request)) ? [{ id: "pty_here", status: "running" }] : [] });
       // The commands left running in the folder asked about.
       if (route === "GET /api/shell") return send({ data: (engine.shells ?? []).filter(job => path.normalize(job.folder) === path.normalize(folderOf(request))).map(({ folder: _, ...job }) => job) });
+      // One of those commands, read or ended; a session's background isn't ended in one call here.
+      const shell = url.pathname.match(/^\/api\/shell\/([^/]+)$/);
+      if (shell && ["GET", "DELETE"].includes(request.method)) {
+        const job = (engine.shells ?? []).find(each => each.id === decodeURIComponent(shell[1]));
+        if (!job) return send({}, 404);
+        if (request.method === "GET") return send({ data: (({ folder: _, ...shown }) => shown)(job) });
+        engine.shells = engine.shells.filter(each => each !== job);
+        publish({ type: "shell.deleted", location: { directory: job.folder }, data: { id: job.id } });
+        return send({});
+      }
+      if (request.method === "DELETE" && /^\/api\/session\/[^/]+\/background$/.test(url.pathname)) return send({}, 404);
       if (["GET /api/form", "GET /api/permission/request"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") {

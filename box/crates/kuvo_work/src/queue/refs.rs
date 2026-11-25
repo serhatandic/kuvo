@@ -43,6 +43,25 @@ impl References {
         })
     }
 
+    pub fn same_source(&self, a: &Value, b: &Value) -> bool {
+        let key = |source: &Value| {
+            let reference = source["ref"].as_str()?;
+            Some(
+                self.issue(reference)
+                    .map(|issue| issue.key())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}:{reference}",
+                            source["kind"].as_str().unwrap_or_default()
+                        )
+                        .to_lowercase()
+                    }),
+            )
+        };
+        a["id"].as_str().is_some_and(|id| b["id"] == id)
+            || key(a).is_some_and(|name| key(b).as_ref() == Some(&name))
+    }
+
     pub fn parse<'a>(&self, text: &'a str) -> Option<Reference<'a>> {
         let text = text.trim();
         if item_id(text) {

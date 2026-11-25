@@ -146,6 +146,13 @@ pub async fn run(
             Some(kuvo_work::queue::move_transfer(home, setup.handle())),
         )
         .await?;
+    // Work for leads on your other computers: taken once this box's work is there (below).
+    let elsewhere = kuvo_work::work::elsewhere::Elsewhere::new();
+    let work_calls = match peers.attach_work(Arc::new(elsewhere.clone())).await {
+        Ok(calls) => Some(calls),
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => None,
+        Err(error) => return Err(error.into()),
+    };
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
     let vault = kuvo_services::vault::Resident::new(
@@ -394,6 +401,7 @@ pub async fn run(
     );
     work.register(&mut routes);
     let work_watch = work.watch();
+    let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -424,7 +432,13 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
+    let updates = crate::updates::start(
+        update_home,
+        &account,
+        peers.clone(),
+        setup.handle(),
+        engine.clone(),
+    );
     crate::updates::register_check(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
@@ -443,6 +457,7 @@ pub async fn run(
         setup.handle(),
         backup_mail,
         Some(vault.clone()),
+        Some(work_queue.queue_review()),
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     peers.register_moves(&mut routes, engine.clone());
@@ -542,6 +557,7 @@ pub async fn run(
     bots_follow_engine.abort();
     approvals_kept.abort();
     work_watch.abort();
+    work_rows.inspect(tokio::task::JoinHandle::abort);
     if let Some(kept_awake) = kept_awake {
         kept_awake.abort();
     }

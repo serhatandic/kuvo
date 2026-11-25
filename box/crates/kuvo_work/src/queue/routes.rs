@@ -204,6 +204,10 @@ impl Runtime {
         self._writer.edits.clone()
     }
 
+    pub fn queue_review(&self) -> Arc<dyn kuvo_setup::backup::QueueReview> {
+        self._writer.review.clone()
+    }
+
     pub fn peer_reads(&self) -> PeerReads {
         self.reads.clone()
     }
@@ -393,6 +397,7 @@ pub(super) fn storage_refusal(error: Error) -> Refusal {
                 "message": error.to_string(),
             }),
         ),
+        Error::Migration(message) => Refusal::new(StatusCode::BAD_REQUEST, message),
         _ => internal(error),
     }
 }

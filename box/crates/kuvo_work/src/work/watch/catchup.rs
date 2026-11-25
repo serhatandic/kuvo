@@ -28,7 +28,7 @@ const UNREAD_STARTS: u64 = 3;
 // How often answers given late that couldn't be told yet are tried again.
 const LATE_AGAIN: Duration = Duration::from_secs(300);
 
-fn ids_of(active: &Value) -> Vec<String> {
+pub(super) fn ids_of(active: &Value) -> Vec<String> {
     match active {
         Value::Array(ids) => ids
             .iter()
@@ -347,7 +347,7 @@ impl Watcher {
 }
 
 /// A question as its lead is told it: its one field's words, else its title.
-fn question_text(form: &Value) -> String {
+pub(super) fn question_text(form: &Value) -> String {
     let shown = |field: &&Value| {
         field["hidden"] != true && field["when"].as_array().is_none_or(Vec::is_empty)
     };
@@ -374,7 +374,7 @@ fn question_text(form: &Value) -> String {
 
 /// Every session here that's someone's work (started by another conversation), whole: none when a
 /// page can't be read.
-async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
+pub(super) async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
     let mut found = Vec::new();
     let mut query = Some("limit=200&order=desc&parentID=null".to_owned());
     for _ in 0..15 {
@@ -405,7 +405,7 @@ async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
 
 /// What a session (or one of its subagents) asks now: its permissions and questions, and whether
 /// its questions could all be read.
-async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, Vec<Value>, bool) {
+pub(super) async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, Vec<Value>, bool) {
     let mut askers = vec![session.to_owned()];
     let mut at = 0;
     while at < askers.len() && at < 40 && !(at > 0 && askers.len() > 30) {
@@ -434,21 +434,28 @@ async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, Vec<Value>, 
             .call(Method::GET, &format!("{at}/permission"), None, WAIT)
             .await
             .unwrap_or_default();
+        // (Each with who asks it: the session, or a subagent of it.)
+        let asked = |mut each: Value| {
+            each["asker"] = Value::from(asker.as_str());
+            each
+        };
+        let listed = listed.as_array().cloned().unwrap_or_default();
         permissions.extend(
             listed
-                .as_array()
                 .into_iter()
-                .flatten()
                 .filter(|each| each["id"].is_string())
-                .cloned(),
+                .map(asked),
         );
         match engine
             .call(Method::GET, &format!("{at}/form"), None, WAIT)
             .await
         {
-            Ok(Value::Array(forms)) => {
-                questions.extend(forms.into_iter().filter(|each| each["id"].is_string()))
-            }
+            Ok(Value::Array(forms)) => questions.extend(
+                forms
+                    .into_iter()
+                    .filter(|each| each["id"].is_string())
+                    .map(asked),
+            ),
             _ => whole = false,
         }
     }

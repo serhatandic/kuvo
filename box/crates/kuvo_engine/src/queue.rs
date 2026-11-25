@@ -322,12 +322,16 @@ impl QueueStore {
         prompt: &Prompt,
         words: Option<&str>,
         from: Option<String>,
-        before: Option<&str>,
-        inbox: &[Inbox],
+        before: Option<(&str, &[Inbox])>,
+        engine_target: bool,
     ) -> io::Result<bool> {
         let current = self.get(session).await?;
         let arriving = current.arriving(&prompt.id);
-        if !current.paused
+        let release = engine_target
+            && (crate::release::holding(&self.run)
+                || (crate::release::releasing(&self.run) && !current.waiting.is_empty()));
+        if !release
+            && !current.paused
             && !current
                 .limit_stop
                 .as_ref()
@@ -336,7 +340,8 @@ impl QueueStore {
         {
             return Ok(false);
         }
-        if prompt.delivery == Delivery::Steer
+        if !release
+            && prompt.delivery == Delivery::Steer
             && !arriving
             && current.inbox_moved.is_empty()
             && !current
@@ -373,11 +378,49 @@ impl QueueStore {
                 state.came_held.push(prompt.id.clone());
                 state.paused = true;
             } else {
-                state.restore_before(waiting, before, inbox);
+                let (anchor, inbox) =
+                    before.map_or((None, &[][..]), |(anchor, inbox)| (Some(anchor), inbox));
+                state.restore_before(waiting, anchor, inbox);
             }
         })
         .await?;
         Ok(true)
+    }
+
+    pub(crate) async fn release_pending(
+        &self,
+        engine: &Engine,
+        lease: Option<&Lease>,
+    ) -> io::Result<bool> {
+        for (session, state) in self.index().await? {
+            if state.paused
+                || state.limit_stop.is_some()
+                || state.waiting.is_empty()
+                || engine
+                    .agent_session(&session)
+                    .await
+                    .map_err(|_| {
+                        io::Error::other("Could not check the owner of a waiting message.")
+                    })?
+                    .is_some()
+            {
+                continue;
+            }
+            if let Some(lease) = lease {
+                match engine
+                    .call::<Value>(lease, Method::GET, &sessions::path(&session), None)
+                    .await
+                {
+                    // Preserve this queue, but a confirmed absent session has
+                    // no turn to release and must not hold every other update.
+                    Err(error) if error.missing() => continue,
+                    Err(error) => return Err(io::Error::other(error)),
+                    Ok(_) => {}
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn clear(&self, session: &str, id: &str) -> io::Result<Queue> {
@@ -492,8 +535,12 @@ impl Queue {
             if let Some(stop) = &self.limit_stop {
                 value["line"] = json!(limit::line(home, stop));
             }
-        } else if !self.waiting.is_empty() && !self.inbox_moved.is_empty() {
-            value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+        } else if !self.waiting.is_empty() {
+            if crate::release::holding(&home.join("run")) {
+                value["line"] = json!(crate::release::HOLD_LINE);
+            } else if !self.inbox_moved.is_empty() {
+                value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+            }
         }
         value
     }
@@ -777,8 +824,19 @@ async fn command_target(engine: &Engine, session: &str) -> Result<Place, Refusal
         return Ok(place);
     }
     let lease = api::start(engine).await?;
-    sessions::read(engine, &lease, &sessions::path(session)).await?;
-    Ok(Place::Engine(lease))
+    // (As the queue routes say it, for any of their conversations.)
+    let path = sessions::path(session);
+    match engine.call::<Value>(&lease, Method::GET, &path, None).await {
+        Ok(_) => Ok(Place::Engine(lease)),
+        Err(error) if error.missing() => Err(Refusal::new(
+            StatusCode::NOT_FOUND,
+            "There's no such conversation here.",
+        )),
+        Err(_) => Err(Refusal::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The engine isn't answering. Try again in a moment.",
+        )),
+    }
 }
 
 pub(crate) async fn check_add_target(
@@ -1134,13 +1192,17 @@ pub(crate) async fn advance(
     Ok(true)
 }
 
-async fn is_running(engine: &Engine, target: Target<'_>, session: &str) -> Result<bool, api::Error> {
+async fn is_running(
+    engine: &Engine,
+    target: Target<'_>,
+    session: &str,
+) -> Result<bool, api::Error> {
     target.is_running(engine, session).await
 }
 
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit(engine, session, None).await?;
+    let _admitted = crate::session_move::admit_turn(engine, session, None).await?;
     let lease = command_target(engine, session).await?;
     resume_on(engine, lease.target(), session).await
 }
@@ -1152,7 +1214,7 @@ pub(crate) async fn resume_move(
     movement: &str,
 ) -> Result<(), Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit(engine, session, Some(movement)).await?;
+    let _admitted = crate::session_move::admit_turn(engine, session, Some(movement)).await?;
     resume_on(engine, target, session).await.map(|_| ())
 }
 
@@ -1638,7 +1700,7 @@ where
 {
     let session = sessions::id(&call)?;
     let given = sessions::body(&call).unwrap_or_default();
-    let items = given
+    let items: Vec<String> = given
         .get("items")
         .and_then(Value::as_array)
         .into_iter()
@@ -1646,6 +1708,14 @@ where
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect();
+    // (A session someone started stops as their work does: what it left running and its lead too.)
+    let stops = engine.work_stops.get().filter(|_| stopping);
+    if let Some(stopped) = match stops {
+        Some(stops) => stops.stop(&session, items.clone()).await,
+        None => None,
+    } {
+        return Ok(RouteReply::json::<200>(sessions::typed(stopped?)?));
+    }
     Ok(RouteReply::json::<200>(sessions::typed(
         holding(engine, &session, items, stopping).await?,
     )?))
@@ -1665,7 +1735,7 @@ where
     let engine = engine.clone();
     let work = async move {
         let _turn = engine.turn(&session).await;
-        let _admitted = crate::session_move::admit(&engine, &session, None).await?;
+        let _admitted = crate::session_move::admit_turn(&engine, &session, None).await?;
         let lease = command_target(&engine, &session).await?;
         if !advance(&engine, lease.target(), &session, &id, how).await? {
             return Err(not_waiting());
@@ -1973,7 +2043,9 @@ async fn remove_reply(
             if crate::query(&call.request.path, "arriving").as_deref() == Some("1") {
                 if send::was_sent(engine, &session, &id).await?
                     || match lease.as_ref() {
-                        Some(lease) => reached(engine, lease.target(), &session, &id).await.unwrap_or(false),
+                        Some(lease) => reached(engine, lease.target(), &session, &id)
+                            .await
+                            .unwrap_or(false),
                         None => false,
                     }
                 {
@@ -2133,22 +2205,75 @@ impl Engine {
     /// Stop an OpenCode turn on behalf of the conversation that started it.
     /// The owner of background work also stops its watches, wake-ups and shells.
     pub async fn stop_for_starter(&self, session: &str) -> Result<(), Refusal> {
+        self.stop_work(session, false, Vec::new()).await.map(drop)
+    }
+
+    /// Stop for a session someone started: what waits held and its turn stopped; `holds` (the
+    /// user's Stop, or a turn that was under way) pauses its queue too, as Stop does, `items` the
+    /// messages sent as it came. The queue as it's left.
+    pub async fn stop_work(
+        &self,
+        session: &str,
+        holds: bool,
+        items: Vec<String>,
+    ) -> Result<Value, Refusal> {
         if !sessions::valid_id(session) {
             return Err(Refusal::new(
                 StatusCode::BAD_REQUEST,
                 "Choose a conversation.",
             ));
         }
+        if holds {
+            // (Paused first, as Stop is: kept so even where what waits can't be held now.)
+            self.pause_for_user(session, false).await?;
+            return holding(self, session, items, true).await;
+        }
         let lease = command_target(self, session).await?;
         let _turn = self.turn(session).await;
-        hold_on(self, lease.target(), session, Vec::new(), Hold::LeadStop).await?;
-        Ok(())
+        hold_on(self, lease.target(), session, items, Hold::LeadStop).await
     }
 
+    /// The queue paused for the user, until they write or Resume; `if_limited`: only one a usage
+    /// limit paused, so its reset doesn't set it going.
+    pub async fn pause_for_user(&self, session: &str, if_limited: bool) -> Result<(), Refusal> {
+        if !sessions::valid_id(session) {
+            return Ok(());
+        }
+        let put = self.queues.put(session, |queue| {
+            if !if_limited || queue.limit_stop.is_some() {
+                queue.paused = true;
+                queue.user_paused = Some(true);
+                queue.limit_stop = None;
+            }
+        });
+        put.await.map(drop).map_err(save_failed)
+    }
+
+    /// What stops a session someone started (Stop on its row), from the box's work.
+    pub fn attach_work_stops(&self, stops: Arc<dyn WorkStops>) {
+        let _ = self.work_stops.set(stops);
+    }
+}
+
+/// A stop's outcome as the box's work gives it: none for a session that isn't someone's work.
+pub type WorkStopped<'a> =
+    std::pin::Pin<Box<dyn Future<Output = Option<Result<Value, Refusal>>> + Send + 'a>>;
+
+/// Stop on a session someone started, as their work stops: what it left running too, and its lead
+/// told. None for a session that isn't someone's work, which stops as any other.
+pub trait WorkStops: Send + Sync {
+    fn stop<'a>(&'a self, session: &'a str, items: Vec<String>) -> WorkStopped<'a>;
+}
+
+impl Engine {
     /// Keep the old engine's inboxes before a coordinated release switch.
     /// A failed inventory or transfer leaves the engine in place and can be retried.
     pub async fn keep_inboxes(&self) -> io::Result<usize> {
-        let Some(lease) = self.acquire(Demand::Existing).await else {
+        self.keep_inboxes_with(Demand::Existing).await
+    }
+
+    pub(crate) async fn keep_inboxes_with(&self, demand: Demand) -> io::Result<usize> {
+        let Some(lease) = self.acquire(demand).await else {
             return Ok(0);
         };
         let ids = inbox_inventory(self, &lease).await?;
@@ -2429,16 +2554,23 @@ impl Drop for QueueEvents {
 
 /// Follow the coding agents' conversations as the engine's: their line and
 /// turn events, in the engine's words, drive the same queue reactions.
-pub(crate) fn follow_agents(engine: Engine, mut events: tokio::sync::broadcast::Receiver<crate::AgentEvent>) {
+pub(crate) fn follow_agents(
+    engine: Engine,
+    mut events: tokio::sync::broadcast::Receiver<crate::AgentEvent>,
+) {
     tokio::spawn(async move {
         let stop = tokio_util::sync::CancellationToken::new();
         let _stop = stop.clone().drop_guard();
         let mut queues = QueueEvents::default();
         loop {
             match events.recv().await {
-                Ok(event) => {
-                    queues.hear(&engine, &event.session, event.kind, &event.data, stop.clone())
-                }
+                Ok(event) => queues.hear(
+                    &engine,
+                    &event.session,
+                    event.kind,
+                    &event.data,
+                    stop.clone(),
+                ),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     engine.queues.notify();
                 }
@@ -2736,13 +2868,18 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
     let Some(place) = Place::passive(engine, session).await else {
         return Ok(());
     };
+    let engine_held =
+        matches!(place, Place::Engine(_)) && crate::release::holding(&engine.home.join("run"));
     let lease = place.target();
     let saved = engine.queues.get(session).await?;
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());
     }
     if matches!(operation, QueueEvent::Drain)
-        && (saved.paused || saved.limit_stop.is_some() || !saved.inbox_moved.is_empty())
+        && (engine_held
+            || saved.paused
+            || saved.limit_stop.is_some()
+            || !saved.inbox_moved.is_empty())
     {
         return Ok(());
     }
@@ -2752,11 +2889,8 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         {
             return Ok(());
         }
-        if matches!(operation, QueueEvent::Failed(_)) {
-            let page = lease
-                .recent(engine, session, 6)
-                .await
-                .unwrap_or_default();
+        if matches!(operation, QueueEvent::Failed(_)) && !engine_held {
+            let page = lease.recent(engine, session, 6).await.unwrap_or_default();
             if page
                 .iter()
                 .find(|row| row["type"] != "idle")
