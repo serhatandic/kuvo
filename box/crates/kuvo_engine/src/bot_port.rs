@@ -15,10 +15,11 @@ use crate::{
     wake_port::Unreachable,
 };
 
-/// The engine, held up for a bot's change.
+/// The engine, held up for a bot's change; or, for the coding agents' conversations alone while
+/// it isn't running, not held (its own routes answer that it isn't).
 pub struct BotEngine {
     engine: Engine,
-    lease: Lease,
+    lease: Option<Lease>,
 }
 
 impl Engine {
@@ -32,16 +33,39 @@ impl Engine {
         self.bot_engine_as(Demand::Existing).await
     }
 
+    /// As `running_bot_engine`, else one for the coding agents' conversations alone.
+    pub async fn work_engine(&self) -> BotEngine {
+        BotEngine {
+            engine: self.clone(),
+            lease: self.acquire(Demand::Existing).await,
+        }
+    }
+
     async fn bot_engine_as(&self, demand: Demand) -> Option<BotEngine> {
         let lease = self.acquire(demand).await?;
         Some(BotEngine {
             engine: self.clone(),
-            lease,
+            lease: Some(lease),
         })
     }
 }
 
 impl BotEngine {
+    fn lease(&self) -> Result<&Lease, Unreachable> {
+        let down = || Unreachable("The engine isn't running.".into());
+        self.lease.as_ref().ok_or_else(down)
+    }
+
+    /// Whether the engine is running (held).
+    pub fn running(&self) -> bool {
+        self.lease.is_some()
+    }
+
+    /// Whether anything keeps conversations here now: the engine, or the coding agents.
+    pub fn reachable(&self) -> bool {
+        self.lease.is_some() || self.engine.agent_sessions.is_some()
+    }
+
     /// One of the engine's routes, its answer's `data` where it has one; why not where it failed.
     pub async fn call(
         &self,
@@ -52,7 +76,7 @@ impl BotEngine {
     ) -> Result<Value, Unreachable> {
         let mut value = self
             .engine
-            .call_raw(&self.lease, method, path, body, wait)
+            .call_raw(self.lease()?, method, path, body, wait)
             .await?;
         if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
             value = data.take();
@@ -77,7 +101,7 @@ impl BotEngine {
         )]);
         let mut value = self
             .engine
-            .call_with_headers(&self.lease, method, path, None, wait, headers)
+            .call_with_headers(self.lease()?, method, path, None, wait, headers)
             .await?;
         if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
             value = data.take();
@@ -94,8 +118,34 @@ impl BotEngine {
     ) -> Result<Value, Unreachable> {
         Ok(self
             .engine
-            .call_raw(&self.lease, method, path, None, wait)
+            .call_raw(self.lease()?, method, path, None, wait)
             .await?)
+    }
+
+    /// A conversation's record, the coding agents' or the engine's, as clients read it.
+    pub async fn session_data(&self, session: &str) -> Result<Value, Unreachable> {
+        let theirs = self.engine.agent_session(session).await.map_err(|_| {
+            Unreachable("The coding agents on this computer aren't answering.".into())
+        });
+        match theirs? {
+            Some((_, header)) => Ok(Value::Object(header)),
+            None => {
+                self.call(Method::GET, &sessions::path(session), None, WAIT)
+                    .await
+            }
+        }
+    }
+
+    /// The coding agents' conversations here, and whether each is in a turn; none where they
+    /// aren't answering.
+    pub async fn agent_sessions(&self) -> Vec<(Value, bool)> {
+        let Some(source) = self.engine.agent_sessions.clone() else {
+            return Vec::new();
+        };
+        let rows = source.inventory().await.unwrap_or_default();
+        rows.into_iter()
+            .map(|row| (Value::Object(row.header), row.running))
+            .collect()
     }
 
     /// What a coding agents' conversation left running besides its turn, stopped through its
@@ -119,10 +169,13 @@ impl BotEngine {
         if !sessions::valid_id(session) {
             return true;
         }
+        let Ok(lease) = self.lease() else {
+            return false;
+        };
         match self
             .engine
             .call_raw(
-                &self.lease,
+                lease,
                 Method::DELETE,
                 &sessions::path(session),
                 None,
@@ -138,7 +191,7 @@ impl BotEngine {
     /// The model a new conversation starts on here, by the box's rule (`models.rs`): the default,
     /// else the first that runs. `None` while the engine can't say; `Some(None)` for none.
     pub async fn starting_model(&self, directory: &str) -> Option<Option<Value>> {
-        crate::models::starting_here(&self.engine, &self.lease, directory).await
+        crate::models::starting_here(&self.engine, self.lease().ok()?, directory).await
     }
 
     /// The conversation's rules and notes changed in its turn, as `change` makes them from the

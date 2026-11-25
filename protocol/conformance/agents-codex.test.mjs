@@ -103,7 +103,7 @@ describe("Codex's account and models", { skip }, () => {
 
 /** One resident for a describe's cases, with sessions seeded before it starts. */
 function resident(fixture = {}) {
-  const pool = { plain: [], ask: [], plan: [], kept: [] };
+  const pool = { plain: [], ask: [], plan: [], kept: [], started: [], botWork: [] };
   const box = {};
   before(async () => {
     if (skip) return;
@@ -129,11 +129,27 @@ function resident(fixture = {}) {
       },
     }));
     pool.kept.push({ id, folder });
+    // Ones another conversation started (its work), and ones a bot's started (Mira's, whose own is
+    // a Codex conversation too).
+    box.lead = pool.plain.pop().id;
+    box.bot = "bot_codexmira";
+    const bot = pool.plain.pop().id;
+    write(path.join(box.codex.home, "bots", box.bot, "bot.json"), JSON.stringify({ kuvo: 1, id: box.bot, name: "Mira" }));
+    write(path.join(box.codex.home, "bots", box.bot, "session"), bot);
+    write(path.join(box.codex.home, "bots", box.bot, "via"), "bridge");
+    for (let index = 1; index <= 4; index++) {
+      const id = `ses_codex_started_${String(index).padStart(3, "0")}`;
+      const folder = path.join(box.codex.home, "projects", id);
+      write(path.join(folder, ".keep"), "");
+      const by = index > 2 ? { startedBy: bot, by: { bot: box.bot, name: "Mira" } } : { startedBy: box.lead };
+      box.codex.seed(id, { directory: folder, metadata: { kuvo: { ...by, wakes: ["finished"] } } });
+      pool[index > 2 ? "botWork" : "started"].push({ id, folder });
+    }
     await box.codex.start();
   });
   after(async () => box.codex?.close());
-  box.next = ({ ask = false, plan = false, kept = false } = {}) => {
-    const session = pool[kept ? "kept" : plan ? "plan" : ask ? "ask" : "plain"].shift();
+  box.next = ({ ask = false, plan = false, kept = false, started = false, botWork = false } = {}) => {
+    const session = pool[botWork ? "botWork" : started ? "started" : kept ? "kept" : plan ? "plan" : ask ? "ask" : "plain"].shift();
     assert.ok(session, "Seed more sessions.");
     return session;
   };
@@ -646,6 +662,40 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     const ended = [...box.codex.sent("thread/backgroundTerminals/terminate"), ...box.codex.sent("thread/backgroundTerminals/clean")];
     assert.ok(ended.some((message) => message.params.threadId === thread), "Codex was never told to end it.");
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).length, 1);
+  });
+
+  // Someone's work at work, with a terminal left running: stopping it ends both, through Codex.
+  const atWork = async (options = { started: true }) => {
+    const { id } = await box.begin([
+      command("bt5", "npm run dev"),
+      { terminals: [{ processId: "p-bt5", itemId: "bt5", command: "npm run dev" }] },
+      "stop",
+    ], options);
+    await until(async () => toolCalls(await box.codex.rows(id)).length, "Its command never showed.");
+    return id;
+  };
+  const endedThrough = async (id) => {
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "interrupted");
+    const thread = box.codex.agentState(id).codexThread;
+    const ended = () => [...box.codex.sent("thread/backgroundTerminals/terminate"), ...box.codex.sent("thread/backgroundTerminals/clean")]
+      .some((message) => message.params.threadId === thread);
+    await until(ended, () => ["Codex was never told to end what it left running.", box.codex.log()].join("\n"));
+  };
+
+  test("Stop on a session someone started ends its turn and what it left running", { timeout: 60000 }, async () => {
+    const id = await atWork();
+    const answer = await request(box.codex.listener, "POST", `kuvo/sessions/${id}/stop`, {}, headers, 20000);
+    assert.equal(answer.status, 200, answer.text);
+    await endedThrough(id);
+  });
+
+  test("Stop All on a bot ends its sessions' turns and what they left running", { timeout: 60000 }, async () => {
+    const id = await atWork({ botWork: true });
+    const answer = await request(box.codex.listener, "POST", `kuvo/bots/${box.bot}/stop-all`, {}, headers, 30000);
+    assert.equal(answer.status, 200, answer.text);
+    assertMatch(answer.json, { stopped: 1 });
+    await endedThrough(id);
   });
 
   test("a list that fails isn't taken for none: what it left running is still to be found, and it's listed again until it ends", { timeout: 120000 }, async () => {

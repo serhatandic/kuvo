@@ -354,8 +354,7 @@ impl Work {
         let title = match all.iter().find(|each| each["id"] == session) {
             Some(any) => Some(title_of(any).to_owned()),
             None => {
-                let path = format!("api/session/{}", encoded(session));
-                let found = engine.call(Method::GET, &path, None, WAIT).await;
+                let found = engine.session_data(session).await;
                 found
                     .ok()
                     .filter(|found| found.is_object())
@@ -452,8 +451,7 @@ impl Work {
 
     /// Whether a conversation is here.
     pub async fn has_session_here(&self, engine: &BotEngine, session: &str) -> bool {
-        let path = format!("api/session/{}", encoded(session));
-        let found = engine.call(Method::GET, &path, None, WAIT).await;
+        let found = engine.session_data(session).await;
         found.is_ok_and(|found| found["id"] == session)
     }
 }
