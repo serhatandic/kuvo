@@ -1081,5 +1081,7 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Lighter
 
+- A wake-up round tells whether the engine or the coding agents have anything due in one look at
+  the folders (`fire::wanted_by`), not one each.
 - What's held is looked at on a 15-second round and as the relay connects, and only read when the
   `bots-held` folder has files; nothing is held in memory but when each went.
