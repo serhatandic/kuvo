@@ -1,4 +1,5 @@
 mod agents;
+mod found;
 mod library_artifacts;
 mod marketplace;
 mod usage;
@@ -247,6 +248,7 @@ pub async fn run(
             accounts.clone(),
             Some(Arc::new(runs.clone())),
         );
+        found::register(Some(rows.clone()), home, &mut routes);
         agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
         agents::sessions::register_reads(inventory.clone(), &mut routes);
         agents::turns::register(runs, accounts.feed().clone(), &mut routes);
@@ -257,6 +259,7 @@ pub async fn run(
             }))
             .with_agent_sessions(Arc::new(inventory))
     } else {
+        found::register(None, home, &mut routes);
         engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
             store: sessions,
             running: None,
@@ -774,6 +777,7 @@ fn info(
         "engine.restart",
         "box.backups.status",
         "box.atWork",
+        found::FEATURE,
     ];
     if !is_mac {
         features.push("engine.start");
