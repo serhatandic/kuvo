@@ -25,9 +25,10 @@ const offered = async (listener) => {
 };
 
 /** A resident of its own for one case. */
-async function withCodex(fixture, check) {
+async function withCodex(fixture, check, prepare = () => {}) {
   const codex = await scriptedCodex(fixture);
   try {
+    prepare(codex);
     await codex.start();
     await check(codex);
   } catch (error) {
@@ -102,17 +103,17 @@ describe("Codex's account and models", { skip }, () => {
 
 /** One resident for a describe's cases, with sessions seeded before it starts. */
 function resident(fixture = {}) {
-  const pool = { plain: [], ask: [], kept: [] };
+  const pool = { plain: [], ask: [], plan: [], kept: [] };
   const box = {};
   before(async () => {
     if (skip) return;
     box.codex = await scriptedCodex(fixture);
-    for (const [kind, permissions] of [["plain"], ["ask", askFirst]]) {
-      for (let index = 1; index <= 16; index++) {
+    for (const [kind, permissions, agent] of [["plain"], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
+      for (let index = 1; index <= 20; index++) {
         const id = `ses_codex_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.codex.home, "projects", id);
         write(path.join(folder, ".keep"), "");
-        box.codex.seed(id, { directory: folder, permissions });
+        box.codex.seed(id, { directory: folder, permissions, agent });
         pool[kind].push({ id, folder });
       }
     }
@@ -131,8 +132,8 @@ function resident(fixture = {}) {
     await box.codex.start();
   });
   after(async () => box.codex?.close());
-  box.next = ({ ask = false, kept = false } = {}) => {
-    const session = pool[kept ? "kept" : ask ? "ask" : "plain"].shift();
+  box.next = ({ ask = false, plan = false, kept = false } = {}) => {
+    const session = pool[kept ? "kept" : plan ? "plan" : ask ? "ask" : "plain"].shift();
     assert.ok(session, "Seed more sessions.");
     return session;
   };
@@ -146,6 +147,7 @@ function resident(fixture = {}) {
 }
 
 const item = (method, value) => [method, { item: value }];
+const id_of = (words) => words.replace(/\W+/g, "-");
 
 describe("Codex's turns", { skip }, () => {
   const box = resident();
@@ -357,6 +359,31 @@ describe("Codex, more of what it does", { skip }, () => {
     assert.ok(texts(rows).join("\n").includes("- Which database? (Postgres / SQLite)"), JSON.stringify(texts(rows)));
   });
 
+  for (const [what, after] of [
+    ["thinking", (n) => ["item/reasoning/summaryTextDelta", { itemId: `r-go${n}`, delta: "Thinking it over." }]],
+    ["a step", (n) => item("item/started", { type: "commandExecution", id: `c-go${n}`, command: "ls" })],
+    ["more words", (n) => item("item/completed", { type: "agentMessage", id: `w-go${n}`, text: "Meanwhile, looking around." })],
+  ].map(([what, step], n) => [what, () => step(n)])) {
+    test(`${what} after asking doesn't lose the question: its card is up while it works, and the answer goes into its turn`, { timeout: 60000 }, async () => {
+      const { id } = await box.begin([
+        item("item/completed", { type: "agentMessage", id: `q-${id_of(what)}`, text: "One thing first.", questions: [{ title: "Which language should the README use?", options: ["English", "Turkish"] }] }),
+        after(),
+        { until: `answered-${id_of(what)}` },
+        item("item/completed", { type: "agentMessage", id: `t-${id_of(what)}`, text: "Writing it in Turkish." }),
+      ]);
+      const form = await until(async () => (await box.codex.forms(id))[0], "No card for its question.");
+      assert.equal(form.fields[0].description, "Which language should the README use?");
+      assert.equal((await box.codex.rows(id)).filter((row) => row.type === "idle").length, 0);
+      assert.equal((await box.codex.replyForm(id, form.id, { [form.fields[0].key]: "Turkish" })).status, 200);
+      const thread = () => box.codex.agentState(id)?.codexThread;
+      await until(() => box.codex.sent("turn/steer").some((message) => message.params.threadId === thread() && message.params.input[0].text === "Turkish"), "Its answer never went into its turn.");
+      box.codex.go(`answered-${id_of(what)}`);
+      const rows = await box.codex.idles(id);
+      assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread()).length, 1);
+      assert.ok(texts(rows).join("\n").includes("Writing it in Turkish."), JSON.stringify(texts(rows)));
+    });
+  }
+
   test("a question still open as its turn ends: the session waits, and your answer starts its next turn", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       item("item/completed", { type: "agentMessage", id: "m1", text: "Waiting on you.", questions: [{ title: "Go ahead?", options: ["Yes", "No"] }] }),
@@ -395,6 +422,316 @@ describe("Codex, more of what it does", { skip }, () => {
     } finally {
       fs.rmSync(path.join(box.codex.home, "box", "models.json"), { force: true });
     }
+  });
+});
+
+describe("Codex's cards, modes, context and summaries", { skip }, () => {
+  const box = resident();
+  const change = (path, diff) => ({ path, kind: { type: "update" }, diff });
+  const asking = (id) => item("item/completed", { type: "agentMessage", id, text: "One question.", questions: [{ title: "Which?", options: ["A", "B"] }] });
+
+  test("a change it asks to make shows its files and their lines on the card: Allow Once makes it, No declines the next", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/started", { type: "fileChange", id: "f1", changes: [change("a.ts", "@@ -1,1 +1,2 @@\n-a\n+b\n+c\n")] }),
+      { ask: ["item/fileChange/requestApproval", { itemId: "f1", reason: "To fix it." }] },
+      item("item/completed", { type: "fileChange", id: "f1", status: "completed", changes: [change("a.ts", "@@ -1,1 +1,2 @@\n-a\n+b\n+c\n")] }),
+      item("item/started", { type: "fileChange", id: "f2", changes: [change("b.ts", "@@ -1,1 +1,1 @@\n-x\n+y\n")] }),
+      { ask: ["item/fileChange/requestApproval", { itemId: "f2" }] },
+    ], { ask: true });
+    const card = await until(async () => (await box.codex.permissions(id))[0], "No card for the change.");
+    assertMatch(card, { action: "edit", resources: ["a.ts"], message: "To fix it.", metadata: { files: [{ file: "a.ts", additions: 2, deletions: 1 }] } });
+    await box.codex.replyPermission(id, card.id, "once");
+    assert.deepEqual((await box.codex.answeredFor("f1")).result, { decision: "accept" });
+    const next = await until(async () => (await box.codex.permissions(id)).find((each) => each.resources?.[0] === "b.ts"), "No card for the second change.");
+    await box.codex.replyPermission(id, next.id, "reject");
+    assert.deepEqual((await box.codex.answeredFor("f2")).result, { decision: "decline" });
+    await box.codex.idles(id);
+  });
+
+  test("Allow Always on a change lets every later change in the session through, to other files too, without asking", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/started", { type: "fileChange", id: "g1", changes: [change("a.ts", "@@ -1 +1 @@\n-a\n+b\n")] }),
+      { ask: ["item/fileChange/requestApproval", { itemId: "g1" }] },
+      item("item/started", { type: "fileChange", id: "g2", changes: [change("other/c.ts", "@@ -1 +1 @@\n-c\n+d\n")] }),
+      { ask: ["item/fileChange/requestApproval", { itemId: "g2" }] },
+    ], { ask: true });
+    const card = await until(async () => (await box.codex.permissions(id))[0], "No card.");
+    await box.codex.replyPermission(id, card.id, "always");
+    assert.deepEqual((await box.codex.answeredFor("g2")).result, { decision: "accept" });
+    await box.codex.idles(id);
+  });
+
+  test("a message you type while it works answers its open question: the card goes, and your words go into its turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([asking("m1"), { until: "typed-answer" }]);
+    await until(async () => (await box.codex.forms(id))[0], "No card.");
+    const message = `msg_${id.slice(4)}_typed`;
+    const answer = await request(box.codex.listener, "POST", box.codex.route(id) + "/prompt", { id: message, text: "Pick B", delivery: "steer" }, headers, 20000);
+    assert.equal(answer.status, 200, answer.text);
+    await until(() => box.codex.sent("turn/steer").find((each) => each.params.clientUserMessageId === message), "Your words never went into its turn.");
+    await until(async () => (await box.codex.forms(id)).length === 0, "The card stayed up.");
+    box.codex.go("typed-answer");
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "succeeded");
+  });
+
+  test("Stop with its card up and it at work: the card goes, and nothing more is sent", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([asking("m1"), "stop"]);
+    await until(async () => (await box.codex.forms(id))[0], "No card.");
+    await box.codex.interrupt(id);
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "interrupted");
+    assert.deepEqual(await box.codex.forms(id), []);
+    const thread = box.codex.agentState(id).codexThread;
+    assert.equal(box.codex.sent("turn/steer").filter((each) => each.params.threadId === thread).length, 0);
+  });
+
+  test("its turn fails with its card up: the card goes, and the failure is what you see", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([asking("m1"), { end: { status: "failed", error: { message: "The model broke." } } }]);
+    const rows = await box.codex.idles(id);
+    assertMatch(idles(rows)[0], { outcome: "failed" });
+    assert.match(JSON.stringify(idles(rows)[0]), /The model broke\./);
+    assert.deepEqual(await box.codex.forms(id), []);
+  });
+
+  test("dismissing the card with its turn over ends the turn there, with nothing sent to Codex", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([asking("m1")]);
+    const form = await until(async () => (await box.codex.forms(id))[0], "No card.");
+    // (Its turn over by then: one at work would hear the card was dismissed.)
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal((await box.codex.dismissForm(id, form.id)).status, 200);
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "succeeded");
+    const thread = box.codex.agentState(id).codexThread;
+    assert.equal(box.codex.sent("turn/start").filter((each) => each.params.threadId === thread).length, 1);
+    assert.equal(box.codex.sent("turn/steer").filter((each) => each.params.threadId === thread).length, 0);
+  });
+
+  test("Ask First: it asks before commands and changes, and what it runs can write in the project and reach the network", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Ok." })], { ask: true });
+    await box.codex.idles(id);
+    const turn = box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
+    assertMatch(turn.params, { approvalPolicy: "untrusted", sandboxPolicy: { type: "workspaceWrite", networkAccess: true }, collaborationMode: { mode: "default" } });
+  });
+
+  test("Plan: it can only read, and a change it asks to make anyway is declined without asking you", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/started", { type: "fileChange", id: "p1", changes: [change("a.ts", "@@ -1 +1 @@\n-a\n+b\n")] }),
+      { ask: ["item/fileChange/requestApproval", { itemId: "p1" }] },
+    ], { plan: true });
+    assert.deepEqual((await box.codex.answeredFor("p1")).result, { decision: "decline" });
+    await box.codex.idles(id);
+    const turn = box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
+    assertMatch(turn.params, { approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: true }, collaborationMode: { mode: "plan" } });
+  });
+
+  test("how full it is, as its last request was, against the window Codex says its model has; and what a turn used, each model call once", { timeout: 60000 }, async () => {
+    const usage = (input, cached, output, reasoning) => ["thread/tokenUsage/updated", { tokenUsage: { last: { totalTokens: input + output, inputTokens: input, cachedInputTokens: cached, outputTokens: output, reasoningOutputTokens: reasoning }, modelContextWindow: 272000 } }];
+    const { id } = await box.begin([
+      item("item/completed", { type: "commandExecution", id: "c1", command: "ls", status: "completed", exitCode: 0, aggregatedOutput: "a" }),
+      usage(4000, 1000, 1000, 200),
+      item("item/completed", { type: "agentMessage", id: "m1", text: "Done." }),
+      usage(6000, 5000, 300, 0),
+    ]);
+    await box.codex.idles(id);
+    const saved = await until(() => box.codex.saved(id).tokens?.input === 4000 && box.codex.saved(id), () => "The turn's use was never kept: " + JSON.stringify(box.codex.saved(id).tokens));
+    assertMatch(saved.context, { used: 6300, window: 272000 });
+    assertMatch(saved.tokens, { input: 4000, output: 1100, reasoning: 200 });
+  });
+
+  test("changing the automatic summary setting loads the same Codex thread again with the new limit", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "First." })]);
+    await box.codex.idles(id);
+    const thread = box.codex.agentState(id).codexThread;
+    write(path.join(box.codex.home, "box", "conversation-compaction.json"), JSON.stringify("200000"));
+    try {
+      box.codex.script(`again ${id}`, [item("item/completed", { type: "agentMessage", id: "m2", text: "Second." })]);
+      await box.codex.prompt(id, `again ${id}`);
+      await box.codex.idles(id, 2);
+      const loaded = [...box.codex.sent("thread/start"), ...box.codex.sent("thread/resume")]
+        .filter((message) => message.params.threadId === thread || message.params.cwd === box.codex.saved(id).location.directory);
+      assert.deepEqual(loaded.map((message) => message.params.config.model_auto_compact_token_limit), [400000, 200000]);
+      assert.equal(box.codex.sent("thread/resume").at(-1).params.threadId, thread);
+    } finally {
+      fs.rmSync(path.join(box.codex.home, "box", "conversation-compaction.json"), { force: true });
+    }
+  });
+
+  test("a summary it makes by itself shows as it runs, and ends as one finished row, not a note", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/started", { type: "contextCompaction", id: "cc1" }),
+      { until: "auto-summary-done" },
+      item("item/completed", { type: "contextCompaction", id: "cc1" }),
+      item("item/completed", { type: "agentMessage", id: "m1", text: "Carrying on." }),
+    ]);
+    await until(async () => (await box.codex.rows(id)).some((row) => row.type === "compaction" && row.status === "running"), "The summary never showed as it ran.");
+    box.codex.go("auto-summary-done");
+    const rows = await box.codex.idles(id);
+    assertMatch(rows.filter((row) => row.type === "compaction"), [{ reason: "auto", status: "completed" }]);
+    assert.equal(rows.filter((row) => row.type === "synthetic").length, 0);
+  });
+
+  test("one it makes by itself that Stop cuts short isn't left under way", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/started", { type: "contextCompaction", id: "cc1" }), "stop"]);
+    await until(async () => (await box.codex.rows(id)).some((row) => row.type === "compaction"), "The summary never showed.");
+    await box.codex.interrupt(id);
+    const rows = await box.codex.idles(id);
+    assert.ok(rows.filter((row) => row.type === "compaction").every((row) => row.status !== "running"), JSON.stringify(rows));
+  });
+
+  test("a summary asked during a turn isn't sent until that turn ends: Codex would stop the turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ until: "turn-may-end" }, item("item/completed", { type: "agentMessage", id: "m1", text: "Ended." })]);
+    await until(() => box.codex.sent("turn/start").some((message) => message.params.input[0].text.includes(`go ${id}`)), "Codex never started.");
+    const thread = () => box.codex.agentState(id)?.codexThread;
+    await until(() => thread(), "No thread.");
+    const answer = await box.codex.compact(id);
+    assert.equal(answer.status, 200, answer.text);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(box.codex.sent("thread/compact/start").filter((message) => message.params.threadId === thread()).length, 0);
+    box.codex.go("turn-may-end");
+    await box.codex.idles(id, 2);
+    assert.equal(box.codex.sent("thread/compact/start").filter((message) => message.params.threadId === thread()).length, 1);
+  });
+
+  test("its reasoning as it streams starts a reasoning block, and the command after it ends it; a step whose start wasn't told still shows, with an MCP result's pictures and links", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "Thinking." }],
+      item("item/started", { type: "commandExecution", id: "c1", command: "ls" }),
+      item("item/completed", { type: "commandExecution", id: "c1", command: "ls", status: "completed", exitCode: 0, aggregatedOutput: "a" }),
+      item("item/completed", { type: "mcpToolCall", id: "t1", server: "docs", tool: "look", arguments: { q: "x" }, status: "completed",
+        result: { content: [{ type: "text", text: "Found." }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }, { type: "resource_link", name: "Spec", uri: "https://example.test/spec" }] } }),
+    ]);
+    const rows = await box.codex.idles(id);
+    const [first] = steps(rows);
+    assert.deepEqual(first.content.map((part) => part.type), ["reasoning", "tool", "tool"]);
+    const mcp = toolCalls(rows).find((tool) => tool.name === "docs_look");
+    assertMatch(mcp.state, { status: "completed", input: { q: "x" } });
+    assertMatch(mcp.state.content[0], { type: "text", text: "Found.\nSpec: https://example.test/spec" });
+    assertMatch(mcp.state.content[1], { type: "file", mime: "image/png" });
+  });
+});
+
+describe("Commands Codex leaves running in a background terminal", { skip }, () => {
+  const box = resident();
+  const command = (id, line) => item("item/started", { type: "commandExecution", id, command: line });
+  const work = async (id) => (await box.codex.work()).sessions?.[id];
+
+  test("a terminal it leaves running shows in the bar with what it printed", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("bt1", "npm run dev"),
+      ["item/commandExecution/outputDelta", { itemId: "bt1", delta: "Listening on :3000\n" }],
+      { terminals: [{ processId: "p-bt1", itemId: "bt1", command: "npm run dev" }] },
+    ]);
+    await box.codex.idles(id);
+    // (Listed as its turn ends, before the box says it ended.)
+    assertMatch(await work(id), { commands: 1, tasks: 0 });
+    const bar = await box.codex.work(`/${id}`);
+    assert.equal(bar.commands.length, 1);
+    assertMatch(bar.commands[0], { command: "npm run dev", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    assertMatch(await box.codex.work(output), { output: "Listening on :3000", state: "running" });
+    assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
+  });
+
+  test("a list that fails isn't taken for none: what it left running is still to be found, and it's listed again until it ends", { timeout: 120000 }, async () => {
+    const { id } = await box.begin([
+      command("bt2", "npm test"),
+      { terminals: [{ processId: "p-bt2", itemId: "bt2", command: "npm test" }], failsUntil: "lists-work", endsWith: "bt2-done" },
+    ]);
+    await box.codex.idles(id);
+    // (A task, until it's known what it left running.)
+    assertMatch(await work(id), { commands: 0, tasks: 1 });
+    assert.deepEqual((await box.codex.work(`/${id}`)).commands, []);
+    box.codex.go("lists-work");
+    // Listed again a while later (every 30 s while any runs).
+    const listed = await until(async () => {
+      const bar = await box.codex.work(`/${id}`);
+      return bar.commands?.length === 1 && bar;
+    }, "It was never listed again.", 45000, 500);
+    assertMatch(listed.commands[0], { command: "npm test" });
+    assertMatch(await work(id), { commands: 1, tasks: 0 });
+    box.codex.go("bt2-done");
+    await until(async () => !(await work(id)), "Its end never showed.", 45000, 500);
+    // It wasn't woken for that.
+    assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
+  });
+});
+
+test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_signout";
+  await withCodex({}, async (codex) => {
+    codex.script(`go ${id}`, [item("item/started", { type: "commandExecution", id: "c1", command: "sleep 100" }), "stop"]);
+    await codex.prompt(id, `go ${id}`);
+    await until(async () => toolCalls(await codex.rows(id)).length === 1, "The command never showed.");
+    const out = await request(codex.listener, "POST", `kuvo/agents/api/integration/${provider}/disconnect`, {}, headers, 20000);
+    assert.ok(out.status < 300, out.text);
+    const rows = await codex.idles(id);
+    assertMatch(idles(rows)[0], { outcome: "failed", error: { type: "agent", message: "Codex stopped." } });
+    assert.ok(codex.heard().some((line) => line.logout), "Codex was never told to sign out.");
+  }, (codex) => codex.seed(id, { directory: codex.root }));
+});
+
+describe("Codex in the session's modes, and MCP asks", { skip }, () => {
+  const box = resident();
+  const mcpAsk = (item, server, tool) => ({ ask: ["mcpServer/elicitation/request", { itemId: item, serverName: server, message: `Allow the ${server} MCP server to run tool "${tool}"?`, mode: "form", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", tool_name: tool } }] });
+
+  test("Approve All: a command Codex's own rules ask about (rm -f) runs, answered for you with no card", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ ask: ["item/commandExecution/requestApproval", { itemId: "aa1", command: "rm -f build.log" }] }]);
+    assert.deepEqual((await box.codex.answeredFor("aa1")).result, { decision: "accept" });
+    await box.codex.idles(id);
+    assert.deepEqual(await box.codex.permissions(id), []);
+  });
+
+  test("Approve All: an MCP tool Codex asks about runs, answered for you with no card", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("aa2", "docs", "search")]);
+    assertMatch((await box.codex.answeredFor("aa2")).result, { action: "accept" });
+    await box.codex.idles(id);
+  });
+
+  test("Ask First: another server's MCP tool asks as a permission card (No declines it); Kuvo Code's own tools don't ask", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("af1", "kuvo-browser", "show_file"), mcpAsk("af2", "docs", "write_page")], { ask: true });
+    assertMatch((await box.codex.answeredFor("af1")).result, { action: "accept" });
+    const card = await until(async () => (await box.codex.permissions(id))[0], "No card for the other server's tool.");
+    assertMatch(card, { action: "docs_write_page" });
+    await box.codex.replyPermission(id, card.id, "reject");
+    assertMatch((await box.codex.answeredFor("af2")).result, { action: "decline" });
+    await box.codex.idles(id);
+  });
+
+  test("Plan: another server's MCP tool, which may change things, still waits for your yes", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("pl1", "docs", "write_page")], { plan: true });
+    // (In Plan it's the server's own question: a yes or no, its words as the server put them.)
+    const form = await until(async () => (await box.codex.forms(id))[0], "Nothing asked about the tool.");
+    assertMatch(form, { title: "docs asks", fields: [{ key: "ok", title: 'Allow the docs MCP server to run tool "write_page"?', type: "boolean" }] });
+    assert.deepEqual(await box.codex.permissions(id), []);
+    assert.equal((await box.codex.replyForm(id, form.id, { ok: true })).status, 200);
+    assertMatch((await box.codex.answeredFor("pl1")).result, { action: "accept" });
+    await box.codex.idles(id);
+  });
+
+  test("what an MCP server asks is its form, and the answers go back typed as it asked", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ ask: ["mcpServer/elicitation/request", { itemId: "fm1", serverName: "tickets", message: "Which ticket?", mode: "form",
+      requestedSchema: { type: "object", required: ["number"], properties: { number: { type: "integer", title: "Number" }, urgent: { type: "boolean", title: "Urgent" } } } }] }], { plan: true });
+    const form = await until(async () => (await box.codex.forms(id))[0], "No form.");
+    assertMatch(form, { title: "tickets asks", metadata: { kind: "mcp-elicitation", server: "tickets" } });
+    assertMatch(form.fields[0], { key: "number", title: "Number", description: "Which ticket?", required: true });
+    assert.equal((await box.codex.replyForm(id, form.id, { number: "42", urgent: "true" })).status, 200);
+    assert.deepEqual((await box.codex.answeredFor("fm1")).result, { action: "accept", content: { number: 42, urgent: true } });
+    await box.codex.idles(id);
+  });
+
+  test("the speed picked for its account: Standard goes as null, and nothing where none was picked", { timeout: 60000 }, async () => {
+    const turnOf = (id) => box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
+    write(path.join(box.codex.home, "box", "models.json"), JSON.stringify({ speeds: { [provider]: null } }));
+    try {
+      const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Standard." })]);
+      await box.codex.idles(id);
+      assert.equal(turnOf(id).params.serviceTier, null);
+    } finally {
+      fs.rmSync(path.join(box.codex.home, "box", "models.json"), { force: true });
+    }
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m2", text: "Its own." })]);
+    await box.codex.idles(id);
+    assert.equal("serviceTier" in turnOf(id).params, false);
   });
 });
 

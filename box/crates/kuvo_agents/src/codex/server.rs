@@ -41,6 +41,8 @@ pub(super) struct Server {
     compaction: String,
     /// The turns under way in it, by Codex thread, as its holder keeps them for a next resident.
     turns: Plain<serde_json::Map<String, Value>>,
+    /// The conversations with commands left running in it, as its holder keeps them.
+    background: Plain<serde_json::Map<String, Value>>,
     /// Taken up from its holder: what it says waits until the turns taken up in it are ready.
     waiting: Plain<std::collections::HashSet<String>>,
     gate: tokio::sync::watch::Sender<bool>,
@@ -67,6 +69,24 @@ impl Server {
                 Value::Object(turns),
             )]))
             .await;
+    }
+
+    /// Keeps whether `session` has commands left running in it in its holder's record.
+    pub async fn note_background(&self, session: &str, working: bool) {
+        let sessions = {
+            let mut sessions = lock(&self.background);
+            if sessions.contains_key(session) == working {
+                return;
+            }
+            if working {
+                sessions.insert(session.to_owned(), Value::Bool(true));
+            } else {
+                sessions.remove(session);
+            }
+            sessions.clone()
+        };
+        let note = Metadata::from_iter([("backgroundSessions".into(), Value::Object(sessions))]);
+        self.rpc.note(note).await;
     }
 
     /// Where the earliest turn under way in it began: what the next resident replays from.
@@ -305,6 +325,13 @@ impl Shared {
         first_id: u64,
         turns: serde_json::Map<String, Value>,
     ) -> Arc<Server> {
+        let background = controller
+            .welcome
+            .meta
+            .get("backgroundSessions")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         let (rpc, mut incoming) = Rpc::over(
             controller,
             Options {
@@ -321,6 +348,7 @@ impl Shared {
             signed_in_as: Plain::new(identity),
             compaction,
             turns: Plain::new(turns),
+            background: Plain::new(background),
             waiting: Plain::new(waiting),
             gate,
         });

@@ -14,7 +14,7 @@ use std::{
 
 use serde_json::{Map, Value, json};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, oneshot},
     task::JoinSet,
     time::Instant,
 };
@@ -37,6 +37,7 @@ use super::{
     asks,
     projection::Lane,
     server::{Event, Route, Server, Shared, lock, stopped},
+    terminals::{Listed, Stop, Terminals},
 };
 
 /// What Codex's models are told of asking you. They list request_user_input outside Plan too,
@@ -46,6 +47,10 @@ pub(super) const ASKING_WORDS: &str = "Outside Plan mode, ask the user with requ
 const LOAD: Duration = Duration::from_secs(60);
 const STEER: Duration = Duration::from_secs(30);
 const STOP: Duration = Duration::from_secs(10);
+/// How often the commands it left running are listed again while any runs, and a list's wait.
+const TERMINALS: Duration = Duration::from_secs(30);
+/// Pages of a terminal list followed at most.
+const LIST_PAGES: usize = 20;
 /// Turned down by its box this many times with no work in between: no further turn for it; and
 /// this many in one turn: the turn is stopped.
 const TURNED_DOWN_TURNS: u32 = 2;
@@ -62,7 +67,9 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Handover(Reply<()>),
     LetGo(TurnNote, Reply<()>),
-    Close(Reply<()>),
+    /// `signed_out`: its account signed out (a turn under way fails, as Codex stopped);
+    /// otherwise removed, or the box stopping (it ends as stopped).
+    Close(bool, Reply<()>),
 }
 
 #[derive(Clone)]
@@ -95,6 +102,11 @@ impl Conversation {
         );
         let current = Arc::new(Plain::new(None));
         let handed = Arc::new(Plain::new(Vec::new()));
+        let terminals = Terminals::new(
+            &context.session_id,
+            &context.directory.to_string_lossy(),
+            context.background.clone(),
+        );
         let conversation = Self {
             commands,
             current: current.clone(),
@@ -123,6 +135,9 @@ impl Conversation {
                 turned_down: 0,
                 deadline: None,
                 closing: false,
+                terminals,
+                list_at: None,
+                relist: Arc::new(Notify::new()),
             }
             .run(receiver, events),
         );
@@ -146,8 +161,8 @@ impl Conversation {
         self.send(|reply| Command::LetGo(note, reply)).await
     }
 
-    pub async fn close(&self) -> io::Result<()> {
-        self.send(Command::Close).await
+    pub async fn close(&self, signed_out: bool) -> io::Result<()> {
+        self.send(|reply| Command::Close(signed_out, reply)).await
     }
 }
 
@@ -297,6 +312,12 @@ struct Actor {
     turned_down: u32,
     deadline: Option<Instant>,
     closing: bool,
+    /// The commands it left running in background terminals.
+    terminals: Terminals,
+    /// When they're listed again.
+    list_at: Option<Instant>,
+    /// One was stopped: they're listed again now.
+    relist: Arc<Notify>,
 }
 
 fn envelope(event: TurnEvent) -> EventEnvelope {
@@ -329,6 +350,14 @@ impl Actor {
                     None => std::future::pending().await,
                 }
             };
+            let list_at = self.list_at;
+            let listing = async {
+                match list_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let relist = self.relist.clone();
             let result = tokio::select! {
                 command = commands.recv() => match command {
                     Some(command) => self.command(command).await,
@@ -340,6 +369,8 @@ impl Actor {
                     Err(_) => Ok(()),
                 },
                 () = timer => self.expired().await,
+                () = listing => self.read_terminals(false).await,
+                () = relist.notified() => self.read_terminals(true).await,
             };
             if let Err(error) = result {
                 eprintln!("Codex conversation {}: {error}", self.session);
@@ -388,7 +419,19 @@ impl Actor {
                 let result = self.let_go(note).await;
                 let _ = reply.send(result);
             }
-            Command::Close(reply) => {
+            Command::Close(signed_out, reply) => {
+                // Its account signed out (Codex stopped under it), or removed, or the box
+                // stopping (the turn ends as stopped, without Stop).
+                self.closing = true;
+                if self.active.is_some() {
+                    self.stop_native().await?;
+                    let outcome = if signed_out {
+                        Outcome::Failed(failure("Codex stopped."))
+                    } else {
+                        Outcome::Interrupted
+                    };
+                    self.finish(outcome).await?;
+                }
                 if let Some(server) = self.server.clone().filter(|server| !server.closed())
                     && let Some(native) = self.native.clone().filter(|_| self.loaded)
                 {
@@ -403,6 +446,10 @@ impl Actor {
                 }
                 if let Some(relay) = &self.relay {
                     relay.drop_relayed(&self.session, self.holder);
+                }
+                self.terminals.reset();
+                if let Some(server) = self.server.clone().filter(|server| !server.closed()) {
+                    server.note_background(&self.session, false).await;
                 }
                 self.closing = true;
                 let _ = reply.send(Ok(()));
@@ -422,6 +469,7 @@ impl Actor {
         if self.server.as_ref().is_none_or(|old| old.id != server.id) {
             self.server = Some(server.clone());
             self.loaded = false;
+            self.terminals.reset();
         }
         self.route();
         let instructions = [instructions, ASKING_WORDS]
@@ -558,6 +606,9 @@ impl Actor {
             .as_str()
             .ok_or_else(|| io::Error::other("Codex didn't start a thread."))?
             .to_owned();
+        if self.native.as_ref().is_some_and(|native| *native != id) {
+            self.terminals.reset();
+        }
         self.native = Some(id.clone());
         self.route();
         self.state.insert("codexThread".into(), json!(id));
@@ -604,7 +655,7 @@ impl Actor {
             .begin(input.id, prompt, start, input.instructions, sink)
             .await;
         if result.is_err() {
-            self.busy.store(false, Ordering::Relaxed);
+            self.set_busy();
         }
         result
     }
@@ -788,6 +839,9 @@ impl Actor {
             .native
             .clone()
             .ok_or_else(|| io::Error::other("This conversation has no Codex thread."))?;
+        if self.server.as_ref().is_none_or(|old| old.id != server.id) {
+            self.terminals.reset();
+        }
         self.server = Some(server.clone());
         self.loaded = true;
         self.route();
@@ -881,6 +935,7 @@ impl Actor {
                 }
                 self.loaded = false;
                 self.server = None;
+                self.terminals.reset();
                 self.route();
                 if self.active.as_ref().is_some_and(|active| active.stopping) {
                     return self.finish(Outcome::Interrupted).await;
@@ -1024,6 +1079,7 @@ impl Actor {
             }
         }
         // Dismissed: a turn at work hears so rather than wait on it; one that's over just ends.
+        let dismissed = said.is_none();
         let said = match said {
             Some(said) => said,
             None if active.between => return self.settle_between().await,
@@ -1038,7 +1094,10 @@ impl Actor {
         {
             return Ok(());
         }
-        self.answers.push(said);
+        // (A dismissal its turn didn't take isn't kept: there's nothing to tell a next turn.)
+        if !dismissed {
+            self.answers.push(said);
+        }
         if self.active.as_ref().is_some_and(|active| active.between) {
             return self.settle_between().await;
         }
@@ -1099,6 +1158,10 @@ impl Actor {
         params: &Value,
         sequence: u64,
     ) -> io::Result<()> {
+        let thread = params["threadId"].as_str();
+        if thread.is_none_or(|thread| self.native.as_deref() == Some(thread)) {
+            self.terminals.heard(method, params);
+        }
         if method == "serverRequest/resolved" {
             // Codex settled an ask itself: its card goes.
             let id = params["requestId"].to_string();
@@ -1346,8 +1409,8 @@ impl Actor {
         }
         self.answers.clear();
         *lock(&self.current) = None;
-        self.busy.store(false, Ordering::Relaxed);
         let Some(mut active) = self.active.take() else {
+            self.set_busy();
             return Ok(());
         };
         if let (Some(server), Some(native)) = (&self.server, &self.native)
@@ -1355,6 +1418,11 @@ impl Actor {
         {
             server.note_turn(native, None).await;
         }
+        // What it left running, said before its turn's end.
+        if !self.closing {
+            self.read_terminals(true).await?;
+        }
+        self.set_busy();
         let mut events = active.lane.take();
         // What changed in its instructions was said with its message: told, once it took it.
         if let Some(told) = active.told.take()
@@ -1619,6 +1687,46 @@ impl Actor {
         self.stop_native().await
     }
 
+    /// Its app-server is kept on for its turn, and for what it left running.
+    fn set_busy(&self) {
+        let open = self.server.as_ref().is_some_and(|server| !server.closed());
+        let working = self.active.is_some() || open && self.terminals.keeps_working();
+        self.busy.store(working, Ordering::Relaxed);
+    }
+
+    /// Lists what it left running again (after a turn, `initial`: never during one otherwise); while
+    /// any runs, again in a while.
+    async fn read_terminals(&mut self, initial: bool) -> io::Result<()> {
+        self.list_at = None;
+        let (Some(server), Some(native)) = (self.server.clone(), self.native.clone()) else {
+            return Ok(());
+        };
+        if server.closed() || self.active.is_some() && !initial {
+            return Ok(());
+        }
+        match list_terminals(&server, &native).await {
+            Some(listed) => {
+                let relist = self.relist.clone();
+                self.terminals.listed(listed, |process| {
+                    terminate(
+                        server.clone(),
+                        native.clone(),
+                        process.to_owned(),
+                        relist.clone(),
+                    )
+                });
+            }
+            None => self.terminals.failed(&native, initial),
+        }
+        let working = self.terminals.keeps_working();
+        server.note_background(&self.session, working).await;
+        if working {
+            self.list_at = Some(Instant::now() + TERMINALS);
+        }
+        self.set_busy();
+        Ok(())
+    }
+
     async fn expired(&mut self) -> io::Result<()> {
         self.deadline = None;
         if self.active.as_ref().is_some_and(|active| active.stopping) {
@@ -1626,6 +1734,59 @@ impl Actor {
         }
         Ok(())
     }
+}
+
+/// Its background terminals as its app-server lists them; none when that failed.
+async fn list_terminals(server: &Server, thread: &str) -> Option<Vec<Listed>> {
+    let mut listed = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut params = json!({ "threadId": thread });
+        if let Some(cursor) = &cursor {
+            params["cursor"] = json!(cursor);
+        }
+        let answer = server
+            .rpc
+            .request(
+                "thread/backgroundTerminals/list",
+                Some(params),
+                Some(TERMINALS),
+            )
+            .await
+            .ok()?;
+        listed.extend(answer["data"].as_array()?.iter().filter_map(Listed::from));
+        cursor = answer["nextCursor"]
+            .as_str()
+            .filter(|next| !next.is_empty() && !seen.contains(*next))
+            .map(str::to_owned);
+        let Some(next) = cursor.clone() else {
+            return Some(listed);
+        };
+        seen.insert(next);
+        if seen.len() >= LIST_PAGES {
+            return Some(listed);
+        }
+    }
+}
+
+/// Stops one of its terminals through Codex, and lists them again.
+fn terminate(server: Arc<Server>, thread: String, process: String, relist: Arc<Notify>) -> Stop {
+    Arc::new(move || {
+        let (server, relist) = (server.clone(), relist.clone());
+        let params = json!({ "threadId": thread, "processId": process });
+        Box::pin(async move {
+            let _ = server
+                .rpc
+                .request(
+                    "thread/backgroundTerminals/terminate",
+                    Some(params),
+                    Some(TERMINALS),
+                )
+                .await;
+            relist.notify_one();
+        })
+    })
 }
 
 fn field_text(value: Option<&Value>) -> String {

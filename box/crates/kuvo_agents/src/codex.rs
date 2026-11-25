@@ -8,6 +8,7 @@ mod citations;
 mod program;
 mod projection;
 mod server;
+mod terminals;
 mod thread;
 
 use std::{
@@ -79,7 +80,7 @@ struct Codex {
 impl Codex {
     /// Its conversations let go of, and their app-server stopped: they're loaded again in a new one
     /// as they're next used.
-    async fn stop_all(&self) {
+    async fn stop_all(&self, signed_out: bool) {
         let threads: Vec<_> = self
             .threads
             .lock()
@@ -87,7 +88,7 @@ impl Codex {
             .drain()
             .map(|(_, thread)| thread)
             .collect();
-        join_all(threads.iter().map(thread::Conversation::close)).await;
+        join_all(threads.iter().map(|thread| thread.close(signed_out))).await;
         self.shared.shutdown().await;
     }
 }
@@ -127,7 +128,7 @@ impl Agent for Codex {
     fn sign_out(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
             self.shared.program.logout().await?;
-            self.stop_all().await;
+            self.stop_all(true).await;
             self.shared.account.forget_models();
             Ok(())
         })
@@ -137,7 +138,7 @@ impl Agent for Codex {
     /// Keychain's or keyring's item too, before the folder goes.
     fn remove_credentials(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
-            self.stop_all().await;
+            self.stop_all(false).await;
             if self.shared.program.added() {
                 let _ = self.shared.program.logout().await;
             }
@@ -147,7 +148,7 @@ impl Agent for Codex {
 
     fn shutdown(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
-            self.stop_all().await;
+            self.stop_all(false).await;
             Ok(())
         })
     }
