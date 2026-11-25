@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Automatic update checks keep their six-hour schedule across restarts. Check for Updates still looks for the latest release immediately.
+- Work Queue agents on Rust computers name GitHub issues by their latest title and find a live item on another computer instead of a deleted local copy.
 
 - Work waiting for a computer’s first Rust update is sent only after that computer confirms the update.
 - Rust computers hold Work Queue changes while the conversation moves, and keep saved mentions linked when their item receives a number. Local attachments selected for work kept on another computer travel with their file contents.
