@@ -332,11 +332,45 @@ pub struct Book {
     pub roster: BTreeMap<String, String>,
 }
 impl Book {
+    /// Only a successful maker observation from a currently admitted peer
+    /// stands in for our own fetch. Borrowed local rows have no checked time.
+    pub fn freshest(&self, account: &Account) -> Option<&AccountMail> {
+        let identity = account.identity.as_ref()?;
+        self.peers
+            .iter()
+            .filter(|(key, peer)| {
+                self.roster.contains_key(*key) && self.scope.is_some() && peer.setup == self.scope
+            })
+            .flat_map(|(_, peer)| &peer.accounts)
+            .filter(|other| {
+                other.service == account.service
+                    && other.identity.as_ref() == Some(identity)
+                    && other.facts.problem.is_none()
+                    && other.facts.checked.is_some_and(|at| at > 0)
+            })
+            .max_by_key(|other| other.facts.checked)
+    }
     pub fn read(path: &Path) -> std::io::Result<Self> {
         let Some(bytes) = kuvo_store::files::read(path)? else {
             return Ok(Self::default());
         };
         if let Ok(mut book) = serde_json::from_slice::<Self>(&bytes) {
+            for group in book.groups.values_mut() {
+                group.retain(|_, trail| trail.valid_kept());
+            }
+            for peer in book.peers.values_mut() {
+                for group in peer.trails.values_mut() {
+                    group.retain(|_, trail| trail.valid_kept());
+                }
+                for account in &mut peer.accounts {
+                    let count = account.windows.len();
+                    account.windows.retain(Window::valid_kept);
+                    if count != account.windows.len() {
+                        account.facts.checked = None;
+                        account.facts.next = None;
+                    }
+                }
+            }
             // Earlier Rust caches keyed shared windows by the maker's ID. Reuse
             // their accepted evidence, not those labels, when opening them.
             for group in book.groups.values_mut() {

@@ -23,6 +23,9 @@ libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
 rustix = { version = "1", features = ["fs", "process", "event", "mount", "thread"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+jiff = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 

@@ -74,18 +74,24 @@ pub async fn verify_sign_ins(
         if !service.has_engine_accounts() {
             return;
         }
-        match kuvo_services::usage::engine_readers::kept_credentials(home.to_owned()).await {
-            Ok(Some(credentials)) => {
+        // A current engine keeps this evidence in SQLite. The legacy API
+        // fallback addresses only an already-running engine; don't let a
+        // blocked legacy process delay drawing the rings.
+        let current = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            engine_credentials(engine, home.to_owned()),
+        )
+        .await;
+        match current {
+            Ok(Ok(Some(credentials))) => {
                 if let Some(accounts) =
                     kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
                 {
                     service.confirm_engine_sign_ins(&accounts, limits::now());
                 }
             }
-            Ok(None) if engine.running_bot_engine().await.is_none() => {
-                service.confirm_engine_sign_ins(&[], limits::now());
-            }
-            _ => {} // A running legacy engine's next refresh confirms its own credentials.
+            Ok(Ok(None)) => service.confirm_engine_sign_ins(&[], limits::now()),
+            _ => {} // An unreadable credential source is not a confirmed sign-out.
         }
     };
     tokio::join!(native, standalone, engine);
@@ -121,6 +127,20 @@ pub async fn refresh(
         if selected
             .as_ref()
             .is_some_and(|id| id != &provider.to_string())
+        {
+            continue;
+        }
+        if !explicit
+            && selected.is_none()
+            && service.defer_passive_provider(
+                &provider.to_string(),
+                limits::now(),
+                if provider.kind == AgentKind::Claude {
+                    15 * 60_000
+                } else {
+                    10 * 60_000
+                },
+            )
         {
             continue;
         }
@@ -289,6 +309,7 @@ pub async fn refresh_engine(
     reader: kuvo_services::usage::engine_readers::Reader,
     home: std::path::PathBuf,
     selected: Option<String>,
+    explicit: bool,
 ) -> bool {
     // Never wake the engine solely to poll quota. A saved reading is usable only
     // when the engine still has the matching active credential.
@@ -313,7 +334,19 @@ pub async fn refresh_engine(
     if let Some(accounts) = kuvo_services::usage::engine_readers::admitted_accounts(&credentials) {
         service.confirm_engine_sign_ins(&accounts, at);
     }
-    let held = service.held_engine_providers(at);
+    let mut held = service.held_engine_providers(at);
+    if !explicit
+        && selected.is_none()
+        && let Some(accounts) =
+            kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+    {
+        for account in accounts {
+            if !held.contains(&account.provider) && service.defer_passive(&account, at, 10 * 60_000)
+            {
+                held.insert(account.provider);
+            }
+        }
+    }
     let Some(mut batch) = reader
         .read(credentials, at, &held, selected.as_deref())
         .await
@@ -322,7 +355,7 @@ pub async fn refresh_engine(
     };
     // A maker's reply can arrive after the user has changed or removed a key.
     // The current SQLite credential is authoritative, never the old response.
-    match kuvo_services::usage::engine_readers::kept_credentials(home).await {
+    match engine_credentials(&engine, home).await {
         Ok(Some(credentials)) => {
             let Some(accounts) =
                 kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
@@ -339,7 +372,7 @@ pub async fn refresh_engine(
                 .providers
                 .retain(|p| accounts.iter().any(|a| &a.provider == p));
         }
-        Ok(None) if engine.running_bot_engine().await.is_none() => {
+        Ok(None) => {
             service.confirm_engine_sign_ins(&[], limits::now());
             return false;
         }
@@ -347,7 +380,6 @@ pub async fn refresh_engine(
             eprintln!("Could not recheck engine plan accounts: {error}");
             return true;
         }
-        _ => {}
     }
     match tokio::task::spawn_blocking(move || {
         let mut failed = false;
@@ -608,6 +640,7 @@ impl kuvo_services::usage::resets::Port for ResetPort {
                         reader.clone(),
                         home.clone(),
                         Some(provider.into()),
+                        true,
                     )
                     .await;
                 }

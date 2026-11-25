@@ -761,7 +761,9 @@ pub(super) fn rail(rows: &[Value]) -> Vec<Value> {
     let mut items = vec![];
     for row in shown {
         let key = rail_key(row);
-        let members = &groups[key];
+        let Some(members) = groups.get(key) else {
+            continue;
+        };
         if members.len() < 3 {
             let mut item = json!({"key":key,"rows":[row["id"]],"ring":row["id"],"selected":row["id"],"title":row["card"]["title"]});
             if let Some(dot) = row["card"].get("dot") {

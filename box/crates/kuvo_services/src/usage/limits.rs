@@ -166,6 +166,14 @@ struct Entry {
     window_order: Vec<String>,
     #[serde(default)]
     notices: Vec<Fact>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    refusals: u8,
+    /// This locally admitted sign-in deferred a read to a peer’s real observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    borrowed_until: Option<u64>,
+}
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Saved {
@@ -252,6 +260,24 @@ impl Service {
             }
         };
         saved.version = 1;
+        for entry in saved.entries.values_mut() {
+            let count = entry.trails.len();
+            entry.trails.retain(|_, trail| trail.valid_kept());
+            if entry.trails.len() != count {
+                entry
+                    .window_order
+                    .retain(|id| entry.trails.contains_key(id));
+                entry
+                    .partial_missing
+                    .retain(|id| entry.trails.contains_key(id));
+                entry
+                    .notices
+                    .retain(|notice| entry.trails.contains_key(&notice.window));
+                entry.facts.checked = None;
+                entry.facts.next = None;
+                entry.borrowed_until = None;
+            }
+        }
         let legacy_cache = if file.exists() || cache_error.is_some() {
             super::legacy_limits::Cache::default()
         } else {
@@ -549,6 +575,8 @@ impl Service {
             partial_missing: BTreeSet::new(),
             window_order: vec![],
             notices: vec![],
+            refusals: 0,
+            borrowed_until: None,
         });
         if entry.trails.is_empty() && entry.facts.checked.is_none() {
             if let Some((facts, trails, order)) = self
@@ -603,7 +631,30 @@ impl Service {
                 window_order.push(id.clone());
             }
         }
-        if let Some(facts) = facts {
+        if let Some(mut facts) = facts {
+            if !only_resets && facts.problem.is_none() {
+                entry.borrowed_until = None;
+            }
+            if entry.account.account.is_none() && !only_resets {
+                if let Some(problem) = facts.problem.as_mut() {
+                    if problem.kind == ProblemKind::RateLimited {
+                        entry.refusals = entry.refusals.saturating_add(1);
+                        let wait = problem
+                            .until
+                            .map(|until| until.max(now + 10 * 60_000))
+                            .unwrap_or_else(|| {
+                                now + (60
+                                    * 60_000
+                                    * (1u64 << entry.refusals.saturating_sub(1).min(3)))
+                                .min(6 * 60 * 60_000)
+                            });
+                        facts.next = Some(wait);
+                        problem.until = Some(wait);
+                    }
+                } else {
+                    entry.refusals = 0;
+                }
+            }
             if only_resets {
                 entry.facts.extras.retain(|extra| match extra {
                     super::plan_facts::Extra::Resets { .. } => false,
@@ -620,6 +671,9 @@ impl Service {
                     entry.trails.clear();
                     entry.partial_missing.clear();
                     entry.notices.clear();
+                    if problem.kind == ProblemKind::Ended {
+                        facts.plan = facts.plan.or_else(|| entry.facts.plan.clone());
+                    }
                     entry.facts = facts;
                 } else {
                     entry.facts.problem = facts.problem;
@@ -861,6 +915,8 @@ impl Service {
                     partial_missing: BTreeSet::new(),
                     window_order: vec![],
                     notices: vec![],
+                    refusals: 0,
+                    borrowed_until: None,
                 });
             if entry.trails.is_empty() && entry.facts.checked.is_none() {
                 if let Some((facts, trails, order)) = self
@@ -880,6 +936,18 @@ impl Service {
             let mut a = account.clone();
             if a.identity.is_none() && a.sign_in == entry.account.sign_in {
                 a.identity = entry.account.identity.clone();
+            }
+            if a.sign_in != entry.account.sign_in
+                && entry.facts.problem.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        super::plan_facts::ProblemKind::Expired
+                            | super::plan_facts::ProblemKind::Unreadable
+                    )
+                })
+            {
+                entry.facts.problem = None;
+                entry.facts.next = None;
             }
             entry.account = a;
         }
@@ -924,7 +992,7 @@ impl Service {
             state
                 .entries
                 .get(id)
-                .is_none_or(|e| !same_sign_in(a, &e.account))
+                .is_none_or(|e| a.sign_in != e.account.sign_in || !same_sign_in(a, &e.account))
         });
         if (imported || removed && self.file.exists()) && self.cache_error.is_none() {
             if let Ok(bytes) = serde_json::to_vec(&*state) {
@@ -956,7 +1024,29 @@ impl Service {
                     .iter()
                     .any(|a| provider == &a.provider && same_sign_in(a, &entry.account))
         });
-        if state.entries.len() == before {
+        let mut changed = state.entries.len() != before;
+        for account in accounts {
+            if let Some(entry) = state.entries.get_mut(&account.provider)
+                && entry.account.account.is_none()
+                && entry.account.sign_in != account.sign_in
+            {
+                entry.account.sign_in = account.sign_in.clone();
+                // A renewal of the same maker identity makes an expired
+                // sign-in eligible again, not a new usage window.
+                if entry.facts.problem.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        super::plan_facts::ProblemKind::Expired
+                            | super::plan_facts::ProblemKind::Unreadable
+                    )
+                }) {
+                    entry.facts.problem = None;
+                    entry.facts.next = None;
+                }
+                changed = true;
+            }
+        }
+        if !changed {
             return;
         }
         let keep = state
@@ -994,6 +1084,9 @@ impl Service {
             .cloned()
             .collect::<Vec<_>>();
         order.extend_from_slice(providers);
+        if state.entries.len() == before && state.order == order {
+            return;
+        }
         state.order = order;
         if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
             if let Ok(bytes) = serde_json::to_vec(&*state) {
@@ -1010,15 +1103,129 @@ impl Service {
             .values()
             .filter(|entry| {
                 entry.account.account.is_none()
-                    && entry
-                        .facts
-                        .problem
-                        .as_ref()
-                        .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::RateLimited)
-                    && entry.facts.next.is_some_and(|n| n > now)
+                    && entry.facts.problem.as_ref().is_some_and(|p| match p.kind {
+                        super::plan_facts::ProblemKind::Expired
+                        | super::plan_facts::ProblemKind::Unreadable => true,
+                        super::plan_facts::ProblemKind::RateLimited => {
+                            entry.facts.next.is_some_and(|n| n > now)
+                        }
+                        _ => false,
+                    })
             })
             .map(|e| e.account.provider.clone())
             .collect()
+    }
+
+    /// A connected client need not ask the same maker again while its own
+    /// reading is current or an admitted peer just read the same account.
+    /// A borrowed reading never becomes a local checked timestamp or notice.
+    pub fn defer_passive(&self, account: &Account, now: u64, every: u64) -> bool {
+        let mut state = self.state.lock().expect("limits lock");
+        let mut account = account.clone();
+        let old = state
+            .entries
+            .get(&account.provider)
+            .filter(|entry| same_sign_in(&entry.account, &account));
+        if let Some(entry) = old {
+            if account.identity.is_none() && account.sign_in == entry.account.sign_in {
+                account.identity = entry.account.identity.clone();
+            }
+            if entry.facts.next.is_some_and(|at| at > now)
+                || entry.facts.problem.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        super::plan_facts::ProblemKind::Expired
+                            | super::plan_facts::ProblemKind::Unreadable
+                    )
+                })
+            {
+                return true;
+            }
+        }
+        let peer_checked = {
+            let book = self.peer_book.lock().expect("peer limits");
+            book.freshest(&account).and_then(|peer| peer.facts.checked)
+        };
+        let Some(checked) = peer_checked else {
+            return false;
+        };
+        let next = checked.saturating_add(every).saturating_add(2 * 60_000);
+        // Honor the two-minute slack only after we have agreed to defer.
+        if now.saturating_sub(checked) >= every
+            && old
+                .and_then(|entry| entry.borrowed_until)
+                .is_none_or(|at| at <= now || next <= now)
+        {
+            return false;
+        }
+        if old.is_some_and(|entry| entry.borrowed_until == Some(next) && entry.account == account) {
+            return true;
+        }
+        let mut entry = old.cloned().unwrap_or_else(|| Entry {
+            account: account.clone(),
+            facts: Default::default(),
+            trails: BTreeMap::new(),
+            partial_missing: BTreeSet::new(),
+            window_order: vec![],
+            notices: vec![],
+            refusals: 0,
+            borrowed_until: None,
+        });
+        entry.account = account.clone();
+        entry.borrowed_until = Some(next);
+        if !state.order.contains(&account.provider) {
+            state.order.push(account.provider.clone());
+        }
+        state.entries.insert(account.provider, entry);
+        if self.cache_error.is_none()
+            && let Ok(bytes) = serde_json::to_vec(&*state)
+            && let Err(error) = kuvo_store::files::write_secret(&self.file, &bytes)
+        {
+            eprintln!("Couldn't keep the peer plan read schedule: {error}");
+        }
+        self.publish(&state, now);
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+        true
+    }
+    pub fn defer_passive_provider(&self, provider: &str, now: u64, every: u64) -> bool {
+        let account = self
+            .state
+            .lock()
+            .expect("limits lock")
+            .entries
+            .get(provider)
+            .map(|entry| entry.account.clone());
+        account.is_some_and(|account| self.defer_passive(&account, now, every))
+    }
+
+    /// Completion belongs to a refresh round, not to any one provider.
+    fn checked_times(&self) -> BTreeMap<String, u64> {
+        self.state
+            .lock()
+            .expect("limits lock")
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| entry.facts.checked.map(|at| (id.clone(), at)))
+            .collect()
+    }
+    fn round_failed(&self, before: &BTreeMap<String, u64>, transport_failed: bool) -> bool {
+        let state = self.state.lock().expect("limits lock");
+        let mut checked = false;
+        for (id, entry) in &state.entries {
+            let Some(at) = entry.facts.checked.filter(|at| before.get(id) != Some(at)) else {
+                continue;
+            };
+            checked = true;
+            let Some(problem) = &entry.facts.problem else {
+                return false;
+            };
+            if problem.kind == super::plan_facts::ProblemKind::Ended
+                || problem.unknown && entry.trails.values().any(|trail| trail.current.read == at)
+            {
+                return false;
+            }
+        }
+        checked || transport_failed
     }
 
     pub fn reset_permissions(&self, allowed: BTreeMap<String, bool>) {
@@ -1119,6 +1326,16 @@ impl Service {
         let mut groups = Vec::<Group>::new();
         let mut group_ids = BTreeMap::<String, usize>::new();
         let mut book = self.peer_book.lock().expect("peer limits");
+        let borrowed = state
+            .ordered()
+            .into_iter()
+            .filter_map(|entry| {
+                entry.borrowed_until?;
+                let peer = book.freshest(&entry.account)?;
+                (peer.facts.checked > entry.facts.checked)
+                    .then(|| (entry.account.provider.clone(), peer.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut add = |entry: &Entry,
                        key: &str,
                        name: &str,
@@ -1134,8 +1351,33 @@ impl Service {
             {
                 return;
             }
-            let (local, row) = project(entry, key, name, now);
+            let (mut local, row) = project(entry, key, name, now);
             if here {
+                if let Some(peer) = borrowed.get(&entry.account.provider) {
+                    let fields = local.as_object_mut().expect("account");
+                    fields.insert(
+                        "windows".into(),
+                        json!(
+                            peer.windows
+                                .iter()
+                                .map(|w| shown(w, now))
+                                .collect::<Vec<_>>()
+                        ),
+                    );
+                    if let Some(plan) = &peer.facts.plan {
+                        fields.insert("plan".into(), json!(plan));
+                    }
+                    if let Some(balance) = &peer.facts.balance {
+                        fields.insert("balance".into(), json!(balance));
+                    }
+                    if peer.facts.extras.is_empty() {
+                        fields.shift_remove("extras");
+                    } else {
+                        fields.insert("extras".into(), json!(peer.facts.extras));
+                    }
+                    fields.shift_remove("problem");
+                    fields.insert("next".into(), json!(entry.borrowed_until));
+                }
                 accounts.push(local);
             }
             let id = entry.account.row(key);
@@ -1251,6 +1493,8 @@ impl Service {
                     partial_missing: BTreeSet::new(),
                     window_order: account.windows.iter().map(|w| w.id.clone()).collect(),
                     notices: account.notices.clone(),
+                    refusals: 0,
+                    borrowed_until: None,
                 };
                 add(
                     &entry,
@@ -1455,7 +1699,12 @@ fn ordered_trails(entry: &Entry) -> Vec<&Trail> {
         .iter()
         .chain(entry.trails.keys())
         .filter(|id| seen.insert((*id).clone()))
-        .filter_map(|id| entry.trails.get(id))
+        .filter_map(|id| {
+            entry
+                .trails
+                .get(id)
+                .filter(|trail| trail.current.valid_kept())
+        })
         .collect()
 }
 fn ring_spans<'a>(
@@ -1589,20 +1838,21 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
     row["id"] = json!(acc.row(key));
     row["boxes"] = json!([box_record]);
     row["rings"] = json!(rings);
-    if !rings.is_empty() {
-        let bar = if rings.get("short").is_some_and(|s| {
-            s["used"].as_f64().unwrap_or(0.0)
-                >= rings
-                    .get("long")
-                    .and_then(|l| l["used"].as_f64())
-                    .unwrap_or(0.0)
-        }) {
-            "short"
-        } else {
-            "long"
-        };
+    let bar = match (rings.get("short"), rings.get("long")) {
+        (Some(short), Some(long)) => Some(
+            if short["used"].as_f64().unwrap_or(0.0) >= long["used"].as_f64().unwrap_or(0.0) {
+                ("short", short)
+            } else {
+                ("long", long)
+            },
+        ),
+        (Some(short), None) => Some(("short", short)),
+        (None, Some(long)) => Some(("long", long)),
+        _ => None,
+    };
+    if let Some((bar, ring)) = bar {
         row["bar"] = json!(bar);
-        row["level"] = rings[bar]["level"].clone();
+        row["level"] = ring["level"].clone();
     }
     if rings.is_empty() {
         let balance = entry.facts.balance.as_ref().and_then(|b| {
@@ -1710,6 +1960,7 @@ where
                     } else {
                         None
                     },
+                    false,
                 );
             }
         }
@@ -1732,7 +1983,7 @@ where
                         },
                         _=tokio::time::sleep_until(next)=>{
                             if *clients.borrow()==0 {break;}
-                            start_read(&connected_service,connected_reader.clone(),false,false,None);
+                            start_read(&connected_service,connected_reader.clone(),false,false,None,false);
                             next=tokio::time::Instant::now()+Duration::from_secs(60);
                         }
                     }
@@ -1748,7 +1999,14 @@ where
     let mut requested = service.menu.requests();
     tokio::spawn(async move {
         while requested.changed().await.is_ok() {
-            start_read(&menu_service, menu_reader.clone(), false, false, None);
+            start_read(
+                &menu_service,
+                menu_reader.clone(),
+                false,
+                false,
+                None,
+                false,
+            );
         }
     });
     let deadlines = service.clone();
@@ -1776,7 +2034,7 @@ where
                 tokio::select! {
                     result=changes.changed()=>{if result.is_err(){return;}},
                     _=tokio::time::sleep(std::time::Duration::from_millis(at.saturating_sub(now())))=>{
-                        if start_read(&deadlines,deadline_reader.clone(),true,false,Some(provider.clone())) {
+                        if start_read(&deadlines,deadline_reader.clone(),true,false,Some(provider.clone()),false) {
                             attempted.insert(provider,at);
                         } else if changes.changed().await.is_err(){return;}
                     }
@@ -1791,8 +2049,7 @@ where
     routes.register::<Refresh, _, _>(Access::Any, move |_| {
         let (service, read) = (manual.clone(), reader.clone());
         async move {
-            let _ = service.remote_refresh.send(());
-            if !start_read(&service, read.clone(), true, true, None) {
+            if !start_read(&service, read.clone(), true, true, None, true) {
                 if let Ok(guard) = tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     service.refreshing.lock(),
@@ -1800,7 +2057,7 @@ where
                 .await
                 {
                     drop(guard);
-                    start_read(&service, read, true, true, None);
+                    start_read(&service, read, true, true, None, true);
                 }
             }
             let _ =
@@ -1830,7 +2087,7 @@ where
                             yield kuvo_server::JsonLine::new(json!({"changed":true}))?;
                         }
                         _=heartbeat.tick()=>yield kuvo_server::JsonLine::new(json!({"heartbeat":true}))?,
-                        _=demand.tick()=>{start_read(&service,read.clone(),false,false,None);},
+                        _=demand.tick()=>{start_read(&service,read.clone(),false,false,None,false);},
                     }
                 }
             };
@@ -1844,6 +2101,7 @@ fn start_read<F, Fut>(
     manual: bool,
     explicit: bool,
     provider: Option<String>,
+    fanout: bool,
 ) -> bool
 where
     F: Fn(Option<String>, bool) -> Fut + Send + Sync + 'static,
@@ -1858,12 +2116,21 @@ where
         service.last_refresh.store(at, Relaxed);
         let service = service.clone();
         tokio::spawn(async move {
-            let failed = read(provider, explicit).await;
-            service.refresh_failed.store(failed, Relaxed);
-            if manual {
-                service.refresh_completed.store(now(), Relaxed);
+            let before = explicit.then(|| service.checked_times());
+            let transport_failed = read(provider, explicit).await;
+            if let Some(before) = before {
+                let failed = service.round_failed(&before, transport_failed);
+                service.refresh_failed.store(failed, Relaxed);
+                if !failed {
+                    service.refresh_completed.store(now(), Relaxed);
+                }
             }
             drop(guard);
+            // Only the initiating client round asks peers, after local sign-ins
+            // and their readings are known. A peer asked to read never fans out.
+            if fanout {
+                let _ = service.remote_refresh.send(());
+            }
             let _ = tokio::task::spawn_blocking({
                 let service = service.clone();
                 move || service.answer(now())

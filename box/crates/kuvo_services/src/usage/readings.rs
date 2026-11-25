@@ -36,6 +36,9 @@ impl Window {
     fn valid(&self) -> bool {
         !self.id.is_empty() && self.used.is_finite()
     }
+    pub(super) fn valid_kept(&self) -> bool {
+        self.valid() && (0.0..=1.0).contains(&self.used)
+    }
     /// Makers can name the same plan window differently (for example an
     /// engine and its native CLI). Its semantic identity is what it counts
     /// and how long it lasts; only nameless, spanless limits fall back to ID.
@@ -159,6 +162,17 @@ pub enum CardPrediction {
     Lasts,
 }
 impl Trail {
+    /// A persisted trail is not a maker observation. Refuse impossible
+    /// ratios and out-of-order/future samples before they enter a projection.
+    pub(super) fn valid_kept(&self) -> bool {
+        self.current.valid_kept()
+            && self.candidate.as_ref().is_none_or(Window::valid_kept)
+            && self
+                .samples
+                .iter()
+                .all(|s| s.at <= self.current.read && (0.0..=1.0).contains(&s.used))
+            && self.samples.windows(2).all(|pair| pair[0].at <= pair[1].at)
+    }
     /// A card's estimate uses the very same accepted, current-window samples as notices.
     pub fn card_prediction(&self, now: u64) -> Option<CardPrediction> {
         let w = &self.current;
@@ -416,10 +430,9 @@ impl Trail {
         // nor fictitious usage at the beginning of a time period.
         let stretch = self.lookback();
         let start = reset.saturating_sub(period);
-        let mut recent = self
-            .samples
-            .iter()
-            .filter(|s| s.at >= start && s.at >= window.read.saturating_sub(stretch));
+        let mut recent = self.samples.iter().filter(|s| {
+            s.at >= start && s.at >= window.read.saturating_sub(stretch) && s.at <= window.read
+        });
         let Some(first) = recent.next() else {
             return Pace::Unknown;
         };

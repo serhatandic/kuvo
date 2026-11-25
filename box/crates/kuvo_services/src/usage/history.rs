@@ -277,7 +277,9 @@ impl Slots {
     }
     pub fn merge(&mut self, other: &Self) {
         for slot in &other.order {
-            let models = &other.used[slot];
+            let Some(models) = other.used.get(slot) else {
+                continue;
+            };
             for (model, (tokens, cost)) in models {
                 self.add(*slot, model.clone(), *tokens, *cost);
             }
@@ -309,7 +311,9 @@ impl Slots {
         };
         let mut days = Days::new();
         for at in &self.order {
-            let models = &self.used[at];
+            let Some(models) = self.used.get(at) else {
+                continue;
+            };
             let Some(date) = date(*at) else {
                 continue;
             };
