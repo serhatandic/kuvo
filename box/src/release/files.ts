@@ -123,7 +123,14 @@ export function boxFiles(root: string, version: string, rust?: RustProgram): Box
   const programs: BoxFile[] = [];
   if (rust) {
     const name = rust.windows ? "kuvo-box.exe" : "kuvo-box";
-    programs.push({ path: `bin/${name}`, mode: 0o700, data: built(root, rust.executable) });
+    programs.push(
+      { path: `bin/${name}`, mode: 0o700, data: built(root, rust.executable) },
+      // Released beta.1 Macs still invoke these SSH verbs through the engine runtime.
+      { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "box/src/keeper/legacy-link.js") },
+      // A released Mac can replace the ordinary keeper. This signed entry is
+      // not named by its installer and can restore the ordinary one.
+      { path: "bin/.kuvo-start-keeper", mode: 0o700, data: boot.find(file => file.name === "kuvo-start")!.data },
+    );
     if (rust.windows) {
       const unwind = path.join(path.dirname(rust.executable), "libunwind.dll");
       if (fs.existsSync(unwind)) programs.push({ path: "bin/libunwind.dll", mode: 0o644, data: built(root, unwind) });

@@ -1,5 +1,8 @@
 //! Verify a target pack and publish its complete installable directory in one rename.
 
+mod repair;
+pub use repair::{repair_selected, repair_with_fetch};
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -360,7 +363,7 @@ pub fn prepare_install_selection(
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn select_initial(home: &Home, selection: &Release) -> io::Result<()> {
     selection.validate(home.root())?;
-    let keeper = selection.folder(home.root()).join("bin/kuvo-start");
+    let keeper = crate::shell_keeper(&selection.folder(home.root()).join("bin"));
     if !fs::symlink_metadata(keeper).is_ok_and(|entry| entry.is_file()) {
         return Err(io::Error::other("The selected release has no keeper."));
     }

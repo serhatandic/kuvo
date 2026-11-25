@@ -77,6 +77,8 @@ pub(crate) enum PersonalityChange {
     Patch(String, Value),
     Delete(String),
     Merge(Value),
+    /// A released Mac's SSH `box personalities`: the same merge, answered with the library.
+    Exchange(Value),
 }
 
 fn personality_id(id: &str) -> bool {
@@ -274,12 +276,13 @@ impl Library {
         let now = lease::wall();
         let removal_limit = if managed { usize::MAX } else { LOCAL_REMOVALS };
         let limits_size = match &change {
-            PersonalityChange::Merge(_) => managed,
+            PersonalityChange::Merge(_) | PersonalityChange::Exchange(_) => managed,
             PersonalityChange::Create(_) | PersonalityChange::Patch(_, _) => true,
             PersonalityChange::Delete(_) => false,
         };
+        let exchange = matches!(change, PersonalityChange::Exchange(_));
         let response = match change {
-            PersonalityChange::Merge(document) => {
+            PersonalityChange::Merge(document) | PersonalityChange::Exchange(document) => {
                 if document
                     .get("personalities")
                     .and_then(Value::as_array)
@@ -315,7 +318,11 @@ impl Library {
                         (old.get(id).copied() != Some(entry)).then_some(id)
                     })
                     .collect();
-                Response::ok(json!({"changed": changed}))
+                Response::ok(if exchange {
+                    self.shared()
+                } else {
+                    json!({"changed": changed})
+                })
             }
             PersonalityChange::Create(value) => {
                 let Some(made) = live(format!("custom.{}", uuid::Uuid::new_v4()), now, &value)

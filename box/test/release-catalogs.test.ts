@@ -106,6 +106,9 @@ test("the release builder packs Rust target executables with the common release 
     writeFileSync(pinFile, JSON.stringify(pin))
     const common = boxFiles(root, "0.8.0").filter(file => file.path !== "bin/kuvo-link.js" && file.path !== "bin/kuvo-agents.js")
     for (const [target, program, windows] of [
+      ["aarch64-apple-darwin", "kuvo-box", false],
+      ["x86_64-apple-darwin", "kuvo-box", false],
+      ["aarch64-unknown-linux-musl", "kuvo-box", false],
       ["x86_64-unknown-linux-musl", "kuvo-box", false],
       ["x86_64-pc-windows-gnullvm", "kuvo-box.exe", true],
     ] as const) {
@@ -132,7 +135,11 @@ test("the release builder packs Rust target executables with the common release 
         expect<Buffer>(readFileSync(bundled), file.path).toEqual(file.data)
         expect(statSync(bundled).mode & 0o777, file.path).toBe(file.mode)
       }
-      expect(existsSync(join(extracted, "bin/kuvo-link.js"))).toBe(false)
+      const delegate = readFileSync(join(root, "box/src/keeper/legacy-link.js"))
+      expect(readFileSync(join(extracted, "bin/kuvo-link.js"))).toEqual(delegate)
+      expect(manifest.files["bin/kuvo-link.js"]).toBe(createHash("sha256").update(delegate).digest("hex"))
+      expect(readFileSync(join(extracted, "bin/.kuvo-start-keeper"))).toEqual(readFileSync(join(extracted, "bin/kuvo-start")))
+      expect(manifest.files["bin/.kuvo-start-keeper"]).toBe(manifest.files["bin/kuvo-start"])
       expect(existsSync(join(extracted, "bin/kuvo-agents.js"))).toBe(false)
       if (windows) {
         expect(readFileSync(join(extracted, "bin/libunwind.dll"), "utf8")).toBe("runtime library")

@@ -1415,6 +1415,7 @@ impl Owner {
             Command::Personalities(change) => {
                 let before = preferences::library(&self.files, &self.link)?;
                 let managed = self.link.setup().is_ok();
+                let exchange = matches!(change, preferences::PersonalityChange::Exchange(_));
                 let (after, response) = before.change(change, managed);
                 if response.status != 200 {
                     return Ok(response);
@@ -1427,6 +1428,13 @@ impl Owner {
                 let receipt = self
                     .save(SharedKind::SetupPersonalities, after.shared(), None, None)
                     .await?;
+                if exchange {
+                    // As the released Mac's command answered: the library, and its save apart.
+                    let mut value = response.value;
+                    value["operation"] = json!(receipt.operation);
+                    value["save"] = json!(receipt);
+                    return Ok(Response::ok(value));
+                }
                 Ok(Response::ok(with_receipt(response.value, receipt)))
             }
             Command::Zone { zone, revision } => {

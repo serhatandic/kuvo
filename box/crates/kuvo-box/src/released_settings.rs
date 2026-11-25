@@ -79,8 +79,42 @@ pub fn run(
                 json!({"status":200})
             }
         }
+        "personalities" => personalities(home, &input)?,
         _ => unreachable!(),
     };
     println!("{answer}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// beta.1 merges its library with the machine's over SSH. The resident owns the library and
+/// its setup save, so the command is handed to it as an internal route, answered as before:
+/// the library, with the save beside it.
+fn personalities(home: &Home, input: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let given: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let request = json!({"method": "POST", "path": kuvo_setup::PERSONALITY_EXCHANGE, "body": given});
+    let mut output = Vec::new();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(kuvo_server::ssh::pipe(
+            home.root(),
+            kuvo_server::ssh::Command::Route {
+                internal: true,
+                internal_path: None,
+            },
+            request.to_string().as_bytes(),
+            &mut output,
+        ))?;
+    let line = output
+        .split(|byte| *byte == b'\n')
+        .rfind(|line| !line.is_empty())
+        .unwrap_or_default();
+    let routed: Value = serde_json::from_slice(line)?;
+    let mut answer = routed["body"]
+        .as_str()
+        .and_then(|body| serde_json::from_str::<Value>(body).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    answer["status"] = routed["status"].clone();
+    Ok(answer)
 }

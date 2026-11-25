@@ -165,6 +165,18 @@ impl SetupHandle {
             }
         });
         let setup = self.clone();
+        routes.register::<PersonalityExchange, _, _>(Access::Internal, move |call| {
+            let setup = setup.clone();
+            async move {
+                setup.require_primary("personalities")?;
+                respond(
+                    setup
+                        .request(Command::Personalities(PersonalityChange::Exchange(call.body)))
+                        .await?,
+                )
+            }
+        });
+        let setup = self.clone();
         routes.register::<get_kuvo_computers_add_credentials::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
@@ -503,6 +515,23 @@ impl RouteSpec for SaveLocal {
 }
 impl JsonStatus<200> for SaveLocal {
     type Body = crate::Receipt;
+}
+
+/// A released beta.1 Mac's `box personalities` over SSH; internal, not in the public export.
+pub const PERSONALITY_EXCHANGE: &str = "kuvo/personalities/exchange";
+struct PersonalityExchange;
+impl RouteSpec for PersonalityExchange {
+    type Body = Value;
+    const ROUTE: &'static Route = &Route {
+        method: "POST",
+        path: PERSONALITY_EXCHANGE,
+        feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))],
+        body: Some(&Shape::Primitive(Primitive::Any)),
+    };
+}
+impl JsonStatus<200> for PersonalityExchange {
+    type Body = Value;
 }
 
 struct InstallerRecovery;

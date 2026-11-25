@@ -22,6 +22,8 @@ const areas = new Map([
   ["agent-sessions", "./agent-sessions.test.mjs"],
   ["agent-turn-fixture", "./agent-turn-fixture.test.mjs"],
   ["compat", "./compat.test.mjs"],
+  ["compat-repair", "./compat-repair.test.mjs"],
+  ["compat-shim", "./compat-shim.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["settings", "./settings.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],

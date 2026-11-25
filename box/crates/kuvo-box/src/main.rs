@@ -170,8 +170,22 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let supervised =
         cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
+    // An older keeper says no format version.
+    let repair = match (word(0), word(1), word(2), args.len()) {
+        (Some("repair"), _, _, 1) | (Some("repair"), Some("--format-version"), Some("0" | "1"), 3) => {
+            true
+        }
+        (Some("repair"), ..) => {
+            return Err("Use repair with --format-version 1.".into());
+        }
+        _ => false,
+    };
+    let wsl_startup = match (word(0), word(1), args.len()) {
+        (Some("box"), Some("wsl-startup"), 3) => word(2),
+        _ => None,
+    };
     let released_settings = match (word(0), word(1), args.len()) {
-        (Some("box"), Some("read" | "adopt" | "change"), 2) => word(1),
+        (Some("box"), Some("read" | "adopt" | "change" | "personalities"), 2) => word(1),
         (Some("box"), Some("key"), 3) => word(1),
         _ => None,
     };
@@ -187,7 +201,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || keeper.is_some()
             || probe.is_some()
             || supervised
-            || released_settings.is_some() =>
+            || released_settings.is_some()
+            || wsl_startup.is_some()
+            || repair =>
         {
             None
         }
@@ -250,6 +266,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
                 #[cfg(not(target_os = "macos"))]
                 launch_agent: None,
+                #[cfg(target_os = "linux")]
+                windows_task: kuvo_keeper::wsl_task::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "linux"))]
+                windows_task: None,
             })
         };
         let outcome = kuvo_setup::uninstall::run(&home, check, startup);
@@ -266,6 +286,45 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{note}");
         }
         return Ok(ExitCode::from(outcome.status));
+    }
+    if repair {
+        // Only a scratch home takes a test's key and feed.
+        let scratch = kuvo_keeper::prepare_command::is_scratch(&home).unwrap_or(false);
+        let test = |name| std::env::var(name).ok().filter(|_| scratch);
+        let key = test("KUVO_TEST_RELEASE_KEY");
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        let feed = test("KUVO_TEST_RELEASE_FEED").unwrap_or_else(|| updates::RELEASES.into());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_keeper::staging::repair_with_fetch(&home, key, &feed))?;
+        println!("{result}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(distro) = wsl_startup {
+        // Only for the distribution it runs in, as WSL says.
+        #[cfg(target_os = "linux")]
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                match kuvo_keeper::wsl_task::WslTask::for_home(&home).await? {
+                    Some(task) if std::env::var("WSL_DISTRO_NAME").is_ok_and(|name| name == distro) => {
+                        task.register(&home).await.map(|()| true)
+                    }
+                    _ => Ok(false),
+                }
+            }) {
+            Ok(true) => return Ok(ExitCode::SUCCESS),
+            Ok(false) => {}
+            Err(error) => eprintln!("{error}"),
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = distro;
+        eprintln!(
+            "Kuvo Code couldn’t set up Windows sign-in startup. Sign in to Windows, check that WSL interop is enabled, then try again."
+        );
+        return Ok(ExitCode::FAILURE);
     }
     if let Some(verb) = released_settings {
         return released_settings::run(&home, verb, word(2));
