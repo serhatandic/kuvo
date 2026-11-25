@@ -270,7 +270,7 @@ scratch folder, the generated account ID, and an empty Undo record
 
 Carried to the rows that bring them:
 
-- Production vendor factory registration, as each adapter lands (4.2–4.5).
+- Production vendor factory registration, as each adapter lands (4.2–4.5). Codex's is in (4.2).
 - `sessions.test.ts` 9 (a program update's drain) and 12 (a model whose
   account is signed out): 4.2, with the first program updater and production
   account status.
@@ -737,3 +737,92 @@ Besides the files in the table above, these differences remain:
 | `run/agents/tmp/claude/catalog-settings.json` | Rust's model probe writes its settings there. TS passes them to the SDK. |
 | `run/work/background.json` `engine` place | The engine's place is written by the engine watcher (5.1). Rust writes the coding agents' `bridge` place. |
 | `run/work-queue/model.json`, `run/work/told.json` | 5.2 and 5.1. |
+
+## Codex (4.2)
+
+`kuvo_agents::codex` runs your own `codex` through its app-server
+(`codex app-server`, bare JSON-RPC on its pipes). One app-server serves all
+of an account's conversations, each one of its threads, under a holder
+(`kind: codex`, `key: ""`, the turns under way by Codex thread). It starts
+when first needed, initializes once, and stops after fifteen minutes with
+nothing on it. When the summary setting or the sign-in it started with
+changed, it starts again once nothing uses it. The factory is registered in
+the resident and takes its `ToolRelay`: each turn gives the thread Kuvo
+Code's tools and the computer's servers, and a closed thread drops them.
+The sandbox's own app-servers (one per session, and your account's) are
+6.1's; until then every Codex runs outside it, as the reference does with the
+sandbox off.
+
+[agents-codex](../../protocol/conformance/agents-codex.test.mjs) runs a
+scripted app-server ([codex.mjs](../../protocol/conformance/codex.mjs)) under
+both boxes: account, sign-in and models, and turns. A Rust-only case
+switches the keeper's release while a turn waits on an approval. The next
+resident takes up the same held app-server (same holder and child,
+initialized once), asks again under the same ID, and its answer reaches
+Codex once.
+
+Shared changes: the JSON-RPC connection says each message's holder line
+(`Incoming::*::sequence`), and can note, prepare and unpin
+(`Rpc::{note, prepare, unpin, seen, is_closed}`). `TurnInput::permissions`
+now follows the reference's `approvesAll`: Approve All only while no rule of
+the session's or the agent's holds anything back, Blocks are known and stop
+nothing, and it isn't Plan or Auto outside the sandbox
+(`Policy::approves_all`). The instructions note and picture helpers moved
+from `claude/` to the crate. `tool_relay::unproxied_loopback` keeps the
+relay's loopback addresses off any proxy an agent is given (`NO_PROXY`,
+`no_proxy`); Codex and Claude Code launch with it. The agent fixture's
+resident-replacement cases now switch releases through the keeper, as an
+update does. A separate case turns the keeper off and checks that the held
+agents stop and the next resident closes their turn.
+
+### TypeScript scenarios
+
+Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.ts) (121).
+
+| Cases | Coverage and remaining owner |
+|---|---|
+| 1 | Rust adapter: receipts before the steer, `thread/read` by client ID. Conformance case open (4.2). |
+| 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
+| 3 | 4.6 (spawned agents). |
+| 4–10 | Background terminals (#262): open (4.2), with the background model. |
+| 11–13 | A failed `initialize` stops that app-server and the next ask starts another; one stopped while starting isn't kept. Process cases open (4.2). |
+| 14–15 | Open (4.2): shutdown during credential reading, a forgotten thread. |
+| 16 | 6.1 (vault and the sandbox). |
+| 17–19 | Ported (both boxes). Making an image and failing to are open (4.2). |
+| 20–22 | Ported. |
+| 23 | Open (4.2): replies saved before citations were read, on reading. |
+| 24–28 | Ported. |
+| 29–32, 34 | Open (4.2): answers turned down with words, the asking words, a refused steer with a card up. |
+| 33, 55 | Ported. |
+| 35–49, 57 | Open (4.2): telling a sleeping Codex its answer, trying again into a sleep. |
+| 50 | Ported. |
+| 51–54, 56, 58–60, 62, 64 | Open (4.2): answers at a turn's edge, two cards, counting refusals. |
+| 61, 63, 65 | Ported. |
+| 66, 72, 73 | Ported (the policies Codex starts with; Plan declines an edit itself). |
+| 67–71 | Open (4.2): Approve All answering Codex's own rules and MCP asks, MCP elicitation in each mode. |
+| 74–89 | 6.1 (Codex run whole in the sandbox, bots' memory with 5.1, attachments copied in). |
+| 90 | Ported (Computer Use plugins off at launch). |
+| 91–92 | Rust passes the relay's servers into the thread; conformance with the engine's servers open (4.2). |
+| 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
+| 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
+| 109 | Fast ported; Standard (null) and none picked open (4.2). |
+| 112–113 | Open: foreground commands listed while they run (background model). |
+| 114 | Open (4.2): a removed account should end the turn as stopped. |
+| 115–119 | Ported. |
+| 120 | Open (4.2): Stop during a summary. |
+| 121 | Open (4.2): the instructions note on a thread it goes on with. |
+
+Also still open for 4.2: `sessions.test.ts` 9 and 12, 59–60 and 127–139; the
+program updater; the live GPT-6-Luna run.
+
+### Verification
+
+| Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
+|---|---:|---:|---:|
+| macOS | 36/36 | 35/35, 1 skipped (Rust-only) | 6/6 |
+| Linux x86-64, lokum | 22/22 at b255c5fc0 | — | 6/6 |
+| WSL2, Ubuntu 24.04 | 22/22 at b255c5fc0 | — | 6/6 |
+| Native Windows x64 | 22/22 at b255c5fc0 | — | 6/6 |
+
+On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
+cases put that folder on the PATH.
