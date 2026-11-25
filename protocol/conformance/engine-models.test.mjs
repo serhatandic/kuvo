@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { request, until, write } from "./adapter.mjs";
+import { boxBinary, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
 
@@ -98,6 +98,15 @@ test("model speeds and standalone stars share one file and survive a restart", {
   });
 });
 
+// The Rust box answers for its integrated coding agents even with no signed-in accounts;
+// this fixture has no separate bridge for the TypeScript box.
+async function agentKnowledge(record) {
+  const info = await request(record, "GET", "kuvo/info");
+  assert.equal(info.status, 200, info.text);
+  const known = !boxBinary().typescript && info.json.features.includes("agents.accounts");
+  return { known, fields: known ? { generations: {} } : {} };
+}
+
 const reference = (providerID, id) => ({ providerID, id });
 const session = (here, id, model) => ({ ...sessionOf({ id, directory: here.home }), ...(model && { model }) });
 
@@ -127,9 +136,10 @@ test("the model picker offers models that run and chooses a supported starting m
     { ...retired, name: "Old", side: "engine", aliases: [], efforts: [], retiring: true },
     { ...ready, name: "One Free", side: "engine", aliases: ["latest"], efforts: ["low", "high"], free: true },
   ];
+  const agents = await agentKnowledge(record);
   assert.deepEqual(answer.json, {
     models: offered, providers: [{ id: "opencode", name: "OpenCode Zen" }], starred: [],
-    known: { engine: true, agents: false }, starting: { ...ready, variant: "high" },
+    ...agents.fields, known: { engine: true, agents: agents.known }, starting: { ...ready, variant: "high" },
   });
   const defaults = await request(record, "GET", route + "?for=defaults");
   assert.equal(defaults.status, 200, defaults.text);
@@ -179,7 +189,8 @@ test("the picker distinguishes free access from zero pricing and supplies an unn
     empty = await offered();
     return empty.json?.models?.length === 0;
   }, "the catalog without a runnable model to replace the saved models");
-  assert.deepEqual(empty.json, { known: { engine: true, agents: false }, models: [],
+  const agents = await agentKnowledge(record);
+  assert.deepEqual(empty.json, { ...agents.fields, known: { engine: true, agents: agents.known }, models: [],
     providers: [], starred: [], starting: null,
     startChoice: { label: "Choose a Model", refusal: "Choose a model to send it." } });
 });
@@ -375,7 +386,9 @@ test("an unloaded model catalog leaves session readiness and the picker start un
   assert.equal(first.status, 200, first.text);
   assert.deepEqual(first.json.sessions, {});
   const picker = await offered();
-  assert.deepEqual(picker.json.known, { engine: false, agents: false });
+  const agents = await agentKnowledge(record);
+  assert.deepEqual(picker.json.known, { engine: false, agents: agents.known });
+  assert.deepEqual(Object.hasOwn(picker.json, "generations") ? { generations: picker.json.generations } : {}, agents.fields);
   assert.equal(Object.hasOwn(picker.json, "starting"), false);
   assert.equal((await request(record, "POST", "kuvo/models/offered", {})).status, 405);
   here.engine.providers.push({ id: "local" }, { id: signingIn.providerID });
