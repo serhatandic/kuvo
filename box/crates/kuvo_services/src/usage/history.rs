@@ -88,6 +88,8 @@ fn price(event: &Observation, kind: Kind, pricing: &Pricing, fallback: Option<&s
     }
 }
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
+    super::engine_codex_history::schema(db)?;
+    super::cursor_history_store::schema(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS native_price(source TEXT NOT NULL,position INTEGER NOT NULL,ordinal INTEGER NOT NULL,model TEXT,tokens INTEGER NOT NULL,cost REAL,unknown INTEGER NOT NULL,fallback TEXT,
           PRIMARY KEY(source,position,ordinal));
           CREATE TABLE IF NOT EXISTS hosted_call(call TEXT PRIMARY KEY, provider TEXT NOT NULL, at INTEGER NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL,cost REAL NOT NULL,scanned INTEGER NOT NULL);
@@ -171,6 +173,8 @@ pub fn reprice(
             )?;
         }
     }
+    super::engine_codex_history::reprice(&tx, pricing, now)?;
+    super::cursor_history_store::reprice(&tx, pricing, now)?;
     tx.execute("INSERT INTO state(key,body) VALUES('native-price-v1',?) ON CONFLICT(key) DO UPDATE SET body=excluded.body",[serde_json::to_string(epoch)?])?;
     tx.commit()?;
     Ok(())
@@ -407,6 +411,10 @@ pub fn own(
             slots,
         });
     }
+    if let Some(account) = super::engine_codex_history::account(db, now, identities)? {
+        out.push(account);
+    }
+    out.extend(super::cursor_history_store::own(db, now)?);
     // The wire order follows the bridge's source roster, not SQLite's
     // alphabetical kind order. Default sign-ins precede their added accounts.
     out.sort_by_key(|row| match row.service.as_str() {

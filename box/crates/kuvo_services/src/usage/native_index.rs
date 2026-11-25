@@ -822,15 +822,23 @@ pub fn reconcile_roots(
         )?;
     }
     for ((root_key, provider), root) in wanted {
-        let folder = std::fs::canonicalize(&root.folder).unwrap_or_else(|_| root.folder.clone());
-        let mut place = Sha256::new();
-        place.update(b"kuvo-code usage place v2\n");
-        place.update(computer);
-        place.update(b"\n");
-        place.update(folder.as_os_str().as_encoded_bytes());
-        let place = hex::encode(&place.finalize()[..8]);
+        let place = place_of(computer, &root.folder, None);
         tx.execute("INSERT INTO native_root VALUES(?,?,?,?,?,?) ON CONFLICT(root,provider) DO UPDATE SET label=excluded.label,place=excluded.place",params![root_key,provider,root.kind.name(),root.label,now,place])?;
     }
     tx.commit()?;
     Ok(sessions)
+}
+
+pub fn place_of(computer: &str, folder: &Path, part: Option<&str>) -> String {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
+    let mut hash = Sha256::new();
+    hash.update(b"kuvo-code usage place v2\n");
+    hash.update(computer);
+    hash.update(b"\n");
+    hash.update(folder.as_os_str().as_encoded_bytes());
+    if let Some(part) = part {
+        hash.update(b"\n");
+        hash.update(part);
+    }
+    hex::encode(&hash.finalize()[..8])
 }

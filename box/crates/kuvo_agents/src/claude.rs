@@ -1,6 +1,7 @@
 //! Claude Code's command line and stream-json protocol.
 
 mod diagnostic;
+mod grants;
 mod model;
 mod owned_paths;
 mod permissions;
@@ -107,6 +108,7 @@ impl Factory for ClaudeFactory {
             program,
             provider: account.provider().to_string(),
             threads: Mutex::new(Threads::default()),
+            grants: grants::Reader::default(),
             models,
         }))
     }
@@ -136,6 +138,7 @@ struct Claude {
     models: model::Catalog,
     provider: String,
     threads: Mutex<Threads>,
+    grants: grants::Reader,
 }
 
 #[derive(Default)]
@@ -177,13 +180,32 @@ impl Agent for Claude {
         explicit: bool,
     ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
         Box::pin(async move {
-            // A passive usage request must not launch a separate Claude native probe.
-            if !explicit {
-                return Ok(None);
-            }
-            let Some((_, identity)) = self.plan_sign_in().await else {
+            let Some((before, identity)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
+            // No passive plan read starts a Claude process. File-owned Linux
+            // grants can be refreshed at their own hourly maker limit.
+            if !explicit {
+                let Some(resets) = self.grants.limits(&self.program).await else {
+                    return Ok(None);
+                };
+                if self
+                    .plan_sign_in()
+                    .await
+                    .as_ref()
+                    .is_none_or(|(mark, who)| mark != &before || who != &identity)
+                {
+                    return Ok(None);
+                }
+                let mut direct =
+                    crate::session::DirectPlanReading::windows(crate::session::PlanLimitReading {
+                        windows: vec![],
+                        sign_in: Some(before),
+                    });
+                direct.only_resets = true;
+                direct.resets = Some(resets);
+                return Ok(Some(direct));
+            }
             let answer = model::usage(self.program.clone()).await?;
             let Some((mark, current)) = self.plan_sign_in().await else {
                 return Ok(None);
@@ -278,10 +300,24 @@ impl Agent for Claude {
                     resets_at: timestamp(&extra["resets_at"]),
                 });
             }
-            if cfg!(target_os = "macos") {
+            direct.resets = self.grants.limits(&self.program).await;
+            if direct.resets.is_none() && cfg!(target_os = "macos") {
                 direct.reset_unreadable=Some("Claude Code keeps this Mac's sign-in in the Keychain, so its resets show only from a Linux computer of yours signed in to Claude Code with the same account.".into());
             }
             Ok(Some(direct))
+        })
+    }
+    fn consume_plan_reset<'a>(
+        &'a self,
+        identity: &'a str,
+        request: &'a str,
+        target: &'a str,
+    ) -> AdapterCall<'a, crate::session::ResetOutcome> {
+        Box::pin(async move {
+            Ok(self
+                .grants
+                .consume(&self.program, identity, request, target)
+                .await)
         })
     }
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {

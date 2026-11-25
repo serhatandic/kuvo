@@ -32,6 +32,73 @@ fn valid_sender(scope: &Scope, sender: &str) -> bool {
 }
 
 impl Service {
+    pub fn peer_reads_whole(&self, service: &str, identity: &str, now: i64) -> bool {
+        if self.scope().setup.is_none() {
+            return false;
+        }
+        self.history_peers
+            .lock()
+            .expect("usage peer book")
+            .reads_whole(self.own_key(), service, identity, now)
+    }
+    pub fn cursor_days(
+        &self,
+        provider: &str,
+        user: &str,
+        now: i64,
+    ) -> Result<(BTreeMap<i64, bool>, Option<i64>)> {
+        let _gate = self.gate.lock().expect("insights gate");
+        let db = self.open()?;
+        Ok((
+            super::super::cursor_history_store::kept_days(&db, user, now)?,
+            super::super::cursor_history_store::known(&db, provider, user)?,
+        ))
+    }
+    pub fn save_cursor_day(
+        &self,
+        user: &str,
+        day: super::super::cursor_history_store::Day,
+        now: i64,
+    ) -> Result<()> {
+        let _gate = self.gate.lock().expect("insights gate");
+        let mut db = self.open()?;
+        let pricing = self.pricing()?;
+        super::super::cursor_history_store::save_day(&mut db, user, day, &pricing, now)
+    }
+    pub fn keep_cursor_account(
+        &self,
+        provider: &str,
+        account: &str,
+        label: Option<&str>,
+        identity: &str,
+        user: &str,
+        scanned: Option<i64>,
+        mark: &str,
+    ) -> Result<()> {
+        let _gate = self.gate.lock().expect("insights gate");
+        let db = self.open()?;
+        super::super::cursor_history_store::account(
+            &db, provider, account, label, identity, user, scanned, mark,
+        )?;
+        self.changed_index();
+        Ok(())
+    }
+    pub fn forget_cursor_signin(&self, provider: &str, mark: &str) -> Result<()> {
+        let _gate = self.gate.lock().expect("insights gate");
+        let db = self.open()?;
+        if super::super::cursor_history_store::forget_changed(&db, provider, mark)? {
+            self.changed_index();
+        }
+        Ok(())
+    }
+    pub fn retain_cursor_accounts(&self, providers: BTreeSet<String>) -> Result<()> {
+        let _gate = self.gate.lock().expect("insights gate");
+        let db = self.open()?;
+        if super::super::cursor_history_store::retain(&db, &providers)? {
+            self.changed_index();
+        }
+        Ok(())
+    }
     pub fn subscribe_index(&self) -> tokio::sync::watch::Receiver<u64> {
         self.index_changes.subscribe()
     }

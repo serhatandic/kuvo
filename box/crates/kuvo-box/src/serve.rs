@@ -2,8 +2,8 @@ mod agents;
 mod library_artifacts;
 mod marketplace;
 mod usage;
-mod usage_peers;
 mod usage_history_peers;
+mod usage_peers;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -543,7 +543,9 @@ pub async fn run(
             .unwrap_or_default(),
         &hostname::get()?.to_string_lossy(),
     )
-    .with_history(usage_settings, limits.clone());
+    .with_history(usage_settings, limits.clone())
+    .with_cursor(standalone_plans.clone());
+    let cursor_watch = insights.follow_cursor(routes.client_activity());
     let price_watch = insights.follow_prices(&account);
     let usage_watch = kuvo_os::watch::WatchHub::default();
     let insights_watch = insights.follow(usage_watch.clone());
@@ -597,9 +599,15 @@ pub async fn run(
             setup.handle(),
         ))
     });
-    let history_peers=peers.relay_handle().map(|relay|tokio::spawn(usage_history_peers::follow(
-        insights,limits.clone(),peers.reader(),relay,setup.handle()
-    )));
+    let history_peers = peers.relay_handle().map(|relay| {
+        tokio::spawn(usage_history_peers::follow(
+            insights,
+            limits.clone(),
+            peers.reader(),
+            relay,
+            setup.handle(),
+        ))
+    });
     let _ = limits.answer(kuvo_services::usage::limits::now());
     crate::box_at_work::register(
         &mut routes,
@@ -777,13 +785,18 @@ pub async fn run(
     insights_watch.abort();
     native_usage_watch.abort();
     engine_usage_watch.abort();
+    if let Some(task) = cursor_watch {
+        task.abort();
+    }
     if let Some(task) = price_watch {
         task.abort();
     }
     if let Some(task) = limits_peers {
         task.abort();
     }
-    if let Some(task)=history_peers{task.abort();}
+    if let Some(task) = history_peers {
+        task.abort();
+    }
     work_watch.abort();
     work_rows.inspect(tokio::task::JoinHandle::abort);
     if let Some(kept_awake) = kept_awake {

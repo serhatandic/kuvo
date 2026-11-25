@@ -1150,3 +1150,207 @@ test('Insights groups model aliases and ranks named sessions from indexed usage'
   assert.equal((await read('&model=opus-4.6')).totals.tokens,1060);
   assert.equal((await read('&model=unknown')).totals.tokens,0);
 });
+
+test('Cursor keeps complete account-wide UTC days, reprices saved counts and refuses an incomplete page',async t=>{
+  if(boxBinary().typescript)return t.skip('The TypeScript scratch bridge disables Cursor maker calls.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const {DatabaseSync}=await import('node:sqlite');
+  const at=Date.now(),day=86400000,today=Math.floor(at/day)*day;
+  const access=['e30',Buffer.from(JSON.stringify({sub:'workos|cursor-history-fixture',exp:Math.floor(at/1000)+3600})).toString('base64url'),'fixture'].join('.');
+  const asked=[],model='fixture-cursor-history-model';
+  let failToday=false;
+  const server=http.createServer((request,response)=>{
+    const send=value=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify(value));};
+    if(request.url==='/cursor/exchange'){assert.equal(request.headers.authorization,'Bearer fixture-cursor-history');send({accessToken:access});return;}
+    if(request.url==='/cursor/GetCurrentPeriodUsage'){send({enabled:true,planUsage:{limit:100,totalPercentUsed:12}});return;}
+    if(request.url==='/cursor/GetPlanInfo'){send({planInfo:{planName:'pro'}});return;}
+    if(request.url==='/cursor/dashboard/get-filtered-usage-events'){
+      let body='';request.on('data',chunk=>body+=chunk);
+      request.on('end',()=>{
+        const given=JSON.parse(body),start=Number(given.startDate);
+        asked.push(start);assert.equal(request.headers.cookie,'WorkosCursorSessionToken=cursor-history-fixture%3A%3A'+access);
+        if(start!==today&&start!==today-day){send({totalUsageEventsCount:0,usageEventsDisplay:[]});return;}
+        const event={timestamp:String(start+1000),model,tokenUsage:{inputTokens:100,outputTokens:10,cacheReadTokens:20,cacheWriteTokens:5}};
+        if(start===today&&failToday){
+          send({totalUsageEventsCount:2,usageEventsDisplay:given.page===1?[event]:[]});return;
+        }
+        send({totalUsageEventsCount:1,usageEventsDisplay:[event]});
+      });
+      return;
+    }
+    send({});
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('CursorHistory',undefined,folder=>({...isolated(folder),KUVO_TEST_CURSOR_HISTORY:'1',KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+server.address().port+'/'}));
+  write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:'fixture-cursor-history'}));
+  const catalog=path.join(box.home,'agents','usage','pricing','litellm.json');
+  const rates=multiplier=>JSON.stringify({models:{[model]:{i:multiplier,o:2*multiplier,cw:multiplier,cr:0.1*multiplier}}});
+  write(catalog,rates(1));
+  let resident=box.start();let view=box.connect(await resident.ready());
+  const read=async()=>{const response=await view('GET','kuvo/agents/api/kuvo/usage?zone=UTC');assert.equal(response.status,200,response.text);return response.json.data.rows.find(row=>row.provider==='cursor');};
+  const first=await until(async()=>{const row=await read();return row?.days.reduce((total,d)=>total+d.tokens,0)===270&&row;},'The account-wide Cursor fixture did not reach history',30000,100);
+  assert.equal(first.accountWide,true);
+  assert.equal(new Set(asked).size,32);
+  assert.equal(asked.length,32);
+  const initialCost=first.days.reduce((sum,d)=>sum+d.cost,0);
+  assert.ok(initialCost>0);
+  write(catalog,rates(2));
+  const repriced=await until(async()=>{const row=await read();return row&&Math.abs(row.days.reduce((sum,d)=>sum+d.cost,0)-2*initialCost)<1e-12&&row;},'Saved Cursor counts were not repriced');
+  assert.equal(asked.length,32,'A new price catalog must not reread the maker’s event pages');
+  await resident.stop();
+  const kept=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'));
+  kept.prepare('UPDATE cursor_account SET scanned=scanned-61000').run();kept.close();
+  asked.length=0;failToday=true;
+  resident=box.start();view=box.connect(await resident.ready());
+  await until(()=>asked.length>=3,'The incomplete today page was not retried',20000,100);
+  const after=await read();
+  assert.deepEqual(after.days,repriced.days,'An incomplete day cannot replace a complete cached day');
+  assert.deepEqual([...new Set(asked)].sort(),[today-day,today]);
+});
+
+test('engine ChatGPT history uses read-only OAuth windows, not paid API calls or duplicate channels',async t=>{
+  if(boxBinary().typescript)return t.skip('The TypeScript scratch bridge disables engine sign-in reads; Rust reads the isolated maker database directly.');
+  const fs=await import('node:fs');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);
+  const box=await computer('EngineCodexHistory',undefined,isolated);
+  const now=Date.now(),signed=now-3600000;
+  const oauth={type:'oauth',access:'fixture-only',refresh:'fixture-refresh',expires:now+3600000};
+  box.engine.credentials=[{integrationID:'openai',active:true,value:oauth}];
+  const folder=path.join(box.home,'data','opencode');fs.mkdirSync(folder,{recursive:true});
+  const channel=name=>{
+    const db=new DatabaseSync(path.join(folder,name));
+    db.exec('CREATE TABLE migration(id TEXT PRIMARY KEY); CREATE TABLE credential(id TEXT PRIMARY KEY,integration_id TEXT,value TEXT,active INTEGER,time_created INTEGER,time_updated INTEGER); CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT)');
+    db.prepare('INSERT INTO migration VALUES (?)').run('20260805200742_import_legacy_credentials');
+    db.prepare('INSERT INTO credential VALUES (?,?,?,?,?,?)').run('fixture','openai',JSON.stringify(oauth),1,signed,signed);
+    return db;
+  };
+  const data=(at,input,cost)=>JSON.stringify({role:'assistant',time:{completed:at},model:{providerID:'openai',id:'gpt-5.4'},tokens:{input,output:10,cache:{read:5,write:0}},cost});
+  const add=(db,id,at,input,cost)=>db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run(id,'ses_engine_codex','assistant',at,at,data(at,input,cost));
+  let db=channel('opencode.db');
+  db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('legacy','ses_engine_codex',signed-1000,signed-1000,data(signed-1000,100,0));
+  add(db,'shared',now-10000,40,0);
+  add(db,'old-key',signed-1000,1000,0);
+  add(db,'paid-key',now-10000,1000,2);
+  db.close();
+  db=channel('opencode-second.db');add(db,'shared',now-10000,40,0);db.close();
+  fs.unlinkSync(path.join(box.home,'run','engine.json'));
+  const resident=box.start();const call=box.connect(await resident.ready());
+  const read=async()=>{const reply=await call('GET','kuvo/agents/api/kuvo/usage?zone=UTC');assert.equal(reply.status,200,reply.text);return reply.json.data.rows.find(row=>row.provider==='openai');};
+  const row=await until(async()=>{const row=await read();return row?.days?.reduce((sum,day)=>sum+day.tokens,0)===170&&row;},'The engine’s OAuth usage did not reach the Codex account',20000,100);
+  assert.equal(row.service,'codex');
+  assert.notEqual(row.estimated,false);
+  assert.equal(fs.existsSync(path.join(box.home,'run','engine.json')),false);
+  for(const name of ['opencode.db','opencode-second.db']){
+    db=new DatabaseSync(path.join(folder,name));db.exec('DELETE FROM credential');db.close();
+  }
+  await until(async()=>!(await read()),'A signed-out engine’s old ChatGPT usage stayed visible',20000,100);
+});
+
+test('Claude file-owned reset grants spend the maker’s named next grant once, with a saved request',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('The TypeScript Mac scratch bridge does not read Linux file-owned grant fixtures.');
+  const http=await import('node:http');
+  const {scriptedClaude}=await import('./claude.mjs');
+  const org='00000000-0000-4000-8000-000000000001';
+  const at=Date.now();
+  let outcome='unknown',reads=0,profile='grant-fixture';
+  const spent=[];
+  const maker=http.createServer((req,res)=>{
+    const url=new URL(req.url,'http://127.0.0.1');
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    assert.equal(req.headers.authorization,'Bearer fixture-claude-grant');
+    if(url.pathname==='/claude/oauth/usage'){
+      reads++;assert.equal(url.searchParams.get('cedar_ember'),'1');assert.equal(url.searchParams.get('skip_spend'),'1');
+      send(200,{cedar_ember:{eligible:true,next_grant_id:'grant-b',grants:[{id:'grant-a',resets_left:1,ends_at:new Date(at+3600000).toISOString(),clears:['five_hour']},{id:'grant-b',resets_left:1,ends_at:new Date(at+7200000).toISOString(),clears:['seven_day']}]}});return;
+    }
+    if(url.pathname==='/claude/oauth/profile'){send(200,{account:{uuid:profile},organization:{uuid:org}});return;}
+    if(url.pathname==='/claude/organizations/'+org+'/reset_rate_limits'){
+      let body='';req.on('data',c=>body+=c);req.on('end',()=>{spent.push(JSON.parse(body));send(200,{result:outcome});});return;
+    }
+    send(404,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const claude=await scriptedClaude();
+  t.after(()=>claude.close());
+  claude.env.KUVO_TEST_USAGE_BASE='http://127.0.0.1:'+maker.address().port+'/';
+  write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'grant-fixture',organizationUuid:org}}));
+  write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-claude-grant',expiresAt:at+3600000,scopes:['user:profile']}}));
+  write(path.join(claude.env.HOME,'claude-usage.json'),JSON.stringify({subscription_type:'max',rate_limits_available:true,rate_limits:{seven_day:{utilization:100,resets_at:new Date(at+7200000).toISOString()}}}));
+  let listener=await claude.start();
+  const base='kuvo/agents/api/kuvo/limits';
+  const refreshed=await request(listener,'POST',base+'/refresh',{});
+  assert.equal(refreshed.status,200,refreshed.text);
+  const row=await until(async()=>{const answer=await request(listener,'GET',base);return answer.json.data.rows.find(r=>r.provider==='claude-code'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'Claude grant inventory did not arrive');
+  const post=body=>request(listener,'POST',base+'/reset',body);
+  const offered=await post({row:row.id});
+  assert.equal(offered.status,200,offered.text);assert.equal(offered.json.data.count,2);
+  assert.deepEqual(offered.json.data.refills,['seven_day']);assert.equal(spent.length,0);
+  const confirm=offered.json.data.confirm;
+  const first=await post({row:row.id,confirm});
+  assert.equal(first.json.data.outcome,'unknown');assert.equal(spent.length,1);
+  assert.equal(spent[0].grant_id,'grant-b');
+  assert.equal(reads,1,'Grant inventory is not fetched again for confirmation');
+  await claude.stop();listener=await claude.start();
+  outcome='already_used';
+  const replay=await post({row:row.id,confirm});
+  assert.equal(replay.json.data.outcome,'reset');assert.equal(spent.length,2);
+  assert.deepEqual(spent[0],spent[1]);
+  await post({row:row.id,confirm});assert.equal(spent.length,2);
+  const next=await post({row:row.id});assert.equal(next.status,200,next.text);
+  profile='other-account';
+  const refused=await post({row:row.id,confirm:next.json.data.confirm});
+  assert.notEqual(refused.json?.data?.outcome,'reset');assert.equal(spent.length,2);
+});
+
+test('a peer remembers a crossing even after its visible notice expires (Rust correction)',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('Tests the corrected accepted-window handoff.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const now=Date.now(),reset=Math.floor(now/1000)+7200;
+  let studioPercent=89,labPercent=90;
+  const maker=http.createServer((req,res)=>{
+    const used=req.headers.authorization==='Bearer fixture-studio'?studioPercent:labPercent;
+    res.writeHead(200,{'Content-Type':'application/json'});
+    res.end(JSON.stringify({plan_type:'plus',rate_limit:{primary_window:{used_percent:used,limit_window_seconds:18000,reset_at:reset}}}));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer,leases}=await bench(t);
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  const studio=await computer('CrossingStudio',undefined,env), lab=await computer('CrossingLab',undefined,env);
+  const sign=access=>[{integrationID:'openai',active:true,value:{type:'oauth',access,expires:now+3600000,metadata:{accountID:'same-crossing-account'}}}];
+  studio.engine.credentials=sign('fixture-studio');lab.engine.credentials=sign('fixture-lab');
+  const base='kuvo/agents/api/kuvo/limits';
+  let resident=studio.start(),main=studio.connect(await resident.ready());
+  assert.equal((await main('PUT',route,{notifications:{underTenPercent:true,healthyToClose:false,closeToRunningOut:false}})).status,200);
+  const read=async call=>(await call('GET',base)).json.data;
+  const refresh=async(call,expected)=>{
+    assert.equal((await call('POST',base+'/refresh',{})).status,200);
+    return until(async()=>{const data=await read(call);return !data.refreshPending&&data.rows.find(r=>r.provider==='openai')?.rings.short?.used===expected&&data;},'The crossing fixture reading did not settle');
+  };
+  await refresh(main,0.89);studioPercent=91;
+  const crossed=await refresh(main,0.91);
+  assert.equal(crossed.notices.filter(n=>n.milestone==='underTenPercent').length,1);
+  await resident.stop();
+  const file=path.join(studio.home,'agents','usage','accepted-limits.json');
+  const saved=JSON.parse(fs.readFileSync(file,'utf8'));
+  for(const entry of Object.values(saved.entries))for(const notice of entry.notices??[])notice.at=now-660000;
+  write(file,JSON.stringify(saved));
+  resident=studio.start();main=studio.connect(await resident.ready());
+  const setup=await main('GET','kuvo/setup');
+  await until(()=>leases.leaseFor(setup.json.setup),'Studio has no relay lease');
+  const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
+  assert.equal(invite.status,201,invite.text);
+  assert.equal((await lab.join(invite.json.code)).code,0);
+  const call=lab.connect(await lab.start().ready());
+  await until(async()=>{const value=await read(call);return value.rows.find(r=>r.provider==='openai')?.rings.short?.used===0.91;},'Lab did not receive Studio’s accepted window',30000,250);
+  await refresh(call,0.90);
+  await until(async()=>{const data=(await call('GET',route)).json.data;return data.settings.notifications?.underTenPercent===true;},'Lab did not receive notification settings');
+  labPercent=92;
+  const repeated=await refresh(call,0.92);
+  assert.equal(repeated.notices.filter(n=>n.milestone==='underTenPercent').length,0);
+});
