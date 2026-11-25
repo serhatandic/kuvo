@@ -180,6 +180,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         _ => false,
     };
+    let wsl_startup = match (word(0), word(1), args.len()) {
+        (Some("box"), Some("wsl-startup"), 3) => word(2),
+        _ => None,
+    };
     let released_settings = match (word(0), word(1), args.len()) {
         (Some("box"), Some("read" | "adopt" | "change" | "personalities"), 2) => word(1),
         (Some("box"), Some("key"), 3) => word(1),
@@ -198,6 +202,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || probe.is_some()
             || supervised
             || released_settings.is_some()
+            || wsl_startup.is_some()
             || repair =>
         {
             None
@@ -261,6 +266,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
                 #[cfg(not(target_os = "macos"))]
                 launch_agent: None,
+                #[cfg(target_os = "linux")]
+                windows_task: kuvo_keeper::wsl_task::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "linux"))]
+                windows_task: None,
             })
         };
         let outcome = kuvo_setup::uninstall::run(&home, check, startup);
@@ -291,6 +300,31 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             .block_on(kuvo_keeper::staging::repair_with_fetch(&home, key, &feed))?;
         println!("{result}");
         return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(distro) = wsl_startup {
+        // Only for the distribution it runs in, as WSL says.
+        #[cfg(target_os = "linux")]
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                match kuvo_keeper::wsl_task::WslTask::for_home(&home).await? {
+                    Some(task) if std::env::var("WSL_DISTRO_NAME").is_ok_and(|name| name == distro) => {
+                        task.register(&home).await.map(|()| true)
+                    }
+                    _ => Ok(false),
+                }
+            }) {
+            Ok(true) => return Ok(ExitCode::SUCCESS),
+            Ok(false) => {}
+            Err(error) => eprintln!("{error}"),
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = distro;
+        eprintln!(
+            "Kuvo Code couldn’t set up Windows sign-in startup. Sign in to Windows, check that WSL interop is enabled, then try again."
+        );
+        return Ok(ExitCode::FAILURE);
     }
     if let Some(verb) = released_settings {
         return released_settings::run(&home, verb, word(2));

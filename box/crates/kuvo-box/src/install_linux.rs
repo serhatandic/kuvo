@@ -209,12 +209,15 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         }
     }
     let mut attempt = prepare(&home, &staged, &marker, &signed, source, &envelope, saved)?;
-    let start = crontab::install(&home)?.is_some() || !scratch;
+    // WSL 2 starts at Windows sign-in, by its task; cron runs only while WSL does.
+    let wsl = Platform::current() == Platform::Wsl
+        && (!scratch || std::env::var_os("KUVO_TEST_WSL_TASK").is_some());
+    let start = wsl || crontab::install(&home)?.is_some() || !scratch;
     let mut value = json!({"result":"done","verdict":"machine","started":start});
     if !attempt.entries.is_empty() {
         value["setAside"] = json!(home.root().join("trash").join(&attempt.aside));
     }
-    if start && let Err(error) = start_keeper(&home, &profile) {
+    if start && let Err(error) = start_keeper(&home, &profile, wsl) {
         attempt.start_failed = true;
         attempt.write(&marker)?;
         value["result"] = "failed".into();
@@ -307,7 +310,26 @@ fn running_refusal(home: &Home) -> io::Result<Option<u8>> {
     }
 }
 
-fn start_keeper(home: &Home, profile: &Path) -> io::Result<()> {
+fn start_keeper(home: &Home, profile: &Path, wsl: bool) -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    if wsl {
+        return runtime.block_on(async {
+            let task = kuvo_keeper::wsl_task::WslTask::for_home(home)
+                .await
+                .and_then(|task| task.ok_or_else(|| io::Error::other("this isn't WSL 2")));
+            if let Err(error) = match task {
+                Ok(task) => task.register(home).await,
+                Err(error) => Err(error),
+            } {
+                return Err(io::Error::other(format!(
+                    "Windows sign-in startup couldn't be set up ({error}). Sign in to Windows, check that WSL interop is enabled, then try again"
+                )));
+            }
+            wait_for_resident(home).await
+        });
+    }
     let started = Command::new("/bin/sh")
         .arg(kuvo_keeper::shell_keeper(&home.bin()))
         .arg("box")
@@ -318,10 +340,7 @@ fn start_keeper(home: &Home, profile: &Path) -> io::Result<()> {
     if !started.success() {
         return Err(io::Error::other("its keeper didn't start"));
     }
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(wait_for_resident(home))
+    runtime.block_on(wait_for_resident(home))
 }
 
 fn prepare(

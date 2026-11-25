@@ -35,6 +35,8 @@ function fixture(t, { feed = "http://127.0.0.1:1", live = false, wsl = false, bi
     data["bin/kuvo-setsid"] = fs.readFileSync(new URL("../../box/src/keeper/kuvo-setsid", import.meta.url));
   }
   if (wsl) {
+    // Each keeper says which one Windows started.
+    data["bin/kuvo-start"] = '#!/bin/sh\n: > "$HOME/.kuvo-code/run/wsl-started-ordinary"\n';
     data["bin/.kuvo-start-keeper"] = '#!/bin/sh\n: > "$HOME/.kuvo-code/run/wsl-started"\n';
   }
   for (const [file, bytes] of Object.entries(data)) write(path.join(tree, file), bytes, { mode: 0o700 });
@@ -77,8 +79,10 @@ function fixture(t, { feed = "http://127.0.0.1:1", live = false, wsl = false, bi
   const command = binary.typescript ? typescriptRuntime() : binary.file;
   const launchEnv = { ...env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
     KUVO_TEST_RELEASE_KEY: key, KUVO_TEST_RELEASE_FEED: feed };
-  if (wsl) for (const name of ["WSL_DISTRO_NAME", "WSL_INTEROP"]) {
-    if (process.env[name]) launchEnv[name] = process.env[name];
+  if (wsl) {
+    for (const name of ["WSL_DISTRO_NAME", "WSL_INTEROP"]) if (process.env[name]) launchEnv[name] = process.env[name];
+    // A scratch home registers a real (disposable) Windows task only when a test asks.
+    launchEnv.KUVO_TEST_WSL_TASK = "1";
   }
   function repair() {
     const run = spawnSync(command, runArgs, {
@@ -97,7 +101,7 @@ function fixture(t, { feed = "http://127.0.0.1:1", live = false, wsl = false, bi
     assert.equal(done.code, 0, output + proc.log());
     return JSON.parse(output);
   }
-  return { home, bin, folder, data, repair, repairing, bytes, packFile, envelopeFor, launchEnv };
+  return { home, bin, folder, data, repair, repairing, bytes, packFile, envelopeFor, launchEnv, command, runArgs: args => binary.typescript ? ["--no-env-file", binary.file, ...args] : args };
 }
 
 test("an earlier Mac's files are put back from the selected signed release", { timeout: 60000 }, t => {
@@ -215,11 +219,8 @@ test("the saved keeper restores its overwritten launcher and leaves the resident
   }
 });
 
-test("a WSL login task keeps its account and trigger but starts the saved keeper", {
-  timeout: 60000, skip: process.platform !== "linux" || !process.env.WSL_DISTRO_NAME || boxBinary().typescript,
-}, async t => {
-  const { home, bin, repairing, launchEnv } = fixture(t, { wsl: true });
-  const distro = process.env.WSL_DISTRO_NAME;
+// The Windows side of WSL 2, through PowerShell as the box reaches it.
+function windowsSide(distro, home) {
   const ps = execFileSync("/usr/bin/wslpath", ["-u", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"], { encoding: "utf8" }).trim();
   const literal = text => "'" + text.replaceAll("'", "''") + "'";
   const encode = text => Buffer.from(text, "utf16le").toString("base64");
@@ -227,35 +228,80 @@ test("a WSL login task keeps its account and trigger but starts the saved keeper
   const windows = script => execFileSync(ps, [...flags.split(" "), encode("$ErrorActionPreference = 'Stop';\n" + script)],
     { encoding: "utf8", timeout: 15000 }).trim();
   const user = windows("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
-  const task = "KuvoCode-WSL-" + digest(JSON.stringify([user, distro, home])).slice(0,32);
-  const action = keeper => flags + " " + encode(`& "$env:SystemRoot\\System32\\wsl.exe" -d ${literal(distro)} --cd ~ --exec /usr/bin/setsid --wait /usr/bin/env ${literal("HOME=" + launchEnv.HOME)} /bin/sh ${literal(path.join(bin, keeper))} wsl-keep\nexit $LASTEXITCODE`);
+  const task = "KuvoCode-WSL-" + digest(JSON.stringify([user, distro, home])).slice(0, 32);
+  const action = keeper => flags + " " + encode(`& "$env:SystemRoot\\System32\\wsl.exe" -d ${literal(distro)} --cd ~ --exec /usr/bin/setsid --wait /usr/bin/env ${literal("HOME=" + path.dirname(home))} /bin/sh ${literal(path.join(home, "bin", keeper))} wsl-keep\nexit $LASTEXITCODE`);
   const name = literal(task);
+  const details = () => JSON.parse(windows(`$task=Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue
+if (!$task) { 'null' } else { [pscustomobject]@{action=$task.Actions[0].Arguments;user=$task.Principal.UserId;trigger=$task.Triggers[0].UserId;hidden=$task.Settings.Hidden} | ConvertTo-Json -Compress }`));
+  const remove = () => windows(`$task=Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue
+if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }`);
+  return { windows, user, task, name, literal, action, details, remove };
+}
+
+const onWsl = process.platform === "linux" && !!process.env.WSL_DISTRO_NAME;
+
+test("a WSL login task keeps its account and trigger but starts the saved keeper", {
+  timeout: 60000, skip: !onWsl || boxBinary().typescript,
+}, async t => {
+  const { home, bin, repairing } = fixture(t, { wsl: true });
+  const side = windowsSide(process.env.WSL_DISTRO_NAME, home);
   // The disposable task has precisely the action written by the released TS
   // registration. No task is started until the repair has updated that action.
-  windows(`
-$name=${name}
+  side.windows(`
+$name=${side.name}
 if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { throw 'Fixture task already exists' }
 $program=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-$action=New-ScheduledTaskAction -Execute $program -Argument ${literal(action("kuvo-start"))}
-$trigger=New-ScheduledTaskTrigger -AtLogOn -User ${literal(user)}
-$principal=New-ScheduledTaskPrincipal -UserId ${literal(user)} -LogonType Interactive -RunLevel Limited
+$action=New-ScheduledTaskAction -Execute $program -Argument ${side.literal(side.action("kuvo-start"))}
+$trigger=New-ScheduledTaskTrigger -AtLogOn -User ${side.literal(side.user)}
+$principal=New-ScheduledTaskPrincipal -UserId ${side.literal(side.user)} -LogonType Interactive -RunLevel Limited
 $settings=New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
 `);
-  t.after(() => windows(`$task=Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue
-if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }`));
-  write(path.join(home, "run/wsl-task"), task + "\n");
-  const details = () => JSON.parse(windows(`$task=Get-ScheduledTask -TaskName ${name}
-[pscustomobject]@{action=$task.Actions[0].Arguments;user=$task.Principal.UserId;trigger=$task.Triggers[0].UserId;hidden=$task.Settings.Hidden} | ConvertTo-Json -Compress`));
-  const before = details();
+  t.after(side.remove);
+  write(path.join(home, "run/wsl-task"), side.task + "\n");
+  const before = side.details();
   write(path.join(bin, "kuvo-start"), "old Mac's keeper");
   assert.equal((await repairing()).result, "repaired");
-  assert.deepEqual(details(), { ...before, action: action(".kuvo-start-keeper") });
+  assert.deepEqual(side.details(), { ...before, action: side.action(".kuvo-start-keeper") });
   // A further overwrite cannot stop the already registered login action from
   // reaching the saved script. This starts only the disposable fixture action.
   write(path.join(bin, "kuvo-start"), "#!/bin/sh\nexit 1\n");
-  windows(`Start-ScheduledTask -TaskName ${name}`);
+  side.windows(`Start-ScheduledTask -TaskName ${side.name}`);
   await until(() => fs.existsSync(path.join(home, "run/wsl-started")), "the Windows task did not invoke the saved WSL launcher", 15000);
+});
+
+test("WSL 2 starts at Windows sign-in by its own task, which uninstall takes away", {
+  timeout: 60000, skip: !onWsl,
+}, async t => {
+  const binary = boxBinary();
+  const { home, launchEnv, command, runArgs } = fixture(t, { wsl: true });
+  const side = windowsSide(process.env.WSL_DISTRO_NAME, home);
+  assert.equal(side.details(), null);
+  t.after(side.remove);
+  write(path.join(home, "run/launch.env"), "PATH=/usr/bin:/mnt/c/Windows/System32:/bin\nOPENCODE_CLIENT=desktop\n");
+  const run = (...args) => spawnSync(command, runArgs(args), { cwd: home, env: launchEnv, encoding: "utf8", timeout: 45000 });
+  const other = run("box", "wsl-startup", "Another-Distro");
+  assert.equal(other.status, 1, other.stdout + other.stderr);
+  assert.equal(side.details(), null);
+  const registered = run("box", "wsl-startup", process.env.WSL_DISTRO_NAME);
+  assert.equal(registered.status, 0, registered.stdout + registered.stderr);
+  assert.equal(fs.readFileSync(path.join(home, "run/wsl-task"), "utf8"), side.task + "\n");
+  const keeper = binary.typescript ? "kuvo-start" : ".kuvo-start-keeper";
+  const task = side.details();
+  assert.equal(task.action, side.action(keeper));
+  assert.equal(task.hidden, true);
+  assert.ok(task.user && task.trigger, JSON.stringify(task));
+  // Registered, it starts at once: Windows runs the keeper inside this distribution.
+  const marker = path.join(home, "run", binary.typescript ? "wsl-started-ordinary" : "wsl-started");
+  await until(() => fs.existsSync(marker), "Windows did not start the keeper", 20000);
+  assert.equal(fs.readFileSync(path.join(home, "run/launch.env"), "utf8"), "PATH=/usr/bin:/bin\nOPENCODE_CLIENT=desktop\n");
+  const check = run("uninstall", "--check");
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(JSON.parse(check.stdout).starts.windowsTask, true, check.stdout);
+  const removed = run("uninstall");
+  assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+  assert.equal(side.details(), null);
+  assert.equal(fs.existsSync(path.join(home, "run/wsl-task")), false);
 });
 
 // Explicit side-by-side proof: the selected release layout differs, but the

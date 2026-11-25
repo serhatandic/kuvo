@@ -18,7 +18,7 @@ pub mod staging;
 pub mod update_status;
 mod worker;
 #[cfg(target_os = "linux")]
-mod wsl_task;
+pub mod wsl_task;
 
 #[cfg(windows)]
 pub mod windows;

@@ -51,10 +51,15 @@ pub fn repair_selected(home: &Home, keys: &[&str], now: SystemTime) -> io::Resul
 pub async fn repair_with_fetch(home: &Home, key: &str, feed: &str) -> io::Result<Value> {
     let result = repair_or_fetch(home, key, feed).await?;
     #[cfg(target_os = "linux")]
-    if matches!(result["result"].as_str(), Some("sound" | "repaired"))
-        && let Err(error) = crate::wsl_task::repair_existing(home).await
-    {
-        eprintln!("Keeping the WSL startup task: {error}");
+    if matches!(result["result"].as_str(), Some("sound" | "repaired")) {
+        let task = crate::wsl_task::WslTask::for_home(home).await;
+        if let Err(error) = match task {
+            Ok(Some(task)) => task.repair(home).await,
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        } {
+            eprintln!("Keeping the WSL startup task: {error}");
+        }
     }
     Ok(result)
 }
