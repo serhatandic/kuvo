@@ -805,9 +805,10 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 29–32, 34 | Ported to agents-codex on both boxes: answers turned down with words (in a turn, again and again, in Plan), the asking words, and a refused steer with a card up. |
 | 33, 55 | Ported. |
 | 35–49 | Ported to agents-codex on both boxes. An answer goes into the turn and ends the sleep it's in. A sleep that starts after its answer went in is told again once. Turned down while it sleeps, it's tried again into that sleep, after 1 s and then double each time up to 64 s, or into one that started in its place. One it heard and worked on isn't retold. Ported from the reference into `codex/thread.rs` (`steer_answer`, `answers_on_item`, `retry`). The stand-in sleeps and turns steers down as the reference's own fake does. |
-| 57 | Open (4.2): dismissed while it sleeps. |
+| 57 | Ported to agents-codex on both boxes. |
 | 50 | Ported. |
-| 51–54, 56, 58–60, 62, 64 | Open (4.2): answers at a turn's edge, two cards, counting refusals. |
+| 51–54, 56, 58–60, 62 | Ported to agents-codex on both boxes: answers at a turn's edge, two cards, a message answering both, and counting refusals (stopped as finished with no work between, never with work). |
+| 64 | Rust: a message from the app (synthetic) doesn't answer an open card (`Turn::steer`). No client route sends one in either box (the reference's `synthetic` is the bridge's own). Its proof goes with app notes into a coding agent's conversation (4.6). |
 | 61, 63, 65 | Ported. |
 | 66, 72, 73 | Ported (the policies Codex starts with; Plan declines an edit itself). |
 | 67–71 | Ported: Approve All answers Codex's own asks and MCP tool asks with no card; Ask First asks for another server's tool and not for Kuvo Code's; in Plan another server's tool is its yes-or-no form; an MCP server's form comes back typed. |
@@ -838,6 +839,8 @@ program updater; the live GPT-6-Luna run.
 | Native Windows x64 | 60/60 | — | 6/6 |
 
 Seen once: one case of agents-codex failed against the reference on macOS after the merge of main at c8d59d9da and passed on two reruns (unnamed in that run's output).
+
+The reference's answer to the sleep that replaces one that turned it down (case 47) is the answer as it was or as retold, depending on which reaches it first. The case accepts either.
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
