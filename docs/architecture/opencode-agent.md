@@ -36,6 +36,30 @@ the same way, as a plain ACP agent started with `opencode acp`.
   OpenCode's HTTP server instead, reusing 3.2's request code. The plan and routes below are the
   same either way.
 
+**Decision (4.7a, 26 November 2026): ACP.** Read from the ACP agent built into the pinned 2.2.6
+binary. It is a thin layer over OpenCode's own server and events, so everything the app shows today
+comes through, given three client capabilities the box sends in `initialize`:
+`_meta["opencode/child-session-updates"]`, `elicitation.form` and `session.compaction`. The one
+difference is steering: a second `session/prompt` while one runs is refused ("Session already has an
+active ACP prompt"), so a message sent mid-turn waits for the turn's end, as it does for Grok and
+Antigravity. The engine path steers it into the running turn. That is not something the app draws
+differently (the message shows as waiting, then sent), so it doesn't justify the HTTP path.
+
+| 3.2 behaviour | Over ACP |
+|---|---|
+| Permission asks | `session/request_permission`, options `once`, `always`, `reject`; a child's ask carries `_meta["opencode/child-session"]` |
+| Question asks | OpenCode's forms become `elicitation/create` (form mode); without the capability the agent is told to continue without an answer |
+| Child sessions | `session/update` with `_meta["opencode/child-session"]` (`id`, `parentID`, `depth`, `title`); tool IDs prefixed by the child ID |
+| `/compact` | The slash command starts OpenCode's compaction; progress and summary arrive as `opencode/compaction` updates and `compaction_summary_chunk` |
+| Usage and cost | `usage_update` after each turn: tokens used, context size, and the session's total cost in USD |
+| Model variants | Config options `model` and `effort` (the model's variants plus `default`), set with `session/set_config_option` |
+| Images | `promptCapabilities.image`; embedded context too |
+| Stop | `session/cancel` interrupts OpenCode's session; the prompt ends `cancelled` |
+| Steering | Not mid-turn: waits for the turn's end (above) |
+| Modes | Config option `mode` lists OpenCode's primary agents; the box never offers `plan` |
+| Sign-in | `providers/list`, `providers/set`, `providers/disable` and `logout` (unstable ACP methods) |
+| Sessions | `session/load`, `resume`, `list`, `fork`, `close`, `delete`; HTTP MCP servers only |
+
 ## 2. The app's `api/…` routes
 
 The app picks a conversation's prefix from the box's answer to `kuvo/sessions/:id/location`
