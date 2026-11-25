@@ -1129,6 +1129,11 @@ test("a released computer enrolls again when its retained work is unchanged", {
       fs.unlinkSync(payload);
     }
   }
+  // The artifact index is disposable. Its store rewriting it, as SQLite does on Windows, is not new work.
+  const index = path.join(other.home, "artifacts", "index-v1.sqlite");
+  assert.ok(fs.existsSync(index), "the applicant's resident opened its artifact store");
+  fs.copyFileSync(index, index + ".rewrite");
+  fs.renameSync(index + ".rewrite", index);
   const rejoined = await other.join(next.json.code, { resident: joinWith.typescript, joinWith });
   assert.equal(rejoined.code, 0, rejoined.log);
   const member = readLink(other.home);

@@ -221,14 +221,19 @@ function pendingSessionWork(): boolean {
     || Object.values(readQueues(sessionQueues, true)).some(state => showsQueue(state) || state.handoff?.length || state.inboxMoved?.length);
 }
 
-function workInventory(omitUsage = false) {
+/** The artifact index is disposable and rewritten while its store is open. Baselines kept before
+ * it was left out still name it (`withIndex`). */
+const isArtifactIndex = (folder: string, name: string) => folder === artifactsRoot && name.startsWith("index-v1.sqlite");
+
+function workInventory(omitUsage = false, withIndex = false) {
   const hash = createHash("sha256");
   function stamp(file: string, stable?: Hash, skipEmpty = false): bigint {
     const info = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
     if (!info) return 0n;
     if (info.isDirectory()) {
       for (const name of entries(file)) {
-        if (name !== ".DS_Store" && !(path.dirname(file) === BOTS && name === "workspace")) stamp(path.join(file, name));
+        if (name !== ".DS_Store" && !(path.dirname(file) === BOTS && name === "workspace")
+          && (withIndex || !isArtifactIndex(file, name))) stamp(path.join(file, name));
       }
       return 0n;
     }
@@ -253,7 +258,7 @@ function workInventory(omitUsage = false) {
       size += journal.size;
     }
   }
-  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size, omitUsage };
+  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size, omitUsage, withIndex };
 }
 
 let lastDatabaseStamp: { stability: string; logical: string } | undefined;
@@ -269,7 +274,7 @@ function databaseStamp(inventory: ReturnType<typeof workInventory>) {
     throw error;
   }
   // The link lock doesn't cover the database, session, or bot writers.
-  const after = workInventory(inventory.omitUsage);
+  const after = workInventory(inventory.omitUsage, inventory.withIndex);
   if (after.stability !== stability) throw new Error("Retained work changed during the check.");
   const logical = content.digest("base64url");
   lastDatabaseStamp = { stability, logical };
@@ -312,9 +317,11 @@ function scopedWorkChanged(baseline: NonNullable<LinkState["releasedScopedWork"]
   const reset = before.scope !== undefined && now.scope !== before.scope
     && !now.imported && now.digest === new UsageSettings().digest();
   if (!same && !reset) return true;
-  const inventory = workInventory(true);
-  return inventory.physical !== baseline.physical
-    && (!baseline.logical || databaseStamp(inventory)?.logical !== baseline.logical);
+  return [false, true].every(withIndex => {
+    const inventory = workInventory(true, withIndex);
+    return inventory.physical !== baseline.physical
+      && (!baseline.logical || databaseStamp(inventory)?.logical !== baseline.logical);
+  });
 }
 
 /** The probe and both ordinary enrollment paths use the same work test. Historical
@@ -352,8 +359,10 @@ export function hasSetupWork(link: LinkState | null): boolean {
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork) {
       if (link.releasedScopedWork) return scopedWorkChanged(link.releasedScopedWork);
       // Compare even if the work is now empty: a deletion after unlink is also a change.
-      const inventory = workInventory();
-      return inventory.physical !== link.releasedWork && (!link.releasedDatabaseWork || databaseStamp(inventory)?.logical !== link.releasedDatabaseWork);
+      return [false, true].every(withIndex => {
+        const inventory = workInventory(false, withIndex);
+        return inventory.physical !== link.releasedWork && (!link.releasedDatabaseWork || databaseStamp(inventory)?.logical !== link.releasedDatabaseWork);
+      });
     }
     return Boolean(hasWork);
   } catch {
