@@ -158,19 +158,12 @@ impl Writer {
             ));
         }
         if let Some(twin) = item.source().and_then(|source| {
-            let reference = self.refs.issue(source["ref"].as_str()?)?.key();
             all.iter().find(|other| {
                 other.id != item.id
                     && other.removed.is_none()
                     && other
                         .source()
-                        .and_then(|source| {
-                            self.refs
-                                .issue(source["ref"].as_str()?)
-                                .map(|issue| issue.key())
-                        })
-                        .as_ref()
-                        == Some(&reference)
+                        .is_some_and(|other| self.refs.same_source(source, other))
             })
         }) {
             let reference = twin

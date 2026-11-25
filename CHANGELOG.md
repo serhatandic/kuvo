@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers reuse fresh GitHub Work Queue readings from your other computers and refuse to restore or hand over an item beside a live copy of the same issue.
+
 - Work Queue history on Rust computers no longer records an edit just because an old item lacked empty fields, and an interrupted local handoff is cleaned up on the next write.
 - Assigning personal Work Queue items to a local bot moves them into its queue on Rust computers.
 - Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.

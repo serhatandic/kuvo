@@ -763,20 +763,23 @@ impl Writer {
                     if agent {
                         edit::refuse_handing(item)?;
                     }
+                    let far = told::items_elsewhere(
+                        &writer.store, &all, &writer.peers.view(), "all",
+                        &super::sessions::Sessions::default(), &[], now,
+                    ).map_err(storage_refusal)?;
+                    if let Some(other) = far.items.iter().find(|other| other["id"] == item.id) {
+                        let computer = other["computer"]["name"].as_str().unwrap_or_default();
+                        return Err(bad(format!("{display} is on {computer} now (it got there before its hand-off was called off): change it there.")));
+                    }
                     if let Some(source) = item.source() {
-                        let ref_of = |value: &Value| {
-                            writer.refs.issue(value["ref"].as_str().unwrap_or_default())
-                                .map(|issue| issue.key())
-                                .unwrap_or_else(|| format!("{}:{}", value["kind"], value["ref"]).to_lowercase())
-                        };
-                        let source_key = ref_of(source);
-                        if let Some(other) = all.iter().find(|other| other.id != item.id && other.removed.is_none()
-                            && other.source().is_some_and(|other| {
-                                ref_of(other) == source_key || source.get("id").is_some_and(|id| other["id"] == *id)
-                            }))
-                        {
-                            return Err(bad(format!("Another item is {} now, in the queue of {}: one item for each issue, so this one stays deleted.",
-                                source["ref"].as_str().unwrap_or_default(), other.owner)));
+                        let twin = all.iter().find(|other| other.id != item.id && other.removed.is_none()
+                            && other.source().is_some_and(|other| writer.refs.same_source(source, other)))
+                            .map(|other| format!("in the queue of {}", other.owner))
+                            .or_else(|| far.items.iter().find(|other| other["id"] != item.id && writer.refs.same_source(source, &other["source"]))
+                                .map(|other| format!("on {}", other["computer"]["name"].as_str().unwrap_or_default())));
+                        if let Some(where_) = twin {
+                            return Err(bad(format!("Another item is {} now, {where_}: one item for each issue, so this one stays deleted.",
+                                source["ref"].as_str().unwrap_or_default())));
                         }
                     }
                     append_event(saved, json!({"at":now,"by":who,"kind":"restored"}));
