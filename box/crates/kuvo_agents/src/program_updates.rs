@@ -63,7 +63,9 @@ pub struct Native {
 impl Native {
     fn is_native(&self, path: &Path) -> bool {
         let path = path.to_string_lossy();
-        self.markers.iter().any(|marker| path.contains(marker.as_str()))
+        self.markers
+            .iter()
+            .any(|marker| path.contains(marker.as_str()))
     }
 }
 

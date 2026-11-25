@@ -2,33 +2,32 @@
 
 use http::StatusCode;
 use kuvo_agents::{
-    session_runs::{Cancelled, SessionRuns},
-    session_store::{MessageOrder, SessionStore},
-};
-use kuvo_agents::{
     accounts::Provider,
+    inbox::{Delivery, Input},
     live_asks::AskKey,
     resident::ResidentAgents,
-    inbox::{Delivery, Input},
     session_store::{NewSession, SessionPatch},
     session_view,
 };
-use kuvo_engine::{
-    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentTakeBack, AgentSessionPatch, AgentSessionRead, AgentSessionRow,
-    AgentSessionSource, NewAgentSession,
+use kuvo_agents::{
+    session_runs::{Cancelled, SessionRuns},
+    session_store::{MessageOrder, SessionStore},
 };
-use std::io;
-use serde_json::{Map, Value};
+use kuvo_engine::{
+    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentSessionPatch, AgentSessionRead,
+    AgentSessionRow, AgentSessionSource, AgentTakeBack, NewAgentSession,
+};
 use kuvo_protocol::routes::{
     delete_kuvo_agents_api_session_id_background as stop_background,
-    delete_kuvo_agents_api_shell_id as stop_command,
-    get_kuvo_agents_api_session_active as active, get_kuvo_agents_api_session_id as read,
-    get_kuvo_agents_api_session_id_message as transcript,
+    delete_kuvo_agents_api_shell_id as stop_command, get_kuvo_agents_api_session_active as active,
+    get_kuvo_agents_api_session_id as read, get_kuvo_agents_api_session_id_message as transcript,
     post_kuvo_agents_api_session_id_model as select_model,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use percent_encoding::percent_decode_str;
+use serde_json::{Map, Value};
+use std::io;
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::{broadcast, watch};
 
@@ -158,10 +157,18 @@ impl AgentSessionSource for Inventory {
                     .and_then(|location| location["directory"].as_str())
                     .map(str::to_owned);
                 if let Some(title) = told.0 {
-                    feed.emit_from("session.renamed", serde_json::json!({ "sessionID": id, "title": title }), directory.clone());
+                    feed.emit_from(
+                        "session.renamed",
+                        serde_json::json!({ "sessionID": id, "title": title }),
+                        directory.clone(),
+                    );
                 }
                 if told.1 {
-                    feed.emit_from("session.metadata.updated", serde_json::json!({ "sessionID": id }), directory);
+                    feed.emit_from(
+                        "session.metadata.updated",
+                        serde_json::json!({ "sessionID": id }),
+                        directory,
+                    );
                 }
             }
             Ok(saved)
@@ -182,7 +189,11 @@ impl AgentSessionSource for Inventory {
                 None => self.store.delete(id).await,
             }?;
             if deleted && let Some(feed) = self.feed() {
-                feed.emit_from("session.deleted", serde_json::json!({ "sessionID": id }), directory);
+                feed.emit_from(
+                    "session.deleted",
+                    serde_json::json!({ "sessionID": id }),
+                    directory,
+                );
             }
             Ok(deleted)
         })
@@ -229,7 +240,11 @@ impl AgentSessionSource for Inventory {
                 .running
                 .as_ref()
                 .ok_or_else(|| io::Error::other("The coding agents aren't running here."))?;
-            let AgentPrompt { id: message, text, metadata } = prompt;
+            let AgentPrompt {
+                id: message,
+                text,
+                metadata,
+            } = prompt;
             let mut input = Input::new(message, text, Vec::new(), Delivery::Steer);
             input.metadata = metadata;
             runs.prompt(id.to_owned(), input, None).await
@@ -238,11 +253,11 @@ impl AgentSessionSource for Inventory {
 
     fn line<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
         Box::pin(async move {
-            Ok(self.store.line(id).await?.map(|line| {
-                line.iter()
-                    .map(|input| input.listed(id))
-                    .collect()
-            }))
+            Ok(self
+                .store
+                .line(id)
+                .await?
+                .map(|line| line.iter().map(|input| input.listed(id)).collect()))
         })
     }
 
@@ -256,7 +271,11 @@ impl AgentSessionSource for Inventory {
                 queue,
                 metadata,
             } = prompt;
-            let delivery = if queue { Delivery::Queue } else { Delivery::Steer };
+            let delivery = if queue {
+                Delivery::Queue
+            } else {
+                Delivery::Steer
+            };
             let mut input = Input::new(message, text, files, delivery);
             input.metadata = metadata;
             runs.prompt(id.to_owned(), input, None).await
@@ -265,7 +284,11 @@ impl AgentSessionSource for Inventory {
 
     fn set_delivery<'a>(&'a self, id: &'a str, item: &'a str, queue: bool) -> AgentCall<'a, ()> {
         Box::pin(async move {
-            let delivery = if queue { Delivery::Queue } else { Delivery::Steer };
+            let delivery = if queue {
+                Delivery::Queue
+            } else {
+                Delivery::Steer
+            };
             self.runs()?
                 .set_delivery(id.to_owned(), item.to_owned(), delivery, false)
                 .await
@@ -372,7 +395,9 @@ pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
         let commands = commands.clone();
         async move {
             let given = call.param("id").unwrap_or_default();
-            let id = percent_decode_str(given).decode_utf8().map_err(|_| no_command())?;
+            let id = percent_decode_str(given)
+                .decode_utf8()
+                .map_err(|_| no_command())?;
             if !commands.stop(&id).await {
                 return Err(no_command());
             }
@@ -490,14 +515,25 @@ pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
             let busy: serde_json::Map<String, Value> = inventory
                 .running
                 .as_ref()
-                .map(|runs| runs.running().iter().map(|id| (id.clone(), serde_json::json!({ "type": "busy" }))).collect())
+                .map(|runs| {
+                    runs.running()
+                        .iter()
+                        .map(|id| (id.clone(), serde_json::json!({ "type": "busy" })))
+                        .collect()
+                })
                 .unwrap_or_default();
             let mut answer = serde_json::json!({ "data": busy });
             // (No turn here follows an engine model.)
-            if call.request.path.split_once('?').is_some_and(|(_, query)| query.split('&').any(|pair| pair.split('=').next() == Some("release-switch"))) {
+            if call.request.path.split_once('?').is_some_and(|(_, query)| {
+                query
+                    .split('&')
+                    .any(|pair| pair.split('=').next() == Some("release-switch"))
+            }) {
                 answer["engineTurns"] = serde_json::json!([]);
             }
-            Ok(RouteReply::json::<200>(serde_json::from_value(answer).map_err(|error| super::refuse(error.into()))?))
+            Ok(RouteReply::json::<200>(
+                serde_json::from_value(answer).map_err(|error| super::refuse(error.into()))?,
+            ))
         }
     });
 
@@ -506,16 +542,32 @@ pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
         let inventory = reading.clone();
         async move {
             let given = call.param("id").unwrap_or_default();
-            let id = percent_decode_str(given).decode_utf8().map_err(|_| missing(given))?.into_owned();
+            let id = percent_decode_str(given)
+                .decode_utf8()
+                .map_err(|_| missing(given))?
+                .into_owned();
             // `context=0`: as saved, without asking its agent for its model's window.
-            let saved = call.request.path.split_once('?').is_some_and(|(_, query)| query.split('&').any(|pair| pair == "context=0"));
+            let saved = call
+                .request
+                .path
+                .split_once('?')
+                .is_some_and(|(_, query)| query.split('&').any(|pair| pair == "context=0"));
             let session = if saved {
-                inventory.store.read(&id).await.map_err(super::refuse)?.map(|header| session_view::for_clients(header.into_fields(), &inventory.home))
+                inventory
+                    .store
+                    .read(&id)
+                    .await
+                    .map_err(super::refuse)?
+                    .map(|header| session_view::for_clients(header.into_fields(), &inventory.home))
             } else {
-                AgentSessionSource::session(&inventory, &id).await.map_err(super::refuse)?
+                AgentSessionSource::session(&inventory, &id)
+                    .await
+                    .map_err(super::refuse)?
             };
             let session = session.ok_or_else(|| missing(&id))?;
-            Ok(RouteReply::json::<200>(read::Status200 { data: Value::Object(session) }))
+            Ok(RouteReply::json::<200>(read::Status200 {
+                data: Value::Object(session),
+            }))
         }
     });
 
@@ -523,12 +575,18 @@ pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
         let inventory = inventory.clone();
         async move {
             let given = call.param("id").unwrap_or_default();
-            let id = percent_decode_str(given).decode_utf8().map_err(|_| missing(given))?.into_owned();
+            let id = percent_decode_str(given)
+                .decode_utf8()
+                .map_err(|_| missing(given))?
+                .into_owned();
             let (Some(runs), Some(agents)) = (&inventory.running, &inventory.agents) else {
                 return Err(super::refuse(std::io::ErrorKind::Unsupported.into()));
             };
             let model = call.body["model"].clone();
-            let changed = runs.select_model(&id, model.clone(), agents).await.map_err(super::refuse)?;
+            let changed = runs
+                .select_model(&id, model.clone(), agents)
+                .await
+                .map_err(super::refuse)?;
             let Some(changed) = changed else {
                 return Err(missing(&id));
             };
@@ -537,8 +595,16 @@ pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
                 if !previous.is_null() {
                     data["previous"] = previous;
                 }
-                let directory = inventory.store.read(&id).await.ok().flatten().and_then(|header| header.directory().map(str::to_owned));
-                agents.feed().emit_from("session.model.selected", data, directory);
+                let directory = inventory
+                    .store
+                    .read(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|header| header.directory().map(str::to_owned));
+                agents
+                    .feed()
+                    .emit_from("session.model.selected", data, directory);
             }
             Ok(RouteReply::json::<200>(select_model::Status200 {}))
         }

@@ -31,8 +31,8 @@ fn answer<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Refusal> {
 }
 
 fn refused(refused: Refused) -> Refusal {
-    let status = http::StatusCode::from_u16(refused.status)
-        .unwrap_or(http::StatusCode::SERVICE_UNAVAILABLE);
+    let status =
+        http::StatusCode::from_u16(refused.status).unwrap_or(http::StatusCode::SERVICE_UNAVAILABLE);
     Refusal::new(status, refused.message)
 }
 
@@ -68,7 +68,11 @@ fn follow_background(feed: Feed, store: SessionStore) {
                 .collect();
             for session in changed {
                 let directory = directory(&store, &session).await;
-                feed.emit_from("session.background.updated", json!({ "sessionID": session }), directory);
+                feed.emit_from(
+                    "session.background.updated",
+                    json!({ "sessionID": session }),
+                    directory,
+                );
             }
             before = now;
         }
@@ -123,7 +127,9 @@ pub(crate) fn register(
         let rows = all.clone();
         async move {
             let updating = rows.update_all().await;
-            Ok(RouteReply::json::<200>(answer(json!({ "data": { "updating": updating } }))?))
+            Ok(RouteReply::json::<200>(answer(
+                json!({ "data": { "updating": updating } }),
+            )?))
         }
     });
 
@@ -133,7 +139,9 @@ pub(crate) fn register(
         async move {
             let provider = provider(call.param("provider"))?;
             let updating = rows.update(&provider).map_err(refused)?;
-            Ok(RouteReply::json::<200>(answer(json!({ "data": { "updating": updating } }))?))
+            Ok(RouteReply::json::<200>(answer(
+                json!({ "data": { "updating": updating } }),
+            )?))
         }
     });
 
@@ -153,7 +161,9 @@ pub(crate) fn register(
         let rows = served.clone();
         async move {
             let notices = rows.notices();
-            Ok(RouteReply::json::<200>(answer(json!({ "data": { "notices": notices } }))?))
+            Ok(RouteReply::json::<200>(answer(
+                json!({ "data": { "notices": notices } }),
+            )?))
         }
     });
 

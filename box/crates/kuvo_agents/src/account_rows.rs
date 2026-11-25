@@ -18,8 +18,8 @@ use crate::{
     accounts::{AgentKind, Provider},
     feed::Feed,
     program_updates::{
-        Accounts, Changed, Hold, InstallResult, Maintenance, Program, ProgramUpdates,
-        UpdateResult, install, maintenance,
+        Accounts, Changed, Hold, InstallResult, Maintenance, Program, ProgramUpdates, UpdateResult,
+        install, maintenance,
         notices::{ProgramNow, Served, UpdateNotices, agents_update_themselves},
     },
     resident::ResidentAgents,
@@ -294,12 +294,17 @@ impl AccountRows {
                 let rows = AccountRows(inner);
                 let mut programs: Vec<Entry> = Vec::new();
                 for entry in rows.0.agents.roster().all() {
-                    if !programs.iter().any(|each| each.account.kind == entry.account.kind) {
+                    if !programs
+                        .iter()
+                        .any(|each| each.account.kind == entry.account.kind)
+                    {
                         programs.push(entry.clone());
                     }
                 }
                 for entry in programs {
-                    let Some(definition) = entry.agent.program() else { continue };
+                    let Some(definition) = entry.agent.program() else {
+                        continue;
+                    };
                     let value = maintenance(&definition, fresh).await;
                     if rows.noted(&entry, value) {
                         for each in rows.0.agents.roster().all() {
@@ -313,7 +318,12 @@ impl AccountRows {
                     }
                 }
                 drop(rows);
-                tokio::time::sleep(if fresh { Duration::from_secs(60 * 60) } else { Duration::from_secs(60) }).await;
+                tokio::time::sleep(if fresh {
+                    Duration::from_secs(60 * 60)
+                } else {
+                    Duration::from_secs(60)
+                })
+                .await;
                 fresh = true;
             }
         });
@@ -341,7 +351,8 @@ impl AccountRows {
             agents_update_themselves(&self.0.home),
         );
         if let Some(notice) = decided.told {
-            self.feed().emit("kuvo.updates.notice", json!({ "notice": notice }));
+            self.feed()
+                .emit("kuvo.updates.notice", json!({ "notice": notice }));
         }
         if decided.changed {
             self.feed().emit("kuvo.updates.notices.updated", json!({}));
@@ -353,7 +364,8 @@ impl AccountRows {
             for each in roster.all().iter().filter(|each| each.account.kind == kind) {
                 Program::updated(each);
             }
-            self.feed().emit("model.updated", json!({ "program": program }));
+            self.feed()
+                .emit("model.updated", json!({ "program": program }));
         }
         before.as_ref() != Some(&value)
     }
@@ -362,7 +374,12 @@ impl AccountRows {
     /// version moved), and, updated, that its models changed.
     fn ended(&self, program: &str, updated: bool) {
         let roster = self.0.agents.roster();
-        let Some(entry) = roster.all().iter().find(|each| each.account.kind.name() == program).cloned() else {
+        let Some(entry) = roster
+            .all()
+            .iter()
+            .find(|each| each.account.kind.name() == program)
+            .cloned()
+        else {
             return;
         };
         let (rows, program) = (self.clone(), program.to_owned());
@@ -373,7 +390,8 @@ impl AccountRows {
                 rows.noted(&entry, value);
             }
             if updated {
-                rows.feed().emit("model.updated", json!({ "program": program }));
+                rows.feed()
+                    .emit("model.updated", json!({ "program": program }));
             }
         });
     }
@@ -387,7 +405,8 @@ impl AccountRows {
         let late = answered.clone();
         let asked = tokio::spawn(async move {
             let value = maintenance(&definition, fresh).await;
-            if rows.noted(&account, value.clone()) && late.load(std::sync::atomic::Ordering::SeqCst) {
+            if rows.noted(&account, value.clone()) && late.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 rows.feed().emit(
                     "integration.updated",
                     json!({ "integrationID": account.account.provider().to_string() }),
@@ -397,7 +416,9 @@ impl AccountRows {
         });
         let value = match tokio::time::timeout(Duration::from_secs(2), asked).await {
             Ok(Ok(value)) => Some(value),
-            _ => lock(&self.0.maintained).get(entry.account.kind.name()).cloned(),
+            _ => lock(&self.0.maintained)
+                .get(entry.account.kind.name())
+                .cloned(),
         };
         answered.store(true, std::sync::atomic::Ordering::SeqCst);
         value
@@ -406,7 +427,8 @@ impl AccountRows {
     /// Every account's row (`fresh`: asked anew).
     pub async fn list(&self, fresh: bool) -> Vec<Value> {
         let roster = self.0.agents.roster();
-        futures_util::future::join_all(roster.all().iter().map(|entry| self.row(entry, fresh))).await
+        futures_util::future::join_all(roster.all().iter().map(|entry| self.row(entry, fresh)))
+            .await
     }
 
     /// One account's row, asked anew.
@@ -417,7 +439,8 @@ impl AccountRows {
     }
 
     async fn row(&self, entry: &Entry, fresh: bool) -> Value {
-        let (account, maintained) = tokio::join!(entry.status(fresh), self.maintained_soon(entry, fresh));
+        let (account, maintained) =
+            tokio::join!(entry.status(fresh), self.maintained_soon(entry, fresh));
         let account = Account::from(account);
         let kind = entry.account.kind;
         let provider = entry.account.provider().to_string();
@@ -437,7 +460,10 @@ impl AccountRows {
         let program = kind.name();
         let updates = facts.program;
         let outdated = maintained.as_ref().is_some_and(Maintenance::is_outdated);
-        let command = maintained.as_ref().and_then(|value| value.command.as_ref()).is_some();
+        let command = maintained
+            .as_ref()
+            .and_then(|value| value.command.as_ref())
+            .is_some();
         let lists_every_model = !facts.lists_when_listed || entry.lists_every_model().await;
         let connections = if account.signed_in {
             let message = match (&label, account.unchecked) {
@@ -504,7 +530,10 @@ impl AccountRows {
         if !facts(entry.account.kind, true).program {
             return Err(Refused {
                 status: 400,
-                message: format!("Update {} the way you installed it.", entry.account.kind.display_name()),
+                message: format!(
+                    "Update {} the way you installed it.",
+                    entry.account.kind.display_name()
+                ),
             });
         }
         drop(self.0.updates.update(Arc::new(entry.clone()), None));
@@ -545,7 +574,10 @@ impl AccountRows {
             message: format!("No agent {provider}."),
         })?;
         let kind = entry.account.kind;
-        let Some(command) = facts(kind, true).install.filter(|_| facts(kind, true).program) else {
+        let Some(command) = facts(kind, true)
+            .install
+            .filter(|_| facts(kind, true).program)
+        else {
             return Err(Refused {
                 status: 400,
                 message: format!("Install {} the way its maker says.", kind.display_name()),
@@ -559,11 +591,22 @@ impl AccountRows {
         if result.installed {
             // How an update went before is no longer news.
             self.0.updates.forget(kind.name(), None);
-            for each in self.0.agents.roster().all().iter().filter(|each| each.account.kind == kind) {
+            for each in self
+                .0
+                .agents
+                .roster()
+                .all()
+                .iter()
+                .filter(|each| each.account.kind == kind)
+            {
                 Program::updated(each);
             }
-            self.feed().emit("integration.updated", json!({ "integrationID": provider.to_string() }));
-            self.feed().emit("model.updated", json!({ "program": kind.name() }));
+            self.feed().emit(
+                "integration.updated",
+                json!({ "integrationID": provider.to_string() }),
+            );
+            self.feed()
+                .emit("model.updated", json!({ "program": kind.name() }));
         }
         Ok(result)
     }

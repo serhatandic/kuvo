@@ -148,10 +148,7 @@ async fn one_its_installer_cant_update_says_so_and_holds_nothing() {
     });
     let (updates, changes) = updates(&home, account.clone());
     let result = updates.update(account.clone(), None).await;
-    assert_eq!(
-        result.message.as_deref(),
-        Some("Stand isn't installed.")
-    );
+    assert_eq!(result.message.as_deref(), Some("Stand isn't installed."));
     assert!(matches!(
         updates.update_of("stand", None),
         Some(ProgramUpdate::Failed { .. })

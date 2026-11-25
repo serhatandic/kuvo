@@ -106,7 +106,11 @@ impl Factory for ClaudeFactory {
 fn update_channel(env: &kuvo_os::platform::Environment) -> &'static str {
     use kuvo_os::platform::{Platform, env_value};
     let platform = Platform::current();
-    let user = if platform == Platform::Windows { "USERPROFILE" } else { "HOME" };
+    let user = if platform == Platform::Windows {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
     let folder = env_value(platform, env, "CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| env_value(platform, env, user).map(|home| PathBuf::from(home).join(".claude")));

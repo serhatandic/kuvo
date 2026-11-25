@@ -155,8 +155,13 @@ impl UpdateNotices {
         };
         let mut kept = self.read();
         let before = serde_json::to_value(&kept).ok();
-        let was = kept.versions.get(&now.program).and_then(Value::as_str).map(str::to_owned);
-        kept.versions.insert(now.program.clone(), Value::String(installed.clone()));
+        let was = kept
+            .versions
+            .get(&now.program)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        kept.versions
+            .insert(now.program.clone(), Value::String(installed.clone()));
         let mine = |notice: &Notice| notice.program == now.program;
         // What it's updated to (or past) holds no more; nor does an earlier update, once moved on.
         kept.notices.retain(|notice| {
@@ -224,15 +229,24 @@ impl UpdateNotices {
 
     /// What clients show now, newest first.
     pub fn list(&self) -> Vec<Served> {
-        let mut notices: Vec<_> = self.read().notices.into_iter().filter(|notice| !notice.seen).collect();
-        notices.sort_by(|a, b| b.at.cmp(&a.at));
+        let mut notices: Vec<_> = self
+            .read()
+            .notices
+            .into_iter()
+            .filter(|notice| !notice.seen)
+            .collect();
+        notices.sort_by_key(|notice| std::cmp::Reverse(notice.at));
         notices.iter().map(|notice| self.served(notice)).collect()
     }
 
     /// It was seen (for every client): no longer served, and not raised again. Whether it was.
     pub fn seen(&self, id: &str) -> bool {
         let mut kept = self.read();
-        let Some(notice) = kept.notices.iter_mut().find(|each| each.id == id && !each.seen) else {
+        let Some(notice) = kept
+            .notices
+            .iter_mut()
+            .find(|each| each.id == id && !each.seen)
+        else {
             return false;
         };
         notice.seen = true;
@@ -246,7 +260,10 @@ impl UpdateNotices {
         let mut served = Served {
             id: notice.id.clone(),
             program: notice.program.clone(),
-            provider: program.map_or_else(|| notice.program.clone(), |program| program.provider.clone()),
+            provider: program.map_or_else(
+                || notice.program.clone(),
+                |program| program.provider.clone(),
+            ),
             kind: notice.kind,
             version: notice.version.clone(),
             title: format!("{name} {} is available", notice.version),
@@ -257,7 +274,9 @@ impl UpdateNotices {
         if notice.kind == Kind::Updated {
             served.title = format!("{name} updated to {}", notice.version);
             served.body = match &notice.from {
-                Some(from) => format!("It was {from}. It updates itself, as set in Settings › Computer."),
+                Some(from) => {
+                    format!("It was {from}. It updates itself, as set in Settings › Computer.")
+                }
                 None => "It updates itself, as set in Settings › Computer.".into(),
             };
             return served;
@@ -265,17 +284,26 @@ impl UpdateNotices {
         let installed = program
             .and_then(|program| program.maintenance.installed.as_deref())
             .or(notice.from.as_deref());
-        let have = installed.map(|installed| format!("You have {installed}.")).unwrap_or_default();
+        let have = installed
+            .map(|installed| format!("You have {installed}."))
+            .unwrap_or_default();
         if program.is_some_and(|program| program.updates) {
             served.body = have;
-            served.action = Some(Action { id: "update", label: "Update" });
+            served.action = Some(Action {
+                id: "update",
+                label: "Update",
+            });
             return served;
         }
         let how = match program.and_then(|program| program.maintenance.shown.as_deref()) {
             Some(shown) => format!("Update it with “{shown}”."),
             None => format!("Update {name} the way you installed it."),
         };
-        served.body = [have, how].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+        served.body = [have, how]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         served
     }
 }

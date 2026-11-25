@@ -185,10 +185,15 @@ impl SessionStore {
         let same = |one: &Value, other: &Value| {
             one["providerID"] == other["providerID"] && one["id"] == other["id"]
         };
-        let identical = previous
-            .as_ref()
-            .is_some_and(|previous| same(previous, &model) && previous["variant"] == model["variant"]);
-        if header.get("parentID").is_some_and(|parent| !parent.is_null()) && previous.is_some() && !identical {
+        let identical = previous.as_ref().is_some_and(|previous| {
+            same(previous, &model) && previous["variant"] == model["variant"]
+        });
+        if header
+            .get("parentID")
+            .is_some_and(|parent| !parent.is_null())
+            && previous.is_some()
+            && !identical
+        {
             return Err(invalid("A subagent's model is its agent's to pick."));
         }
         if !connected {
