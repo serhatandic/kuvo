@@ -59,7 +59,17 @@ export async function withAgentFixture(t, seed, run, { env: extra = {}, kept = f
         residents.push(listener.pid);
         return listener;
       };
-      await run(listener, home, { restart });
+      // Turned off (stopped for good: its agents stop with it), and on again.
+      const off = () => releases.control(["off"]);
+      const on = async () => {
+        rmSync(path.join(home, "run", "off"), { force: true });
+        await keeper.stop();
+        keeper = boxCommand(binary, home, env, relay, ["keep"]);
+        listener = await keptListener(home, keeper, listener.pid);
+        residents.push(listener.pid);
+        return listener;
+      };
+      await run(listener, home, { restart, off, on });
       return;
     }
     resident = startBox({ binary, home, env, relay });

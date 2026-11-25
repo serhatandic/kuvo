@@ -280,7 +280,7 @@ test("a Mac's held agent in the sandbox reaches Kuvo Code's tools through the bo
     }, { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(settings) }, kept: true });
   });
 
-test("a resident stopped for good stops the agents it holds: the next ends their turn as cut off",
+test("a resident turned off stops the agents it holds: the next ends their turn as cut off",
   { timeout: 60000 }, t => {
     if (boxBinary().typescript) {
       t.skip("The stand-in implements the Rust adapter contract.");
@@ -296,7 +296,7 @@ test("a resident stopped for good stops the agents it holds: the next ends their
         time: { created: 1, updated: 1 },
         permissions: [{ action: "edit", resource: "*", effect: "ask" }],
       }));
-    }, async (first, home, { restart }) => {
+    }, async (first, home, { off, on }) => {
       let listener = first;
       const call = (method, tail, body) => request(listener, method, route + tail, body, headers);
       assert.equal((await call("POST", "/prompt", { id: "msg_held_stopped_1", text: "edit" })).status, 200);
@@ -304,13 +304,14 @@ test("a resident stopped for good stops the agents it holds: the next ends their
       const holders = path.join(home, "run", "agents", "hold");
       const left = () => existsSync(holders) ? readdirSync(holders).filter(name => name !== "lifecycle.log") : [];
       assert.ok(left().length > 0);
-      listener = await restart();
+      await off();
       await until(() => left().length === 0, () => "Holders were left: " + left().join(", "), 30000);
+      listener = await on();
       const done = await until(async () => {
         const all = (await call("GET", "/message?order=asc")).json.data;
         return all.some(row => row.type === "idle") && all;
       }, "The cut-off turn was never closed.");
       assert.deepEqual(done.filter(row => row.type === "idle").map(row => row.outcome), ["interrupted"]);
       assert.deepEqual((await call("GET", "/permission")).json.data, []);
-    });
+    }, { kept: true });
   });

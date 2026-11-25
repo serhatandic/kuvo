@@ -425,8 +425,9 @@ test("the Rust keeper keeps a Codex turn across a release switch: the same app-s
       privateHome(home);
       const base = isolatedEnv(root);
       const bin = standInCodex(base.HOME);
-      const system = process.platform === "win32" ? path.join(base.SystemRoot, "System32") : "/usr/bin:/bin";
-      const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, system].join(path.delimiter) };
+      // (On Windows the box's own folder too: a cross build's libunwind.dll is beside it.)
+      const system = process.platform === "win32" ? [path.join(base.SystemRoot, "System32"), path.dirname(binary.file)] : ["/usr/bin:/bin"];
+      const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, ...system].join(path.delimiter) };
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       seedCodexSession(home, session, { permissions: askFirst });
       write(path.join(base.HOME, "codex-script.json"), JSON.stringify({ "wait for update": [
