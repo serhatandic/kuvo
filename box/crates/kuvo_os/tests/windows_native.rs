@@ -4,10 +4,33 @@
 #![cfg(windows)]
 
 use kuvo_os::{
-    platform::{git_bash, git_bash_command},
+    platform::{Environment, git_bash, git_bash_spawn},
+    process::Stdio,
     windows::{private_home, system_directory},
 };
-use std::{env, fs, io::ErrorKind, process::Command};
+use std::{
+    env, fs,
+    io::{ErrorKind, Read},
+    path::Path,
+    process::Command,
+};
+
+#[derive(Debug)]
+struct Reply {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
+fn bash(environment: &Environment, folder: &Path, source: &str) -> Reply {
+    let mut spawn = git_bash_spawn(environment.clone(), folder, source).unwrap();
+    spawn.stdout = Stdio::Pipe;
+    spawn.stderr = Stdio::Inherit;
+    let mut child = spawn.spawn().unwrap();
+    let mut stdout = Vec::new();
+    child.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
+    let success = child.wait().unwrap().success();
+    Reply { success, stdout }
+}
 
 #[test]
 fn an_installation_refuses_an_acl_other_accounts_can_read() {
@@ -53,15 +76,12 @@ fn git_bash_runs_crlf_commands_and_git_tracks_a_long_path_with_spaces() {
         );
         panic!("This Windows scenario requires Git for Windows");
     }
-    let reply = git_bash_command(
+    let reply = bash(
         &environment,
         &folder,
         "printf '%s\n' 'First line' > 'File With Spaces.txt'\r\n",
-    )
-    .unwrap()
-    .output()
-    .unwrap();
-    assert!(reply.status.success(), "{reply:?}");
+    );
+    assert!(reply.success, "{reply:?}");
     let file = folder.join("File With Spaces.txt");
     assert_eq!(fs::read(&file).unwrap(), b"First line\n");
 
@@ -79,22 +99,16 @@ fn git_bash_runs_crlf_commands_and_git_tracks_a_long_path_with_spaces() {
         "git add -- \"$TEST_LONG_PATH\" &&\r\n",
         "git ls-files\r\n"
     );
-    let reply = git_bash_command(&environment, &home, source)
-        .unwrap()
-        .output()
-        .unwrap();
-    assert!(reply.status.success(), "{reply:?}");
+    let reply = bash(&environment, &home, source);
+    assert!(reply.success, "{reply:?}");
     assert_eq!(String::from_utf8_lossy(&reply.stdout).trim_end(), relative);
 
-    let link = git_bash_command(
+    let link = bash(
         &environment,
         &folder,
         "ln -s 'File With Spaces.txt' 'Project link'",
-    )
-    .unwrap()
-    .output()
-    .unwrap();
-    if link.status.success() {
+    );
+    if link.success {
         assert!(
             fs::symlink_metadata(folder.join("Project link"))
                 .unwrap()
