@@ -336,7 +336,7 @@ impl Agent for Codex {
                     Some("reset") => ResetOutcome::Reset,
                     Some("alreadyRedeemed") => ResetOutcome::AlreadyRedeemed,
                     Some("nothingToReset") => ResetOutcome::NothingToReset,
-                    Some("noCredit") => ResetOutcome::NoReset,
+                    Some("noCredit") => ResetOutcome::MakerNoReset,
                     _ => ResetOutcome::Unknown,
                 },
             )

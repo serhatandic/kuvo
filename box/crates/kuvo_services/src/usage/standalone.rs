@@ -1068,9 +1068,14 @@ impl Readers {
         at: u64,
     ) -> Result<Option<Plan>, Problem> {
         let fixture = if self.isolated {
+            let fixture_key = if cfg!(windows) {
+                "KUVO_TEST_AG_WINDOWS_ROOT"
+            } else {
+                "KUVO_TEST_AG_PROC_ROOT"
+            };
             let Some(root) = self
                 .env
-                .get(OsStr::new("KUVO_TEST_AG_PROC_ROOT"))
+                .get(OsStr::new(fixture_key))
                 .map(PathBuf::from)
                 .and_then(|p| p.canonicalize().ok())
             else {

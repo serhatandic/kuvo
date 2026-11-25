@@ -274,7 +274,8 @@ impl Work {
             let Some(limits) = self.limits.clone() else {
                 return Ok(refused("Plan limits aren't read on this computer."));
             };
-            return tokio::task::spawn_blocking(move || said(limits.describe()))
+            let zone = self.setup.time_zone().map(|(zone, _)| zone);
+            return tokio::task::spawn_blocking(move || said(limits.describe(zone.as_deref())))
                 .await
                 .map_err(|e| e.to_string());
         }
