@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Mac still on Kuvo Code 0.8.0-beta.1 that has gone away can be removed from a Rust computer's list with Remove. Such a Mac sees that computer's conversations with their project, and untitled ones as New session.
+
 - Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
 
 - Usage history includes Cursor account-wide events and ChatGPT subscription calls made through the engine; Claude file-owned accounts can spend reset grants, and usage warnings do not repeat when another computer takes over the same window.

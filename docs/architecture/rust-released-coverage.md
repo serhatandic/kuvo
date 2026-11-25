@@ -62,8 +62,14 @@ Part B results (Rust): macOS `compat-repair` 5/5 (2 WSL-only skips), `compat-shi
 WSL are Rust-pack only). Linux (static musl, lokum, one CPU / 1 GB): repair 4/4, shim 2/2,
 released compat 4/4. WSL 2 Ubuntu 24.04 (musl): repair 6/6, shim 2/2, released compat 4/4.
 Native Windows: repair 3/3, shim 2/2 (the delegate under the pinned Windows engine), released
-compat 4/4. Off the Mac the current-beta compat case needs Bun to generate its home and the app
-moves need APFS, so they don't apply there.
+compat 4/4. The app moves need APFS, so they don't apply off the Mac. Where no Bun is installed,
+the current-beta home is generated with the pinned engine's Bun; the TypeScript box can't make or
+keep that home on native Windows (it syncs folders, which Windows refuses), so only that case
+skips there.
+
+Final 7.3 results (Rust): macOS, Linux (musl, one CPU / 1 GB) and WSL 2 pass `compat-repair`,
+`compat-shim`, `compat-stays` and `compat` (R1–R10 and the current-beta home); native Windows
+passes every case that applies to it.
 
 Lighter than TypeScript, same answers: a repair round on WSL 2 asks Windows about the sign-in
 task only until it's seen starting the saved keeper (`run/wsl-task.keeper`), not each round.
@@ -160,6 +166,7 @@ proves the other way. beta.1 ignores the fields it doesn't know (`libraryCopy`, 
 | Adding: a phone's Add a Machine, Remove, Uninstall and Forget (`kuvo/machines`, `kuvo/hosts`) | The phone app is retired. |
 | Adding 413, setup "different terms", "phone stays with its signed Mac", "older Mac coexists", "altered part", "peer announces its setup", "zone count ties", "no known address", "legacy library", "forwarded signed roster" | TypeScript-beta only (above). No tag reads `agents.setup` either. |
 | Setup: SSH personalities | R7. Label restores are 2.5 and 5.2. |
+| The row's `personalities-box.test.js` | The setup map's B1, B5, B18 and B19; the app folder's libraries are 2.6's move and a bot's retelling 5.1's. A beta.1 Mac's library meets the machine's through R7. |
 | Setup: released peer mail readers | R1–R3, R6–R7, R10. |
 | Updates: `update-from-before`, `update-real-keeper` and the predecessor updater rehearsals | 9.1: the predecessor updater is a TypeScript beta's (beta.30). 9.3: a 0.7.2 Mac and a beta.1 machine straight to Rust, with the real Helper. Repair is R5. |
 | Updates: `run/link.json` `macMoved`, `macPeers` | TypeScript-beta fields (neither tag has them); `kuvo_setup/src/actor.rs` carries them. |
