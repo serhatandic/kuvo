@@ -1,4 +1,5 @@
 mod agents;
+mod found;
 mod library_artifacts;
 mod marketplace;
 mod usage;
@@ -264,6 +265,7 @@ pub async fn run(
             accounts.clone(),
             Some(Arc::new(runs.clone())),
         );
+        found::register(Some(rows.clone()), home, &mut routes);
         agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
         agents::sessions::register_reads(inventory.clone(), &mut routes);
         agents::turns::register(runs, accounts.feed().clone(), &mut routes);
@@ -274,6 +276,7 @@ pub async fn run(
             }))
             .with_agent_sessions(Arc::new(inventory))
     } else {
+        found::register(None, home, &mut routes);
         engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
             store: sessions,
             running: None,
@@ -390,9 +393,10 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup
-        .handle()
-        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
+    let setup_routes = setup.handle();
+    // Outside a setup, a released beta.1 Mac that enrolled this machine can be let go here.
+    let setup_routes = if managed { setup_routes } else { setup_routes.with_legacy(devices.clone()) };
+    setup_routes.register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     let archives = kuvo_services::settings::register(
         &mut routes,
@@ -959,6 +963,7 @@ fn info(
         "engine.restart",
         "box.backups.status",
         "box.atWork",
+        found::FEATURE,
     ];
     if !is_mac {
         features.push("engine.start");

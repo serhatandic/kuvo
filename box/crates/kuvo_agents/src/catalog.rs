@@ -15,7 +15,7 @@ pub struct Models {
     pub models: Vec<Model>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Model {
     pub id: String,
     pub name: String,

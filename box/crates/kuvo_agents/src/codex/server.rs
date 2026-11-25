@@ -489,7 +489,7 @@ impl Shared {
                     server.rpc.respond(id, answer).await;
                 }
             }
-            Incoming::Stray { .. } => {}
+            Incoming::Stray { .. } | Incoming::Answer { .. } => {}
             Incoming::Exited { .. } => {
                 {
                     let mut slot = self.slot.lock().await;
