@@ -6,7 +6,7 @@
 use kuvo_os::{
     platform::{Environment, git_bash, git_bash_spawn},
     process::Stdio,
-    windows::{private_home, system_directory},
+    windows::{private_folder, private_home, system_directory},
 };
 use std::{
     env, fs,
@@ -120,4 +120,32 @@ fn git_bash_runs_crlf_commands_and_git_tracks_a_long_path_with_spaces() {
             "{link:?}"
         );
     }
+}
+
+#[test]
+fn a_secret_folder_is_closed_to_others_and_refused_when_another_account_owns_it() {
+    let scratch = tempfile::tempdir().unwrap();
+    let folder = scratch.path().join("keys");
+    fs::create_dir(&folder).unwrap();
+    let icacls = system_directory().unwrap().join("icacls.exe");
+    let acl = |args: &[&str]| {
+        let reply = Command::new(&icacls).arg(&folder).args(args).output().unwrap();
+        assert!(reply.status.success(), "{reply:?}");
+        String::from_utf8_lossy(&reply.stdout).into_owned()
+    };
+    acl(&["/grant", "*S-1-1-0:(OI)(CI)(RX)"]);
+    private_folder(&folder).unwrap();
+    // Only this account is left, with nothing inherited from the scratch folder.
+    let listed = acl(&[]);
+    let entries: Vec<_> = listed.lines().filter(|line| line.contains(":(")).collect();
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert!(entries[0].contains("(OI)(CI)(F)") && !entries[0].contains("(I)"), "{listed}");
+    // A private one stays as it is; one another account owns is refused.
+    private_folder(&folder).unwrap();
+    acl(&["/grant", "*S-1-5-19:(OI)(CI)(F)"]);
+    acl(&["/setowner", "*S-1-5-19"]);
+    assert_eq!(
+        private_folder(&folder).unwrap_err().kind(),
+        ErrorKind::PermissionDenied
+    );
 }
