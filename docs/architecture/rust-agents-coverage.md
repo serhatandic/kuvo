@@ -802,9 +802,10 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 20–22 | Ported. |
 | 23 | Ported to agents-codex on both boxes. As the resident starts, Codex's replies an older bridge saved with its directives as words are read as a reply is now (`codex::read_kept_citations`, through `SessionStore::rows_saying`), and so is a title with one. Another agent's words quoting one stay as they were. The reference also keeps a list of the files it found (`sessions.cited`), which nothing reads. |
 | 24–28 | Ported. |
-| 29–32, 34 | Open (4.2): answers turned down with words, the asking words, a refused steer with a card up. |
+| 29–32, 34 | Ported to agents-codex on both boxes: answers turned down with words (in a turn, again and again, in Plan), the asking words, and a refused steer with a card up. |
 | 33, 55 | Ported. |
-| 35–49, 57 | Open (4.2): telling a sleeping Codex its answer, trying again into a sleep. |
+| 35–49 | Ported to agents-codex on both boxes. An answer goes into the turn and ends the sleep it's in. A sleep that starts after its answer went in is told again once. Turned down while it sleeps, it's tried again into that sleep, after 1 s and then double each time up to 64 s, or into one that started in its place. One it heard and worked on isn't retold. Ported from the reference into `codex/thread.rs` (`steer_answer`, `answers_on_item`, `retry`). The stand-in sleeps and turns steers down as the reference's own fake does. |
+| 57 | Open (4.2): dismissed while it sleeps. |
 | 50 | Ported. |
 | 51–54, 56, 58–60, 62, 64 | Open (4.2): answers at a turn's edge, two cards, counting refusals. |
 | 61, 63, 65 | Ported. |
@@ -831,7 +832,7 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 60/60 | 58/58, 2 skipped (Rust-only) | 6/6 |
+| macOS | 80/80 | 78/78, 2 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
 | WSL2, Ubuntu 24.04 (musl) | 60/60 | — | 6/6 |
 | Native Windows x64 | 60/60 | — | 6/6 |

@@ -109,7 +109,7 @@ function resident(fixture = {}) {
     if (skip) return;
     box.codex = await scriptedCodex(fixture);
     for (const [kind, permissions, agent] of [["plain"], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
-      for (let index = 1; index <= 20; index++) {
+      for (let index = 1; index <= 24; index++) {
         const id = `ses_codex_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.codex.home, "projects", id);
         write(path.join(folder, ".keep"), "");
@@ -1008,6 +1008,181 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
     await turnDown(id, form.id);
     await box.codex.idles(id);
     assert.deepEqual((await box.codex.answeredFor("pq1")).result, { answers: { which: { answers: [autopilot] }, key: { answers: [] } } });
+  });
+
+  const thinking = (n) => ["item/started", { item: { type: "reasoning", id: `r-${n}`, summary: [], content: [] } }];
+  const working = (n) => item("item/started", { type: "commandExecution", id: `c-${n}`, command: "ls" });
+  const asleep = async (id, count = 1) => until(async () => toolCalls(await box.codex.rows(id)).filter((tool) => tool.name === "sleep").length >= count, "It never slept.");
+  const answer = async (id, value = "Turkish", which = 0) => {
+    const forms = await card(id, which + 1).catch(async () => box.codex.forms(id));
+    const form = forms[which];
+    assert.equal((await box.codex.replyForm(id, form.id, { [form.fields[0].key]: value })).status, 200);
+  };
+  const ends = (id) => box.codex.idles(id, 1, "Its turn never ended: " + JSON.stringify(steered(id)));
+  const said = async (id) => texts(await box.codex.rows(id)).join("\n");
+  const typed = async (id, text) => {
+    const sent = await request(box.codex.listener, "POST", box.codex.route(id) + "/prompt", { id: `msg_${id.replace(/^ses_/, "")}_${Date.now().toString(36)}`, text, delivery: "steer" }, headers, 45000);
+    assert.equal(sent.status, 200, sent.text);
+  };
+
+  test("asleep for hours after asking: your answer goes into its turn, which ends the sleep, and it goes on", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s1"), thinking("s1"), { sleeps: true }, ...answered("s1")]);
+    await asleep(id);
+    await answer(id);
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish"]);
+    assert.deepEqual(starts(id), ["go"]);
+    assert.ok((await said(id)).includes("Writing it in Turkish."));
+  });
+
+  test("turned down by its box with words (Autopilot) while it sleeps on it: it hears them, the sleep ends and its turn goes on", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s2"), { sleeps: true }, ...answered("s2")]);
+    await asleep(id);
+    const [form] = await card(id);
+    await turnDown(id, form.id);
+    await ends(id);
+    assert.deepEqual(steered(id), [autopilot]);
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("settled before it starts to sleep: the sleep that follows isn't slept, it's told again", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s3"), { untilTold: true }, { sleeps: true }, ...answered("s3")]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.equal(told.length, 2, JSON.stringify(told));
+    assert.equal(told[0], "Turkish");
+    assert.ok(told[1].includes("Turkish"), told[1]);
+    assert.ok((await said(id)).includes("Writing it in Turkish."));
+  });
+
+  test("a sleep with no answered question behind it isn't woken", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ sleeps: true }, ...answered("s4")]);
+    await asleep(id);
+    await typed(id, "carry on");
+    await ends(id);
+    assert.deepEqual(steered(id), ["carry on"]);
+  });
+
+  test("answered while it sleeps, a later sleep of its own isn't woken", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s5"), { sleeps: true }, thinking("s5"), { sleeps: true }, ...answered("s5")]);
+    await asleep(id);
+    await answer(id);
+    await until(async () => steered(id).length === 1 && (await asleep(id, 2)), "It never slept again.");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await typed(id, "carry on");
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish", "carry on"]);
+  });
+
+  test("answered before a sleep, one it starts after hearing it and working on isn't woken", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s6"), { untilTold: true }, working("s6"), { sleeps: true }, ...answered("s6")]);
+    await answer(id);
+    await asleep(id);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await typed(id, "carry on");
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish", "carry on"]);
+  });
+
+  test("telling it again as it starts to sleep doesn't go through: it's tried again, and the sleep ends with nobody typing", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s7"), { untilTold: true }, { refusesNext: true }, { sleeps: true }, ...answered("s7")]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.equal(told.length, 3, JSON.stringify(told));
+    assert.equal(told[0], "Turkish");
+    assert.ok(told[1].includes("Turkish"));
+    assert.equal(told[2], told[1]);
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("an answer turned down while it sleeps: it's tried again, and the sleep ends with nobody typing", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refusesNext: true }, ...asking("s8"), { sleeps: true }, ...answered("s8")]);
+    await asleep(id);
+    await answer(id);
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish", "Turkish"]);
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("Stop while it's trying again to reach a sleep: the turn ends at once, with nothing more sent", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refuses: true }, ...asking("s9"), { sleeps: true }]);
+    await asleep(id);
+    await answer(id);
+    await until(async () => steered(id).length === 1 && (await box.codex.forms(id)).length === 0, "Its answer was never tried.");
+    await box.codex.interrupt(id);
+    await ends(id);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.deepEqual(steered(id), ["Turkish"]);
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("an answer its turn turned down a moment ago goes in as it goes on, and ends the sleep it starts", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refusesNext: true }, ...asking("s10"), { untilTold: true }, working("s10"), { sleeps: true }, ...answered("s10")]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.ok(told.length >= 2 && told.every((text) => text.includes("Turkish")), JSON.stringify(told));
+    assert.deepEqual(starts(id), ["go"]);
+    assert.ok((await said(id)).includes("Writing it in Turkish."));
+  });
+
+  test("an answer it takes in the breath a sleep starts, its turn ending there: told again and turned down, it isn't sent again in a turn of its own", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([...asking("s11"), { takesAsItSleeps: true }]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.equal(told.length, 2, JSON.stringify(told));
+    assert.equal(told[0], "Turkish");
+    assert.ok(told[1].includes("Turkish"));
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("an answer turned down as its sleep gives way to another goes into the new one, and ends it", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refusesNext: true }, ...asking("s12"), { sleepsAgainOnceRefused: true }, ...answered("s12")]);
+    await asleep(id);
+    await answer(id);
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish", "Turkish"]);
+    assert.deepEqual(starts(id), ["go"]);
+    assert.ok((await said(id)).includes("Writing it in Turkish."));
+  });
+
+  test("turned down as a sleep starts, and told again as that sleep gives way to another: the new one is told, and ends", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refusesAsItSleeps: true }, ...asking("s13"), { untilTold: true }, { refusesNext: true }, { sleepsAgainOnceRefused: true }, ...answered("s13")]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.equal(told.length, 3, JSON.stringify(told));
+    assert.equal(told[0], "Turkish");
+    assert.ok(told[1].includes("Turkish"));
+    assert.equal(told[2], told[1]);
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("turned down in the same breath a sleep starts: it's told once more, and no further turn starts for it", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refusesAsItSleeps: true }, ...asking("s14"), { untilTold: true }, { sleeps: true }, ...answered("s14")]);
+    await answer(id);
+    await ends(id);
+    const told = steered(id);
+    assert.equal(told.length, 2, JSON.stringify(told));
+    assert.ok(told[1].includes("Turkish"));
+    assert.deepEqual(starts(id), ["go"]);
+  });
+
+  test("what it heard before asking another isn't told again as it sleeps on the new one: that's yours to answer", { timeout: 60000 }, async () => {
+    const second = item("item/completed", { type: "agentMessage", id: "q2-s15", text: "Which tone?", delivery: "async", questions: [{ title: "Which tone?", options: ["Plain", "Warm"] }] });
+    const { id } = await box.begin([...asking("s15"), { untilTold: true }, second, { sleeps: true }, ...answered("s15")]);
+    await answer(id);
+    await asleep(id);
+    const [form] = await until(async () => {
+      const forms = await box.codex.forms(id);
+      return forms.length === 1 && forms[0].fields[0].description === "Which tone?" && forms;
+    }, "Its second question never showed.");
+    assert.equal((await box.codex.replyForm(id, form.id, { [form.fields[0].key]: "Plain" })).status, 200);
+    await ends(id);
+    assert.deepEqual(steered(id), ["Turkish", "Plain"]);
   });
 
   test("a message you type leaves the question open if Codex refuses the steer", { timeout: 60000 }, async () => {
