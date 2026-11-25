@@ -113,35 +113,7 @@ pub fn is_scratch(home: &Home) -> io::Result<bool> {
         }))
 }
 
-pub(crate) fn version_order(version: &str) -> Option<([u64; 3], bool, u64)> {
-    let (base, beta) = version
-        .split_once("-beta.")
-        .map_or((version, None), |(base, beta)| (base, Some(beta)));
-    let number = |part: &str| {
-        part.bytes()
-            .all(|byte| byte.is_ascii_digit())
-            .then(|| part.parse::<u64>().ok())
-            .flatten()
-    };
-    let mut parts = base.split('.');
-    let sequence = [
-        number(parts.next()?)?,
-        number(parts.next()?)?,
-        number(parts.next()?)?,
-    ];
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((
-        sequence,
-        beta.is_none(),
-        if let Some(beta) = beta {
-            number(beta)?
-        } else {
-            0
-        },
-    ))
-}
+pub(crate) use kuvo_store::release_version::order as version_order;
 
 fn usage() -> io::Error {
     io::Error::new(

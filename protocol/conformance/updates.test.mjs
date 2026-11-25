@@ -2,7 +2,7 @@
 // Each scenario uses freshly generated test signing keys and isolated local packs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import fs from "node:fs";
@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
@@ -410,6 +410,327 @@ async function macHelperRelease(t, swift, renew = false) {
     if (keychainCreated) assert.equal(security("delete-keychain", keychain).status, 0);
   }
 }
+
+test("a headless computer has its installed version but no local Mac app registration", async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Headless app status");
+  const version = "0.8.0-beta.1";
+  write(path.join(here.home, "bin/box-version"), version + "\n");
+  const child = here.start();
+  const resident = await child.ready();
+  for (const [method, body] of [["GET", undefined], ["POST", { desktop: path.join(here.env.HOME, "Kuvo.app") }]]) {
+    const answer = await request(resident, method, "kuvo/box/app", body, { "x-kuvo-from": "app" });
+    assert.equal(answer.status, 409, answer.text);
+    assert.deepEqual(answer.json, { message: "Only Kuvo on a Mac in its own folder has its app register with it." });
+  }
+  const local = (await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+  assert.deepEqual([local.version, local.kuvo, local.appCheck], [version, version, undefined]);
+  await child.stop();
+  write(path.join(here.home, "bin/box-version"), "not-a-version\n");
+  const unknown = await here.start().ready();
+  const row = (await request(unknown, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+  assert.deepEqual([row.version, row.kuvo, row.appCheck], [undefined, undefined, undefined]);
+});
+
+test("the Mac app registers its desktop and browser authority, keeps them separate, and reports appCheck", { timeout: 45000 }, async t => {
+  if (process.platform !== "darwin") return t.skip("Only an own-home Mac has an app.");
+  const binary = boxBinary();
+  const { computer, relay } = await bench(t);
+  const here = await computer("App registration");
+  const { home } = here;
+  write(path.join(home, "box/kind"), "mac\n");
+  const installed = "0.8.0", desktopVersion = "0.8.0-beta.2";
+  write(path.join(home, "bin/box-version"), installed + "\n");
+  const desktop = path.join(here.env.HOME, "Kuvo.app");
+  const bundle = path.join(here.env.HOME, "Kuvo Code.app");
+  const record = path.join(home, "run/app.json"), updating = path.join(home, "run/app-updating");
+  const failed = path.join(home, "run/app-open-failed.json"), opening = path.join(home, "run/app-opening.json");
+  const tools = { url: "http://127.0.0.1:12345/tools", token: "fixture-tool-token-only" };
+  const host = { url: "http://127.0.0.1:12346", password: "fixture-host-password-only" };
+  const app = { "x-kuvo-from": "app" }, mac = { "x-kuvo-from": "mac" };
+  const start = () => startBox({ binary, home, relay, env: { ...here.env, KUVO_APP_VERSION: desktopVersion }, mac: true });
+  let child = start();
+  try {
+    let resident = await child.ready();
+    const read = () => request(resident, "GET", "kuvo/box/app");
+    const register = (body, origin = app) => request(resident, "POST", "kuvo/box/app", body, origin);
+    const check = async (body, origin, status, message) => {
+      const answer = await register(body, origin);
+      assert.equal(answer.status, status, answer.text);
+      assert.deepEqual(answer.json, { message });
+    };
+    const empty = { bundle: null, desktop: null, open: false, updating: false, opening: false, failed: null };
+    assert.deepEqual((await read()).json, empty);
+    await check({ desktop }, {}, 403, "Only Kuvo Code on this Mac registers its app.");
+    await check({ desktop }, mac, 403, "Only Kuvo itself says where its desktop app is.");
+    for (const invalid of ["Kuvo.app", path.join(here.env.HOME, "Kuvo.txt"), `${here.env.HOME}/../Kuvo.app`, `${here.env.HOME}//Kuvo.app`])
+      await check({ desktop: invalid }, app, 400, "Say where the desktop app is: a whole path to it (…/Kuvo.app).");
+    await check({}, app, 400, "Say where its tools answer (tools), or that it quits (tools: null).");
+    await check("[", app, 400, "Say where its tools answer (tools), or that it quits (tools: null).");
+    let events, frames;
+    if (!binary.typescript) {
+      events = await openLine(resident, "", "kuvo/computers/events");
+      t.after(() => events.close());
+      frames = events.frames();
+      assert.equal((await frames.next()).value.computers.find(row => row.here).appCheck, undefined);
+    }
+    assert.deepEqual((await register({ desktop: desktop + "/", version: desktopVersion })).json, { ...empty, desktop });
+    if (frames) {
+      // The desktop actually follows this event line; the new registration is
+      // published without waiting for a release-feed check or a new resident.
+      let changed;
+      do { changed = await frames.next(); assert.equal(changed.done, false); }
+      while (changed.value.computers.find(row => row.here).appCheck !== installed);
+      events.close();
+    }
+    let local = (await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+    assert.deepEqual([local.version, local.kuvo, local.appCheck], [desktopVersion, installed, installed]);
+    const routeArgs = binary.typescript ? ["box", "route"] : ["route"];
+    const routed = async body => {
+      const result = await here.command(routeArgs, JSON.stringify({ method: "POST", path: "kuvo/box/app", body, headers: { "x-kuvo-from": "app" } }));
+      assert.equal(result.code, 0, result.log);
+      return JSON.parse(result.text);
+    };
+    assert.equal((await routed({ desktop })).status, 403, "box route cannot register the desktop");
+    assert.equal((await routed({ tools, host })).status, 403, "box route cannot register host authority");
+    assert.equal((await routed({ tools })).status, 200, "box route may say where the browser tools answer");
+    await check({ tools: { ...tools, url: "http://example.invalid/tools" } }, app, 400, "Its tools answer on this Mac, at an http address, with a token.");
+    await check({ tools: { ...tools, token: "short" } }, app, 400, "Its tools answer on this Mac, at an http address, with a token.");
+    for (const address of ["http://localhost:12345/tools", "http://[::1]:12345/tools"]) {
+      const loopback = { ...tools, url: address };
+      assert.equal((await register({ tools: loopback }, mac)).status, 200);
+      assert.deepEqual(readJSON(record).tools, loopback);
+    }
+    await check({ tools, bundle: "Kuvo Code.app" }, app, 400, "Its bundle is a whole path to the app (…/Kuvo Code.app).");
+    await check({ tools, bundle: null }, app, 400, "Its bundle is a whole path to the app (…/Kuvo Code.app).");
+    await check({ tools, host }, mac, 403, "Only Kuvo Code itself says where its own host answers.");
+    await check({ tools: null, host }, mac, 403, "Only Kuvo Code itself says where its own host answers.");
+    await check({ tools, host: { ...host, url: "http://localhost:12346" } }, app, 400, "Its host answers on this Mac (http://127.0.0.1:<port>), with a password.");
+    await check({ tools, host: { ...host, url: "http://127.0.0.1:12346/elsewhere" } }, app, 400, "Its host answers on this Mac (http://127.0.0.1:<port>), with a password.");
+    const opened = await register({ bundle, tools, host: { ...host, url: host.url + "/" } });
+    assert.equal(opened.status, 200, opened.text);
+    assert.deepEqual(opened.json, { ...empty, bundle, desktop, open: true });
+    const kept = readJSON(record);
+    assert.deepEqual({ ...kept, at: 0 }, { bundle, desktop, tools, host, at: 0, desktopVersion });
+    assert.equal(typeof kept.at, "number");
+    const alternate = path.join(here.env.HOME, "Another Kuvo.app");
+    const racing = await Promise.all([register({ desktop: alternate, version: installed }), register({ tools, host })]);
+    assert.ok(racing.every(answer => answer.status === 200));
+    const combined = readJSON(record);
+    assert.deepEqual([combined.desktop, combined.desktopVersion, combined.tools, combined.host], [alternate, installed, tools, host]);
+    assert.equal((await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here).appCheck, undefined);
+    assert.equal((await register({ desktop, version: desktopVersion })).status, 200);
+    const registeredAt = readJSON(record).at;
+    write(failed, encode({ at: Date.now(), message: "a browser opening note" }));
+    write(updating, String(Date.now()));
+    const unchanged = await register({ desktop, version: desktopVersion });
+    assert.equal(unchanged.json.open, true);
+    assert.equal(unchanged.json.updating, true);
+    assert.equal(unchanged.json.failed.message, "a browser opening note");
+    assert.equal(readJSON(record).at, registeredAt, "a desktop registration leaves browser authority alone");
+    assert.equal((await register({ tools }, mac)).json.open, true);
+    assert.equal(fs.existsSync(failed), false);
+    assert.equal(fs.existsSync(updating), false);
+    assert.equal(readJSON(record).host, null, "a new registration without a host cannot retain an earlier authority");
+    assert.equal(readJSON(record).desktop, desktop);
+    assert.equal((await register({ tools, host })).status, 200);
+    assert.deepEqual((await register({ updating: true }, mac)).json, { ...empty, bundle, desktop, updating: true });
+    assert.equal(readJSON(record).tools, null);
+    assert.equal(readJSON(record).host, null);
+    assert.equal(readJSON(record).desktopVersion, desktopVersion);
+    const now = Date.now();
+    write(failed, encode({ at: now, message: "fixture opening failed" }));
+    write(opening, "");
+    assert.equal((await read()).json.opening, true, "the incomplete exclusive opening note still holds its time window");
+    write(opening, encode({ at: now, by: 999999999 }));
+    assert.equal((await read()).json.opening, false, "a gone opener cannot hold the app opening");
+    write(opening, encode({ at: now, by: process.pid }));
+    assert.deepEqual((await read()).json, { ...empty, bundle, desktop, updating: true, opening: true, failed: { at: now, message: "fixture opening failed" } });
+    const old = new Date(now - 6 * 60_000);
+    fs.utimesSync(updating, old, old);
+    write(failed, encode({ at: old.getTime(), message: "old failure" }));
+    write(opening, encode({ at: old.getTime(), by: process.pid }));
+    assert.deepEqual((await read()).json, { ...empty, bundle, desktop });
+    assert.equal((await register({ tools, host })).json.open, true);
+    assert.equal(fs.existsSync(failed), false);
+    assert.equal(fs.existsSync(updating), false);
+    assert.deepEqual((await register({ tools: null }, mac)).json, { ...empty, bundle, desktop });
+    assert.equal(readJSON(record).host, null);
+    await child.stop();
+    child = start();
+    resident = await child.ready();
+    assert.deepEqual((await read()).json, { ...empty, bundle, desktop });
+    assert.equal((await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here).appCheck, installed);
+    let cleared, clearing;
+    if (!binary.typescript) {
+      cleared = await openLine(resident, "", "kuvo/computers/events");
+      t.after(() => cleared.close());
+      clearing = cleared.frames();
+      assert.equal((await clearing.next()).value.computers.find(row => row.here).appCheck, installed);
+    }
+    assert.equal((await register({ desktop, version: installed })).status, 200);
+    local = (await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+    assert.equal(local.appCheck, undefined);
+    if (clearing) {
+      let changed;
+      do { changed = await clearing.next(); assert.equal(changed.done, false); }
+      while (changed.value.computers.find(row => row.here).appCheck !== undefined);
+      cleared.close();
+    }
+    const veryNew = "99999999999999999999999.0.0";
+    assert.equal((await register({ desktop, version: veryNew })).status, 200);
+    assert.equal(readJSON(record).desktopVersion, veryNew);
+    local = (await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+    assert.equal(local.appCheck, undefined);
+    assert.equal((await register({ desktop, version: "not a version" })).status, 200);
+    assert.equal(readJSON(record).desktopVersion, undefined);
+  } finally { await child.stop(); }
+});
+
+test("the registered app host is proved before browser sign-in facts are read", async t => {
+  if (process.platform !== "darwin") return t.skip("The Mac app's local host.");
+  const binary = boxBinary();
+  const { computer, relay } = await bench(t);
+  const here = await computer("App host registration");
+  write(path.join(here.home, "box/kind"), "mac\n");
+  const id = "fixture-site";
+  write(path.join(here.home, "bin/integrations.json"), encode({ integrations: [{
+    id, title: "Fixture site", summary: "A local test", kind: "Code and Work", symbol: "fixture",
+    site: "https://example.invalid", how: "Browser", way: "browser",
+  }] }));
+  const password = "fixture-app-host-password";
+  let proves = false, challenges = 0, reads = 0;
+  const host = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const said = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    res.setHeader("content-type", "application/json");
+    res.setHeader("x-kuvo-host-version", "1");
+    if (req.url === "/hello") {
+      challenges++;
+      const proof = proves ? createHmac("sha256", password).update(`kuvo-host-hello\0${said.nonce}\0${host.address().address}:${host.address().port}`).digest("hex") : "0".repeat(64);
+      return res.end(encode({ proof }));
+    }
+    if (req.url === "/sites/signed-in" && req.headers.authorization === `Bearer ${password}`) {
+      reads++;
+      return res.end(encode({ sites: { [id]: true } }));
+    }
+    res.writeHead(403).end();
+  });
+  host.listen(0, "127.0.0.1");
+  await once(host, "listening");
+  t.after(() => { host.close(); host.closeAllConnections(); });
+  const child = startBox({ binary, home: here.home, relay, env: here.env, mac: true });
+  try {
+    const resident = await child.ready();
+    const app = { "x-kuvo-from": "app" };
+    const tools = { url: `http://127.0.0.1:${host.address().port}/tools`, token: "fixture-browser-tools-token" };
+    const register = body => request(resident, "POST", "kuvo/box/app", body, app);
+    assert.equal((await register({ tools, host: { url: `http://127.0.0.1:${host.address().port}`, password } })).status, 200);
+    const site = async () => {
+      const answer = await request(resident, "GET", "kuvo/integrations");
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.integrations.find(entry => entry.id === id);
+    };
+    assert.equal((await site()).siteSignedIn, undefined);
+    assert.equal(reads, 0, "an unproved host must not receive the site request");
+    assert.ok(challenges > 0);
+    proves = true;
+    assert.equal((await site()).siteSignedIn, true);
+    assert.equal(reads, 1);
+    assert.equal((await register({ desktop: path.join(here.env.HOME, "Kuvo.app") })).status, 200);
+    assert.equal((await site()).siteSignedIn, true, "desktop registration preserves the app's host");
+    assert.equal(reads, 2);
+    assert.equal((await register({ tools })).status, 200);
+    assert.equal((await site()).siteSignedIn, undefined);
+    assert.equal(reads, 2, "a new browser registration must not send to the old host");
+  } finally { await child.stop(); }
+});
+
+for (const mac of [false, true]) test(mac ? "the Mac announces its app and installed Kuvo version but keeps appCheck local" : "a machine announces its installed version even without a release feed worker", async t => {
+  const binary = boxBinary();
+  if (binary.typescript || mac && process.platform !== "darwin") return t.skip("A native resident's signed peer announcement.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Version announcement");
+  const { main } = seedPeerSetup(here.home, relay.url);
+  const installed = "0.8.0", app = "0.7.2";
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  if (mac) {
+    write(path.join(here.home, "box/kind"), "mac\n");
+    write(path.join(here.home, "run/mac-link.json"), encode({ phones: true, relay: relay.url, app }));
+    write(path.join(here.home, "run/app.json"), encode({ desktop: path.join(here.env.HOME, "Kuvo.app"), desktopVersion: "0.8.0-beta.2", tools: null, host: null, at: Date.now() }));
+  }
+  const peer = await releaseMailPeer(t, relay, main, 2);
+  const resident = await here.start().ready();
+  const local = (await request(resident, "GET", "kuvo/computers")).json.computers.find(row => row.here);
+  assert.deepEqual([local.version, local.kuvo, local.appCheck], [mac ? app : installed, installed, mac ? installed : undefined]);
+  await peer.ready();
+  const facts = await peer.receiveComputer(facts => facts.kuvo === installed && facts.version === (mac ? app : installed));
+  assert.equal(facts.appCheck, undefined);
+});
+
+test("a legacy bridge recipient gets only the signed bridge facts, not the selected Rust version", async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("A native resident's transition announcement.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Bridge version announcement");
+  const { main } = seedPeerSetup(here.home, relay.url);
+  const { body, key } = box(t);
+  const feed = createServer((_req, res) => res.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const bridgeVersion = "0.8.0-beta.49", bridgeBytes = Buffer.from("fixture bridge pack");
+  const bridgePack = { url: `${url}/bridge.tar.gz`, sha256: digest(bridgeBytes) };
+  const pack = { url: `${url}/rust.tar.gz`, sha256: digest("fixture Rust pack") };
+  const bridge = encode(envelope({ ...body, version: bridgeVersion, pack: bridgePack }, key)).toString();
+  const signed = encode(envelope({ ...body, pack, bridge, launch: "rust", packs: { [target]: pack } }, key));
+  const selected = `versions/${body.version}-${pack.sha256.slice(0,12)}`;
+  write(path.join(here.home, "active-release"), selected + "/bin");
+  write(path.join(here.home, selected, "boxes.json"), signed);
+  write(path.join(here.home, "updates/bridge/boxes.json"), bridge);
+  write(path.join(here.home, "updates/bridge/pack"), bridgeBytes);
+  const peer = await releaseMailPeer(t, relay, main, 2);
+  await here.start(binary, { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key }).ready();
+  await peer.ready();
+  peer.announce({ kuvo: "0.8.0-beta.48" });
+  const offered = await peer.receiveComputer(facts => facts.kuvo === bridgeVersion);
+  assert.equal(offered.runningManifest, bridge);
+  assert.equal(offered.installedSha256, bridgePack.sha256);
+  assert.equal(offered.version, undefined, "the special bridge announcement must not carry a fallback Rust version");
+  peer.announce({ kuvo: bridgeVersion, releaseTarget: target });
+  const current = await peer.receiveComputer(facts => facts.kuvo === body.version && facts.version === body.version);
+  assert.equal(current.releaseTarget, target);
+});
+
+test("a Mac app-owned home refuses the own-home app registration", async t => {
+  if (process.platform !== "darwin") return t.skip("A Mac app-owned folder.");
+  const binary = boxBinary();
+  const { computer, relay } = await bench(t);
+  const here = await computer("App-owned home");
+  write(path.join(here.home, "box/kind"), "mac\n");
+  const env = { ...here.env, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(here.env.HOME, "config"),
+    OPENCODE_PASSWORD: "conformance-local", KUVO_TEST_NO_PEERS: "1" };
+  // The predecessor's app-owned server is foreground, not its installed resident.
+  const child = binary.typescript ? boxCommand(binary, here.home, env, relay, ["serve"], {}, "pipe") :
+    startBox({ binary, home: here.home, relay, env, mac: true });
+  let output = "";
+  if (binary.typescript) child.child.stdout.on("data", chunk => { output += chunk; });
+  try {
+    const resident = binary.typescript ? await until(() => {
+      if (child.child.exitCode !== null) throw new Error(child.log());
+      if (!output.includes("\n")) return;
+      const { url } = JSON.parse(output.split("\n")[0]);
+      return { port: Number(new URL(url).port), password: env.OPENCODE_PASSWORD };
+    }, () => child.log()) : await child.ready();
+    for (const method of ["GET", "POST"]) {
+      const answer = await request(resident, method, "kuvo/box/app", method === "POST" ? { desktop: path.join(here.env.HOME, "Kuvo.app") } : undefined, { "x-kuvo-from": "app" });
+      assert.equal(answer.status, 409, answer.text);
+      assert.deepEqual(answer.json, { message: "Only Kuvo on a Mac in its own folder has its app register with it." });
+    }
+  } finally { await child.stop(); }
+});
 
 test("the update status reports the installed release and a keeper's failed trial", async t => {
   const { computer } = await bench(t);
@@ -1756,13 +2077,20 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture, holdDow
   };
 }
 
-for (const mode of ["switch", "rollback", "borrowed"]) test({
+for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback"]) test({
   switch: "a differing engine finishes its turn and carries waiting work through a release switch",
   rollback: "a differing engine restores waiting work after a failed release trial",
   borrowed: "a differing engine leaves a borrowed worker's inbox alone",
+  "holder-switch": "a signed differing-engine switch adopts the actual coding-agent holder",
+  "holder-rollback": "a failed signed differing-engine trial adopts the same coding-agent holder after rollback",
 }[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
-  const rollback = mode === "rollback";
+  const rollback = mode.endsWith("rollback");
   const borrowed = mode === "borrowed";
+  const held = mode.startsWith("holder-");
+  const holderProbe = process.env.KUVO_CONFORMANCE_HOLDER_PROBE;
+  if (held && (!holderProbe || !path.isAbsolute(holderProbe) || !fs.existsSync(holderProbe))) {
+    return t.skip("Set KUVO_CONFORMANCE_HOLDER_PROBE to the dedicated agent_holders test executable.");
+  }
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust keeper and engine supervisor.");
   const { computer } = await bench(t);
@@ -1816,7 +2144,7 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
   const targetVersion = "0.8.0";
   const release = path.join(here.env.HOME, "release");
   let keeper;
-  let keeperEnv;
+  let keeperEnv, startedHolder;
   const keep = (...args) => {
     const result = spawnSync(binary.file, ["keep", ...args], { env: keeperEnv, cwd: home, encoding: "utf8", timeout: 15000 });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
@@ -1850,6 +2178,14 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
     write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
     write(path.join(home, previous, "bin/box-version"), current + "\n");
+    const heldSession = path.join(home, "agents/sessions/ses_keeper_fixture");
+    if (held) {
+      write(path.join(home, "run/agent-fixture-program"), holderProbe);
+      write(path.join(heldSession, "session.json"), encode({
+        id: "ses_keeper_fixture", projectID: "fixture", agent: "build", location: { directory: home },
+        time: { created: 1, updated: 1 }, model: { providerID: "codex-cli", id: "stand-in" },
+      }));
+    }
     keeperEnv = { ...here.env, KUVO_HOME: home, ...updateEnv };
     keep("select", `${previous}/bin`);
     keeper = launch(binary.file, ["keep"], keeperEnv, home);
@@ -1857,6 +2193,17 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const before = await until(async () => {
       try { const record = readJSON(serve); return (await request(record, "GET", "kuvo/info")).status === 200 && record; } catch { return false; }
     }, () => "the earlier resident did not answer\n" + keeper.log(), 25000);
+    const checkpoint = name => {
+      const file = path.join(home, "run", name);
+      try { return readJSON(file); } catch { return false; }
+    };
+    if (held) {
+      write(path.join(home, "run/agent-fixture-begin"), "");
+      startedHolder = await until(() => checkpoint("agent-fixture-started"),
+        () => "the first resident must start its actual holder\n" + keeper.log(), 25000);
+      assert.equal(startedHolder.resident, before.pid);
+      assert.equal(startedHolder.generation, 1);
+    }
     await until(() => {
       const failed = path.join(home, "run/fleet-cannot.json");
       if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
@@ -1963,6 +2310,11 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     if (rollback) {
       await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && fs.existsSync(path.join(home, "run/previous")), "the keeper should try the signed target", keeperTrialMs);
       assert.ok(fs.existsSync(hold), "the queue stays held during the failed health trial");
+      if (held) {
+        assert.doesNotThrow(() => process.kill(startedHolder.holder, 0));
+        assert.doesNotThrow(() => process.kill(startedHolder.agent, 0));
+        assert.equal(checkpoint("agent-fixture-finished"), false, "the held provider has not been completed before the keeper's verdict");
+      }
       assert.equal(fs.existsSync(path.join(home, "run/engine.json")), false, "no engine starts before the keeper verdict");
       assert.deepEqual(engine.messages.get(session).map(message => message.id), ["msg_originalEngine"]);
       await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous")),
@@ -1988,6 +2340,23 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     assert.ok(received.text.includes(attached[0]));
     assert.deepEqual(received.files, [inline]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
+    if (held) {
+      const finished = await until(() => checkpoint("agent-fixture-finished"),
+        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
+      assert.notEqual(finished.resident, startedHolder.resident);
+      assert.equal(finished.resident, readJSON(serve).pid);
+      assert.equal(finished.holder, startedHolder.holder);
+      assert.equal(finished.agent, startedHolder.agent);
+      assert.equal(finished.generation, 2);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
+      try {
+        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
+        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
+        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
+        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
+      } finally { db.close(); }
+    }
     const settled = (await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/update")).json;
     assert.equal(settled.updating, null);
     assert.equal(settled.engineChange, undefined);

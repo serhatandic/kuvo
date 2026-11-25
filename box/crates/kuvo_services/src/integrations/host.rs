@@ -1,6 +1,6 @@
 //! Mac host interface (PROTOCOL.md): authenticated loopback calls for Keychain keys and site sign-ins.
 
-use std::{fs, path::{Path, PathBuf}, sync::Mutex, time::Duration};
+use std::{path::{Path, PathBuf}, sync::Mutex, time::Duration};
 
 use hmac::{Hmac, Mac};
 use kuvo_store::format::ObjectFormat;
@@ -68,9 +68,9 @@ impl HostInterface {
 
     pub fn open_app_host(&self) -> Option<HostAddress> {
         if !self.own_home_mac { return self.app_host().ok().flatten(); }
-        let host = serde_json::from_str::<Value>(&fs::read_to_string(self.run.join("app.json")).ok()?).ok()?.get("host")?.as_object()?.clone();
-        let (url, pw) = (host.get("url")?.as_str().filter(|s| !s.is_empty())?, host.get("password")?.as_str().filter(|s| !s.is_empty())?);
-        Some(HostAddress { url: url.trim_end_matches('/').to_owned(), password: pw.into(), said: format!("app {url} {pw}") })
+        let host = crate::mac_app::read(&self.run)?.host?;
+        let said = format!("app {} {}", host.url, host.password);
+        Some(HostAddress { url: host.url, password: host.password, said })
     }
 
     async fn prove_host(&self, host: &HostAddress) -> Result<(), KeysUnavailable> {

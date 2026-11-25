@@ -657,7 +657,9 @@ pub fn installed(home: &Home) -> io::Result<(Option<String>, Option<Release>)> {
         .as_ref()
         .map(|working| working.version().to_owned())
         .or_else(|| {
-            files::text_of(&home.bin().join("box-version")).map(|version| version.trim().to_owned())
+            files::text_of(&home.bin().join("box-version"))
+                .map(|version| version.trim().to_owned())
+                .filter(|version| version_order(version).is_some())
         });
     Ok((version, working))
 }

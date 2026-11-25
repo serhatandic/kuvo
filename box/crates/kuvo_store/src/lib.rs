@@ -7,6 +7,7 @@ pub mod format;
 pub mod home;
 pub mod layout;
 pub mod locks;
+pub mod release_version;
 pub mod sqlite;
 
 mod platform;

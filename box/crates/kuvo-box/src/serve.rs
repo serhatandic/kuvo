@@ -172,6 +172,13 @@ pub async fn run(
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
     let mut agent_handover = None;
     let mut routes = Registry::new();
+    crate::box_app::register(
+        &mut routes,
+        update_home.clone(),
+        kind == ComputerKind::Mac,
+        peers.clone(),
+    )
+    .await?;
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
     agents::sessions::register(sessions.clone(), &mut routes);
     let agent_background = sessions.background().clone();
