@@ -470,7 +470,8 @@ for (const confirmed of [false, true]) {
     const main = await computer("Studio");
     const applicant = await computer("Workshop");
     const stranger = await computer("Spare");
-    if (!boxBinary().typescript) {
+    {
+      // Its own resident ran first: the empty stores it opened aren't setup data.
       const independent = applicant.start();
       const ready = applicant.connect(await independent.ready());
       const own = await ready("GET", "kuvo/setup");

@@ -44,6 +44,16 @@ const sessionQueues = sessionQueueFiles(RUN);
 
 const payloads = [path.join(agents, "sessions"), CHATS, GROUPS,
   SESSION_WAKES, process.env.KUVO_ARTIFACTS || path.join(K, "artifacts"), ...attachmentRoots(), path.join(WORK_QUEUE, "files"), path.join(RUN, "work", "notes")];
+const artifactsRoot = process.env.KUVO_ARTIFACTS || path.join(K, "artifacts");
+/** The artifact store a resident opens at start: its key, a disposable index and empty folders. */
+const EMPTY_ARTIFACT_STORE = new Set([".DS_Store", "key", "log", "copies",
+  ...["", "-wal", "-shm", "-journal"].map(suffix => "index-v1.sqlite" + suffix)]);
+
+/** Kept artifacts, as against the empty store every resident opens when it starts. */
+function artifactsKept(): boolean {
+  return entries(artifactsRoot).some(name => !EMPTY_ARTIFACT_STORE.has(name))
+    || ["log", "copies"].some(folder => entries(path.join(artifactsRoot, folder)).some(name => name !== ".DS_Store"));
+}
 
 function databases(): string[] {
   return entries(engine).filter(name => name.startsWith("opencode") && name.endsWith(".db")).map(name => path.join(engine, name));
@@ -330,7 +340,8 @@ export function hasSetupWork(link: LinkState | null): boolean {
       || library.personalities.length || library.removed.length || readZoneSetting()
       || Object.keys(new UsageSettings(usageFile).kept()).length
       || sessionMetadata.some(file => Object.keys(jsonFile(file) ?? {}).length)
-      || payloads.some(folder => entries(folder).some(name => name !== ".DS_Store"))
+      || payloads.some(folder => folder !== artifactsRoot && entries(folder).some(name => name !== ".DS_Store"))
+      || artifactsKept()
       || entries(BOTS).some(name => {
         const folder = path.join(BOTS, name);
         const info = fs.lstatSync(folder, { throwIfNoEntry: false });

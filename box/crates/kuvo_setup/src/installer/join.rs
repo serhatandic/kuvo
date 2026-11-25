@@ -891,11 +891,10 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
         "agents/sessions",
         "chats",
         "groups",
-        "artifacts",
         "attachments",
         "wakes",
-        "run/work",
-        "run/work-queue",
+        "run/work/notes",
+        "run/work-queue/files",
         "run/owned-data/outbox",
         "run/owned-data/edit-outbox",
         "data/opencode/storage/session",
@@ -907,6 +906,9 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
         {
             return Ok(true);
         }
+    }
+    if artifacts_kept(files)? || super::queue_work::has_queue_or_session_work(files, now)? {
+        return Ok(true);
     }
     // Starting the letter worker creates these folders and a writer lock.
     // Only queued records keep an otherwise unused setup from joining.
@@ -949,6 +951,34 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
                     &files.path("data/opencode").join(name),
                 ))
         {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Kept artifacts, as against the empty store every resident opens when it starts:
+/// its key, a disposable index and empty folders.
+fn artifacts_kept(files: &Files) -> Result<bool, Error> {
+    const EMPTY_STORE: &[&str] = &[
+        ".DS_Store",
+        "key",
+        "log",
+        "copies",
+        "index-v1.sqlite",
+        "index-v1.sqlite-wal",
+        "index-v1.sqlite-shm",
+        "index-v1.sqlite-journal",
+    ];
+    if files
+        .names("artifacts")?
+        .iter()
+        .any(|name| !EMPTY_STORE.contains(&name.as_str()))
+    {
+        return Ok(true);
+    }
+    for folder in ["artifacts/log", "artifacts/copies"] {
+        if files.names(folder)?.iter().any(|name| name != ".DS_Store") {
             return Ok(true);
         }
     }

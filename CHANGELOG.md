@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A computer that has run Kuvo Code on its own, with nothing made yet, can join another setup with an installer code.
 - A pending wipe stays visible after the main computer restarts. You can record a lost disk or cancel a wipe that can’t erase the computer’s data layout.
 - A removed computer can finish its wipe when it reconnects and retry its completion after a relay disconnect.
 - A pending wipe can finish after another computer takes over as the main computer.

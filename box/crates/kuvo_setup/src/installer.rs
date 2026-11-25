@@ -2,6 +2,7 @@
 
 pub(crate) mod credentials;
 mod join;
+mod queue_work;
 pub(crate) mod released;
 
 use std::time::Duration;
