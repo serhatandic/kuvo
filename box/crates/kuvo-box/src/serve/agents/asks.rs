@@ -2,7 +2,8 @@
 
 use http::StatusCode;
 use kuvo_agents::{
-    live_asks::{Ask, AskKey, Reply},
+    feed::Feed,
+    live_asks::{Ask, AskKey, Ended, Reply},
     permissions::remember,
     session::{Answer, Decision, Field, FieldKind},
     session_runs::SessionRuns,
@@ -17,7 +18,7 @@ use kuvo_protocol::routes::{
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::{Map, Value, json};
-use std::io;
+use std::{collections::BTreeSet, io};
 
 pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Registry) {
     let ask_runs = runs.clone();
@@ -169,46 +170,108 @@ fn cards(runs: &SessionRuns, session: &str, questions: bool) -> Vec<Value> {
     let current = pending.borrow();
     current
         .iter()
-        .filter(|(key, _)| key.session == session)
-        .filter_map(|(key, ask)| {
-            let id = key.client_id(questions);
-            match ask {
-                Ask::Permission(ask) if !questions => {
-                    let mut card = json!({
-                        "id":id,"sessionID":session,"action":ask.action,"resources":ask.resources,
-                        "save":remember(ask).patterns,
-                    });
-                    if let Some(message) = &ask.message {
-                        card["message"] = json!(message);
-                    }
-                    if !ask.metadata.is_empty() {
-                        card["metadata"] = json!(ask.metadata);
-                    }
-                    if ask.sandboxed == Some(true) {
-                        card["sandboxed"] = true.into();
-                    }
-                    // (Its place in the conversation, filled in by `with_sources`.)
-                    if let Some(tool) = &ask.tool_call_id {
-                        card["tool"] = json!(tool);
-                    }
-                    Some(card)
-                }
-                Ask::Question(ask) if questions => {
-                    let mut context = Map::<String, Value>::new();
-                    context.insert("kind".into(), "question".into());
-                    context.extend(ask.metadata.clone());
-                    if let Some(tool) = &ask.tool_call_id {
-                        context.insert("tool".into(), json!({"id":tool}));
-                    }
-                    Some(json!({
-                        "id":id,"sessionID":session,"title":ask.title,"metadata":context,
-                        "fields":ask.fields.iter().map(field).collect::<Vec<_>>()
-                    }))
-                }
-                _ => None,
-            }
-        })
+        .filter(|(key, ask)| key.session == session && matches!(ask, Ask::Question(_)) == questions)
+        .map(|(key, ask)| card(key, ask))
         .collect()
+}
+
+/// One ask as clients see it: a permission's card, or a question's form.
+fn card(key: &AskKey, ask: &Ask) -> Value {
+    let session = &key.session;
+    match ask {
+        Ask::Permission(ask) => {
+            let mut card = json!({
+                "id":key.client_id(false),"sessionID":session,"action":ask.action,"resources":ask.resources,
+                "save":remember(ask).patterns,
+            });
+            if let Some(message) = &ask.message {
+                card["message"] = json!(message);
+            }
+            if !ask.metadata.is_empty() {
+                card["metadata"] = json!(ask.metadata);
+            }
+            if ask.sandboxed == Some(true) {
+                card["sandboxed"] = true.into();
+            }
+            // (Its place in the conversation, filled in by `with_sources`.)
+            if let Some(tool) = &ask.tool_call_id {
+                card["tool"] = json!(tool);
+            }
+            card
+        }
+        Ask::Question(ask) => {
+            let mut context = Map::<String, Value>::new();
+            context.insert("kind".into(), "question".into());
+            context.extend(ask.metadata.clone());
+            if let Some(tool) = &ask.tool_call_id {
+                context.insert("tool".into(), json!({"id":tool}));
+            }
+            json!({
+                "id":key.client_id(true),"sessionID":session,"title":ask.title,"metadata":context,
+                "fields":ask.fields.iter().map(field).collect::<Vec<_>>()
+            })
+        }
+    }
+}
+
+/// What the agents ask, told on their feed as it's asked and as it ends: `permission.asked` and
+/// `permission.replied`, `form.created`, and `form.replied` or `form.cancelled`.
+pub(crate) fn follow(runs: SessionRuns, store: SessionStore, feed: Feed) {
+    tokio::spawn(async move {
+        let asks = runs.asks().clone();
+        let mut pending = asks.pending();
+        let mut ended = asks.ended();
+        let mut known: BTreeSet<AskKey> = pending.borrow().keys().cloned().collect();
+        let directory = |session: String| {
+            let store = store.clone();
+            async move {
+                let header = store.read(&session).await.ok()??;
+                header.directory().map(str::to_owned)
+            }
+        };
+        loop {
+            tokio::select! {
+                changed = pending.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let now = pending.borrow_and_update().clone();
+                    for (key, ask) in now.iter().filter(|(key, _)| !known.contains(*key)) {
+                        let mut card = card(key, ask);
+                        with_sources(&store, &key.session, std::slice::from_mut(&mut card)).await;
+                        let at = directory(key.session.clone()).await;
+                        match ask {
+                            Ask::Permission(_) => feed.emit_from("permission.asked", card, at),
+                            Ask::Question(_) => feed.emit_from("form.created", json!({ "form": card }), at),
+                        }
+                    }
+                    known = now.keys().cloned().collect();
+                }
+                gone = ended.recv() => match gone {
+                    Ok(Ended { key, ask, reply }) => {
+                        let at = directory(key.session.clone()).await;
+                        match ask {
+                            Ask::Permission(_) => feed.emit_from(
+                                "permission.replied",
+                                json!({ "sessionID": key.session, "requestID": key.client_id(false) }),
+                                at,
+                            ),
+                            Ask::Question(_) => {
+                                let answered = matches!(reply, Some(Reply::Question(answer)) if !matches!(answer, Answer::Dismissed { .. }));
+                                feed.emit_from(
+                                    if answered { "form.replied" } else { "form.cancelled" },
+                                    json!({ "id": key.client_id(true), "sessionID": key.session }),
+                                    at,
+                                );
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    });
 }
 
 fn pending(

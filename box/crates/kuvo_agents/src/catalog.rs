@@ -67,6 +67,16 @@ impl Roster {
 }
 
 impl Entry {
+    /// Whether its last list is every model it runs (one missing from it is gone).
+    pub async fn lists_every_model(&self) -> bool {
+        self.model_cache
+            .lock()
+            .await
+            .last
+            .as_ref()
+            .is_some_and(|models| models.complete)
+    }
+
     async fn catalog(&self, refresh: bool) -> CatalogEntry {
         loop {
             let (epoch, read) = {

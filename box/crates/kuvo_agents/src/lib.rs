@@ -1,11 +1,13 @@
 //! Agent holders, accounts, sign-in, tools and handover.
 
 pub mod account_check;
+pub mod account_rows;
 pub mod accounts;
 pub mod background;
 pub mod catalog;
 pub mod claude;
 pub mod codex;
+pub mod feed;
 pub mod file_change;
 mod foreground;
 pub mod hold;
@@ -13,6 +15,7 @@ pub mod inbox;
 pub mod live_asks;
 pub mod permissions;
 mod pictures;
+pub mod program_updates;
 pub mod resident;
 pub mod roster;
 pub mod rpc;

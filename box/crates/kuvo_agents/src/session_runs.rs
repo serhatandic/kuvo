@@ -3,7 +3,7 @@
 
 use crate::{
     accounts::Provider,
-    inbox::{Delivery, Input, InboxEvent},
+    inbox::{Delivery, InboxEvent, Input},
     live_asks::{Ask, AskKey, LiveAsks, Reply as AskReply},
     permissions::{
         Allowance, ConfigLocation, Policy, covers, remember,
@@ -31,6 +31,7 @@ use tokio::{
 };
 
 mod line;
+mod programs;
 mod update;
 
 pub use update::{HandedTurn, Handover, Update};
@@ -91,6 +92,13 @@ enum Command {
         held: BTreeSet<String>,
         reply: Reply<Handover>,
     },
+    /// A program's update is over: what it held goes.
+    WakeHeld,
+    /// Whether a program has turns under way.
+    ProgramWorks {
+        program: String,
+        reply: oneshot::Sender<bool>,
+    },
 }
 
 struct Start {
@@ -122,7 +130,10 @@ enum Doing {
     Idle,
     /// Its agent is getting ready for message `id`. `stop` once asked to
     /// stop meanwhile.
-    Starting { stop: bool, id: String },
+    Starting {
+        stop: bool,
+        id: String,
+    },
     Running(Live),
     Stopping(Live),
 }
@@ -167,6 +178,7 @@ pub struct SessionRuns {
     running: watch::Receiver<Arc<BTreeSet<String>>>,
     events: broadcast::Sender<InboxEvent>,
     restoring: Arc<update::Restorings>,
+    programs: programs::Holds,
 }
 
 impl SessionRuns {
@@ -193,7 +205,9 @@ impl SessionRuns {
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
         let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
+        let programs = programs::Holds::new(&home);
         let service = Service {
+            programs: programs.clone(),
             restoring: restoring.clone(),
             agents,
             store: store.clone(),
@@ -212,6 +226,7 @@ impl SessionRuns {
             running,
             events,
             restoring,
+            programs,
         }
     }
 
@@ -374,7 +389,12 @@ impl SessionRuns {
     pub async fn recent(&self, session: &str, limit: u32) -> io::Result<Vec<Value>> {
         Ok(self
             .store
-            .message_page(session, None, limit, crate::session_store::MessageOrder::NewestFirst)
+            .message_page(
+                session,
+                None,
+                limit,
+                crate::session_store::MessageOrder::NewestFirst,
+            )
             .await?
             .map(|page| page.messages)
             .unwrap_or_default())
@@ -447,7 +467,32 @@ impl SessionRuns {
     }
 
     /// The conversation's mode from its next message on.
-    pub async fn select_agent(&self, session: &str, agent: &str) -> io::Result<bool> {
+    /// The conversation's folder.
+    pub async fn directory(&self, session: &str) -> Option<String> {
+        let header = self.store.read(session).await.ok()??;
+        header.directory().map(str::to_owned)
+    }
+
+    /// Puts the conversation on `model` from its next turn: one of an agent connected here.
+    /// `None` when the conversation isn't here; otherwise the model it was on, when it changed.
+    pub async fn select_model(
+        &self,
+        session: &str,
+        model: Value,
+        agents: &ResidentAgents,
+    ) -> io::Result<Option<Option<Value>>> {
+        let connected = model["providerID"]
+            .as_str()
+            .and_then(Provider::parse)
+            .is_some_and(|provider| agents.roster().find(&provider).is_some());
+        self.store.select_model(session, model, connected).await
+    }
+
+    pub async fn select_agent(
+        &self,
+        session: &str,
+        agent: &str,
+    ) -> io::Result<Option<Option<Value>>> {
         self.store.select_agent(session, agent).await
     }
 
@@ -562,6 +607,7 @@ struct Service {
     events: broadcast::Sender<InboxEvent>,
     commands: mpsc::WeakSender<Command>,
     restoring: Arc<update::Restorings>,
+    programs: programs::Holds,
 }
 
 type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
@@ -686,6 +732,10 @@ impl Service {
             Command::HandOver { held, reply } => {
                 let _ = reply.send(Ok(self.hand_over(state, &held).await));
             }
+            Command::WakeHeld => self.wake_held(state).await,
+            Command::ProgramWorks { program, reply } => {
+                let _ = reply.send(self.program_works(state, &program).await);
+            }
         }
     }
 
@@ -716,6 +766,7 @@ impl Service {
 
     async fn prepared(&self, state: &mut State, prepared: Prepared) {
         let (session, mut outcome, reply) = prepared;
+        self.programs.entered(&session);
         let conversation = state.conversation(&session);
         let stop = matches!(conversation.doing, Doing::Starting { stop: true, .. });
         if conversation.retired
@@ -830,6 +881,21 @@ impl Service {
         self.identities.send_replace(Arc::new(running));
     }
 
+    /// The agent's name, when its account is installed and signed out of: as it was last known,
+    /// and asked anew (signed in a moment ago, in Terminal say, it goes). At most 10 s each.
+    async fn signed_out(&self, provider: &str) -> Option<&'static str> {
+        let parsed = Provider::parse(provider)?;
+        let roster = self.agents.roster();
+        let entry = roster.find(&parsed)?.clone();
+        let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked);
+        let within = Duration::from_secs(10);
+        if !out(tokio::time::timeout(within, entry.status(false)).await.ok()) {
+            return None;
+        }
+        out(tokio::time::timeout(within, entry.status(true)).await.ok())
+            .then(|| parsed.kind.display_name())
+    }
+
     async fn thread(&self, session: &str, provider: &str) -> io::Result<Arc<dyn Thread>> {
         let parsed = Provider::parse(provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
@@ -858,6 +924,44 @@ impl Service {
         shown: Option<Prompt>,
     ) -> io::Result<Live> {
         let agent = if input.plan { "plan" } else { "build" };
+        // Its account signed out of: said at once, rather than fail only after its agent started
+        // and tried. (A turn taken up goes on where it is.)
+        if !matches!(input.kind, TurnKind::Recover { .. })
+            && let Some(name) = self.signed_out(&input.model.provider).await
+        {
+            // (Each computer signs in on its own: the one it runs on is named.)
+            let computer = std::env::var("KUVO_MACHINE_NAME")
+                .ok()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "this machine".into());
+            let message = format!(
+                "{name} isn't signed in on {computer}, where this conversation runs: each machine signs in on its own."
+            );
+            if shown.is_some() {
+                let error = crate::session::TurnError {
+                    kind: "signin".into(),
+                    message: message.clone(),
+                    status: None,
+                    limit: None,
+                };
+                let _ = crate::turn_projection::record_turned_away(
+                    self.store.clone(),
+                    session.into(),
+                    agent.into(),
+                    &input,
+                    shown.as_ref(),
+                    note,
+                    error,
+                )
+                .await;
+            }
+            return Err(io::Error::new(ErrorKind::PermissionDenied, message));
+        }
+        // Its program updating, it waits for it (a turn taken up runs already).
+        let recovering = matches!(input.kind, TurnKind::Recover { .. });
+        self.programs
+            .enter(session, &input.model.provider, !recovering)
+            .await;
         let thread = match self.thread(session, &input.model.provider).await {
             Ok(thread) => thread,
             Err(error) => {
@@ -946,8 +1050,12 @@ impl Service {
                 }
             })
         });
-        let foreground =
-            crate::foreground::Foreground::new(session, &cwd, self.store.background().clone(), stop);
+        let foreground = crate::foreground::Foreground::new(
+            session,
+            &cwd,
+            self.store.background().clone(),
+            stop,
+        );
         let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer, foreground);
         Ok(Live {
             turn,

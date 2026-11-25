@@ -29,6 +29,7 @@ use crate::{
     accounts::Account,
     catalog::Models,
     hold::{Controller, HoldKind, Record, TurnNote},
+    program_updates::{Definition, Native},
     roster::{Agent, Factory},
     runtime::{AdapterCall, Adoption},
     session::{SessionContext, Thread},
@@ -64,7 +65,10 @@ pub async fn read_kept_citations(
         .as_str()
         .and_then(crate::accounts::Provider::parse)
         .is_some_and(|provider| provider.kind == crate::accounts::AgentKind::Codex);
-    if let Some(title) = fields["title"].as_str().filter(|title| codex && title.contains(":codex-")) {
+    if let Some(title) = fields["title"]
+        .as_str()
+        .filter(|title| codex && title.contains(":codex-"))
+    {
         let plain = citations::plain(title);
         changed |= store
             .change_header(id, move |header| {
@@ -80,6 +84,7 @@ pub struct CodexFactory {
     home: Home,
     holder_binary: PathBuf,
     relay: Option<ToolRelay>,
+    feed: Option<crate::feed::Feed>,
 }
 
 impl CodexFactory {
@@ -89,7 +94,14 @@ impl CodexFactory {
             home,
             holder_binary,
             relay,
+            feed: None,
         }
+    }
+
+    /// Where its accounts say their sign-in changed.
+    pub fn with_feed(mut self, feed: crate::feed::Feed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -101,8 +113,14 @@ impl Factory for CodexFactory {
             account.provider().to_string(),
             home,
         );
+        let shared = Shared::new(program)?;
+        if let Some(feed) = &self.feed {
+            shared
+                .account
+                .tell_on(feed.clone(), account.provider().to_string());
+        }
         Ok(Arc::new(Codex {
-            shared: Shared::new(program)?,
+            shared,
             relay: self.relay.clone(),
             threads: Mutex::default(),
         }))
@@ -189,6 +207,28 @@ impl Agent for Codex {
     fn shutdown(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
             self.stop_all(false).await;
+            Ok(())
+        })
+    }
+
+    /// Updated by its own updater (`codex update`) where its installer put it, else by npm's.
+    fn program(&self) -> Option<Definition> {
+        let env = self.shared.program.environment();
+        Some(Definition {
+            name: "Codex".into(),
+            executable: self.shared.program.executable(&env)?.path().to_owned(),
+            npm_package: Some("@openai/codex".into()),
+            native: Some(Native {
+                args: vec!["update".into()],
+                markers: vec!["/.codex/".into()],
+                dist_tag: None,
+            }),
+        })
+    }
+
+    fn program_updated(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async {
+            self.shared.program_updated().await;
             Ok(())
         })
     }

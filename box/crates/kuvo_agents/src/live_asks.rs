@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct AskKey {
@@ -68,18 +68,38 @@ impl Pending {
     }
 }
 
+/// An ask no longer waiting: answered (with what), or gone unanswered (`None`: cancelled, its
+/// turn ended, or its agent stopped waiting).
+#[derive(Clone, Debug)]
+pub struct Ended {
+    pub key: AskKey,
+    pub ask: Ask,
+    pub reply: Option<Reply>,
+}
+
 #[derive(Clone)]
 pub struct LiveAsks {
     commands: mpsc::Sender<Command>,
     pending: watch::Receiver<Arc<BTreeMap<AskKey, Ask>>>,
+    ended: broadcast::Sender<Ended>,
 }
 
 impl LiveAsks {
     pub fn start() -> Self {
         let (commands, requests) = mpsc::channel(32);
         let (published, pending) = watch::channel(Arc::new(BTreeMap::new()));
-        tokio::spawn(run(requests, published));
-        Self { commands, pending }
+        let ended = broadcast::channel(64).0;
+        tokio::spawn(run(requests, published, ended.clone()));
+        Self {
+            commands,
+            pending,
+            ended,
+        }
+    }
+
+    /// Each ask as it stops waiting.
+    pub fn ended(&self) -> broadcast::Receiver<Ended> {
+        self.ended.subscribe()
     }
 
     pub fn pending(&self) -> watch::Receiver<Arc<BTreeMap<AskKey, Ask>>> {
@@ -182,6 +202,7 @@ impl TurnAsks {
 async fn run(
     mut commands: mpsc::Receiver<Command>,
     published: watch::Sender<Arc<BTreeMap<AskKey, Ask>>>,
+    ended: broadcast::Sender<Ended>,
 ) {
     let mut pending = BTreeMap::<AskKey, Pending>::new();
     let mut kept = false;
@@ -202,12 +223,13 @@ async fn run(
             }
             command => command,
         };
+        let mut answered = None;
         let reply = match command {
-            Command::Ask(key, ask, ended, answer) => {
+            Command::Ask(key, ask, retired, answer) => {
                 if answer.is_closed() {
                     continue;
                 }
-                if ended.load(Ordering::Acquire) {
+                if retired.load(Ordering::Acquire) {
                     Pending { ask, answer }.cancel();
                     continue;
                 }
@@ -225,6 +247,7 @@ async fn run(
                 None
             }
             Command::Answer(key, reply, result) => {
+                answered = Some((key.clone(), reply.clone()));
                 let found = pending.get(&key);
                 let outcome = match found {
                     Some(Pending {
@@ -269,12 +292,23 @@ async fn run(
             }
         };
         pending.retain(|_, entry| !entry.answer.is_closed());
-        published.send_replace(Arc::new(
+        let before = published.send_replace(Arc::new(
             pending
                 .iter()
                 .map(|(key, entry)| (key.clone(), entry.ask.clone()))
                 .collect(),
         ));
+        for (key, ask) in before.iter().filter(|(key, _)| !pending.contains_key(*key)) {
+            let reply = answered
+                .as_ref()
+                .filter(|(answered, _)| answered == key)
+                .map(|(_, reply)| reply.clone());
+            let _ = ended.send(Ended {
+                key: key.clone(),
+                ask: ask.clone(),
+                reply,
+            });
+        }
         if let Some((sender, reply)) = reply {
             let _ = sender.send(reply);
         }

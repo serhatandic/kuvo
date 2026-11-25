@@ -29,6 +29,7 @@ use crate::{
     accounts::Account,
     catalog::Models,
     hold::{Controller, HoldKind, Record, TurnNote},
+    program_updates::{Definition, Native},
     roster::{Agent, Factory},
     runtime::{AdapterCall, Adoption},
     session::{SessionContext, Thread},
@@ -99,6 +100,25 @@ impl Factory for ClaudeFactory {
             models: model::Catalog::new()?,
         }))
     }
+}
+
+/// The channel Claude Code's own updater follows, as its settings say.
+fn update_channel(env: &kuvo_os::platform::Environment) -> &'static str {
+    use kuvo_os::platform::{Platform, env_value};
+    let platform = Platform::current();
+    let user = if platform == Platform::Windows {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    let folder = env_value(platform, env, "CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env_value(platform, env, user).map(|home| PathBuf::from(home).join(".claude")));
+    let stable = folder
+        .and_then(|folder| std::fs::read(folder.join("settings.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|settings| settings["autoUpdatesChannel"] == "stable");
+    if stable { "stable" } else { "latest" }
 }
 
 struct Claude {
@@ -195,6 +215,32 @@ impl Agent for Claude {
 
     fn shutdown(&self) -> AdapterCall<'_, ()> {
         Box::pin(self.stop_threads(true))
+    }
+
+    /// Its own installer puts it in `~/.local/share/claude` (or `~/.claude/local`): `claude
+    /// update`, on the channel its settings follow. Otherwise npm's.
+    fn program(&self) -> Option<Definition> {
+        let env = self.program.environment(false);
+        Some(Definition {
+            name: "Claude Code".into(),
+            executable: self.program.executable(&env)?.path().to_owned(),
+            npm_package: Some("@anthropic-ai/claude-code".into()),
+            native: Some(Native {
+                args: vec!["update".into()],
+                markers: vec!["/.local/share/claude/".into(), "/.claude/local/".into()],
+                dist_tag: Some(update_channel(&env).into()),
+            }),
+        })
+    }
+
+    /// Its models are asked of the new Claude Code; each conversation's starts again at its
+    /// next message.
+    fn program_updated(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async {
+            self.program.updated();
+            self.models.clear().await;
+            Ok(())
+        })
     }
 
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {

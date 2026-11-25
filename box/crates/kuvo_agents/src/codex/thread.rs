@@ -47,7 +47,15 @@ pub(super) const ASKING_WORDS: &str = "Outside Plan mode, ask the user with requ
 const LOAD: Duration = Duration::from_secs(60);
 const STEER: Duration = Duration::from_secs(30);
 const STOP: Duration = Duration::from_secs(10);
-/// How often the commands it left running are listed again while any runs, and a list's wait.
+/// Trying again to reach a sleep that turned it down: after this long, then twice that, up to the
+/// last.
+const STEER_AGAIN: Duration = Duration::from_secs(1);
+const STEER_AGAIN_LAST: Duration = Duration::from_secs(64);
+/// A sleep that ended: one starting in the same breath is looked for this long after.
+const BREATH: Duration = Duration::from_millis(50);
+/// What a sleep it started after its answer went in is told.
+const ANSWERED: &str = "Your question has its answer, so there's nothing to wait for on it:";
+/// How often the commands it left running while any runs, and a list's wait.
 const TERMINALS: Duration = Duration::from_secs(30);
 /// Pages of a terminal list followed at most.
 const LIST_PAGES: usize = 20;
@@ -136,6 +144,11 @@ impl Conversation {
                 turned_down: 0,
                 deadline: None,
                 closing: false,
+                answered: Vec::new(),
+                retelling: Vec::new(),
+                sleep: None,
+                sleeps: 0,
+                retries: Vec::new(),
                 terminals,
                 list_at: None,
                 relist: Arc::new(Notify::new()),
@@ -286,6 +299,33 @@ struct Said {
     message: Option<String>,
 }
 
+/// An answer gone into the turn under way, which Codex may yet sleep past: one it's `heard` and
+/// worked on from isn't what it's sleeping on.
+struct Answered {
+    id: u64,
+    text: String,
+    files: Vec<PromptFile>,
+    heard: bool,
+}
+
+/// What words tried again into a sleep are for, and what's left of them if none gets through.
+enum Retried {
+    /// An answer (none: a dismissal, which isn't kept).
+    Answer(Option<Said>),
+    /// Answers a sleep is told again, by their number.
+    Retell(Vec<u64>),
+}
+
+/// Words a sleep turned down, tried again into it a while later.
+struct Retry {
+    sleep: u64,
+    wait: Duration,
+    at: Instant,
+    text: String,
+    files: Vec<PromptFile>,
+    then: Retried,
+}
+
 enum Settled {
     /// An answer to Codex's request, by its app-server and ID.
     Request(u64, Value, Result<Value, RpcError>),
@@ -317,6 +357,16 @@ struct Actor {
     turned_down: u32,
     deadline: Option<Instant>,
     closing: bool,
+    /// Answers gone into the turn under way, for the first sleep that starts after them.
+    answered: Vec<Answered>,
+    /// Answers a sleep took from `answered` as it started, while it's told them again: one Codex
+    /// takes meanwhile, as it was first sent, is heard.
+    retelling: Vec<Answered>,
+    /// The sleep it's in (its number), which what goes in now ends.
+    sleep: Option<u64>,
+    sleeps: u64,
+    /// Words tried again into a sleep.
+    retries: Vec<Retry>,
     /// The commands it left running in background terminals.
     terminals: Terminals,
     /// When they're listed again.
@@ -363,6 +413,13 @@ impl Actor {
                 }
             };
             let relist = self.relist.clone();
+            let retry_at = self.retries.iter().map(|retry| retry.at).min();
+            let retrying = async {
+                match retry_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             let result = tokio::select! {
                 command = commands.recv() => match command {
                     Some(command) => self.command(command).await,
@@ -376,6 +433,7 @@ impl Actor {
                 () = timer => self.expired().await,
                 () = listing => self.read_terminals(false).await,
                 () = relist.notified() => self.read_terminals(true).await,
+                () = retrying => self.retry().await,
             };
             if let Err(error) = result {
                 eprintln!("Codex conversation {}: {error}", self.session);
@@ -728,6 +786,9 @@ impl Actor {
     ) -> io::Result<()> {
         let server = self.server.clone().ok_or_else(stopped)?;
         let native = self.native.clone().ok_or_else(stopped)?;
+        // (Each native turn its own: what went into the last isn't this one's to tell again.)
+        self.answered.clear();
+        self.woke_up();
         let active = self.active.as_mut().ok_or_else(stopped)?;
         active.turn = None;
         active.between = false;
@@ -1104,9 +1165,8 @@ impl Actor {
                 message: None,
             },
         };
-        if !active.between && active.turn.is_some() && self.steer_in(&said.text, &said.files).await
-        {
-            return Ok(());
+        if !active.between && active.turn.is_some() {
+            return self.steer_answer(said, dismissed).await;
         }
         // (A dismissal its turn didn't take isn't kept: there's nothing to tell a next turn.)
         if !dismissed {
@@ -1114,6 +1174,218 @@ impl Actor {
         }
         if self.active.as_ref().is_some_and(|active| active.between) {
             return self.settle_between().await;
+        }
+        Ok(())
+    }
+
+    /// An answer into the turn under way, which ends a sleep it's in; turned down while it sleeps,
+    /// tried again into that sleep; otherwise kept, for when it goes on or for its next turn.
+    async fn steer_answer(&mut self, said: Said, dismissed: bool) -> io::Result<()> {
+        // (Noted first: a sleep that starts after it is told again. One under way, this ends.)
+        let noted = self.sleep.is_none().then(|| {
+            let id = self.next_answer();
+            self.answered.push(Answered {
+                id,
+                text: said.text.clone(),
+                files: said.files.clone(),
+                heard: false,
+            });
+            id
+        });
+        if self.steer_in(&said.text, &said.files).await {
+            return Ok(());
+        }
+        if let Some(id) = noted {
+            self.answered.retain(|each| each.id != id);
+        }
+        let (text, files) = (said.text.clone(), said.files.clone());
+        let then = Retried::Answer((!dismissed).then_some(said));
+        self.retry_into_sleep(text, files, then);
+        self.after_retries().await
+    }
+
+    fn next_answer(&mut self) -> u64 {
+        self.sleeps += 1;
+        self.sleeps
+    }
+
+    /// Turned down while it sleeps: nothing else would reach it, as it says nothing that could set
+    /// off another try, so tried again for a while. With no sleep, what's left goes as it can.
+    fn retry_into_sleep(&mut self, text: String, files: Vec<PromptFile>, then: Retried) {
+        match self.sleep {
+            Some(sleep) => self.retries.push(Retry {
+                sleep,
+                wait: STEER_AGAIN,
+                at: Instant::now() + STEER_AGAIN,
+                text,
+                files,
+                then,
+            }),
+            None => self.gave_up(then),
+        }
+    }
+
+    /// Words no sleep took: an answer is kept, for when it goes on or for its next turn; of
+    /// answers told again, one it heard waits for the next sleep, and one it never took is kept.
+    fn gave_up(&mut self, then: Retried) {
+        match then {
+            Retried::Answer(Some(said)) => self.answers.push(said),
+            Retried::Answer(None) => {}
+            Retried::Retell(ids) => {
+                let (said, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retelling)
+                    .into_iter()
+                    .partition(|each| ids.contains(&each.id));
+                self.retelling = rest;
+                for each in said {
+                    if each.heard {
+                        self.answered.push(each);
+                    } else {
+                        self.answers.push(Said {
+                            text: each.text,
+                            files: each.files,
+                            declined: false,
+                            message: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Words a sleep turned down, tried again: into the sleep they were for, or one that started as
+    /// it ended; past the last try, or with no sleep left, given up.
+    async fn retry(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retries)
+            .into_iter()
+            .partition(|retry| retry.at <= now);
+        self.retries = waiting;
+        for mut retry in due {
+            let going = self
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.stopping && !active.between && active.turn.is_some());
+            if !going {
+                self.gave_up(retry.then);
+                continue;
+            }
+            if self.sleep != Some(retry.sleep) {
+                match self.sleep {
+                    Some(sleep) => {
+                        retry.sleep = sleep;
+                        retry.wait = STEER_AGAIN;
+                        retry.at = Instant::now() + STEER_AGAIN;
+                        self.retries.push(retry);
+                    }
+                    None => self.gave_up(retry.then),
+                }
+                continue;
+            }
+            if self.steer_in(&retry.text, &retry.files).await {
+                if let Retried::Retell(ids) = &retry.then {
+                    self.retelling.retain(|each| !ids.contains(&each.id));
+                }
+                continue;
+            }
+            retry.wait *= 2;
+            if retry.wait > STEER_AGAIN_LAST {
+                self.gave_up(retry.then);
+            } else {
+                retry.at = Instant::now() + retry.wait;
+                self.retries.push(retry);
+            }
+        }
+        self.after_retries().await
+    }
+
+    /// With nothing more being tried, between native turns: settled, as questions are.
+    async fn after_retries(&mut self) -> io::Result<()> {
+        if self.retries.is_empty() && self.active.as_ref().is_some_and(|active| active.between) {
+            return self.settle_between().await;
+        }
+        Ok(())
+    }
+
+    /// Its sleep is over (or its turn): words tried into it look, a breath later, for one that
+    /// started in its place.
+    fn woke_up(&mut self) {
+        if let Some(sleep) = self.sleep.take() {
+            let soon = Instant::now() + BREATH;
+            for retry in self.retries.iter_mut().filter(|retry| retry.sleep == sleep) {
+                retry.at = retry.at.min(soon);
+            }
+        }
+    }
+
+    /// What an item says of the answers in its turn.
+    async fn answers_on_item(&mut self, method: &str, item: &Value) -> io::Result<()> {
+        let kind = item["type"].as_str().unwrap_or_default();
+        if kind == "sleep" && method == "item/completed" {
+            self.woke_up();
+        }
+        if method != "item/started" {
+            return Ok(());
+        }
+        let stopped = self
+            .active
+            .as_ref()
+            .is_none_or(|active| active.stopping || active.between);
+        match kind {
+            "sleep" => {
+                let sleep = self.next_answer();
+                self.sleep = Some(sleep);
+                // One that starts after its answer went in isn't cut short by it, as one under way
+                // is, and the model may be sleeping on that question: told again once, which ends
+                // the sleep. (Past that, it's a sleep of its own.)
+                let said = std::mem::take(&mut self.answered);
+                if !said.is_empty() && !stopped {
+                    let words = said
+                        .iter()
+                        .map(|each| each.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let text = format!("{ANSWERED}\n\n{words}");
+                    let ids: Vec<u64> = said.iter().map(|each| each.id).collect();
+                    self.retelling.extend(said);
+                    if self.steer_in(&text, &[]).await {
+                        self.retelling.retain(|each| !ids.contains(&each.id));
+                    } else {
+                        self.retry_into_sleep(text, Vec::new(), Retried::Retell(ids));
+                    }
+                }
+            }
+            "userMessage" => {
+                // (Its words first: what it attached, Codex may be told of after them. One being
+                // told again as a sleep started counts too: Codex may take it as first sent.)
+                let text = item["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|part| part["type"] == "text")
+                    .and_then(|part| part["text"].as_str());
+                if let Some(text) = text
+                    && let Some(each) = self
+                        .retelling
+                        .iter_mut()
+                        .chain(self.answered.iter_mut())
+                        .find(|each| !each.heard && text.starts_with(&each.text))
+                {
+                    each.heard = true;
+                }
+            }
+            "commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
+            | "imageGeneration" | "imageView" | "collabAgentToolCall" => {
+                self.turned_down = 0;
+                // (Reasoning doesn't let it go: it's what comes before the sleep that needs ending.)
+                self.answered.retain(|each| !each.heard);
+            }
+            _ => {}
+        }
+        // One its turn turned down a moment ago (as it compacted, say) goes in as it goes on.
+        if !self.answers.is_empty() && !stopped {
+            for said in std::mem::take(&mut self.answers) {
+                self.steer_answer(said, false).await?;
+            }
         }
         Ok(())
     }
@@ -1141,7 +1413,7 @@ impl Actor {
     /// Between native turns with questions open: once they're settled, an answer no turn took
     /// starts the next, and with none the turn is over.
     async fn settle_between(&mut self) -> io::Result<()> {
-        if !self.cards.is_empty() {
+        if !self.cards.is_empty() || !self.retries.is_empty() {
             return Ok(());
         }
         let stopped = self
@@ -1242,30 +1514,17 @@ impl Actor {
                     .as_str()
                     .unwrap_or("question")
                     .to_owned();
+                // (What it heard before asking this isn't what a sleep from here on is about.)
+                self.answered.retain(|each| !each.heard);
                 self.ask(item, titles);
             }
+        }
+        if matches!(method, "item/started" | "item/completed") {
+            self.answers_on_item(method, &params["item"]).await?;
         }
         let Some(active) = self.active.as_mut() else {
             return Ok(());
         };
-        if matches!(method, "item/started" | "item/completed") {
-            let kind = params["item"]["type"].as_str().unwrap_or_default();
-            if method == "item/started"
-                && matches!(
-                    kind,
-                    "commandExecution"
-                        | "fileChange"
-                        | "mcpToolCall"
-                        | "dynamicToolCall"
-                        | "webSearch"
-                        | "imageGeneration"
-                        | "imageView"
-                        | "collabAgentToolCall"
-                )
-            {
-                self.turned_down = 0;
-            }
-        }
         match method {
             "turn/started" => {
                 if let Some(turn) = params["turn"]["id"].as_str() {
@@ -1348,6 +1607,8 @@ impl Actor {
     }
 
     async fn turn_completed(&mut self, params: &Value) -> io::Result<()> {
+        // Its sleep is over with it: what was being tried into it is kept, or given up.
+        self.woke_up();
         let Some(active) = self.active.as_mut() else {
             return Ok(());
         };
@@ -1396,7 +1657,7 @@ impl Actor {
         // an answer no turn took starts the next.
         if matches!(outcome, Outcome::Succeeded)
             && !active.stopped_asking
-            && (!self.cards.is_empty() || !self.answers.is_empty())
+            && (!self.cards.is_empty() || !self.answers.is_empty() || !self.retries.is_empty())
         {
             active.between = true;
             active.turn = None;
@@ -1409,6 +1670,10 @@ impl Actor {
 
     async fn finish(&mut self, outcome: Outcome) -> io::Result<()> {
         self.deadline = None;
+        self.retries.clear();
+        self.answered.clear();
+        self.retelling.clear();
+        self.sleep = None;
         for (_, card) in self.cards.drain() {
             card.task.abort();
             if let Some(active) = &self.active {

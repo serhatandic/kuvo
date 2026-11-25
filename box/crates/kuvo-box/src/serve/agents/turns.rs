@@ -2,6 +2,7 @@
 
 use http::StatusCode;
 use kuvo_agents::{
+    feed::Feed,
     inbox::{Delivery, Input},
     session_runs::SessionRuns,
     session_store::SessionStore,
@@ -16,7 +17,7 @@ use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::Value;
 use std::io;
 
-pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
+pub(crate) fn register(runs: SessionRuns, feed: Feed, routes: &mut Registry) {
     let as_turns = runs.clone();
     routes.register::<prompt::Spec, _, _>(Access::DesktopOrPaired, move |call| {
         let runs = as_turns.clone();
@@ -30,17 +31,26 @@ pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
             Ok(RouteReply::json::<200>(prompt::Status200 {}))
         }
     });
-    let modes = runs.clone();
+    let (modes, feed) = (runs.clone(), feed.clone());
     routes.register::<select_agent::Spec, _, _>(Access::DesktopOrPaired, move |call| {
-        let runs = modes.clone();
+        let (runs, feed) = (modes.clone(), feed.clone());
         async move {
             let id = session_id(call.param("id"))?;
             let agent = call.body["agent"].as_str().unwrap_or_default();
-            if !runs.select_agent(&id, agent).await.map_err(super::refuse)? {
+            let Some(changed) = runs.select_agent(&id, agent).await.map_err(super::refuse)? else {
                 return Err(super::refuse(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("No session {id}."),
                 )));
+            };
+            if let Some(previous) = changed {
+                let mode = if agent.is_empty() { "build" } else { agent };
+                let mut data = serde_json::json!({ "sessionID": id, "agent": mode });
+                if !previous.is_null() {
+                    data["previous"] = previous;
+                }
+                let directory = runs.directory(&id).await;
+                feed.emit_from("session.agent.selected", data, directory);
             }
             Ok(RouteReply::json::<200>(select_agent::Status200 {}))
         }
