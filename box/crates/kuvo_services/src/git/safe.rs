@@ -213,6 +213,120 @@ pub fn asked_args(args: &[String], cwd: Option<&Path>) -> Result<Vec<String>, Re
     asked_args_in(&Here::from_env(), args, cwd)
 }
 
+/// Whether a Git operation was requested explicitly or is performed by the box itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    Own,
+    Asked,
+    Yours,
+}
+
+/// Run through the same argument gate as the rest of the box. No terminal prompts.
+pub async fn run(
+    folder: &Path,
+    args: &[&str],
+    intent: Intent,
+    env: &[(&str, &str)],
+    limit: Duration,
+) -> Result<std::process::Output, String> {
+    let at = folder.to_owned();
+    let mut args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    if kuvo_os::platform::Platform::current() == kuvo_os::platform::Platform::Wsl
+        && kuvo_os::platform::is_wsl_windows_drive(folder)
+    {
+        args.splice(..0, ["-c", "core.filemode=false"].map(str::to_owned));
+    }
+    let args = tokio::task::spawn_blocking(move || match intent {
+        Intent::Own => own_args(&args, Some(&at), None),
+        Intent::Asked | Intent::Yours => asked_args(&args, Some(&at)),
+    })
+    .await.map_err(|error| error.to_string())?
+    .map_err(|_| "This repository’s own settings name a program Kuvo Code won’t run for it, or lead git to another repository’s.".to_owned())?;
+    let mut command = tokio::process::Command::new("git");
+    command
+        .args(args)
+        .current_dir(folder)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let mut environment = crate::vault::command_environment();
+    if intent == Intent::Yours
+        && cfg!(target_os = "macos")
+        && std::env::var_os("KUVO_TEST_LOGIN_ENV").as_deref() != Some(std::ffi::OsStr::new("off"))
+    {
+        let original = environment.clone();
+        let login = tokio::task::spawn_blocking(move || {
+            let account = kuvo_os::platform::Account::current().ok()?;
+            kuvo_os::platform::login_environment(
+                &account,
+                &original,
+                Duration::from_secs(3),
+                Duration::from_secs(3),
+            )
+            .ok()
+            .flatten()
+        })
+        .await
+        .ok()
+        .flatten();
+        for (key, value) in login.into_iter().flatten() {
+            let name = key.to_string_lossy();
+            if !["DYLD_", "BUN_", "KUVO_", "OPENCODE_"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+                && !matches!(
+                    name.as_ref(),
+                    "NODE_OPTIONS" | "PWD" | "OLDPWD" | "SHLVL" | "_"
+                )
+            {
+                environment.insert(key, value);
+            }
+        }
+    }
+    command.env_clear().envs(environment);
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    if intent == Intent::Own {
+        command.env("GIT_OPTIONAL_LOCKS", "0");
+    }
+    command.envs(env.iter().copied());
+    if intent == Intent::Own {
+        tokio::time::timeout(limit, command.output())
+            .await
+            .map_err(|_| "git took too long".to_owned())?
+            .map_err(|error| error.to_string())
+    } else {
+        // Hooks may leave a child which inherits the pipes. Git's exit settles the action.
+        use tokio::io::AsyncReadExt;
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let status;
+        {
+            let read =
+                async { tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err)) };
+            tokio::pin!(read);
+            status = tokio::select! {
+                status = child.wait() => {
+                    let _ = tokio::time::timeout(Duration::from_millis(100), &mut read).await;
+                    status
+                }
+                _ = &mut read => child.wait().await,
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        })
+    }
+}
+
 pub(crate) fn own_args_in(
     here: &Here,
     args: &[String],

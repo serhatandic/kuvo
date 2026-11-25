@@ -1,6 +1,6 @@
-# Rust box 6.3b: Git, Changes, worktrees and projects, coverage
+# Rust box 6.3b–c: Git, Changes, worktrees and projects, coverage
 
-Part B of row 6.3 in [rust-box.md](rust-box.md). Part A (files and folders) is
+Parts B and C of row 6.3 in [rust-box.md](rust-box.md). Part A (files and folders) is
 [rust-files-coverage.md](rust-files-coverage.md).
 
 The Rust side is `box/crates/kuvo_services/src/git/`: `projects.rs` (the projects list as
@@ -36,8 +36,7 @@ never by running git, looked for again off the request path each 15 seconds as `
 `kuvo_services::git::safe` ports `ownArgs` and `askedArgs` with everything they call: the same
 arguments in the same order, the same refusals (`Err(Refused::…)` where TS answers `undefined`),
 the same budget (whole milliseconds left, none left refused before git runs) and the same
-environment (yours, with `GIT_TERMINAL_PROMPT=0`). No route uses it yet, so there's no conformance
-or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
+environment (yours, with `GIT_TERMINAL_PROMPT=0`). The Changes routes now run through it (6.3c below). Its layer proof is unit and scenario tests in `safe_tests.rs`:
 
 - The arguments against the TS box's for the same inputs: 144 rows (`ownArgs`/`askedArgs` for 36
   commands in four repositories: none named, filters/converter/hook/watcher named, a filter and a
@@ -77,12 +76,12 @@ or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
 | TS case | Status |
 | --- | --- |
 | git-programs 1: the repository's programs are really there | `hostile::the_repositorys_programs_are_really_there…` |
-| git-programs 2–7: Changes, the branch menu, switching branches, a review, Undo, backups start none | Layer half: `hostile::what_the_box_runs_by_itself…`, `…what_you_ask_for…` (the commands they run); the routes **left** |
-| git-programs 8: what you stage and commit runs its filters and hooks | `hostile::what_you_ask_for…`; the route **left** |
-| git-programs 9: git-lfs as installed stays on, one of the same name elsewhere doesn't | `hostile::a_file_git_lfs_keeps…`; Changes showing it unchanged **left** |
+| git-programs 2–7: Changes, the branch menu, switching branches, a review, Undo, backups start none | Layer half: `hostile::what_the_box_runs_by_itself…`, `…what_you_ask_for…` (the commands they run); the Changes and branches routes are served; equivalent hostile route scenarios and review/Undo/backups **left** |
+| git-programs 8: what you stage and commit runs its filters and hooks | `hostile::what_you_ask_for…`; the routes are served; equivalent hook/filter scenario **left** |
+| git-programs 9: git-lfs as installed stays on, one of the same name elsewhere doesn't | `hostile::a_file_git_lfs_keeps…`; Changes showing it unchanged **proof left** |
 | git-programs 10: a program name settings can't switch off isn't read | `hostile::one_whose_program_has_a_name…`, table (`unswitchable`, `hookeq`) |
 | git-programs 11: git's own watcher on a Mac | `hostile::gits_own_watcher…` |
-| git-common 1–3: commondir elsewhere, a bare repository made around a broken `.git`, own/none/worktree as ever | `common::…` (the layer's refusals); Changes' Commit **left** |
+| git-common 1–3: commondir elsewhere, a bare repository made around a broken `.git`, own/none/worktree as ever | `common::…` (the layer's refusals); Changes' Commit served; equivalent route proof **left** |
 
 Where the layer's tests ran: macOS (20 of 20; the TS hostile case 4 of 4), native Windows (the
 cross-built test executable over SSH, git 2.56: 9 of 9, the hostile and `commondir` cases being
@@ -91,35 +90,106 @@ static musl build, git 2.43: 20 of 20; the `git` conformance area 4 of 4). The t
 arrays, printed by the TS box on a Mac, hold on Windows and Linux too, where git's own watcher is
 never kept on.
 
-## The TypeScript cases
+## Changes and project edits (6.3c)
+
+`PUT kuvo/projects`, `GET kuvo/git/files` and its events, and `POST kuvo/git/{changes,stage,unstage,discard,commit,push,branches,switch,merge,pull-request/draft,pull-request}` use the existing route shapes. The Rust route boundary is `git/routes.rs`; reading a diff, staging and committing, porcelain status rows and stamps, and branch actions are separate modules. Every Git operation goes through the argument gate and shared runner in `git/safe.rs`. Followers of a folder share a read: a newly following client waits for a read begun after it subscribed. The index, HEAD and its log are checked every second. Filesystem events are used on macOS and WSL's own filesystem, with periodic reads on other systems. Discards use the listed stamp and preserve intervening or blocking files in the Trash.
+
+The `git` conformance area has these new cases (short names used in the table):
+
+- **Edit:** a project is kept by its given folder, edited and brought back; newer list refused on GET and PUT, untouched.
+- **List:** Changes lists, follows and edits the repository's real files (partial staging, move, deletion, untracked file, single-file and new-file diff, follower update, new follower, stage, unstage, stale discard, actual trash contents, commit staged only).
+- **Branches:** branches, worktree merge and a pull request to a local remote (switch, push, clean draft, push on Create, linked worktree without record, dirty/clean merge and conflict rollback).
+- **Discard:** discard checks the listed stamp, keeps blocking entries and unstages a first commit (literal path, missing stamp and invalid path, parent file, binary/large diff, first commit).
+- **GitLab:** a failed push keeps the commit, and GitLab's pull-request page names the branch and base (local push URL, draft and prompt, title/body, no live network or hosting account).
+- **Directory queries:** both Windows separators and the same parent-traversal guard for the three folder query routes. The new case failed on the old TS and the native Windows Rust box, before the shared path guard was corrected in both.
+
+### Proof
+
+| System | TypeScript | Rust |
+| --- | --- | --- |
+| macOS | 10/10 | 10/10 |
+| Linux (Lokum, one container, 1 CPU/1 GiB; Git 2.39.5) | — | 10/10 |
+| Ubuntu 24.04 under WSL2 (Git 2.43.0) | — | 10/10 |
+| Native Windows (Git 2.56.1) | — | 10/10 |
+
+The Mac's shared workspace check, TypeScript check, and Rust `engine-sessions` conformance (81/81) also pass. The native Windows run exposed the Windows directory query bug in both boxes' path guard; the new regression fails on the old TypeScript build and the old Windows Rust build.
+
+Differential: six requests on copies of one seeded home (PUT and GET projects, file list, the diff of a deleted tracked file, branches, and refused pull-request draft). All six answers, the project record, the repository files (including its git records) and the engine transcript match. The full-home comparison still exits nonzero: 67 unrelated startup/identity/usage/work-queue differences, not hidden by the comparison. That's not a whole-home equivalence claim.
+
+Size: 60,542 net added non-test Rust characters, without indentation, versus approximately 71,601 of the corresponding TypeScript route/functions (including project edit, pull-link and pull-request prompt; excluding the uncalled read/migration routes), 0.85×. No client or generated file is changed.
+
+Related behaviour not yet matched/proven in full: Mac login refresh is per requested action rather than the TS minute cache; fallback Trash uses a private random directory instead of a timestamped directory, and the native Trash command is not yet time-limited. The shared conformance uses a local bare remote (no real hosting account); the signed-in GitHub command and its persisted session link still need their equivalent stand-in scenario. The table below records other scenario-level proof gaps.
+
+### TypeScript case map
+
+A case marked partly or proof left has an implementation but does not have the full equivalent scenario in shared conformance. Test numbers are their order in the named source file.
 
 | TS case | Status |
 | --- | --- |
-| projects-worktrees 1: the projects list says which project each worktree's sessions belong to (kept, removed, restorable) | Conformance (`kept projects …`: records `worktrees`, `restorable`, `handedOver`, `removed`) |
-| projects-worktrees 2: a worktree made after a client began following is filed at once | **Left**: `kuvo/projects/events` |
-| projects-worktrees 3: a git worktree made elsewhere is filed under its project, one that's a project of its own isn't | Conformance (`kept projects …`), unit test (`a_projects_linked_worktrees_name_it_back`) |
-| projects-worktrees 4: other folders filed under their project, a worktree of one too, not a project of its own or a removed one's | Conformance, unit test (`other_folders_are_filed_under_their_project…`) |
-| projects-worktrees 5: project and worktree edits refuse future records | Reading half: conformance (`a list from a newer box is refused`); edits **left** |
-| projects-worktrees 6: the first-seen folder index preserves a future file | **Left** (project edits) |
-| projects 1: a project added from any client is kept as named, and changed there | **Left**: `PUT kuvo/projects` |
-| projects 2: a saved terminal project is returned as an ordinary one, cleaned on its next edit | Reading half: conformance (`terminal` left out); cleaning on edit **left** |
-| projects 3–7: Remove Project archives sessions (worktrees', other folders', older ones), the engine down, removed worktrees, folders the client shows | **Left**: `DELETE kuvo/projects`, with the engine (row 5.1's project removal) |
-| projects 8: the list followed, a line now and another when it changes | **Left**: `kuvo/projects/events` |
-| worktrees (32), branch-backups (14) | **Left**: worktrees and Git routes |
-| Changes (`kuvo/git/changes`, `…/count`, `kuvo/git/files`, `kuvo/git/status`, …) | **Left**: see below |
+| projects-worktrees 1, 3, 4 | Existing list conformance and linked-tree unit test |
+| projects-worktrees 2 | Not ported: no client (`projects/events`) |
+| projects-worktrees 5 | Edit: project format read and write refusal; worktree mutation left |
+| projects-worktrees 6 | First-seen folder index, not called by PUT; proof left |
+| projects 1–2 | Edit (including retired terminal setting) |
+| projects 3–7 | Remove Project (`DELETE kuvo/projects`), with the engine (row 5.1); left |
+| projects 8 | Not ported: no client (`projects/events`) |
+| git-files 1 | List, grouped rows, partial stage and line counts; subfolder filtering proof left |
+| git-files 2 | Conflict row proof left |
+| git-files 3 | List covers move; spaced names, staged new discard and nested repository proof left |
+| git-files 4 | List, Discard: one-file, new-file, binary and large diff; old path and binary false positive proof left |
+| git-files 5 | Branches |
+| git-files 6 | Branches, GitLab partly; detached and recorded base proof left |
+| git-files 7 | List, follows index changes |
+| git-files 8, 13, 18 | Files/folders: see [coverage](rust-files-coverage.md) |
+| git-files 9, 12, 21 | List, staged-only commit; staged elsewhere and cross-folder rename count proof left |
+| git-files 10–11 | Discard confirmation for lost staged content; proof left |
+| git-files 14 | List, stale new-file discard; committed-since proof left |
+| git-files 15 | Discard, blocking parent kept and file restored |
+| git-files 16, 20, 22–24 | Staged deletion, old path preserved, identical disk version, intent-to-add and untracked after cached removal; proof left |
+| git-files 17 | Discard, big file; cap at 1,000 names proof left |
+| git-files 19 | List, a newly following client sees a new read; simultaneous read-sharing proof left |
+| git-files 25 | Discard, missing stamp refused |
+| git-files 26–27 | Nested repo stamp and read-in-progress stamp; proof left |
+| git-files 28 | List, index change; filesystem-only and branch-only reset proof left |
+| changes (bridge) 1 | List, tracked and new file diffs (whole-list diff and old-file stamp proof left) |
+| changes 2–5 | New-file stamps, blank lines, converters, outside repository: proof left |
+| changes 6–10 | Not ported: no client (`changes/count`) |
+| changes 11–14 | List, Discard |
+| changes 15 | Not ported: no client (`git/show`) |
+| changes 16 | Discard, first commit including new files; folder-only and commit message diff proof left (`commit-diff` not ported: no client) |
+| changes 17 | Requested commands use filtered environment and refresh the Mac login environment; hook scenario proof left (refresh per action rather than TS's one-minute cache) |
+| changes 18 | Blocking directory discard proof left |
+| changes 19, 21, 23 | Discard: missing stamp, invalid path, unborn HEAD |
+| changes 20, 22 | Move and nested repository discard proof left |
+| changes 24 | Requested git settles on child exit even if a hook holds pipes open; proof left |
+| changes 25 | Branch scope since merge base; proof left |
+| changes 26–27 | Branches, GitLab: local push, failed push preserves commit; retry after failed commit+push proof left |
+| changes 28 | Branches: clean/dirty merge and conflict rollback; nothing new and preexisting merge proof left |
+| changes 29 | Recorded worktree base used, proof left |
+| changes 30 | Branches: linked worktree without record |
+| changes 31–32 | Branches, GitLab: draft and push/create fallback; signed-in/signed-out/missing gh and session's pull record proof left |
+| changes 33–34 | GitLab: main base, host page and local push; explicit origin/HEAD proof left |
+| changes 35 | Dirty submodule discard proof left |
+| changes 36–37 | Branches: listing and create/switch; multiple dated branches, tag name, carried edits, hooks and failure proof left |
+| changes 38 | Not ported: no client (`git/status`) |
+| changes 39 | Files/folders: see [coverage](rust-files-coverage.md) |
+| changes 40 | Bare repository menu implemented, proof left; status not ported: no client |
+| git-words 1, 4–7 | Not ported: no client (`commit-diff`, `settings/move`) |
+| git-words 2 | GitLab: prompt uses the computer's instructions |
+| git-words 3 | No-origin refusal implemented; proof left |
+| git-settings 1–5 | Settings migration: not ported here, no client for `settings/move` |
+| git-programs 1–11, git-common 1–3, git-hostile 1–4 | Layer proof above; route-level equivalents of the hostile cases remain |
+| worktrees 1–32, worktrees-where 1–12 | Worktree lifecycle/Settings routes outside this desktop slice (some appear in the generic worktrees route fixture); files/folders cases in the files coverage map |
+| branch-backups 1–14 | Not ported: no client for `git/backups` and restore |
 
-Counts so far: projects-worktrees 6 (3 covered, 1 partly, 2 left), projects 9 (1 partly, 8 left);
-worktrees and branch-backups not started.
+### Routes not needed by the desktop
 
-## What's left
+Searched the desktop Rust sources, shared conformance tests and their route fixtures. The following have no caller or conformance request: **not ported: no client**.
 
-- The Changes read (`kuvo/git/changes/count`, `kuvo/git/changes`, `kuvo/git/files`,
-  `kuvo/git/status`). Each runs git in the repository, which the TS box does only through its safe
-  git runner (`ownArgs`/`ownArgsLater` in `src/shared/git.ts`: its own options, the programs a
-  repository's settings name switched off, a `commondir` that leads elsewhere refused). That runner
-  is ported first, whole and tested, then the reads on it.
-- `kuvo/projects/events`, `PUT kuvo/projects`, `DELETE kuvo/projects` (Remove Project, with the
-  engine). The `projects` feature isn't advertised until they're there.
-- The 6.3 cases of the other maps: golden-home projects (`protocol/conformance/compat.test.mjs`),
-  project removal from 5.1, `projects-worktrees` and `start-cancelled-worktree` in
-  [rust-engine-coverage.md](rust-engine-coverage.md).
+- `kuvo/projects/events`, `kuvo/worktrees/events`
+- `kuvo/git/show`, `kuvo/git/changes/count`, `kuvo/git/status`, `kuvo/git/commit-diff`, `kuvo/git/settings/move`, `kuvo/git/backups` and `kuvo/git/backups/restore`
+- `kuvo/plugins/search`, `kuvo/providers/models`, `kuvo/sessions/read`, `kuvo/sessions/glance/events`
+
+The desktop does not call any `kuvo/worktrees` routes; the generic worktrees route fixture is separate from the Changes slice. The grouped `projects` and `git` features are not advertised as complete (some routes in the groups are not served); the individual Changes features implemented here are advertised.
+
+The remaining 6.3 cases in the other maps include the golden-home projects (`protocol/conformance/compat.test.mjs`), project removal from 5.1, and `projects-worktrees` / `start-cancelled-worktree` in [rust-engine-coverage.md](rust-engine-coverage.md).
