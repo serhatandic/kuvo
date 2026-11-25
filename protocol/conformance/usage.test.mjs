@@ -770,6 +770,7 @@ test('Insights watches the engine SQLite channel and counts only new or changed 
   let db=new DatabaseSync(source);
   db.exec('PRAGMA journal_mode=WAL; CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT); CREATE INDEX message_updated ON session_message(time_updated)');
   db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_engine_usage','Engine usage fixture',null,'{}');
+  for(let i=0;i<20;i++)db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_inactive_'+i,'Inactive session',null,'{}');
   const insert=(id,at,input,output)=>{
     db.prepare('INSERT OR REPLACE INTO session_message VALUES (?, ?, ?, ?, ?, ?)').run(id,'ses_engine_usage','assistant',at,Date.now(),JSON.stringify({time:{completed:at},model:{providerID:'opencode-go',id:'claude-opus-4-6'},tokens:{input,output,cache:{read:10,write:2}},cost:0.013}));
   };
@@ -801,6 +802,8 @@ test('Insights watches the engine SQLite channel and counts only new or changed 
     try{
       const decoded=kept.prepare("SELECT body FROM state WHERE key LIKE 'scan/rust-engine-v1/%/decoded'").get();
       assert.equal(JSON.parse(decoded.body),2,'The recent overlap and new call are read; older calls are not decoded');
+      const cursor=kept.prepare("SELECT body FROM state WHERE key LIKE 'scan/rust-engine-v1/%' AND key NOT LIKE '%/decoded'").get();
+      assert.equal(JSON.parse(cursor.body).headers,1,'Only affected session headers and their lineage are decoded');
     }finally{kept.close();}
     insert('new',now-100,20,8);
     await until(async()=>(await totals()).tokens===209,'Changed engine call remained stale');
@@ -1013,4 +1016,137 @@ test('a changed price feed reprices saved history and a bad feed does not replac
   resident=box.start();call=box.connect(await resident.ready());
   await until(async()=>{const day=await value();return day?.cost===0.004;},'Saved feed prices were not restored');
   assert.equal(requests.length,before,'The saved hourly freshness survives restart');
+});
+
+test('usage and Insights merge only admitted peer records, retain them across restart and filter by computer',{timeout:120000},async t=>{
+  const fs=await import('node:fs');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer,leases}=await bench(t);
+  const studio=await computer('HistoryStudio',undefined,isolated);
+  const other=process.env.KUVO_USAGE_PEER_BIN?boxBinary(process.env.KUVO_USAGE_PEER_BIN):undefined;
+  const lab=await computer('HistoryLab',other,isolated);
+  const now=Date.now()-5000;
+  const seed=(box,session,input,billed)=>{
+    const folder=path.join(box.home,'data','opencode');
+    fs.mkdirSync(folder,{recursive:true});
+    const db=new DatabaseSync(path.join(folder,'opencode.db'));
+    try{
+      db.exec('CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT)');
+      db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run(session,session,null,'{}');
+      db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run(session+'-call',session,'assistant',now,now,JSON.stringify({time:{completed:now},model:{providerID:'opencode-go',id:'claude-opus-4-6'},tokens:{input,output:10,cache:{read:5,write:0}},cost:billed}));
+    }finally{db.close();}
+  };
+  seed(studio,'ses_studio_history',100,0.01);
+  // A restored transcript from an unadmitted origin may be present, but must
+  // not become local or be forwarded to another computer as eligible usage.
+  const foreign='ses_foreign_history',foreignFolder=path.join(studio.home,'agents','sessions',foreign);
+  const foreignModel={providerID:'claude-code',id:'claude-opus-4-6'};
+  write(path.join(foreignFolder,'session.json'),JSON.stringify({id:foreign,title:'Unadmitted origin',model:foreignModel,agent:'build',projectID:'fixture',time:{created:now,updated:now},location:{directory:studio.home}}));
+  write(path.join(foreignFolder,'messages.json'),JSON.stringify([{id:'foreign-call',type:'assistant',time:{created:now,completed:now,origin:'not-an-admitted-computer'},model:foreignModel,agent:'build',tokens:{input:99999,output:9,cache:{read:0,write:0}},content:[]}]));
+  const first=studio.start();
+  const main=studio.connect(await first.ready());
+  const setup=await main('GET','kuvo/setup');
+  await until(()=>leases.leaseFor(setup.json.setup),'History Studio did not claim its relay lease');
+  const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
+  assert.equal(invite.status,201,invite.text);
+  const joined=await lab.join(invite.json.code);
+  assert.equal(joined.code,0,joined.log);
+  seed(lab,'ses_lab_history',40,0.02);
+  let resident=lab.start();
+  let view=lab.connect(await resident.ready());
+  const usage='kuvo/agents/api/kuvo/usage';
+  const summary='kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC';
+  const history=async call=>{
+    const response=await call('GET',usage+'?zone=UTC');
+    assert.equal(response.status,200,response.text);
+    const hosted=response.json.data.totals.opencode;
+    return hosted.reduce((sum,day)=>sum+day.tokens,0);
+  };
+  const insight=async(call,filter='')=>{
+    const response=await call('GET',summary+filter);
+    assert.equal(response.status,200,response.text);
+    return response.json.data;
+  };
+  // The signed setup and each usage service's own directory are separate
+  // handshakes on the TS oracle. Wait for the directory, not a wall-clock delay.
+  const known=async call=>(await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC')).json?.data?.computers??[];
+  await until(async()=>(await known(main)).some(c=>c.name==='HistoryLab')&&(await known(view)).some(c=>c.name==='HistoryStudio'),'The usage directories did not learn both computers',30000,250);
+  // An explicit refresh is allowed to read now; the later updates and kept
+  // copy must be served without another refresh.
+  await main('POST',usage+'/refresh?zone=UTC',{});
+  await view('POST',usage+'/refresh?zone=UTC',{});
+  await main('GET',summary+'&refresh=1');
+  await view('GET',summary+'&refresh=1');
+  let mainTokens,labTokens;
+  await until(async()=>{mainTokens=await history(main);labTokens=await history(view);return mainTokens===170&&labTokens===170;},()=> 'Peer history did not merge: '+mainTokens+' / '+labTokens+'\n'+first.log()+'\n'+resident.log(),30000,250);
+  const billed=await main('GET',usage+'?zone=UTC');
+  assert.ok(Math.abs(billed.json.data.totals.opencode.reduce((sum,day)=>sum+day.cost,0)-0.03)<1e-12);
+  assert.ok(billed.json.data.rows.filter(row=>row.provider==='opencode-go').every(row=>row.estimated===false));
+  const combined=await until(async()=>{
+    const a=await insight(main),b=await insight(view);
+    return a.totals.tokens===170&&b.totals.tokens===170&&a.lists.find(l=>l.key==='computers').rows.length===2&&a;
+  },'Peer Insight totals or computer rows did not merge',30000,250);
+  const computers=combined.lists.find(l=>l.key==='computers').rows;
+  const key=computers.find(c=>c.name==='HistoryLab')?.id;
+  assert.ok(key,JSON.stringify(computers));
+  assert.equal((await insight(main,'&computer='+encodeURIComponent(key))).totals.tokens,55);
+  assert.equal((await insight(main,'&computer=unknown')).totals.tokens,0);
+  let kept=170;
+  if(!boxBinary().typescript&&!other?.typescript){
+    // A new call must be sent from the retained cursor and recent history slots,
+    // not wait for another full history scan or client query.
+    const source=path.join(studio.home,'data','opencode','opencode.db');
+    const change=new DatabaseSync(source);
+    try{
+      const at=Date.now()-100;
+      change.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('studio-new','ses_studio_history','assistant',at,Date.now(),JSON.stringify({time:{completed:at},model:{providerID:'opencode-go',id:'claude-opus-4-6'},tokens:{input:30,output:10,cache:{read:5,write:0}},cost:0.003}));
+    }finally{change.close();}
+    await until(async()=>await history(view)===215&&(await insight(view)).totals.tokens===215,()=> 'Peer live history delta or Insight cursor did not advance\n'+first.log()+'\n'+resident.log(),30000,250);
+    kept=215;
+  }
+  await first.stop();
+  await resident.stop();
+  resident=lab.start(); view=lab.connect(await resident.ready());
+  await until(async()=>await history(view)===kept&&(await insight(view)).totals.tokens===kept,'Kept peer history or Insights went missing after restart',30000,250);
+});
+
+test('Insights groups model aliases and ranks named sessions from indexed usage',async t=>{
+  const fs=await import('node:fs');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);
+  const box=await computer('NamedInsights',undefined,isolated);
+  const now=Date.now()-5000;
+  const folder=path.join(box.home,'data','opencode');
+  fs.mkdirSync(folder,{recursive:true});
+  const db=new DatabaseSync(path.join(folder,'opencode.db'));
+  const models=['claude-opus-4-6','anthropic/claude-opus-4.6','claude-opus-4-6-latest','claude-opus-4.6-20261101'];
+  try{
+    db.exec('CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT)');
+    for(let i=0;i<models.length;i++){
+      const id='ses_named'+i;
+      db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run(id,'Named session '+i,null,'{}');
+      db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run(id+'-call',id,'assistant',now,now,JSON.stringify({time:{completed:now},model:{providerID:'opencode-go',id:models[i]},tokens:{input:100*(i+1),output:10,cache:{read:5,write:0}},cost:0.001}));
+    }
+    const prior=now-8*86400000;
+    db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_named_prior','Prior session',null,'{}');
+    db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('prior-call','ses_named_prior','assistant',prior,prior,JSON.stringify({time:{completed:prior},model:{providerID:'opencode-go',id:models[0]},tokens:{input:100,output:10,cache:{read:5,write:0}},cost:0.001}));
+  }finally{db.close();}
+  const call=box.connect(await box.start().ready());
+  const base='kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC';
+  const read=async filter=>{
+    const reply=await call('GET',base+filter+(boxBinary().typescript?'&refresh=1':''));
+    assert.equal(reply.status,200,reply.text);
+    return reply.json.data;
+  };
+  const summary=await until(async()=>{const value=await read('');return value.totals.tokens===1060&&value;},'Alias usage was not counted');
+  const modelsRows=summary.lists.find(list=>list.key==='models').rows;
+  assert.equal(modelsRows.length,1);
+  assert.deepEqual({id:modelsRows[0].id,name:modelsRows[0].name,tokens:modelsRows[0].tokens},{id:'opus-4.6',name:'Opus 4.6',tokens:1060});
+  assert.equal(summary.lists.find(list=>list.key==='providers').rows[0].name,'OpenCode Go');
+  assert.equal(summary.lists.find(list=>list.key==='bots').rows.length,4);
+  assert.ok(Math.abs(summary.totals.cacheRate-20/1020)<1e-12);
+  assert.ok(Math.abs(summary.change.tokens-(1060-115)/115)<1e-12);
+  assert.ok(summary.standouts.some(row=>row.kind==='cost'&&row.reason==='Highest cost'));
+  assert.equal((await read('&model=opus-4.6')).totals.tokens,1060);
+  assert.equal((await read('&model=unknown')).totals.tokens,0);
 });

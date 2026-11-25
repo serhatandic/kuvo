@@ -98,6 +98,14 @@ impl SetupHandle {
         self.rosters.clone()
     }
 
+    /// Historical computer keys come only from verified setup membership.
+    pub fn insight_origins(&self) -> std::collections::BTreeMap<String, String> {
+        if self.config_receipt_scope().is_none() {
+            return Default::default();
+        }
+        self.views.borrow().insight_origins.clone()
+    }
+
     /// The current accepted setup position for a local settings change receipt.
     pub fn config_receipt_scope(&self) -> Option<(String, u64)> {
         let view = self.views.borrow();
@@ -202,6 +210,7 @@ pub(crate) struct View {
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
+    insight_origins: std::collections::BTreeMap<String, String>,
 }
 
 pub(crate) struct Request {
@@ -925,6 +934,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        insight_origins: link.historical_insight_origins().unwrap_or_default(),
         model_stars: link
             .value(SharedKind::SetupStarredModels)
             .map(|value| model_stars::list(Some(value))),

@@ -4,6 +4,11 @@ This is an in-progress map, not a parity claim. A case marked **open** has not b
 
 Inventory: 392 named or parameterized test declarations. Parameterized declarations are represented by their source line; their variants are still open unless individually demonstrated.
 
+Client call sites: `gpui/kuvo_box/src/areas.rs:1261` (limits, refresh,
+reset and follow), `gpui/kuvo_box/src/settings.rs:279` (usage settings), and
+`gpui/kuvo/src/insights.rs:23` (Insights overview, summary and detail; this one
+is in the thin app rather than kuvo_box). All have resident route specs.
+
 ## New boundary scenarios
 
 | Area | Scenario | Scope |
@@ -41,6 +46,8 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Usage history | `native usage history is deduplicated, priced and assigned to the client’s calendar day` | Both boxes |
 | Pricing | `Codex fallback pricing uses the saved counts without reparsing its logs` | Both boxes for fallback price and saved setting |
 | Price feeds | `a changed price feed reprices saved history and a bad feed does not replace a good cache` | Rust isolated loopback feed, restart and ETag |
+| History/Insights peers | `usage and Insights merge only admitted peer records, retain them across restart and filter by computer` | Both boxes, including mixed Rust/TS in each direction; Rust live delta without a request |
+| Insights summary | `Insights groups model aliases and ranks named sessions from indexed usage` | Both boxes; names, filtering, cache rate, prior period, highest-cost standout |
 
 ## Deliberate work-timing changes
 
@@ -65,6 +72,26 @@ start rarely used work only on demand.
   the native watch has a bounded vnode supplement for live database/WAL files, with
   folder discovery still using FSEvents. No timed scan or new process. The live
   writer scenarios verify both types of SQLite usage source.
+  The engine header projection now looks up only the changed calls' session and
+  ancestor IDs, rather than selecting every header in the changed channel.
+  The engine fixture has 20 unrelated session headers and checks exactly one
+  decoded header for its changed calls.
+- The summary's SQL queries group by session, model/provider and computer;
+  the daily/prior aggregates are also SQL sums. No call-sized vector is built
+  just to view a period. A bounded 24-entry, ten-second cache is invalidated by
+  index mutations and signed peer-directory changes; incomplete/loading
+  summaries are not cached. The named-model/filter/prior/standout scenario
+  checks the same route values on both boxes.
+- Usage mail uses the existing authenticated seat protocol, bounded multipart
+  assemblies and per-sender retained account slots. No periodic source read is
+  needed to tell a peer: send recent changed slots on index changes, a full
+  snapshot when requested, and an unchanged digest heartbeat. Insights pages
+  use the existing per-peer SQLite cursor/epoch and accepted historical origins.
+  Rust acknowledges a final nonempty page with a pull at the new cursor (an
+  empty final reply stops it), so later local mutations reach the other box
+  immediately; TypeScript requests again on its scheduled scan. The both-box
+  scenario checks initial and retained data (and mixed versions), with the
+  Rust-only no-request live-delta assertion documenting this work-timing change.
 - Limits are refreshed on a rail/menu subscription, a manual refresh, turn readings,
   when a reset/projected crossing becomes due, and on a one-minute wake while an
   authenticated client request or stream is active (provider reads are throttled to
@@ -246,12 +273,39 @@ read its generation metadata again. Summary still builds its period's compact
 events into memory (`insights.rs`, `filter_rows` and `summary`); SQL aggregates
 and a reuse cache are open. These are not repeated full source-log reads.
 
+## Verification of the sixth port slice
+
+Mac Rust usage 31/31; TypeScript 13/13 applicable, 18 intentional skips.
+Static musl on Lokum (one capped container), WSL2 Ubuntu 24.04 and native
+Windows gnullvm with libunwind each passed 31/31. All platform scratch and
+cross-target build folders were removed.
+Both mixed-version runs of the peer fixture pass (Rust main with TS peer,
+and TS main with Rust peer). A fixture race initially left both TS services'
+own usage unmerged: a full rerun reproduced it. The scenario now waits for
+both usage services to learn the signed computer directory before requesting
+a refresh; targeted and full TS reruns passed. A live-delta expectation that
+depends on the new cursor acknowledgement is Rust-only, as above.
+
+Engine-sessions 81/81; workspace check and Bun check pass (only the existing
+wake helper warning). The seeded differential includes
+a real fixture OpenCode Go call in the copied engine SQLite database; all
+eight route answers match, including its billed history and normalized
+Insight provider/model rankings. Scan timestamps alone are normalized,
+as in the fifth slice. Inventory differences remain. The changed-header
+fixture and SQL summary cases verify the two requested lightness improvements.
+Cumulative size: 395,041 new-module characters and 30,849 added existing
+production characters (425,890 total, 0.62× the 687,546 TS characters).
+Remaining lightness opportunity: history peer snapshots currently aggregate
+the compact 35-day SQLite counts once per changed source batch (not per peer
+or heartbeat); a persistent quarter-hour delta index would avoid even that
+aggregate on very large histories.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state parity.
 - Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
 - Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT subscription history, Cursor account-wide history, remaining Antigravity deletion and malformed/busy/symlink cases, history peer merge, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT subscription history, Cursor account-wide history, remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -284,8 +338,8 @@ and a reuse cache are open. These are not repeated full source-log reads.
 
 ### `box/test/usage/insights-kept.test.ts`
 
-- L26: a period asked again is answered at once with the last summary, marked as of when, while it's read afresh — open.
-- L62: a summary that says the box is still reading its usage is never kept — open.
+- L26: a period asked again is answered at once with the last summary, marked as of when, while it's read afresh — partial — bounded mutation-invalidated SQL cache; durable kept summaries open.
+- L62: a summary that says the box is still reading its usage is never kept — partial — cache admits only ready summaries; durable cache fixture open.
 
 ### `box/test/usage/insights-refresh.test.ts`
 
@@ -296,11 +350,11 @@ and a reuse cache are open. These are not repeated full source-log reads.
 - L58: a bot's row is its own chat and every session it oversees, subagents and older starts included — open.
 - L123: Bots includes all unowned sessions after the old ranked-list limit — open.
 - L133: a refresh attributes retained calls through engine sessions without changing their usage or origin — open.
-- L188: each model has one name however its id was written, and narrows by it — open.
-- L215: the cache rate is cached input over all input, at every level — open.
-- L234: the change is against the period of the same length just before — open.
-- L253: at most three sessions stand out, each for one reason, once there are enough — open.
-- L267: Insights waits for a new computer’s first complete copy and counts kept usage after it goes away — open.
+- L188: each model has one name however its id was written, and narrows by it — covered by named model aliases and filter scenario.
+- L215: the cache rate is cached input over all input, at every level — partial — named summary fixture checks total cache rate; all ranked levels open.
+- L234: the change is against the period of the same length just before — covered by named summary fixture with a prior-period call.
+- L253: at most three sessions stand out, each for one reason, once there are enough — partial — highest-cost standout verified; low-cache/subagent standouts open.
+- L267: Insights waits for a new computer’s first complete copy and counts kept usage after it goes away — partial — connected peer coverage and retained-away restart scenario; exact first-page loading states open.
 
 ### `box/test/usage/insights.test.ts`
 
@@ -312,10 +366,10 @@ and a reuse cache are open. These are not repeated full source-log reads.
 - L142: day bounds use the viewer's time zone, including DST transitions — open.
 - L154: a cold yearly query and repricing both leave the bridge event loop responsive — open.
 - L186: a session page computes shares of the whole filtered snapshot after a scan — open.
-- L207: resume peer pages, reject vouched computers, and price incoming records locally — open.
+- L207: resume peer pages, reject vouched computers, and price incoming records locally — partial — peer live cursor/delta, mixed version and unadmitted-origin filter; per-peer pricing fixture and multiple-page malformed-record matrix open.
 - L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — open.
 - L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — open.
-- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — partial — managed native Claude supplies portable step counts, duplicate/private log excluded, native Codex/Grok integration not yet boundary-tested; AG and engine SQLite open.
+- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — partial — managed native Claude and AG supply portable counts, read-only engine SQLite live cursor; native Codex/Grok integration exact fixture open.
 - L423: legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned — open.
 - L458: opening an unversioned Insights database stamps it without losing records — open.
 
@@ -695,14 +749,14 @@ and a reuse cache are open. These are not repeated full source-log reads.
 - L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — partial — ETag, changed feed, invalid feed and restart fixture; elapsed-hour timing open.
 - L235: only a real box's bridge fetches them, a Mac app's or a machine's: never one a test started in a folder of its own — partial — scratch homes disable feed requests except explicit loopback fixtures; exact real-home path matrix open.
 - L246: new prices price the next round: a model that was unknown gets its dollars — covered by changed price feed reprice scenario.
-- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — open.
-- L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — open.
-- L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — open.
-- L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — partial — billed local hosted usage scenario, peer transport open.
+- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — partial — distinct billed engine sources merge across peers; same-identity account rows still need a fixture.
+- L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — partial — fallback flags excluded from digest and full retell on change implemented; exact older reader scenario open.
+- L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — partial — bounded full/recent slots traffic implemented, live delta case; size-cut test open.
+- L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — covered by local engine billed and peer merged cost scenarios.
 - L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — open.
 - L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — open.
-- L670: refresh asks peers to read now and a restart restores their cached usage — open.
-- L715: old directory and usage records do not add an unknown computer to the totals — open.
+- L670: refresh asks peers to read now and a restart restores their cached usage — covered by peer merge refresh, live delta and away restart scenario.
+- L715: old directory and usage records do not add an unknown computer to the totals — partial — unadmitted Insight origin fixture and authenticated current usage roster; exact kept usage-cache refusal open.
 
 ### `box/test/notices-usage.test.ts`
 

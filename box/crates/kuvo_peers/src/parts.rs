@@ -227,3 +227,53 @@ impl WorkQueueParts {
         self.0.retain(|(sender, _), _| member(sender));
     }
 }
+/// Usage/Insights seat payloads are nondurable. Each assembly is scoped to the
+/// authenticated computer and bounded to the historic 512 KiB usage limit.
+#[derive(Default)]
+pub struct SeatParts(HashMap<String, Parts>);
+impl SeatParts {
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.0.retain(|key, _| keep(key));
+    }
+    pub fn take(&mut self, sender: &str, envelope: &Envelope) -> Option<Value> {
+        if let Some(value) = envelope.0.get("seat") {
+            return value.is_object().then(|| value.clone());
+        }
+        let part: Part = serde_json::from_value(envelope.0.get("seatPart")?.clone()).ok()?;
+        // 18 base64url frames cover 512 KiB. An ordinary nondurable usage mail
+        // has no delivered-letter id.
+        if part.of > 18 || !part.s.is_empty() {
+            return None;
+        }
+        let bytes = self.0.entry(sender.into()).or_default().add(part)?;
+        if bytes.len() > 512 * 1024 {
+            return None;
+        }
+        serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .filter(Value::is_object)
+    }
+}
+pub fn usage_seat_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
+    let json = ordinary(&payload);
+    if json.len() > 512 * 1024 {
+        return None;
+    }
+    let mail = |key: &str, value: Value| {
+        Envelope(
+            [(key.into(), value), ("at".into(), at.into())]
+                .into_iter()
+                .collect(),
+        )
+    };
+    if json.len() <= 48_000 {
+        return Some(vec![mail("seat", payload)]);
+    }
+    let parts = split(json.as_bytes())?;
+    Some(
+        parts
+            .iter()
+            .map(|part| mail("seatPart", serde_json::to_value(part).expect("seat part")))
+            .collect(),
+    )
+}
