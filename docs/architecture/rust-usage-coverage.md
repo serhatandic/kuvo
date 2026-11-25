@@ -34,6 +34,13 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Native log cursor | `usage_native_logs.rs` | Scoped Rust tests for append/partial-line/rewrite, Codex running state, Grok multi-model ticks |
 | Pace | `usage_readings.rs` | Deterministic window regression, single false refill, same-window alert deduplication, previous-window pace exclusion |
 | Pricing | `usage_pricing.rs` | Bundled price resolution, exact fallback, cache writes and fast rates |
+| Engine history | `Insights watches the engine SQLite channel and counts only new or changed calls` | Both boxes for initial counts and billed hosted cost; Rust live-writer, mutation and restart checks |
+| Antigravity history | `Antigravity generation metadata supplies native calls without reading conversation bodies` | Both boxes for initial counts; Rust live-writer mutation check |
+| Engine limits | `OpenCode Go limits read the engine’s saved credentials without starting the engine` | Rust fixture SQLite and loopback maker; database unchanged |
+| Usage history | `empty usage history retains service order on both boxes` | Both boxes, including local row and scan timestamp |
+| Usage history | `native usage history is deduplicated, priced and assigned to the client’s calendar day` | Both boxes |
+| Pricing | `Codex fallback pricing uses the saved counts without reparsing its logs` | Both boxes for fallback price and saved setting |
+| Price feeds | `a changed price feed reprices saved history and a bad feed does not replace a good cache` | Rust isolated loopback feed, restart and ETag |
 
 ## Deliberate work-timing changes
 
@@ -50,7 +57,14 @@ start rarely used work only on demand.
   event-driven per-file offsets with bounded prefix/suffix anchors; observations and
   cursor commit together. Native changes reattribute only saved compact steps, not
   unchanged transcripts; unowned personal observations are not projected into Insights.
-  Antigravity and engine SQLite history remain open.
+  Engine channels now project compact usage and lineage directly from read-only SQLite,
+  keyed by file/WAL revision and a mutation watermark with a one-hour overlap; no
+  engine process starts. Antigravity uses generation metadata and a revision per
+  database (the maker exposes no mutation clock), so only changed databases are
+  decoded. Darwin's FSEvents may defer updates to an open SQLite writer until close;
+  the native watch has a bounded vnode supplement for live database/WAL files, with
+  folder discovery still using FSEvents. No timed scan or new process. The live
+  writer scenarios verify both types of SQLite usage source.
 - Limits are refreshed on a rail/menu subscription, a manual refresh, turn readings,
   when a reset/projected crossing becomes due, and on a one-minute wake while an
   authenticated client request or stream is active (provider reads are throttled to
@@ -74,7 +88,11 @@ start rarely used work only on demand.
   generation, or an actual attribution change needs a one-time compact catch-up.
   The fixture updates one of multiple projections and verifies that only one
   projection was decoded. This additive index is a deliberate transcript-file
-  inventory difference; the client answers do not change.
+  inventory difference; the client answers do not change. The price-feed refresh
+  uses HTTP ETags, validates data before saving and reprices the compact indexed
+  counts on a changed catalog, not the source logs. The client history queries
+  aggregate index rows into UTC quarter-hour slots, then convert to requested local
+  dates. Explicit refresh catches up the saved cursors.
 - Remaining lightness risk: the platform watch fallback (`kuvo_os/src/watch.rs`,
   `start_watcher`) can compare contents on a polling filesystem when a native
   watch cannot start; avoid a history-wide fallback on large provider roots.
@@ -188,13 +206,52 @@ characters in existing production Rust files (292,705 total, 0.43× the 687,546
 TS characters, same measure). Static musl on Lokum (one capped container),
 WSL2 Ubuntu 24.04 and native Windows (with libunwind.dll) passed 22/22 each.
 All platform scratch and cross-target build folders were removed.
+The scoped native-log and accepted-reading tests also passed (three each).
+
+## Verification of the fifth port slice
+
+Mac usage 29/29; TypeScript usage 11/11 applicable, 18 intentional skips.
+Static musl on Lokum (one capped container), WSL2 Ubuntu 24.04, and native
+Windows cross-built gnullvm with libunwind each 29/29. All platform scratch
+and cross-target build folders removed.
+Engine-sessions 81/81; workspace check and Bun check pass. The only workspace
+warning is the existing unused wake helper. All eight seeded differential route
+answers match, including history refresh and Insights summary. Both copies now
+have the same fixture computer key; only the actual scan timestamps are normalized
+in those two new answer comparisons (their presence and numeric values are checked
+in the scenarios). Whole-home inventories differ: Rust's additive SQLite cursor,
+price and native-history tables replace the old standalone usage caches; setup
+marker and other startup-file differences remain.
+
+The first Mac open-writer SQLite cases reproduced stale history: FSEvents did not
+deliver the database/WAL modification while its writer remained open. Closing
+the writer confirmed the issue, but the final fixture keeps it open. A bounded
+Darwin vnode watch (up to 128 descriptors per SQLite watcher, no extra thread or
+process; other platforms retain the existing folder watches) fixes the live
+updates. Both engine and Antigravity live mutation assertions pass. The engine
+fixture verifies two recent mutation projections decoded rather than the older
+call as well. The Go fixture proves a read-only database credential read with
+no engine launch, and the database bytes unchanged. All maker answers are
+isolated fixtures. The initial differential also caught an alphabetical rather
+than source-roster order for empty history; the new service-order scenario
+failed on the old order and passes both boxes.
+
+Cumulative size: 340,531 characters in usage/OS/adapter modules and 26,637
+added characters in existing production Rust files (367,168 total; 0.53×
+the 687,546 TS characters; same measure). Remaining lightness opportunities:
+engine session-header lineage is currently selected as compact metadata on each
+changed channel (`engine_index.rs`, `read`), even when only one message changed;
+Antigravity's writer doesn't expose a mutation clock so a changed database must
+read its generation metadata again. Summary still builds its period's compact
+events into memory (`insights.rs`, `filter_rows` and `summary`); SQL aggregates
+and a reuse cache are open. These are not repeated full source-log reads.
 
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state parity.
 - Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
 - Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Antigravity native history, engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT subscription history, Cursor account-wide history, remaining Antigravity deletion and malformed/busy/symlink cases, history peer merge, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -428,16 +485,16 @@ All platform scratch and cross-target build folders were removed.
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
 - L37: shared blob fixtures decode exactly as Swift, including fallback time and malformed messages — open.
-- L42: read-only SQLite batches and pricing match Swift's shared expected days — open.
-- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — open.
+- L42: read-only SQLite batches and pricing match Swift's shared expected days — partial — Antigravity metadata scenario with fixture SQLite; shared expected-day matrix open.
+- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — partial — engine open-WAL and Antigravity database mutation scenarios; Antigravity WAL-only and cutoff-specific case open.
 - L72: legacy databases without steps, then gaining metadata, are re-read — open.
 - L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — open.
-- L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — open.
+- L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — partial — native Antigravity ACP generation scenario; empty store case open.
 - L143: a conversations folder that can't be listed is logged once and left out while the others count — open.
 - L158: missing stores are empty and symlinked stores count only once — open.
 - L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — open.
 - L202: deleted databases leave the total after restart and do not block the remaining stores — open.
-- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — open.
+- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — per-database revision and live generation append; retention/failure matrix open.
 - L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — open.
 - L284: shared missing/empty profile fixtures contain no history, as Swift — open.
 - L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — open.
@@ -631,17 +688,17 @@ All platform scratch and cross-target build folders were removed.
 
 - L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — open.
 - L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — open.
-- L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — open.
+- L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — covered by native usage history timezone scenario.
 - L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test and native Claude Insights append/rewrite/restart. Usage history totals route open.
 - L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — open.
 - L189: a client's days are today and the 30 before it, in its zone — open.
-- L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — open.
-- L235: only a real box's bridge fetches them, a Mac app's or a machine's: never one a test started in a folder of its own — open.
-- L246: new prices price the next round: a model that was unknown gets its dollars — open.
+- L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — partial — ETag, changed feed, invalid feed and restart fixture; elapsed-hour timing open.
+- L235: only a real box's bridge fetches them, a Mac app's or a machine's: never one a test started in a folder of its own — partial — scratch homes disable feed requests except explicit loopback fixtures; exact real-home path matrix open.
+- L246: new prices price the next round: a model that was unknown gets its dollars — covered by changed price feed reprice scenario.
 - L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — open.
 - L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — open.
 - L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — open.
-- L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — open.
+- L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — partial — billed local hosted usage scenario, peer transport open.
 - L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — open.
 - L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — open.
 - L670: refresh asks peers to read now and a restart restores their cached usage — open.

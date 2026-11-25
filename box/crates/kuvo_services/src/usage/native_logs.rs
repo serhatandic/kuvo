@@ -18,6 +18,7 @@ pub enum Kind {
     Claude,
     Codex,
     Grok,
+    Antigravity,
 }
 impl Kind {
     pub fn name(self) -> &'static str {
@@ -25,6 +26,7 @@ impl Kind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Grok => "grok",
+            Self::Antigravity => "antigravity",
         }
     }
 }
@@ -82,6 +84,7 @@ impl Observation {
         let value = match kind {
             Kind::Claude => json!([self.message.as_ref()?, self.request]),
             Kind::Grok => json!([self.call.as_ref()?, model]),
+            Kind::Antigravity => json!([self.session.as_ref()?, self.call.as_ref()?]),
             Kind::Codex => json!([
                 self.at,
                 model,
@@ -627,6 +630,12 @@ pub struct Changes {
 /// the bounded anchors and complete new lines are read. A failed read leaves the
 /// original cursor untouched; the caller commits observations and cursor together.
 pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Result<Option<Changes>> {
+    if kind == Kind::Antigravity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Antigravity uses its SQLite reader",
+        ));
+    }
     let meta = std::fs::symlink_metadata(file)?;
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Ok(None);
@@ -686,6 +695,7 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
                 let keep = match kind {
                     Kind::Claude => buf.windows(7).any(|w| w == br#""usage""#),
                     Kind::Grok => buf.windows(14).any(|w| w == b"turn_completed"),
+                    Kind::Antigravity => false,
                     Kind::Codex => [
                         b"token_count".as_slice(),
                         b"turn_context",
@@ -704,6 +714,7 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
                         let events = match kind {
                             Kind::Claude => claude(&row),
                             Kind::Grok => grok(&row),
+                            Kind::Antigravity => vec![],
                             Kind::Codex => cursor.codex.line(&row),
                         };
                         let at = cursor.offset;

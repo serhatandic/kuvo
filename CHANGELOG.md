@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
+
 - Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.
 
 - Rust computers show Archived Sessions from other computers with the owner’s confirmation and follow their changes. Opening Settings does not start OpenCode.

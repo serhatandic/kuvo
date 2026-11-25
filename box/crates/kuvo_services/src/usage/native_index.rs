@@ -105,6 +105,12 @@ pub async fn roots(home: &Path) -> std::io::Result<Vec<Root>> {
                 Kind::Grok,
                 super::grok_native::folder(managed, &env, &personal).join("sessions"),
             )],
+            AgentKind::Antigravity => vec![(
+                Kind::Antigravity,
+                managed
+                    .unwrap_or_else(|| home.join("agents/antigravity"))
+                    .join("profile"),
+            )],
             _ => vec![],
         };
         roots.extend(paths.into_iter().map(|(kind, folder)| Root {
@@ -119,7 +125,8 @@ pub async fn roots(home: &Path) -> std::io::Result<Vec<Root>> {
 }
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS native_file(source TEXT PRIMARY KEY, root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, managed INTEGER NOT NULL, label TEXT, cursor TEXT NOT NULL, scanned INTEGER NOT NULL);
+        "CREATE TABLE IF NOT EXISTS native_root(root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, label TEXT, scanned INTEGER, place TEXT NOT NULL, PRIMARY KEY(root,provider));
+         CREATE TABLE IF NOT EXISTS native_file(source TEXT PRIMARY KEY, root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, managed INTEGER NOT NULL, label TEXT, cursor TEXT NOT NULL, scanned INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS native_file_root ON native_file(root);
          CREATE TABLE IF NOT EXISTS native_limit(source TEXT NOT NULL, provider TEXT NOT NULL, window TEXT NOT NULL, read INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(source,window,read));
          CREATE INDEX IF NOT EXISTS native_limit_provider ON native_limit(provider,read);
@@ -152,9 +159,34 @@ fn path_age(path: &Path) -> Option<i64> {
 fn jsonl(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str) == Some("jsonl")
 }
+fn maker_file(path: &Path, kind: Kind) -> bool {
+    if kind != Kind::Antigravity {
+        return jsonl(path);
+    }
+    path.extension().and_then(OsStr::to_str) == Some("db")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "conversations")
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.starts_with("antigravity"))
+}
+fn maker_age(path: &Path, kind: Kind) -> Option<i64> {
+    let base = path_age(path);
+    if kind != Kind::Antigravity {
+        return base;
+    }
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    base.max(path_age(Path::new(&wal)))
+}
 /// The first catch-up and an event-loss recovery walk names/mtime only. Every
 /// regular file is opened at most when its stored cursor says it changed.
-pub fn files(root: &Path, since: i64) -> Vec<PathBuf> {
+pub fn files(root: &Path, kind: Kind, since: i64) -> Vec<PathBuf> {
     let mut pending = vec![root.to_owned()];
     let mut result = vec![];
     let mut walked = 0;
@@ -172,14 +204,14 @@ pub fn files(root: &Path, since: i64) -> Vec<PathBuf> {
             if walked > MAX_FILES * 4 {
                 break;
             }
-            let Ok(kind) = entry.file_type() else {
+            let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if kind.is_dir() {
+            if file_type.is_dir() {
                 pending.push(entry.path());
-            } else if kind.is_file()
-                && jsonl(&entry.path())
-                && path_age(&entry.path()).is_some_and(|at| at >= since)
+            } else if file_type.is_file()
+                && maker_file(&entry.path(), kind)
+                && maker_age(&entry.path(), kind).is_some_and(|at| at >= since)
             {
                 result.push(entry.path());
             }
@@ -195,7 +227,7 @@ pub fn files(root: &Path, since: i64) -> Vec<PathBuf> {
     result.sort();
     result
 }
-pub fn changed_files(root: &Path, changed: &[PathBuf], since: i64) -> Vec<PathBuf> {
+pub fn changed_files(root: &Path, kind: Kind, changed: &[PathBuf], since: i64) -> Vec<PathBuf> {
     let mut result = BTreeSet::new();
     for relative in changed {
         if relative
@@ -207,9 +239,20 @@ pub fn changed_files(root: &Path, changed: &[PathBuf], since: i64) -> Vec<PathBu
         let path = root.join(relative);
         if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
         {
-            result.extend(files(&path, since));
-        } else if jsonl(&path) {
-            result.insert(path);
+            result.extend(files(&path, kind, since));
+        } else {
+            let path = if kind == Kind::Antigravity {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .and_then(|name| name.strip_suffix("-wal"))
+                    .map(|name| path.with_file_name(name))
+                    .unwrap_or(path)
+            } else {
+                path
+            };
+            if maker_file(&path, kind) {
+                result.insert(path);
+            }
         }
     }
     result.into_iter().collect()
@@ -225,6 +268,8 @@ pub fn fold_file(
     root: &Root,
     path: &Path,
     now: i64,
+    pricing: &super::pricing::Pricing,
+    fallback: Option<&str>,
 ) -> Result<BTreeSet<String>> {
     let source = hash(&json!([key(path), root.provider]));
     let root_key = key(&root.folder);
@@ -243,12 +288,13 @@ pub fn fold_file(
         let sessions = affected(db, &source)?;
         let tx = db.transaction()?;
         tx.execute("DELETE FROM native_call WHERE source=?", [&source])?;
+        tx.execute("DELETE FROM native_price WHERE source=?", [&source])?;
         tx.execute("DELETE FROM native_limit WHERE source=?", [&source])?;
         tx.execute("DELETE FROM native_file WHERE source=?", [&source])?;
         tx.commit()?;
         return Ok(sessions);
     }
-    if path_age(path).is_some_and(|at| at < now - KEEP) {
+    if maker_age(path, root.kind).is_some_and(|at| at < now - KEEP) {
         return Ok(BTreeSet::new());
     }
     if root.kind == Kind::Grok && path.file_name().is_none_or(|name| name != "updates.jsonl") {
@@ -267,10 +313,43 @@ pub fn fold_file(
             .ok()
             .zip(std::fs::canonicalize(home).ok())
             .is_some_and(|(path, home)| path.starts_with(home));
-    let Some(changes) = native_logs::read(path, root.kind, &cursor, now - KEEP)? else {
-        return Ok(BTreeSet::new());
+    let (cursor_body, rewritten, events, limits) = if root.kind == Kind::Antigravity {
+        let Some(stamp) = super::engine_index::stamp(path)? else {
+            return Ok(BTreeSet::new());
+        };
+        if before
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<super::engine_index::Stamp>(s).ok())
+            .as_ref()
+            == Some(&stamp)
+        {
+            return Ok(BTreeSet::new());
+        }
+        let Some(session) = super::antigravity_history::database_session(path) else {
+            return Ok(BTreeSet::new());
+        };
+        let Some(owned) = super::engine_index::owned(&root.folder, path)? else {
+            return Ok(BTreeSet::new());
+        };
+        let db = super::engine_index::open_maker(&owned)?;
+        let mut events = vec![];
+        super::antigravity_history::read(&db, session, now - KEEP, |index, event| {
+            events.push((index, event));
+            Ok(())
+        })?;
+        (serde_json::to_string(&stamp)?, true, events, vec![])
+    } else {
+        let Some(changes) = native_logs::read(path, root.kind, &cursor, now - KEEP)? else {
+            return Ok(BTreeSet::new());
+        };
+        (
+            serde_json::to_string(&changes.cursor)?,
+            changes.rewritten,
+            changes.events,
+            changes.limits,
+        )
     };
-    let mut sessions = if changes.rewritten {
+    let mut sessions = if rewritten {
         affected(db, &source)?
     } else {
         BTreeSet::new()
@@ -284,13 +363,14 @@ pub fn fold_file(
         tx.query_row("SELECT revision FROM native_sequence WHERE id=1", [], |r| {
             r.get(0)
         })?;
-    if changes.rewritten {
+    if rewritten {
         tx.execute("DELETE FROM native_call WHERE source=?", [&source])?;
+        tx.execute("DELETE FROM native_price WHERE source=?", [&source])?;
         tx.execute("DELETE FROM native_limit WHERE source=?", [&source])?;
     }
     let mut ordinal = 0u64;
     let mut last_position = None;
-    for (position, mut event) in changes.events {
+    for (position, mut event) in events {
         if root.kind == Kind::Grok && event.session.is_none() {
             event.session = path
                 .parent()
@@ -310,6 +390,11 @@ pub fn fold_file(
         let body = serde_json::to_string(&event)?;
         let processed = event.counts.processed().min(i64::MAX as u64);
         tx.execute("INSERT OR REPLACE INTO native_call VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![source,position,ordinal,root.provider,root.kind.name(),managed,dedup,event.message,event.sidechain,processed,event.has_speed,event.session,event.at,body,revision])?;
+        if event.at >= now - 35 * DAY {
+            super::history::put(
+                &tx, &source, position, ordinal, &event, root.kind, pricing, fallback,
+            )?;
+        }
         if managed && let Some(session) = event.session.as_deref() {
             let mut query = tx.prepare_cached(
                 "SELECT session FROM native_thread WHERE provider=? AND native_session=?",
@@ -325,8 +410,7 @@ pub fn fold_file(
         "DELETE FROM native_limit WHERE read<?",
         [now.saturating_sub(20 * 60_000)],
     )?;
-    for window in changes
-        .limits
+    for window in limits
         .into_iter()
         .filter(|w| w.read >= now.saturating_sub(20 * 60_000) as u64)
     {
@@ -341,7 +425,7 @@ pub fn fold_file(
             ],
         )?;
     }
-    tx.execute("INSERT INTO native_file VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,scanned=excluded.scanned,label=excluded.label",params![source,root_key,root.provider,root.kind.name(),managed,root.label,serde_json::to_string(&changes.cursor)?,now])?;
+    tx.execute("INSERT INTO native_file VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,scanned=excluded.scanned,label=excluded.label",params![source,root_key,root.provider,root.kind.name(),managed,root.label,cursor_body,now])?;
     tx.commit()?;
     Ok(sessions)
 }
@@ -358,7 +442,7 @@ pub fn threads(
         let field = match p.kind {
             AgentKind::Claude => "claudeSession",
             AgentKind::Codex => "codexThread",
-            AgentKind::Grok => "acpSession",
+            AgentKind::Grok | AgentKind::Antigravity => "acpSession",
             _ => return None,
         };
         state[field]
@@ -373,7 +457,7 @@ pub fn threads(
             }
         }
     }
-    for provider in ["claude-code", "codex-cli", "grok-cli"] {
+    for provider in ["claude-code", "codex-cli", "grok-cli", "antigravity"] {
         if !threads.contains_key(provider)
             && let Some(native) = find(provider, agent)
         {
@@ -403,7 +487,7 @@ pub fn threads(
 }
 /// One canonical observation per copied maker call. The parent's Claude line
 /// wins a sidechain replay even when the latter used a different request ID.
-const CANONICAL: &str = "NOT EXISTS(SELECT 1 FROM native_call better WHERE better.provider=n.provider AND (better.dedup=n.dedup OR (n.kind='claude' AND n.message IS NOT NULL AND better.message=n.message AND (n.sidechain=1 OR better.sidechain=1))) AND (better.sidechain<n.sidechain OR (better.sidechain=n.sidechain AND (better.processed>n.processed OR (better.processed=n.processed AND (better.speed>n.speed OR (better.speed=n.speed AND (better.source<n.source OR (better.source=n.source AND (better.position<n.position OR (better.position=n.position AND better.ordinal<n.ordinal)))))))))))";
+pub(super) const CANONICAL: &str = "NOT EXISTS(SELECT 1 FROM native_call better WHERE better.provider=n.provider AND (better.dedup=n.dedup OR (n.kind='claude' AND n.message IS NOT NULL AND better.message=n.message AND (n.sidechain=1 OR better.sidechain=1))) AND (better.sidechain<n.sidechain OR (better.sidechain=n.sidechain AND (better.processed>n.processed OR (better.processed=n.processed AND (better.speed>n.speed OR (better.speed=n.speed AND (better.source<n.source OR (better.source=n.source AND (better.position<n.position OR (better.position=n.position AND better.ordinal<n.ordinal)))))))))))";
 pub fn candidates(
     db: &Connection,
     provider: &str,
@@ -421,28 +505,9 @@ pub fn candidates(
     }
     Ok(result)
 }
-#[allow(dead_code)]
-pub fn totals_rows(db: &Connection, since: i64) -> Result<Vec<(String, Kind, Observation)>> {
-    let mut query=db.prepare(&format!("SELECT n.provider,n.kind,n.body FROM native_call n WHERE n.at>=? AND {CANONICAL} ORDER BY n.provider,n.at"))?;
-    let mut rows = query.query([since])?;
-    let mut result = vec![];
-    while let Some(row) = rows.next()? {
-        let provider: String = row.get(0)?;
-        let kind: String = row.get(1)?;
-        let body: String = row.get(2)?;
-        let kind = match kind.as_str() {
-            "claude" => Kind::Claude,
-            "codex" => Kind::Codex,
-            "grok" => Kind::Grok,
-            _ => continue,
-        };
-        result.push((provider, kind, serde_json::from_str(&body)?));
-    }
-    Ok(result)
-}
-
 #[derive(Clone, Debug)]
 pub enum Change {
+    Roster(Vec<Root>),
     Scan(Root),
     Files(Root, Vec<PathBuf>),
     Removed(Root),
@@ -485,8 +550,22 @@ async fn watch_root(root: Root, hub: WatchHub, tx: tokio::sync::mpsc::Sender<Cha
                 return;
             }
         };
+        if !exists && !send(&tx, Change::Scan(root.clone())).await {
+            return;
+        }
         if exists {
-            while let Some(event) = watch.recv().await {
+            let mut live = if root.kind == Kind::Antigravity {
+                kuvo_os::watch_live::LiveFiles::new().ok().flatten()
+            } else {
+                None
+            };
+            loop {
+                let event = tokio::select! {
+                    event = watch.recv() => match event { Some(event) => event, None => return },
+                    result = super::engine_index::live_events(&mut live), if live.is_some() => {
+                        match result { Ok(paths) => Notice::Changed { paths: paths.into_iter().filter_map(|p|p.strip_prefix(&folder).ok().map(Path::to_owned)).collect() }, Err(error) => { eprintln!("Couldn't watch live provider database: {error}"); live = None; continue; } }
+                    }
+                };
                 let mut files = BTreeSet::new();
                 let mut scan = false;
                 let mut add = |event| match event {
@@ -503,6 +582,30 @@ async fn watch_root(root: Root, hub: WatchHub, tx: tokio::sync::mpsc::Sender<Cha
                         return;
                     }
                     break;
+                }
+                if let Some(live) = live.as_mut() {
+                    let since = super::limits::now() as i64 - KEEP;
+                    let mut paths = if scan {
+                        self::files(&folder, root.kind, since)
+                    } else {
+                        changed_files(
+                            &folder,
+                            root.kind,
+                            &files.iter().cloned().collect::<Vec<_>>(),
+                            since,
+                        )
+                    };
+                    paths.sort_by_key(|path| maker_age(path, root.kind));
+                    let recent = paths.len().saturating_sub(40);
+                    for path in paths.into_iter().skip(recent) {
+                        if let Some(parent) = path.parent() {
+                            let _ = live.track(parent);
+                        }
+                        let _ = live.track(&path);
+                        let mut wal = path.as_os_str().to_owned();
+                        wal.push("-wal");
+                        let _ = live.track(Path::new(&wal));
+                    }
                 }
                 if scan {
                     if !send(&tx, Change::Scan(root.clone())).await {
@@ -581,6 +684,11 @@ pub async fn follow_roots(home: PathBuf, hub: WatchHub, tx: tokio::sync::mpsc::S
             continue;
         };
         let wanted = wanted.into_iter().collect::<BTreeSet<_>>();
+        if !watchers.0.keys().eq(wanted.iter())
+            && !send(&tx, Change::Roster(wanted.iter().cloned().collect())).await
+        {
+            return;
+        }
         let gone = watchers
             .0
             .keys()
@@ -591,7 +699,11 @@ pub async fn follow_roots(home: PathBuf, hub: WatchHub, tx: tokio::sync::mpsc::S
             if let Some(task) = watchers.0.remove(&root) {
                 task.abort();
             }
-            if !send(&tx, Change::Removed(root)).await {
+            if !wanted
+                .iter()
+                .any(|next| next.provider == root.provider && next.folder == root.folder)
+                && !send(&tx, Change::Removed(root)).await
+            {
                 return;
             }
         }
@@ -624,6 +736,7 @@ pub fn remove_root(db: &mut Connection, root: &Root) -> Result<BTreeSet<String>>
     let tx = db.transaction()?;
     for source in sources {
         tx.execute("DELETE FROM native_call WHERE source=?", [&source])?;
+        tx.execute("DELETE FROM native_price WHERE source=?", [&source])?;
         tx.execute("DELETE FROM native_limit WHERE source=?", [&source])?;
         tx.execute("DELETE FROM native_file WHERE source=?", [&source])?;
     }
@@ -660,4 +773,64 @@ pub fn recent_limits(
         windows.push(serde_json::from_str(&row?)?);
     }
     Ok(windows)
+}
+
+pub fn scanned(db: &Connection, root: &Root, now: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE native_root SET scanned=? WHERE root=? AND provider=?",
+        params![now, key(&root.folder), root.provider],
+    )?;
+    Ok(())
+}
+pub fn reconcile_roots(
+    db: &mut Connection,
+    roots: &[Root],
+    computer: &str,
+    now: i64,
+) -> Result<BTreeSet<String>> {
+    let wanted = roots
+        .iter()
+        .map(|root| ((key(&root.folder), root.provider.clone()), root))
+        .collect::<BTreeMap<_, _>>();
+    let stale = {
+        let mut query = db.prepare(
+            "SELECT root,provider FROM native_root UNION SELECT root,provider FROM native_file",
+        )?;
+        query
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let tx = db.transaction()?;
+    let mut sessions = BTreeSet::new();
+    for (root, provider) in stale.into_iter().filter(|key| !wanted.contains_key(key)) {
+        let sources = {
+            let mut query =
+                tx.prepare_cached("SELECT source FROM native_file WHERE root=? AND provider=?")?;
+            query
+                .query_map(params![root, provider], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for source in sources {
+            sessions.extend(affected(&tx, &source)?);
+            for table in ["native_call", "native_price", "native_limit", "native_file"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE source=?"), [&source])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM native_root WHERE root=? AND provider=?",
+            params![root, provider],
+        )?;
+    }
+    for ((root_key, provider), root) in wanted {
+        let folder = std::fs::canonicalize(&root.folder).unwrap_or_else(|_| root.folder.clone());
+        let mut place = Sha256::new();
+        place.update(b"kuvo-code usage place v2\n");
+        place.update(computer);
+        place.update(b"\n");
+        place.update(folder.as_os_str().as_encoded_bytes());
+        let place = hex::encode(&place.finalize()[..8]);
+        tx.execute("INSERT INTO native_root VALUES(?,?,?,?,?,?) ON CONFLICT(root,provider) DO UPDATE SET label=excluded.label,place=excluded.place",params![root_key,provider,root.kind.name(),root.label,now,place])?;
+    }
+    tx.commit()?;
+    Ok(sessions)
 }
