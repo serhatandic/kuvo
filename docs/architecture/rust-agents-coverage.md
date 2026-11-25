@@ -790,7 +790,7 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 
 | Cases | Coverage and remaining owner |
 |---|---|
-| 1 | Rust adapter: receipts before the steer, `thread/read` by client ID. Conformance case open (4.2). |
+| 1 | Ported to agents-codex on both boxes, with and without the resident starting again: a steer whose acknowledgement is lost is found in the thread's history by its client ID, shown once, never sent again, and not carried into the next message. |
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
 | 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 is ported on both boxes: Stop on what it left running (`DELETE kuvo/agents/api/session/:id/background`) ends each command through Codex. The reference cleans the thread's terminals, `thread/backgroundTerminals/clean`; a terminal without a command (a task) isn't stopped by Rust, which stops commands only. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
@@ -814,12 +814,12 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 67–71 | Ported: Approve All answers Codex's own asks and MCP tool asks with no card; Ask First asks for another server's tool and not for Kuvo Code's; in Plan another server's tool is its yes-or-no form; an MCP server's form comes back typed. |
 | 74–89 | 6.1 (Codex run whole in the sandbox, bots' memory with 5.1, attachments copied in). |
 | 90 | Ported (Computer Use plugins off at launch). |
-| 91–92 | Rust passes the relay's servers into the thread; conformance with the engine's servers open (4.2). |
+| 91–92 | Rust gives each server the relay finds as `mcp_servers.<name>`: its relay URL, the conversation's own `Authorization`, never the server's keys. A changed set (a sign-in renewed) loads the thread again (`Loaded::servers`). The servers, their keys and a refused sign-in are the relay's, proven in `tool_sources.rs` (4.1c). A both-box case needs the engine's settings under the Rust box, which no agent case runs yet. Claude Code's equivalent isn't in conformance either, so it goes with the relay (4.1c). |
 | 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
 | 109 | Ported (Fast, Standard as null, nothing where none was picked). |
 | 112–113 | Ported to agents-codex on both boxes. The commands a turn waits on are listed while they run, with what they printed, and Stop on one stops its turn: `foreground::Foreground` in the turn runtime, for every agent's `shell` step. One that ends leaves the list, and what it printed can still be read. `DELETE kuvo/agents/api/shell/:id` stops one listed command through `Background::stop`. |
-| 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
+| 114 | Ported to agents-codex on both boxes: an added account removed while its Codex works ends the turn as stopped, without Stop. Signing out mid-turn is ported as well: Codex is told to sign out and the turn fails as "Codex stopped." |
 | 115–119 | Ported. |
 | 120 | Ported to agents-codex on both boxes: Stop during a summary tells Codex to stop its own turn, and the summary row says it failed. |
 | 121 | Ported to agents-codex on both boxes: a thread it goes on with hears what changed in its instructions with your next message, once. |

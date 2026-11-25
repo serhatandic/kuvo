@@ -894,6 +894,27 @@ for (const restart of [false, true]) {
   });
 }
 
+test("its account removed while it works (Settings › Accounts): the turn ends as stopped, without Stop", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_removed";
+  const added = `${provider}@work`;
+  await withCodex({}, async (codex) => {
+    codex.script(`go ${id}`, [item("item/started", { type: "commandExecution", id: "c-rm", command: "npm run dev" }), "stop"]);
+    await codex.prompt(id, `go ${id}`);
+    await until(async () => toolCalls(await codex.rows(id)).length === 1, "The command never showed.");
+    const removed = await request(codex.listener, "DELETE", `kuvo/agents/api/kuvo/accounts/${encodeURIComponent(added)}`, undefined, headers, 30000);
+    assert.equal(removed.status, 200, removed.text);
+    const rows = await codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "interrupted");
+  }, (codex) => {
+    // An added account (its own Codex home, signed in), and a session on it.
+    write(path.join(codex.home, "agents", "accounts.json"), JSON.stringify([{ formatVersion: 1 }, { kind: "codex", id: "work", label: "Work" }]));
+    write(path.join(codex.home, "agents", "codex", "accounts", "work", "fixture-auth.json"), JSON.stringify({ type: "chatgpt", email: "work@example.test", planType: "pro" }));
+    codex.seed(id, { directory: codex.root });
+    const file = path.join(codex.home, "agents/sessions", id, "session.json");
+    write(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), model: { providerID: added, id: "gpt-test" } }));
+  });
+});
+
 test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
   const id = "ses_codex_signout";
   await withCodex({}, async (codex) => {
