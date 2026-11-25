@@ -436,9 +436,9 @@ test("Archived Sessions publishes owner menus and checks a remote change again o
   const near = main.connect(nearRecord);
   const original=await near("GET","kuvo/setup");
   assert.equal(original.status,200,original.text);
-  await until(()=>leases.leaseFor(original.json.setup),"The main computer did not claim a relay lease.");
   const invite=await near("POST","kuvo/computers/add/code",{},{"x-kuvo-from":"mac"});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(original.json.setup),"The main computer did not claim a relay lease.");
   const joined=await other.join(invite.json.code);
   assert.equal(joined.code,0,joined.log);
   const session=sessionOf({id:"ses_archive_owner",title:"Archived on Lab"});

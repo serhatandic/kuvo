@@ -153,6 +153,14 @@ fn denied() -> Response {
 }
 
 impl Owner {
+    pub(super) fn model_stars_pending(&self) -> bool {
+        let (Ok(own), Ok(local)) = (self.own(), self.local_stars()) else {
+            return false;
+        };
+        !local.is_empty()
+            && self.seed_revision(&own.public) != Some(fingerprint(&json!({"starred":local})))
+    }
+
     pub(super) async fn offer_model_stars(&mut self) -> Result<(), Error> {
         if self.next_stars_offer > Instant::now() {
             return Ok(());

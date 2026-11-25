@@ -78,6 +78,13 @@ impl Numbers {
         local_max: u64,
         now: i64,
     ) -> Result<Option<(String, Value)>, Error> {
+        if !self
+            .setup
+            .queue_setup()
+            .is_some_and(|setup| !setup.main_here && !setup.merging)
+        {
+            return Ok(None);
+        }
         let file = self.file.clone();
         if !tokio::task::spawn_blocking(move || file.try_exists())
             .await
@@ -181,6 +188,19 @@ impl Numbers {
         let Some(setup) = self.setup.queue_setup().filter(|setup| setup.main_here) else {
             return Ok(None);
         };
+        // A quiet main has no number request to answer. In particular, don't ask
+        // setup for a new reservation simply because the exchange task woke up.
+        let file = self.file.clone();
+        let asking = tokio::task::spawn_blocking(move || {
+            LEDGER
+                .read(&file)
+                .map(|row| row.is_some_and(|row| row.fields.get("asking").is_some_and(valid_ask)))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        if !asking {
+            return Ok(None);
+        }
         self.change(local_max, move |ledger, scope| {
             let Some(mut ask) = ledger
                 .fields

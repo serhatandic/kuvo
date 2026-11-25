@@ -1111,7 +1111,7 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     }
-                    Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_))) => {
+                    Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_) | relay::Event::Gone { replaced: false, .. })) => {
                         let now = clock();
                         if let (relay::Event::Mail { key, envelope, .. }, Some(devices), Some(relay)) = (&event, &devices, &relay) {
                             match devices.legacy_mail(*key, &envelope.0, now).await {
@@ -1211,7 +1211,11 @@ impl Resident {
 
     fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
         match event {
-            relay::Event::Unreachable(address) => {
+            relay::Event::Unreachable(address)
+            | relay::Event::Gone {
+                address,
+                replaced: false,
+            } => {
                 if let Some(peer) = self.view.roster.at_address(address) {
                     Arc::make_mut(&mut self.view.reach).unreachable(
                         &self.run,

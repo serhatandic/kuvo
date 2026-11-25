@@ -767,7 +767,9 @@ test("the update status reports the installed release and a keeper's failed tria
 test("a member asks its main to check the release feed now or when it returns", async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform === "win32") return t.skip("This uses the Rust resident in a disposable Unix account.");
-  const { computer, relay, leases } = await bench(t);
+  // With no lease poll to send incidental mail, the actual relay's departure push
+  // is the source of timely reach changes.
+  const { computer, relay, leases } = await bench(t, { presenceEvents: true });
   const [main, member] = await Promise.all([computer("Main"), computer("Member")]);
   const old = main.start();
   let mainKey, mainAddress;
@@ -777,9 +779,9 @@ test("a member asks its main to check the release feed now or when it returns", 
     mainKey = setup.json.you.key;
     const identity = readJSON(path.join(main.home, "run/link.json"));
     mainAddress = relayAddress(Buffer.from(identity.secret, "base64url"));
-    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
     const invite = await request(ready, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
     assert.equal((await member.join(invite.json.code)).code, 0);
   } finally {
     await old.stop();
@@ -1512,9 +1514,9 @@ async function pairedUpdateComputers(t) {
   const old = main.start();
   const previous = await old.ready();
   const setup = await request(previous, "GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
   const invite = await request(previous, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
   const joined = await member.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   await old.stop();
@@ -3187,10 +3189,10 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
   const before = main.connect(await old.ready());
   const setup = await before("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a relay lease");
   for (const peer of [member, away]) {
     const invite = await before("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a relay lease");
     const joined = await peer.join(invite.json.code);
     assert.equal(joined.code, 0, joined.log);
   }

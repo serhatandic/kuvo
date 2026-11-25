@@ -26,9 +26,9 @@ async function joined(t, seed) {
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joinedLab = await lab.join(invite.json.code);
   assert.equal(joinedLab.code, 0, joinedLab.log);
   const studioKey = setup.json.you.key;

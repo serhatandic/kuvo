@@ -88,9 +88,7 @@ test("the released beta.1 MachineBox command runs through the installed engine a
     }
     assert.equal(fs.readFileSync(path.join(home, "box/keys/KUVO_KEY_NOTION"), "utf8"), "fixture-value");
     // beta.1's Personalities.Library, met with the machine's own. The moved machine leads its
-    // own setup, so the library is saved there once it holds the relay's lease.
-    const { setup } = (await request(server, "GET", "kuvo/setup")).json ?? {};
-    if (setup) await until(() => leases.leaseFor(setup), "The machine did not claim a relay lease.");
+    // own setup, so its local main can save the library without a relay lease.
     const personality = { id: "custom.from-mac", name: "From the Mac", description: "A released Mac's.", updated: 5 };
     const met = JSON.parse(run(["box", "personalities"], JSON.stringify({ personalities: [personality], removed: [] })).trim().split("\n").at(-1));
     assert.equal(met.status, 200, JSON.stringify(met));
@@ -118,7 +116,6 @@ test("beta.1's SSH personalities command saves at the main and a member refuses 
   const main = await computer("Studio"), other = await computer("Lab");
   const primary = main.connect(await main.start().ready());
   const setup = (await primary("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(setup.setup), "The main computer did not claim a relay lease.");
   const personality = { id: "custom.personal-1", name: "Personality 1", description: "x".repeat(40), updated: 2 };
   const saved = await main.command(["box", "personalities"], JSON.stringify({ personalities: [personality], removed: [] }));
   assert.equal(saved.code, 0, saved.log);
@@ -132,6 +129,7 @@ test("beta.1's SSH personalities command saves at the main and a member refuses 
   assert.deepEqual((await primary("GET", "kuvo/personalities")).json.personalities.map(each => each.id), [personality.id]);
   const invite = await primary("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.setup), "The main computer did not claim a relay lease.");
   assert.equal((await other.join(invite.json.code)).code, 0);
   const member = other.connect(await other.start().ready());
   await until(async () => (await member("GET", "kuvo/personalities")).json?.personalities?.length === 1, "The member did not take the main's library.");

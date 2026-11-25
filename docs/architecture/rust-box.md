@@ -434,7 +434,7 @@ parallel.
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: parity spike, ACP or HTTP (2 h). 4.7b: adapter, one held process per computer, catalog cache, sign-in paths, MCP config read by the box, bots and wake-ups pointed at it (6 ×2). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). | agents | 4.3, 3.2 | 24 | B |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
-| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, Marketplace, session and Settings follow changes; keeper, work and peer idle rounds are event-driven. Setup lease and cross-platform gates remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
+| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, Marketplace, session and Settings follow changes; keeper, work and peer idle rounds are event-driven. Setup leases are demand-driven, with fenced shared numbering; cross-platform gates remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
 | 5.1 | 5.1a done: wake-ups and watches fired by the resident and the bot list; 5.1b done: making, changing, deleting and telling bots, on macOS, Windows and Linux; 5.1c-1 done: approval routes and the round that keeps conversations' rules; 5.1c-2 done: work settings, Keep This Mac Awake, oversight, work changes and the asks list; 5.1c-3 done: a bot's work (`kuvo/work?bot=`) from the session list; 5.1c-4 done: `kuvo/projects/new` and answering what's asked; 5.1c-5 done: models that can't answer now; 5.1c-6a and 6b done: the work watcher (live, catch-up, held finishes, late answers) and the engine's place in the background model; 5.1c-7 done: Stop on someone's work and Stop All; 5.1f-1 done: a lead's sessions here listed, stopped, summarized and answered from another computer, and their rows told it; 5.1f-2 done: work started here for a lead on another computer, its models and projects read, and its Stop All; 5.1e-1 done: the agents' work tools and letters (`kuvo/agent-tools`: sessions here and on your other computers, starts with a bot's limits, the start rate and 5.2's Work Queue link, models, projects, make_project, Stop All elsewhere, list_agents, send_message, read_conversation). Open: 5.1e-2 (the wake tools, set_job), the rest of 5.1c (notices and their holds) and 5.1d (held edits, bots elsewhere, bots' old keys). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
@@ -520,12 +520,35 @@ work happens, not which computer owns it or the route shapes:
   Wake-ups sleep until their next due time and watch their folders, with a minute deadline only
   for active watches or blocked work. Approval changes use live channels/file watches with a
   one-shot grace for initial conversation writes. Peer lists follow local and ownership changes;
-  the old copy-standing heartbeat remains only with connected peers. Letters follow the outbox,
+  the old copy-standing heartbeat remains only with connected peers. The relay's departure push
+  (`0x07`, already in the wire contract) marks the departing computer away rather than waiting
+  for another send to be rejected; the member update-check scenario exercises that push. Letters follow the outbox,
   replies and peer changes; retries only run while work is kept. A release admission announcement
   is sent before the newly admitted peer work. The Library uses the resident's existing engine
   event feed instead of opening another one. Existing `bots`, `engine-sessions`, `library`,
   `peers`, `moves`, `work-elsewhere`, and `updates` cases exercise these paths; the quiet member
   release case compares the signed preparing row after the peer's target is known.
+
+- **Setup lease and Work Queue numbers:** a setup with just its own computer no longer reads or
+  renews a relay lease. A live installer invitation starts the lease, and enrollment is fenced
+  until its relay high-water mark covers the local number ledger, including the persisted number
+  reservation, used and granted ranges, pending reservations and merge allocations. Solo numbering
+  uses a durable local ceiling, with the last relay floor carried forward after removing the final
+  peer. That removal first confirms the changed roster at the relay; a missing or unconfirmed
+  roster observation keeps the fence. With members, the main renews twenty seconds before expiry
+  (normally about every forty seconds). Authenticated change mail prompts an authoritative read;
+  a missed hint or an older main is recovered at lease expiry, with takeover and transfer deadlines
+  retained. Real pending setup edits, handovers and removal deliveries still retry; no quiet
+  setup maintenance round runs. `two-boxes` checks that solo startup, numbering and restart do
+  not call the relay and that a first invitation carries a reserved merge range before both
+  computers allocate distinct numbers. `adding`, `ssh-adding`, `removal`, `setup-judge`,
+  `work-queue` and `updates` keep the enrollment, fencing, failover and release contracts. Fixtures
+  that waited for a solo lease before an invitation now wait after the invitation; fixtures that
+  only number locally retain the wait for the TypeScript reference or an already grouped roster.
+  The pair case also checks that no relay calls occur in a settled three-second interval and that
+  the final unlink is fenced at the relay before solo numbering resumes. The backup fixture uses
+  a current approval record with `since` so independent normalization does not race its exact-byte
+  assertion.
 
 Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
 relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second
@@ -536,12 +559,17 @@ not PSS. The connected sample includes a persistent line plus model and account 
 |---|---|---|
 | Before 4.8, `27ed3c8e6` | 79,904 KiB / 1 / 2.8 | 144,720 KiB / 3 / 8.2 |
 | After the agent catalog and program changes | 77,440 KiB / 1 / 0.0 | 81,984 KiB / 1 / 0.0 |
+| After all eight idle changes (debug resident) | 80,800 KiB / 1 / 0.0 | 85,648 KiB / 1 / 0.0 |
+| After all eight changes, with keeper as well | 99,408 KiB / 2 / 0.0 | 104,304 KiB / 2 / 0.0 |
 
 The baseline's other two live processes were the holder (18,288 KiB) and its scripted app-server
 (44,016 KiB); neither starts on the new route reads. The version command can run briefly when the
 agents settings is opened, not at startup. The wake readings are short OS samples on a busy Mac;
-zero reported idle wakes does not mean the remaining application timers have been removed. Repeat
-after the remaining work, including the keeper.
+zero reported idle wakes is not a count of all application timer callbacks. The final keeper sample
+uses a lease-capable stand-in and records zero relay lease calls before and after connecting the
+client, with no native agent launched. The direct resident is the like-for-like memory comparison:
+its connected RSS fell 40.8%, and its unconnected RSS is within 1.2% of baseline. The keeper sample
+is supplemental (there was no before-keeper sample).
 
 ## 7. Release decisions
 

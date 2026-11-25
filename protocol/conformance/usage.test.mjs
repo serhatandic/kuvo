@@ -731,9 +731,9 @@ test('two computers keep one account ring and never replace it with a peer’s o
   const original=(await refresh(main)).rows.find(row=>row.provider==='openai');
   assert.equal(original.rings.short.used,0.17);
   const setup=await main('GET','kuvo/setup');
-  await until(()=>leases.leaseFor(setup.json.setup),'The main did not claim its relay lease');
   const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'The main did not claim its relay lease');
   const joined=await lab.join(invite.json.code);
   assert.equal(joined.code,0,joined.log);
   let resident=lab.start();
