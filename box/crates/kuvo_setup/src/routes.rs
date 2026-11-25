@@ -309,6 +309,9 @@ impl SetupHandle {
             async move {
                 let by = submitter(&call.request.caller)?;
                 let key = call.param("key").unwrap_or_default().to_owned();
+                if let Some(removed) = setup.leave_legacy(&key).await? {
+                    return typed::<R, 200>(removed);
+                }
                 let body = &call.request.body;
                 let mut request = if body.is_empty() {
                     Unlink::default()
@@ -347,6 +350,22 @@ impl SetupHandle {
                 )
             }
         });
+    }
+
+    /// A released beta.1 Mac let go of here: it never updates to leave by itself. Its list goes
+    /// with it; a signed Mac and one in a setup keep the setup's removal.
+    async fn leave_legacy(&self, key: &str) -> Result<Option<Value>, Refusal> {
+        let (Some(devices), Some(mac)) = (&self.legacy, kuvo_wire::keys::decode_exact::<32>(key)) else {
+            return Ok(None);
+        };
+        if !devices.legacy_roster().macs.contains(&mac) {
+            return Ok(None);
+        }
+        let left = devices
+            .leave_legacy(mac)
+            .await
+            .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        Ok(left.then(|| json!({"removal": {"operation": format!("leave-{}", &key[..12]), "accessRemoved": true, "state": "unlinked"}})))
     }
 
     /// Save the usage settings through the same main-computer authority as the legacy bridge.

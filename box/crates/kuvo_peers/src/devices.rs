@@ -149,9 +149,18 @@ impl DeviceRoster {
     }
 }
 
+/// A released beta.1 Mac's roster as it stands: the Macs that enrolled this machine and the
+/// computers they listed. Empty in a setup.
+#[derive(Clone, Default)]
+pub struct LegacyRoster {
+    pub macs: Vec<ComputerKey>,
+    pub members: Vec<Member>,
+}
+
 #[derive(Clone)]
 pub struct Devices {
     current: watch::Receiver<Arc<DeviceRoster>>,
+    legacy: watch::Receiver<Arc<LegacyRoster>>,
     managed: Option<Arc<dyn ManagedDevices>>,
     commands: mpsc::Sender<Command>,
     identity: Option<([u8; 32], ComputerKey)>,
@@ -276,6 +285,7 @@ enum Command {
         Millis,
         oneshot::Sender<io::Result<Option<Vec<Member>>>>,
     ),
+    LeaveLegacy(ComputerKey, oneshot::Sender<io::Result<bool>>),
 }
 
 struct Store {
@@ -297,16 +307,18 @@ impl Devices {
         let (store, roster, identity, config) =
             tokio::task::spawn_blocking(move || load(&home, fallback_name, kind)).await??;
         let (publish, current) = watch::channel(Arc::new(store.state()));
+        let (legacy_publish, legacy) = watch::channel(Arc::new(store.legacy_roster()));
         let (commands, rx) = mpsc::channel(16);
         let devices = Self {
             current,
+            legacy,
             managed: None,
             commands,
             identity,
             enabled: store.enabled,
             can_pair: store.enabled && store.authority == Authority::Standalone,
         };
-        tokio::spawn(store.run(rx, publish));
+        tokio::spawn(store.run(rx, publish, legacy_publish));
         Ok(Bootstrap {
             roster,
             devices,
@@ -331,6 +343,28 @@ impl Devices {
         let (reply, result) = oneshot::channel();
         self.commands
             .send(Command::LegacyMail(mac, payload.clone(), now, reply))
+            .await
+            .map_err(io::Error::other)?;
+        result.await.map_err(io::Error::other)?
+    }
+
+    pub fn legacy_roster(&self) -> Arc<LegacyRoster> {
+        self.legacy.borrow().clone()
+    }
+
+    /// Follows the released Macs' roster as it changes.
+    pub fn legacy_watch(&self) -> watch::Receiver<Arc<LegacyRoster>> {
+        self.legacy.clone()
+    }
+
+    /// Lets a released beta.1 Mac go from this machine's list; false when it isn't one.
+    pub async fn leave_legacy(&self, mac: ComputerKey) -> io::Result<bool> {
+        if self.managed.is_some() {
+            return Ok(false);
+        }
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(Command::LeaveLegacy(mac, reply))
             .await
             .map_err(io::Error::other)?;
         result.await.map_err(io::Error::other)?
@@ -713,13 +747,27 @@ impl Store {
         mut self,
         mut commands: mpsc::Receiver<Command>,
         publish: watch::Sender<Arc<DeviceRoster>>,
+        legacy: watch::Sender<Arc<LegacyRoster>>,
     ) {
+        let legacy = Arc::new(legacy);
         while let Some(command) = commands.recv().await {
             let published = publish.clone();
+            let legacy = legacy.clone();
             let work = tokio::task::spawn_blocking(move || {
                 match command {
                     Command::LegacyMail(mac, payload, now, answer) => {
-                        let _ = answer.send(self.take_legacy(mac, payload, now));
+                        let result = self.take_legacy(mac, payload, now);
+                        if matches!(result, Ok(Some(_))) {
+                            legacy.send_replace(Arc::new(self.legacy_roster()));
+                        }
+                        let _ = answer.send(result);
+                    }
+                    Command::LeaveLegacy(mac, answer) => {
+                        let result = self.leave_legacy(mac);
+                        if matches!(result, Ok(true)) {
+                            legacy.send_replace(Arc::new(self.legacy_roster()));
+                        }
+                        let _ = answer.send(result);
                     }
                     Command::Pair(device, now, answer) => {
                         let result = self.pair(device, now);
@@ -746,6 +794,41 @@ impl Store {
                 }
             }
         }
+    }
+
+    fn here(&self) -> Option<ComputerKey> {
+        self.link
+            .key
+            .as_deref()
+            .and_then(decode_exact)
+            .map(|private| Identity::from_bytes(private, [0; 32]).public())
+    }
+
+    fn legacy_roster(&self) -> LegacyRoster {
+        LegacyRoster {
+            macs: legacy::enrollers(&self.link.extra),
+            members: legacy::members(&self.link.extra, self.here()),
+        }
+    }
+
+    fn leave_legacy(&mut self, mac: ComputerKey) -> io::Result<bool> {
+        let mut next = self.link.clone();
+        if !legacy::leave(&mut next.extra, mac) {
+            return Ok(false);
+        }
+        next.version = Some(1);
+        kept::write_durable(&self.path, &next)?;
+        self.link = next;
+        let roster = self.legacy_roster();
+        self.box_keys = roster
+            .members
+            .iter()
+            .map(|member| &member.key)
+            .chain(&roster.macs)
+            .chain(self.here().as_ref())
+            .map(|key| encode(key))
+            .collect();
+        Ok(true)
     }
 
     fn take_legacy(

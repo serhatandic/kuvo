@@ -12,7 +12,7 @@ use kuvo_protocol::{
 };
 use kuvo_server::{Access, Caller, JsonLine, Refusal, Registry, RouteReply, Transport};
 use kuvo_wire::keys::encode;
-use serde_json::Number;
+use serde_json::{Number, json};
 
 use crate::{
     attention, conversation,
@@ -524,6 +524,9 @@ fn computers(
         if peer.kind == crate::session::ComputerKind::Mac {
             row.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
+        if reach == Reach::Away && view.legacy_macs.contains(&peer.key) {
+            row.actions = vec![legacy_removal(&peer.name)];
+        }
         let features = said
             .filter(|said| !said.features_cut)
             .and_then(|said| said.features.as_ref());
@@ -591,6 +594,19 @@ fn computer_compatibility(
 fn working_title(count: u64) -> String {
     let noun = if count == 1 { "session" } else { "sessions" };
     format!("{count} {noun} at work")
+}
+
+/// Removing a released beta.1 Mac that's away: it never updates to leave by itself (a difference
+/// from TypeScript, which refused and aged it out after 30 days).
+fn legacy_removal(name: &str) -> GetKuvoComputersStatus200ComputersItemActionsItem {
+    let name = if name.is_empty() { "this Mac" } else { name };
+    serde_json::from_value(json!({
+        "id": "remove", "label": "Remove",
+        "confirm": {"title": format!("Remove {name}?"), "label": "Remove",
+            "message": format!("This computer stops counting {name} among your computers, with the computers it listed. Add it again from {name} once it's updated.")},
+        "removal": {"choices": ["unlink"]},
+    }))
+    .expect("a removal action fits the route")
 }
 
 fn computer_row(

@@ -24,6 +24,7 @@ const areas = new Map([
   ["compat", "./compat.test.mjs"],
   ["compat-repair", "./compat-repair.test.mjs"],
   ["compat-shim", "./compat-shim.test.mjs"],
+  ["compat-stays", "./compat-stays.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["settings", "./settings.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],

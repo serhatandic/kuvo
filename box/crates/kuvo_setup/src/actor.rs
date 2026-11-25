@@ -74,9 +74,16 @@ pub struct SetupHandle {
     rosters: watch::Receiver<Option<Arc<Roster>>>,
     activity: activity::Sender,
     pub(crate) files: Files,
+    /// A machine outside a setup: the released beta.1 Macs that enrolled it can be let go here.
+    pub(crate) legacy: Option<kuvo_peers::devices::Devices>,
 }
 
 impl SetupHandle {
+    pub fn with_legacy(mut self, devices: kuvo_peers::devices::Devices) -> Self {
+        self.legacy = Some(devices);
+        self
+    }
+
     /// Ask the setup owner at the point of a coordinated update decision.
     /// A roster saying that this computer is main can outlive its lease.
     pub async fn may_switch_fleet(&self) -> bool {
@@ -527,6 +534,7 @@ impl PreparedSetup {
             ssh_routes,
             activity: activity.clone(),
             files: files.clone(),
+            legacy: None,
         };
         let actor = Owner {
             handle: handle.clone(),
