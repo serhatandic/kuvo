@@ -21,8 +21,8 @@ use kuvo_protocol::routes::{
     get_kuvo_work_asks_events as asks_events, get_kuvo_work_events as changed_events,
     get_kuvo_work_oversight as oversight_get, get_kuvo_work_oversight_events as oversight_events,
     get_kuvo_work_settings as settings_get, get_kuvo_work_unanswering as unanswering_get,
-    patch_kuvo_work_settings as settings_patch, post_kuvo_projects_new as project_new,
-    post_kuvo_work_asks_id as ask_answer,
+    patch_kuvo_work_settings as settings_patch, post_kuvo_bots_id_stop_all as stop_all,
+    post_kuvo_projects_new as project_new, post_kuvo_work_asks_id as ask_answer,
 };
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
 use serde_json::{Value, json};
@@ -172,6 +172,22 @@ impl Work {
     }
 
     pub fn register(&self, routes: &mut Registry) {
+        let stops = std::sync::Arc::new(watch::Stops(self.clone()));
+        self.list.engine().attach_work_stops(stops);
+        let work = self.clone();
+        routes.register::<stop_all::Spec, _, _>(Access::Any, move |call| {
+            let work = work.clone();
+            async move {
+                let bot =
+                    percent_encoding::percent_decode_str(call.param("id").unwrap_or_default())
+                        .decode_utf8_lossy()
+                        .into_owned();
+                let stopped = work.stop_bot_work(&bot).await?;
+                Ok(RouteReply::json::<200>(typed(
+                    json!({ "stopped": stopped }),
+                )?))
+            }
+        });
         let here = self.settings.clone();
         routes.register::<settings_get::Spec, _, _>(Access::Any, move |_| {
             let settings = here.clone();
