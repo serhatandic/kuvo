@@ -208,10 +208,17 @@ pub(super) struct Recovery {
     pipe: Pipe,
     note: Option<TurnNote>,
     instructions: Option<String>,
+    tasks: Value,
 }
 
 impl Recovery {
     pub fn new(controller: Controller, note: Option<TurnNote>) -> Self {
+        let tasks = controller
+            .welcome
+            .meta
+            .get("claudeTasks")
+            .cloned()
+            .unwrap_or(Value::Null);
         let instructions = controller
             .welcome
             .meta
@@ -224,6 +231,7 @@ impl Recovery {
             pipe,
             note,
             instructions,
+            tasks,
         }
     }
 
@@ -311,6 +319,7 @@ impl Conversation {
             Arc::new(Calls(conversation.commands.downgrade())),
         );
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
+            tasks.restore(old.tasks);
             (Some(old.pipe), old.note, old.instructions)
         });
         tokio::spawn(
@@ -486,6 +495,15 @@ struct Steered {
 
 impl Actor {
     async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+        if self.recovery.is_none()
+            && self.tasks.keeps_working()
+            && let Some(pipe) = &mut self.pipe
+            && pipe.needs_initialize
+            && let Err(error) =
+                reinitialize(pipe, self.instructions.as_deref().unwrap_or_default()).await
+        {
+            eprintln!("Claude Code could not reconnect: {error}");
+        }
         while !self.closing {
             let read = async {
                 match &mut self.pipe {
@@ -570,6 +588,16 @@ impl Actor {
                 let _ = reply.send(Ok(()));
             }
             Command::Prepare(reply) => {
+                if self.tasks.keeps_working()
+                    && let Some(pipe) = &mut self.pipe
+                {
+                    pipe.input
+                        .note(Metadata::from_iter([(
+                            "claudeTasks".into(),
+                            self.tasks.snapshot(),
+                        )]))
+                        .await?;
+                }
                 if let Some(pipe) = &mut self.pipe
                     && let Some(turn) = &self.running
                 {
@@ -1075,7 +1103,16 @@ impl Actor {
                     pipe.said.forget();
                 }
                 let message: Value = serde_json::from_str(line)?;
-                self.tasks.frame(&message);
+                if self.tasks.frame(&message)
+                    && let Some(pipe) = &mut self.pipe
+                {
+                    pipe.input
+                        .note(Metadata::from_iter([(
+                            "claudeTasks".into(),
+                            self.tasks.snapshot(),
+                        )]))
+                        .await?;
+                }
                 self.message(sequence, replay, &message).await?;
             }
             Err(_) => {}

@@ -55,7 +55,6 @@ pub const AGENT_TOOLS: &[&str] = &[
 
 /// The tools this box doesn't answer yet, and the part of the rewrite each comes with.
 const NOT_YET: &[(&str, &str)] = &[
-    ("notify_user", "5.1c"),
     ("plan_limits", "5.4"),
     ("use_limit_reset", "5.4"),
     ("show_in_panel", "6.4"),
@@ -348,10 +347,16 @@ impl Work {
                         .filter(|data| data["id"] == session),
                     _ => None,
                 };
-                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref())
+                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref(), operation)
                     .await
             }
             "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
+            "notify_user" => match &caller {
+                None => {
+                    refused("Only a conversation on this computer can notify the user from here.")
+                }
+                Some(caller) => self.notify_user_tool(caller, args).await,
+            },
             "list_agents" => {
                 let (agents, _) = self.everyone(engine.as_ref()).await;
                 said(self.describe_agents(

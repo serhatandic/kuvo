@@ -14,7 +14,7 @@ use super::{
     here::BotHere,
     job::job_of,
     kit::{JobText, Kit},
-    reach,
+    own_keys, reach,
 };
 use crate::approval::{Rule, refreshed_rules, without_former_asks};
 
@@ -85,7 +85,7 @@ impl Bots {
                 line: job.line,
                 section: job.details,
             }),
-        )
+        ) + &own_keys::keys_gone_note(&here.folder, &self.config(), &self.inner.computer)
     }
 
     /// Tells a bot's conversation `text`, and notes it. Whether it got there.
@@ -240,6 +240,7 @@ impl Bots {
             return;
         };
         let told = told_of(&here.folder);
+        own_keys::forget_connected_keys(&here.folder, &self.config());
         let text = self.told_now(&kit, &here, &here.described);
         let stale = match reach::told_there(engine, &here.session).await {
             None => {

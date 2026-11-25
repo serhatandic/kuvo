@@ -1,0 +1,315 @@
+{
+ "scenarios": [
+  {
+   "name": "What's news, said in a sentence: a reply to you, a permission in a few plain words, a failure with its reason; another agent's reply isn't",
+   "steps": [
+    {
+     "send": "GET kuvo/notices",
+     "expect": {
+      "status": 200,
+      "json": {
+       "notices": []
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_mine",
+       "title": "Fix login"
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_mine",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "time": {
+          "created": 10
+         },
+         "text": "Fix the login page."
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "time": {
+          "created": 20
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "## Done\nFixed the **login** redirect. Also cleaned up the tests."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "time": {
+          "created": 30
+         },
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_mine"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_work",
+       "title": "Build it",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead"
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_work",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "time": {
+          "created": 10
+         },
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it."
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "time": {
+          "created": 20
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "Built it."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "time": {
+          "created": 30
+         },
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_work"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_broke",
+       "title": "Broke"
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.failed",
+       "data": {
+        "sessionID": "ses_broke",
+        "error": {
+         "message": "The model is overloaded right now"
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "permission.asked",
+       "data": {
+        "id": "per_1",
+        "sessionID": "ses_mine",
+        "action": "bash",
+        "resources": [
+         "npm test"
+        ]
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/notices",
+     "why": "Its first sentence in plain words; the command never shown, so its buttons don't answer it; a lead's session answering it isn't news.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "notices": {
+        "<length>": 3,
+        "<includes>": [
+         {
+          "notice": {
+           "title": "Fix login",
+           "body": "Fixed the login redirect.",
+           "category": "finished",
+           "thread": "ses_mine",
+           "data": {
+            "session": "ses_mine"
+           }
+          }
+         },
+         {
+          "notice": {
+           "title": "Broke",
+           "body": "Stopped with an error: The model is overloaded right now",
+           "category": "failed",
+           "data": {
+            "session": "ses_broke"
+           }
+          }
+         },
+         {
+          "notice": {
+           "title": "Fix login",
+           "body": "Wants to run npm.",
+           "category": "permission",
+           "data": {
+            "session": "ses_mine",
+            "request": "per_1",
+            "answerable": "0",
+            "always": "<absent>",
+            "alwaysTitle": "Always Allow npm test"
+           }
+          }
+         }
+        ],
+        "<excludes>": [
+         {
+          "notice": {
+           "thread": "ses_work"
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "notify_user tells you once, in a sentence: the same again is refused, and a conversation that isn't here can't",
+   "only": "mac",
+   "why": "A machine tells from its bridge, which the reference starts only with its agents.",
+   "steps": [
+    {
+     "given": {
+      "session": {
+       "id": "ses_mine",
+       "title": "Fix login"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "notify_user",
+      "arguments": {
+       "text": "I need your **OK** on the deploy. It's ready otherwise."
+      },
+      "session": "ses_mine"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "text": "Sent to the user: “I need your OK on the deploy.”",
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "notify_user",
+      "arguments": {
+       "text": "I need your OK on the deploy."
+      },
+      "session": "ses_mine"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "text": "You already sent the user that today. They'll see it; don't send it again.",
+       "isError": true
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "notify_user",
+      "arguments": {
+       "text": " "
+      },
+      "session": "ses_mine"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "text": "Give the text: one sentence saying what you need from the user.",
+       "isError": true
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/notices",
+     "expect": {
+      "status": 200,
+      "json": {
+       "notices": [
+        {
+         "by": "agent",
+         "notice": {
+          "title": "Fix login",
+          "body": "I need your OK on the deploy.",
+          "category": "finished",
+          "thread": "ses_mine",
+          "data": {
+           "session": "ses_mine"
+          }
+         }
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

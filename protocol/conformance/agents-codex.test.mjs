@@ -278,6 +278,15 @@ describe("Codex, more of what it does", { skip }, () => {
   const box = resident();
   const begun = (id) => until(() => box.codex.sent("turn/start").some((message) => message.params.input[0].text.includes(`go ${id}`)), "Codex never started.");
 
+  test("its reply to you is news, said in its first sentence", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "## Done\nFixed the **login** page. Tests pass too." })]);
+    await box.codex.idles(id);
+    const told = () => request(box.codex.listener, "GET", "kuvo/notices", undefined, headers, 20000)
+      .then((answer) => answer.json?.notices?.find((entry) => entry.notice.thread === id));
+    const entry = await until(told, "Its reply was never news.", 20000, 100);
+    assertMatch(entry.notice, { title: "Codex fixture", body: "Fixed the login page.", category: "finished", data: { session: id } });
+  });
+
   test("summarizing when you ask: Codex is asked with its own request, no turn of words, and the row shows it with no reply", { timeout: 60000 }, async () => {
     const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Hello." })]);
     await box.codex.idles(id);
@@ -1453,7 +1462,7 @@ function heldCodex(home) {
   }).find((record) => record.meta?.provider === provider && record.meta?.kind === "codex");
 }
 
-test("the Rust keeper keeps a Codex turn across a release switch: the same app-server finishes it, and what it asked is asked once more and answered once",
+for (const idle of [false, true]) test(idle ? "the Rust keeper adopts idle Codex background terminals" : "the Rust keeper keeps a Codex turn across a release switch: the same app-server finishes it, and what it asked is asked once more and answered once",
   { timeout: 90000 }, async (t) => {
     const binary = boxBinary();
     if (binary.typescript) {
@@ -1476,7 +1485,11 @@ test("the Rust keeper keeps a Codex turn across a release switch: the same app-s
       const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, ...system].join(path.delimiter) };
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       seedCodexSession(home, session, { permissions: askFirst });
-      write(path.join(base.HOME, "codex-script.json"), JSON.stringify({ "wait for update": [
+      write(path.join(base.HOME, "codex-script.json"), JSON.stringify({ "wait for update": idle ? [
+        item("item/started", { type: "commandExecution", id: "bt1", command: "npm run dev" }),
+        ["item/commandExecution/outputDelta", { itemId: "bt1", delta: "Listening\n" }],
+        { terminals: [{ processId: "p-bt1", itemId: "bt1", command: "npm run dev" }] },
+      ] : [
         ["item/completed", { item: { type: "agentMessage", id: "m1", text: "Before the switch." } }],
         { ask: ["item/commandExecution/requestApproval", { itemId: "c1", command: "make" }] },
         ["item/completed", { item: { type: "agentMessage", id: "m2", text: "After the switch." } }],
@@ -1489,6 +1502,27 @@ test("the Rust keeper keeps a Codex turn across a release switch: the same app-s
         residents.push(first.pid);
         const started = await request(first, "POST", route + "/prompt", { id: "msg_codex_kept", text: "wait for update" }, headers);
         assert.equal(started.status, 200, started.text);
+        if (idle) {
+          const bar = async record => (await request(record, "GET", `kuvo/work/background/${session}`, undefined, headers)).json;
+          await until(async () => (await transcript(first, route)).at(-1)?.outcome === "succeeded", "the first turn should finish");
+          const [command] = (await until(async () => { const value = await bar(first); return value?.commands?.length && value; }, "terminal should be listed")).commands;
+          const initial = await until(() => { const record = heldCodex(home); return record && Object.keys(record.meta.turns ?? {}).length === 0 && record; }, "holder should have no active turn");
+          await control(["select", next]);
+          const second = await keptListener(home, keeper, first.pid);
+          residents.push(second.pid);
+          const [restored] = (await until(async () => { const value = await bar(second); return value?.commands?.length && value; }, "idle terminal should be adopted", 10000)).commands;
+          assert.deepEqual([restored.id, restored.started, restored.command], [command.id, command.started, command.command]);
+          const output = await request(second, "GET", `kuvo/work/background/${session}/commands/${restored.id}/output`, undefined, headers);
+          assert.equal(output.json.output, "Listening");
+          const after = heldCodex(home);
+          assert.deepEqual([after.pid, after.child, after.generation], [initial.pid, initial.child, initial.generation + 1]);
+          assert.equal((await request(second, "DELETE", route + "/background", undefined, headers)).status, 200);
+          await until(async () => !(await bar(second)).commands?.length, "Stop must reach the adopted terminal");
+          const heard = fs.readFileSync(path.join(base.HOME, "codex-heard.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+          assert.equal(heard.filter(line => line.message?.method === "turn/start").length, 1);
+          assert.equal(heard.filter(line => line.message?.method === "thread/backgroundTerminals/terminate").length, 1);
+          return;
+        }
         const asked = await until(async () => {
           const answer = await request(first, "GET", route + "/permission", undefined, headers);
           return answer.json?.data?.[0];

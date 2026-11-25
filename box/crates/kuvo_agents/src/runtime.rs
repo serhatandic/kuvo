@@ -32,6 +32,15 @@ pub trait Adoption: Send + Sync {
         controller: Controller,
     ) -> AdapterCall<'a, ()>;
 
+    /// Restore idle background work from the attached process, without starting a turn.
+    fn restore_idle<'a>(
+        &'a self,
+        _store: &'a SessionStore,
+        _record: &'a Record,
+    ) -> AdapterCall<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// The resident won't take up this attached turn after all: its
     /// conversation is gone or has moved on, or `Thread::start` with
     /// `TurnKind::Recover` failed. Stop the held agent unless another turn
@@ -177,21 +186,30 @@ impl Runtime {
         &self,
         adapter: &dyn Adoption,
         account: &Account,
-        record: Record,
+        mut record: Record,
     ) -> io::Result<BTreeMap<String, TurnNote>> {
         let turns = record.turns()?;
         if !adapter.accepts(&record, &turns) {
             return Ok(BTreeMap::new());
         }
-        let replay = turns
-            .values()
-            .map(|turn| turn.from)
-            .min()
-            .map_or(Replay::Idle, Replay::Complete);
+        let replay = turns.values().map(|turn| turn.from).min().map_or_else(
+            || {
+                if record.meta.contains_key("claudeTasks")
+                    || record.meta.contains_key("backgroundSessions")
+                {
+                    Replay::Acknowledged
+                } else {
+                    Replay::Idle
+                }
+            },
+            Replay::Complete,
+        );
         let controller = self.holders.adopt(&record, replay).await?;
+        record.meta = controller.welcome.meta.clone();
         adapter
-            .attach(account, record, turns.clone(), controller)
+            .attach(account, record.clone(), turns.clone(), controller)
             .await?;
+        adapter.restore_idle(&self.sessions, &record).await?;
         Ok(turns)
     }
 }

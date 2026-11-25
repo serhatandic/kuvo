@@ -148,6 +148,12 @@ impl BotEngine {
             .collect()
     }
 
+    /// A coding agents' conversation's last `limit` rows, newest first; none for the engine's.
+    pub async fn agent_recent(&self, session: &str, limit: u32) -> Option<Vec<Value>> {
+        let (source, _) = self.engine.agent_session(session).await.ok()??;
+        source.recent(session, limit).await.ok()
+    }
+
     /// What a coding agents' conversation left running besides its turn, stopped through its
     /// agent; `None` for the engine's own conversation, or agents that aren't answering.
     pub async fn stop_agent_background(&self, session: &str) -> Option<bool> {

@@ -45,6 +45,8 @@ pub struct Config {
     pub grants: HashMap<[u8; 32], String>,
     /// Ordinary mail is authenticated against these keys; addresses only prioritize lookup.
     pub peers: Vec<Host>,
+    /// Direct historical SSH enrollers can send mail even before supplying an address.
+    pub legacy_enrollers: Vec<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -213,6 +215,9 @@ impl Command {
             } => {
                 config.grants = grants;
                 config.peers = peers;
+                if reply.is_some() {
+                    config.legacy_enrollers.clear();
+                }
                 if let Some(reply) = reply {
                     let _ = reply.send(Ok(()));
                 }
@@ -544,25 +549,32 @@ impl Owner {
         let candidates = peers
             .iter()
             .filter(|peer| peer.address == from)
-            .chain(peers.iter().filter(|peer| peer.address != from));
-        for peer in candidates {
-            match Envelope::open(body, &self.config.key, &peer.key) {
+            .chain(peers.iter().filter(|peer| peer.address != from))
+            .map(|peer| &peer.key)
+            .chain(
+                self.config
+                    .legacy_enrollers
+                    .iter()
+                    .filter(|key| !peers.iter().any(|peer| &peer.key == *key)),
+            );
+        for key in candidates {
+            match Envelope::open(body, &self.config.key, key) {
                 Ok(mut envelope) => {
-                    if !self.work_queue_parts.receive(peer.key, &mut envelope) {
+                    if !self.work_queue_parts.receive(*key, &mut envelope) {
                         return Ok(());
                     }
                     if is_memory(&envelope) {
                         envelope.0.retain(|field, _| field == "workQueue");
                         let _ = self.observations.send(Arc::new(RelayEvent::Mail {
                             from,
-                            key: peer.key,
+                            key: *key,
                             envelope,
                         }));
                         return Ok(());
                     }
                     return self.emit(Event::Mail {
                         from,
-                        key: peer.key,
+                        key: *key,
                         envelope,
                     });
                 }
@@ -673,6 +685,9 @@ impl Owner {
                 reply,
             } => {
                 self.config.peers = peers;
+                if reply.is_some() {
+                    self.config.legacy_enrollers.clear();
+                }
                 self.work_queue_parts
                     .retain(|key| self.config.peers.iter().any(|peer| &peer.key == key));
                 self.config.grants = grants;

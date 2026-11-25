@@ -308,6 +308,56 @@ impl Adoption for Codex {
         })
     }
 
+    fn restore_idle<'a>(
+        &'a self,
+        store: &'a crate::session_store::SessionStore,
+        record: &'a Record,
+    ) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            let Some(saved) = record
+                .meta
+                .get("backgroundSessions")
+                .and_then(Value::as_object)
+            else {
+                return Ok(());
+            };
+            let result = async {
+                let active = record.turns()?;
+                for (session, snapshot) in saved {
+                    if active.values().any(|turn| &turn.session == session) {
+                        continue;
+                    }
+                    let Some(context) = store
+                        .context(session, &self.shared.program.provider)
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let thread = {
+                        let mut threads = self.threads.lock().await;
+                        threads
+                            .entry(session.clone())
+                            .or_insert_with(|| {
+                                thread::Conversation::spawn(
+                                    self.shared.clone(),
+                                    self.relay.clone(),
+                                    context,
+                                )
+                            })
+                            .clone()
+                    };
+                    thread.restore_idle(snapshot.clone()).await?;
+                }
+                Ok(())
+            }
+            .await;
+            if let Some(server) = self.shared.current().await {
+                server.ready("background");
+            }
+            result
+        })
+    }
+
     /// A turn the resident won't take up: Codex is told to stop it, and the app-server's lines
     /// for the others come.
     fn let_go<'a>(&'a self, turn: &'a TurnNote) -> AdapterCall<'a, ()> {

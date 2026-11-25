@@ -7,6 +7,7 @@ pub mod kit;
 pub mod list;
 mod make;
 pub mod now;
+pub mod own_keys;
 pub(crate) mod reach;
 mod routes;
 mod seen;
@@ -327,6 +328,11 @@ impl Bots {
     /// This computer's wake-ups.
     pub(crate) fn wakes(&self) -> &Wakes {
         &self.inner.wakes
+    }
+
+    /// This computer's settings, as its integrations are kept there.
+    pub(crate) fn config(&self) -> kuvo_services::config::ConfigPaths {
+        kuvo_services::config::ConfigPaths::for_home(&self.inner.home, self.inner.is_mac)
     }
 
     pub fn bots_folder(&self) -> &Path {

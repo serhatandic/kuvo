@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, boxCommand, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, localRelay, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
@@ -729,6 +729,11 @@ test("a Mac app-owned home refuses the own-home app registration", async t => {
       assert.equal(answer.status, 409, answer.text);
       assert.deepEqual(answer.json, { message: "Only Kuvo on a Mac in its own folder has its app register with it." });
     }
+    const menu = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(menu.status, 200, menu.text);
+    assert.equal(menu.json.applies, false);
+    const stop = await request(resident, "POST", "kuvo/box/stop", {});
+    assert.equal(stop.status, 409, stop.text);
   } finally { await child.stop(); }
 });
 
@@ -886,10 +891,11 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
   const hash = digest(packBytes ?? "signed target");
   let downloads = 0;
   let signed;
+  const waiting = [];
   const feed = createServer((req, res) => {
     if (req.url !== "/boxes.json") {
       downloads += 1;
-      if (holdPack) return;
+      if (holdPack) { waiting.push(res); return; }
       return packBytes ? res.end(packBytes) : res.writeHead(404).end();
     }
     res.end(signed);
@@ -904,7 +910,9 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
     KUVO_TEST_RELEASE_KEY: key.key,
   };
-  return { version, hash, signed, updateEnv, downloaded: () => downloads };
+  return { version, hash, signed, updateEnv, downloaded: () => downloads,
+    releasePack() { holdPack = false; for (const response of waiting.splice(0)) if (!response.destroyed) response.end(packBytes); },
+  };
 }
 
 
@@ -1538,11 +1546,12 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   write(trial, previous + "/bin");
   const sender = "ses_confirmedWork", recipient = "ses_returningWork";
   const mainChild = "ses_childOfReturning", memberChild = "ses_childOfConfirmed";
-  for (const [computer, id, child, lead] of [[main, sender, mainChild, recipient], [member, recipient, memberChild, sender]]) {
+  const mainToolChild = "ses_toolChildOfReturning", memberToolChild = "ses_toolChildOfConfirmed";
+  for (const [computer, id, child, toolChild, lead] of [[main, sender, mainChild, mainToolChild, recipient], [member, recipient, memberChild, memberToolChild, sender]]) {
     const directory = path.join(computer.home, "chats");
     fs.mkdirSync(directory, { recursive: true });
     computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
-    computer.engine.sessions.push({ ...sessionOf({ id: child, title: child, directory }), metadata: {
+    for (const id of [child, toolChild]) computer.engine.sessions.push({ ...sessionOf({ id, title: id, directory }), metadata: {
       kuvo: { startedBy: lead, line: [lead], wake: ["finished"], depth: 1 },
     } });
   }
@@ -1591,6 +1600,27 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     const inFlight = mail(from, to, peer, { call: { id, from: lead, made: at, at, ...call } });
     calls.push({ id, file, to, child, inFlight, result: path.join(to.home, "run/work/call-results", id + ".json") });
   }
+  // A real caller, not a prebuilt outbox record, also keeps its work call through the trial.
+  const requested = [];
+  for (const [from, to, record, lead, child, peer] of [
+    [main, member, observer, sender, memberToolChild, peerKey],
+    [member, main, returning, recipient, mainToolChild, mainKey],
+  ]) {
+    const homes = path.join(from.home, "run/work/homes.json");
+    const before = fs.existsSync(homes) ? readJSON(homes) : {};
+    // The lead remembers the computer on which it previously started this child.
+    write(homes, encode({ ...before, [child]: { key: peer, at: Date.now() } }));
+    const answer = await request(record, "POST", "kuvo/agent-tools", { name: "stop_session", arguments: { session: child }, session: lead });
+    assert.equal(answer.status, 200, answer.text);
+    assert.equal(answer.json.isError, false, answer.json.text);
+    assert.match(answer.json.text, /kept/);
+    const outbox = path.join(from.home, "run/outbox/sending");
+    const saved = await until(() => fs.readdirSync(outbox).filter(name => name.startsWith("cal_")).map(name => path.join(outbox, name)).find(file => {
+      try { return readJSON(file).call?.args?.session === child; } catch { return false; }
+    }), "the actual tool should save its work call");
+    assert.equal(readJSON(saved).sentTo, undefined);
+    requested.push({ from, to, lead, child, saved });
+  }
   const pending = [];
   for (const [computer, local, remote, here, there] of [
     [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
@@ -1618,6 +1648,10 @@ test("the returning bridge stays out of work placement during its Rust trial", {
 
   // Four half-second remote-work rounds: a held call cannot be used as the normal away probe.
   await new Promise(resolve => setTimeout(resolve, 2000));
+  for (const { saved, to, child } of requested) {
+    assert.equal(readJSON(saved).sentTo, undefined);
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 0);
+  }
   for (const { file, to, child, result } of calls) {
     assert.equal(readJSON(file).sentTo, undefined, "the held call must not be marked sent");
     assert.equal(fs.existsSync(result), false, "an in-flight call must not be accepted on trial");
@@ -1652,6 +1686,32 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     }), "the receiver should acknowledge a replay of the previously held call");
     assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1,
       "the real stop call must take effect once, only after confirmation");
+  }
+  for (const { from, to, lead, child, saved } of requested) {
+    await until(() => !fs.existsSync(saved), "the caller's real work call must settle", 20000);
+    const heard = () => from.engine.asked.filter(each => each.method === "POST" && each.path === `/api/session/${lead}/prompt` && each.json?.text?.includes(`Stopped "${child}".`));
+    await until(() => heard().length === 1, "the caller's lead should hear the actual result", 20000);
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1);
+    const id = path.basename(saved, ".json");
+    assert.ok(fs.existsSync(path.join(to.home, "run/work/call-results", id + ".json")));
+    const source = readJSON(path.join(from.home, "run/link.json")), destination = readJSON(path.join(to.home, "run/link.json"));
+    const sourceSecret = Buffer.from(source.key, "base64url"), destinationSecret = Buffer.from(destination.key, "base64url");
+    const sourceAddress = relayAddress(Buffer.from(source.secret, "base64url")), destinationAddress = relayAddress(Buffer.from(destination.secret, "base64url"));
+    const original = relay.delivered.find(({ from, to, payload }) => {
+      if (!from.equals(sourceAddress) || !to.equals(destinationAddress)) return false;
+      const packet = codec.readFrame(payload);
+      return packet?.kind === codec.Frame.mail && JSON.parse(codec.openOneWay(packet.body, destinationSecret, codec.publicOf(sourceSecret)).payload).call?.id === id;
+    });
+    assert.ok(original, "the real caller's packet was delivered");
+    const before = relay.delivered.length;
+    relay.replay(original);
+    await until(() => relay.delivered.slice(before).some(({ from, to, payload }) => {
+      if (!from.equals(destinationAddress) || !to.equals(sourceAddress)) return false;
+      const packet = codec.readFrame(payload);
+      return packet?.kind === codec.Frame.mail && JSON.parse(codec.openOneWay(packet.body, sourceSecret, codec.publicOf(destinationSecret)).payload).delivered?.id === id;
+    }), "a repeated actual call receives its saved receipt");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1);
+    assert.equal(heard().length, 1);
   }
   const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
   assert.equal(direct.status, 202, direct.text);
@@ -2077,16 +2137,19 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture, holdDow
   };
 }
 
-for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback"]) test({
+for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback", "same-engine", "same-engine-rollback"]) test({
   switch: "a differing engine finishes its turn and carries waiting work through a release switch",
   rollback: "a differing engine restores waiting work after a failed release trial",
   borrowed: "a differing engine leaves a borrowed worker's inbox alone",
   "holder-switch": "a signed differing-engine switch adopts the actual coding-agent holder",
   "holder-rollback": "a failed signed differing-engine trial adopts the same coding-agent holder after rollback",
+  "same-engine": "a signed server-only release keeps the actual engine and coding-agent holder running",
+  "same-engine-rollback": "a failed signed server-only trial retains the engine and coding-agent holder on rollback",
 }[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
   const rollback = mode.endsWith("rollback");
   const borrowed = mode === "borrowed";
-  const held = mode.startsWith("holder-");
+  const sameEngine = mode.startsWith("same-engine");
+  const held = mode.startsWith("holder-") || sameEngine;
   const holderProbe = process.env.KUVO_CONFORMANCE_HOLDER_PROBE;
   if (held && (!holderProbe || !path.isAbsolute(holderProbe) || !fs.existsSync(holderProbe))) {
     return t.skip("Set KUVO_CONFORMANCE_HOLDER_PROBE to the dedicated agent_holders test executable.");
@@ -2100,7 +2163,8 @@ for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-r
   });
   const { home, engine } = here;
   const workspace = path.join(home, "workspace");
-  const oldVersion = rollback ? "2.2.6" : "2.2.5", newVersion = rollback ? "2.2.7" : "2.2.6";
+  const oldVersion = sameEngine || rollback ? "2.2.6" : "2.2.5";
+  const newVersion = sameEngine ? oldVersion : rollback ? "2.2.7" : "2.2.6";
   const exe = process.platform === "win32" ? "opencode.exe" : "opencode";
   const oldEngine = borrowed ? path.join(here.env.HOME, `borrowed-${exe}`) : path.join(home, "engine", oldVersion, exe);
   const runtime = typescriptRuntime();
@@ -2167,14 +2231,14 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const members = { [`bin/${program}`]: rollback ? engineBytes : oldBinary, "bin/box-version": Buffer.from(targetVersion + "\n") };
     for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
     write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: targetVersion, engine: newVersion,
-      downgradeSafe: true, engines: [oldVersion, newVersion],
+      downgradeSafe: true, engines: [...new Set([oldVersion, newVersion])],
       files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
     const tar = path.join(release, "box.tar");
     assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
     const assets = await engineFeed(t, path.join(release, "engine"), engineBytes, { damageFirst: false });
     const system = process.platform === "win32" ? "windows" : process.platform;
     const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
-    const { hash, updateEnv } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
+    const { hash, updateEnv, releasePack } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { holdPack: sameEngine, engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
     write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
     write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
     write(path.join(home, previous, "bin/box-version"), current + "\n");
@@ -2203,6 +2267,89 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
         () => "the first resident must start its actual holder\n" + keeper.log(), 25000);
       assert.equal(startedHolder.resident, before.pid);
       assert.equal(startedHolder.generation, 1);
+    }
+    const finishHolder = async () => {
+      const finished = await until(() => checkpoint("agent-fixture-finished"),
+        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
+      assert.notEqual(finished.resident, startedHolder.resident);
+      assert.equal(finished.resident, readJSON(serve).pid);
+      assert.equal(finished.holder, startedHolder.holder);
+      assert.equal(finished.agent, startedHolder.agent);
+      assert.equal(finished.generation, 2);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
+      try {
+        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
+        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
+        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
+        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
+      } finally { db.close(); }
+    };
+    if (sameEngine) {
+      // These are the installed engine's generated files, not release assets.
+      const generated = ["config/opencode/plugins/kuvo-sandbox.js", "config/opencode/plugins/kuvo-defaults.js", "bin/kuvo-fence", "bin/kuvo-fence.js"];
+      const timestamp = new Date(1_700_000_000_000);
+      for (const file of generated) {
+        const destination = path.join(home, file);
+        write(destination, `generated ${file}\n`, { mode: 0o700 });
+        fs.utimesSync(destination, timestamp, timestamp);
+      }
+      const snapshot = () => generated.map(file => {
+        const destination = path.join(home, file), info = fs.statSync(destination);
+        return [file, digest(fs.readFileSync(destination)), info.mtimeMs, info.mode];
+      });
+      const originalFiles = snapshot();
+      const hold = path.join(home, "run/fleet-engine-hold.json");
+      const selected = `versions/${targetVersion}-${hash.slice(0, 12)}/bin`;
+      const selector = path.join(home, "active-release");
+      const sameWorker = () => {
+        const record = readJSON(path.join(home, "run/engine.json"));
+        assert.deepEqual([record.pid, record.port, record.version], [oldRecord.pid, oldRecord.port, oldVersion]);
+        assert.doesNotThrow(() => process.kill(worker.child.pid, 0));
+        assert.ok(engine.running.has(session), "the native turn is still running");
+        assert.deepEqual(snapshot(), originalFiles);
+        assert.equal(fs.existsSync(hold), false, "a server-only release must not hold the engine queue");
+        assert.equal(fs.existsSync(assets.calls), false, "the pin already installed is not downloaded again");
+      };
+      releasePack();
+      await until(() => {
+        sameWorker();
+        return fs.readFileSync(selector, "utf8") === selected;
+      }, "the signed server-only release should select without waiting for the native turn", peerTransferMs + keeperTrialMs);
+      sameWorker();
+      if (rollback) {
+        assert.doesNotThrow(() => process.kill(startedHolder.holder, 0));
+        assert.doesNotThrow(() => process.kill(startedHolder.agent, 0));
+        await until(() => {
+          sameWorker();
+          return fs.readFileSync(selector, "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous"));
+        }, "the actual failed trial should restore the earlier resident but not the engine", keeperTrialMs + peerTransferMs);
+      }
+      const after = await until(async () => {
+        try {
+          const record = readJSON(serve);
+          return record.pid !== before.pid && !fs.existsSync(path.join(home, "run/previous")) && (await request(record, "GET", "kuvo/info")).status === 200 && record;
+        } catch { return false; }
+      }, "the replacement resident should answer after its keeper verdict", keeperTrialMs + peerTransferMs);
+      sameWorker();
+      await finishHolder();
+      const active = await request(oldRecord, "GET", "api/session/active");
+      assert.equal(active.json.data[session].type, "busy");
+      const queued = await request(after, "POST", `api/session/${session}/prompt`, { id: "msg_sameEngineAfter", text: "queue after update", delivery: "queue" }, { "x-kuvo-from": "app" });
+      assert.equal(queued.status, 200, queued.text);
+      await until(() => engine.inboxes.get(session)?.some(row => row.id === "msg_sameEngineAfter"), "the new message should join the same engine's inbox");
+      assert.deepEqual(engine.inboxes.get(session).map(row => row.id), ["msg_inboxEngine", "msg_sameEngineAfter"]);
+      assert.deepEqual(engine.messages.get(session).map(row => row.id), ["msg_originalEngine"]);
+      assert.deepEqual(engine.interrupted, []);
+      assert.equal(engine.asked.filter(row => row.method === "DELETE" && row.path.includes("/inbox/")).length, 0);
+      assert.equal(engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt") && row.json?.text === "continue").length, 0);
+      assert.equal(fs.existsSync(path.join(home, "run/continue-after-update.json")), false);
+      const status = (await request(after, "GET", "kuvo/update")).json;
+      assert.equal(status.engineChange, undefined);
+      assert.equal(status.updating, null);
+      assert.equal(status.last.result, rollback ? "failed" : "updated");
+      assert.equal(status.version, rollback ? current : targetVersion);
+      return;
     }
     await until(() => {
       const failed = path.join(home, "run/fleet-cannot.json");
@@ -2340,23 +2487,7 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     assert.ok(received.text.includes(attached[0]));
     assert.deepEqual(received.files, [inline]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
-    if (held) {
-      const finished = await until(() => checkpoint("agent-fixture-finished"),
-        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
-      assert.notEqual(finished.resident, startedHolder.resident);
-      assert.equal(finished.resident, readJSON(serve).pid);
-      assert.equal(finished.holder, startedHolder.holder);
-      assert.equal(finished.agent, startedHolder.agent);
-      assert.equal(finished.generation, 2);
-      const { DatabaseSync } = await import("node:sqlite");
-      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
-      try {
-        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
-        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
-        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
-        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
-      } finally { db.close(); }
-    }
+    if (held) await finishHolder();
     const settled = (await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/update")).json;
     assert.equal(settled.updating, null);
     assert.equal(settled.engineChange, undefined);
@@ -2783,6 +2914,7 @@ async function releaseMailPeer(t, relay, observer, seed) {
 
     send: release => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), release }), secret, key).message)),
     announce: computer => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), agents: { at: Date.now(), list: [], computer } }), secret, key).message)),
+    activity: rows => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), activity: { at: Date.now(), part: 0, total: 1, rows } }), secret, key).message)),
     receive: match => receiveField(payload => payload.release, match),
     receiveComputer: match => receiveField(payload => payload.agents?.computer, match),
   };
@@ -4035,18 +4167,20 @@ fi
   const previousWork = path.join("workspace", "old-work");
   write(fault, "");
   write(path.join(home, previousWork), "keep earlier work");
+  const old = completedWipeReceipt(env.HOME);
   try {
     const failed = install("new");
     assert.equal(failed.status, 1, failed.error?.message ?? failed.stdout + failed.stderr);
     const failure = JSON.parse(failed.stdout);
     assert.deepEqual([failure.result, failure.verdict, failure.started], ["failed", "fresh", false]);
+    assert.deepEqual(readJSON(old.marker), { ...old.receipt, formatVersion: 1 });
     const firstId = fs.readFileSync(path.join(home, "machine-id"), "utf8");
     assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
     const table = fs.readFileSync(cron, "utf8");
     const status = install("status");
     assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
-    const { verdict, verb } = JSON.parse(status.stdout);
-    assert.deepEqual({ verdict, verb }, { verdict: "fresh", verb: "new" });
+    const { verdict, verb, offer, wipeReceipt } = JSON.parse(status.stdout);
+    assert.deepEqual({ verdict, verb, offer, wipeReceipt }, { verdict: "fresh", verb: null, offer: "reinstall-local", wipeReceipt: old.receipt });
     fs.rmSync(fault);
     const made = install("new");
     assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
@@ -4056,7 +4190,9 @@ fi
     assert.equal(fs.readFileSync(path.join(result.setAside, "run/link.json"), "utf8"), interruptedLink);
     const link = readJSON(path.join(home, "run/link.json"));
     assert.equal(link.setup.role, "primary");
+    assert.notEqual(link.setup.id, old.receipt.setup);
     assert.equal(link.mac, undefined);
+    assert.equal(fs.existsSync(old.marker), false);
     assert.notEqual(fs.readFileSync(path.join(home, "machine-id"), "utf8"), firstId);
     assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
     assert.equal(fs.readFileSync(cron, "utf8"), table);
@@ -4537,6 +4673,290 @@ function macInstallerRequest({ binary, env, release }, bundle, verb) {
   return [run.status, JSON.parse(run.stdout)];
 }
 
+test("installer refuses future or unreadable making markers before acting", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  if (!binary.typescript) privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.making-fixture") : undefined;
+  const ask = verb => {
+    if (bundle && verb !== "media-status") return macInstallerRequest(fixture, bundle, verb);
+    const install = ["install", `--${verb}`, "--root", ".kuvo-code"];
+    const args = binary.typescript
+      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install]
+      : verb === "media-status" ? ["install", "--status", "--root", ".kuvo-code", "--media", release, ...(bundle ? ["--app", bundle] : [])]
+      : verb === "status" ? install : ["install-linux", verb === "shell-status" ? "status" : verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const inventory = () => fs.readdirSync(home, { recursive: true }).sort().map(relative => {
+    const file = path.join(home, relative);
+    return [relative, fs.statSync(file).isDirectory() ? null : digest(fs.readFileSync(file))];
+  });
+  const verbs = process.platform === "win32" ? ["status"] : ["status", "new", "move"];
+  if (!binary.typescript) verbs.push("media-status", ...(process.platform === "linux" ? ["shell-status"] : []));
+  for (const installed of [false, true]) {
+    if (installed) {
+      write(path.join(home, "box/kind"), "machine\n");
+      write(path.join(home, process.platform === "win32" ? "bin/kuvo-box.exe" : "bin/kuvo-start"), "existing launcher");
+      write(path.join(home, "workspace/notes"), "saved work");
+    }
+    for (const relative of ["updates/install/making", "updates/rehome/new"]) {
+      const marker = path.join(home, relative);
+      for (const bytes of ["1\n", '{"at":1}', '{"at":1,"formatVersion":0}', '{"at":1,"formatVersion":1}']) {
+        write(marker, bytes);
+        const [code, reply] = ask("status");
+        assert.equal(code, 0, JSON.stringify(reply));
+      }
+      for (const [bytes, message] of [
+        ['{"at":1,"formatVersion":2,"extra":{"keep":true}}', "Interrupted installation marker format version 2 is unsupported (this build writes 1)."],
+        ['{"at":', "Interrupted installation marker isn't a JSON object."],
+        ['{"formatVersion":1}', "The interrupted installation marker is unreadable."],
+      ]) {
+        write(marker, bytes);
+        const before = inventory();
+        for (const verb of verbs) {
+          const [code, reply] = ask(verb);
+          assert.equal(code, 1, `${relative} ${verb}: ${JSON.stringify(reply)}`);
+          assert.deepEqual(reply, { result: "refused", message });
+          assert.deepEqual(inventory(), before);
+        }
+      }
+      fs.unlinkSync(marker);
+    }
+  }
+});
+
+test("installer checks the selected installed receipt before judging or staging", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  env.HOME = env.USERPROFILE = fs.realpathSync(env.HOME);
+  const home = path.join(env.HOME, ".kuvo-code");
+  if (!binary.typescript) privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.receipt-fixture") : undefined;
+  const ask = verb => {
+    if (bundle && verb !== "media-status") return macInstallerRequest(fixture, bundle, verb);
+    const args = binary.typescript ? ["--config=/dev/null", "--no-env-file", binary.file, "install", `--${verb}`, "--root", ".kuvo-code"]
+      : verb === "media-status" ? ["install", "--status", "--root", ".kuvo-code", "--media", release, ...(bundle ? ["--app", bundle] : [])]
+      : verb === "status" ? ["install", "--status", "--root", ".kuvo-code"] : ["install-linux", verb === "shell-status" ? "status" : verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, { cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000 });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const primary = path.join(home, "bin/.installed.json"), legacy = path.join(home, "updates/installed.json");
+  const verbs = process.platform === "win32" ? ["status"] : ["status", "new", "move"];
+  if (!binary.typescript) verbs.push("media-status", ...(process.platform === "linux" ? ["shell-status"] : []));
+  for (const file of [legacy, primary]) {
+    for (const bytes of ['{}', '{"formatVersion":0}', '{"formatVersion":1}']) {
+      write(file, bytes);
+      assert.equal(ask("status")[0], 0);
+    }
+    for (const [bytes, message] of [['{"formatVersion":2,"extra":{"keep":true}}', "Installed Box receipt format version 2 is unsupported (this build writes 1)."], ['{', `Kuvo cannot read ${file}; its bytes were kept.`], ['[]', `Kuvo cannot read ${file}; its bytes were kept.`]]) {
+      write(file, bytes);
+      for (const verb of verbs) {
+        assert.deepEqual(ask(verb), [1, { result: "refused", message }]);
+        assert.equal(fs.readFileSync(file, "utf8"), bytes);
+        assert.equal(fs.existsSync(path.join(home, "active-release")), false);
+      }
+    }
+    fs.unlinkSync(file);
+  }
+  write(legacy, '{"formatVersion":2}');
+  write(primary, '{"formatVersion":1}');
+  assert.equal(ask("status")[0], 0, "the selected receipt wins over legacy");
+  assert.equal(fs.readFileSync(legacy, "utf8"), '{"formatVersion":2}');
+  if (!binary.typescript) {
+    const selected = "versions/0.8.0-111111111111/bin";
+    write(path.join(home, "active-release"), selected);
+    write(path.join(home, selected, ".installed.json"), '{"formatVersion":2}');
+    assert.deepEqual(ask("status"), [1, { result: "refused", message: "Installed Box receipt format version 2 is unsupported (this build writes 1)." }]);
+  }
+});
+
+// Directory identity is read from the same native metadata as the wipe journal.
+function wipeDirectoryIdentity(folder) {
+  if (process.platform !== "win32") {
+    const { dev, ino } = fs.lstatSync(folder, { bigint: true });
+    return `${dev}:${ino}`;
+  }
+  const script = `
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class FixtureDirectoryId {
+  [StructLayout(LayoutKind.Sequential)] public struct Id { public ulong Volume, Low, High; }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr x, uint d, uint f, IntPtr t);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Id i, uint n);
+  public static string Read(string p) {
+    using (var h = CreateFile(p, 0x80, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      Id i; if (h.IsInvalid || !GetFileInformationByHandleEx(h, 18, out i, 24)) throw new System.ComponentModel.Win32Exception();
+      return i.Volume + ":" + i.Low + ":" + i.High;
+    }
+  }
+}
+
+'@
+    [FixtureDirectoryId]::Read($env:KUVO_FIXTURE_DIRECTORY)
+  `;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    env: { ...process.env, KUVO_FIXTURE_DIRECTORY: folder }, encoding: "utf8", timeout: 15000,
+  });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  const [volume, low, high] = result.stdout.trim().split(":");
+  return `${volume}:${BigInt(low) + (BigInt(high) << 64n)}`;
+}
+
+function completedWipeReceipt(profile) {
+  const receipts = path.join(profile, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe");
+  const receipt = { setup: "set_" + Buffer.alloc(16, 15).toString("base64url"), operation: Buffer.alloc(16, 91).toString("base64url") };
+  write(marker, JSON.stringify({ ...receipt, formatVersion: 1 }), { mode: 0o600 });
+  fs.chmodSync(receipts, 0o700);
+  return { marker, receipt };
+}
+
+test("installer resumes only the authorized detached wipe and offers reinstall", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.wipe-fixture") : undefined;
+  const ask = verb => {
+    if (bundle) return macInstallerRequest(fixture, bundle, verb);
+    const install = ["install", `--${verb}`, "--root", ".kuvo-code"];
+    const args = binary.typescript
+      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", release]
+      : verb === "status" ? install : ["install-linux", verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const setup = "set_" + Buffer.alloc(16, 15).toString("base64url"), operation = Buffer.alloc(16, 91).toString("base64url");
+  const receipts = path.join(env.HOME, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe"), detached = path.join(receipts, `erase-${operation}`);
+  if (!binary.typescript) { privateWindowsHome(receipts); privateWindowsHome(home); }
+  const old = path.join(detached, "data/old.txt"), replacement = path.join(home, "desktop/marker");
+  write(old, "the old installation"); write(replacement, "keep for reinstall");
+  fs.chmodSync(receipts, 0o700);
+  const oldId = wipeDirectoryIdentity(detached), newId = wipeDirectoryIdentity(home);
+  const keep = (source, phase = "erasing") => {
+    write(marker, JSON.stringify({ setup, operation, phase, source, formatVersion: 1 }), { mode: 0o600 });
+    fs.chmodSync(marker, 0o600);
+  };
+  const waits = () => {
+    const [code, answer] = ask("status");
+    assert.equal(code, 0);
+    assert.deepEqual([answer.verdict, answer.verb, answer.offer, answer.message], ["waits", null, undefined, "This computer’s wipe hasn’t finished."]);
+    assert.equal(fs.readFileSync(old, "utf8"), "the old installation");
+    assert.equal(fs.readFileSync(replacement, "utf8"), "keep for reinstall");
+  };
+  const unapproved = path.join(home, "run/link.json");
+  write(unapproved, JSON.stringify({ setup: { id: setup, role: "primary" }, localWipe: { setup, operation } }), { mode: 0o600 });
+  waits();
+  assert.equal(fs.existsSync(marker), false, "a marker without committed authority must not erase anything");
+  fs.unlinkSync(unapproved);
+  keep(newId); // The recorded inode is not the retired directory: refuse to erase.
+  waits();
+  keep(oldId);
+  const lock = path.join(env.HOME, ".kuvo-code-wipe.lock");
+  write(path.join(lock, `owner-${process.pid}-${"a".repeat(16)}`), "");
+  waits();
+  if (process.platform !== "win32") {
+    const [code, answer] = ask("new");
+    assert.equal(code, 4);
+    assert.deepEqual([answer.result, answer.verdict, answer.message], ["waits", "waits", "This computer’s wipe hasn’t finished."]);
+  }
+  fs.rmSync(lock, { recursive: true });
+  // The future maker must be refused before the status is allowed to resume a wipe.
+  const making = path.join(home, "updates/install/making");
+  write(making, '{"at":1,"formatVersion":2}');
+  const [refused, answer] = ask("status");
+  assert.equal(refused, 1);
+  assert.equal(answer.result, "refused");
+  assert.ok(fs.existsSync(old));
+  fs.unlinkSync(making);
+  for (const phase of ["erasing", "detached"]) {
+    // Both journal checkpoints are resumable, including a crash after the rename.
+    if (!fs.existsSync(detached)) { write(old, "the old installation"); keep(wipeDirectoryIdentity(detached), phase); }
+    const [code, reply] = ask("status");
+    assert.equal(code, 0);
+    assert.deepEqual([reply.verdict, reply.verb, reply.offer, reply.wipeReceipt], ["fresh", null, "reinstall-local", { setup, operation }]);
+    assert.equal(fs.existsSync(detached), false);
+    assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
+    assert.equal(fs.readFileSync(replacement, "utf8"), "keep for reinstall");
+  }
+  assert.deepEqual(ask("status")[1].wipeReceipt, { setup, operation });
+});
+
+test("installer completes the real standalone wipe after its owner stops", { timeout: 60000 }, async t => {
+  const fixture = box(t);
+  const { env, binary } = fixture;
+  if (binary.typescript) return t.skip("The native signed standalone removal receipt is the carried authority.");
+  const home = path.join(env.HOME, ".kuvo-code");
+  privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.wipe-owner-fixture") : undefined;
+  const ask = () => {
+    if (bundle) return macInstallerRequest(fixture, bundle, "status");
+    const result = spawnSync(binary.file, ["install", "--status", "--root", ".kuvo-code"], {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const data = path.join(home, "data/old-work"), outside = path.join(env.HOME, "outside");
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "run/link.json"), '{"name":"Last computer","phones":[]}');
+  write(data, "old work"); write(outside, "not part of the installation");
+  const relay = await localRelay();
+  const resident = startBox({ binary, home, env, relay });
+  try {
+    const record = await resident.ready();
+    const before = (await request(record, "GET", "kuvo/setup")).json;
+    const operation = Buffer.alloc(16, 93).toString("base64url");
+    const lock = path.join(env.HOME, ".kuvo-code-wipe.lock");
+    write(path.join(lock, `owner-${process.pid}-${"b".repeat(16)}`), "");
+    const response = await request(record, "POST", `kuvo/computers/${before.you.key}/unlink`, { operation }, { "x-kuvo-from": "mac" });
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.json.removal.state, "wipe-pending");
+    await resident.exited;
+    const receiptFolder = path.join(env.HOME, ".kuvo-code-removal-receipts");
+    const marker = path.join(receiptFolder, "last-setup-wipe");
+    if (process.platform === "win32") {
+      // The resident's own eraser waits for its exact parent, then sees our lock.
+      const exe = path.join(receiptFolder, `eraser-${resident.child.pid}`, "kuvo-box.exe");
+      const script = `@(Get-CimInstance Win32_Process -Filter "Name='kuvo-box.exe'" | Where-Object ExecutablePath -eq $env:KUVO_FIXTURE_ERASER).Count`;
+      await until(() => {
+        const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          env: { ...env, KUVO_FIXTURE_ERASER: exe }, encoding: "utf8", timeout: 10000,
+        });
+        return result.status === 0 && result.stdout.trim() === "0";
+      }, "the resident's own eraser should exit while the receipt lock is held", 20000, 100);
+    }
+    const [waiting, held] = ask();
+    assert.equal(waiting, 0);
+    assert.deepEqual([held.verdict, held.verb, held.offer], ["waits", null, undefined]);
+    assert.equal(fs.readFileSync(data, "utf8"), "old work");
+    assert.equal(fs.existsSync(marker), false);
+    fs.rmSync(lock, { recursive: true });
+    const [code, after] = ask();
+    assert.equal(code, 0);
+    assert.deepEqual([after.verdict, after.verb, after.offer, after.wipeReceipt], ["fresh", null, "reinstall-local", { setup: before.setup, operation }]);
+    assert.equal(fs.existsSync(home), false);
+    assert.deepEqual(readJSON(marker), { setup: before.setup, operation, formatVersion: 1 });
+    assert.equal(fs.readFileSync(outside, "utf8"), "not part of the installation");
+  } finally { await resident.stop(); await relay.close(); }
+});
+
 test("the Mac installer offers a move when the earlier app still has work", t => {
   if (process.platform !== "darwin") return t.skip("Uses the earlier Mac app's home.");
   const fixture = box(t);
@@ -4839,11 +5259,17 @@ esac
       const status = install("status", fresh, freshTools);
       assert.equal(status.status, 0, status.stderr);
       assert.equal(JSON.parse(status.stdout).verb, "new");
+      const old = completedWipeReceipt(fresh);
+      const offer = install("status", fresh, freshTools);
+      assert.equal(offer.status, 0, offer.stderr);
+      const { verdict, verb, offer: reinstall, wipeReceipt } = JSON.parse(offer.stdout);
+      assert.deepEqual({ verdict, verb, reinstall, wipeReceipt }, { verdict: "fresh", verb: null, reinstall: "reinstall-local", wipeReceipt: old.receipt });
       const made = install("new", fresh, freshTools);
       assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
       const answer = JSON.parse(made.stdout.trim().split("\n").at(-1));
       assert.equal(answer.result, "done");
       assert.equal(answer.started, true);
+      assert.equal(fs.existsSync(old.marker), false);
       const home = path.join(fresh, ".kuvo-code");
       assert.equal(readJSON(path.join(home, "box.json")).launch, "rust");
       installedRelease(home);
@@ -4986,4 +5412,304 @@ test("a TypeScript updater stages the signed Rust pack for its own target", t =>
   assert.equal(readJSON(path.join(prepared, "box.json")).launch, "rust");
   assert.deepEqual(readJSON(path.join(home, "run/fleet-ready.json")), { version, sha256: hash });
   assert.equal(fs.readFileSync(path.join(home, "bin/box-version"), "utf8"), "0.8.0-beta.1\n");
+});
+
+// Add the test producer's part without racing the actual engine/agent background writers.
+async function menuBackground(file, sessions) {
+  const folder = path.dirname(file), lock = path.join(folder, ".background.lock");
+  fs.mkdirSync(folder, { recursive: true });
+  await until(() => {
+    try { fs.mkdirSync(lock); return true; }
+    catch (error) { if (error.code === "EEXIST") return false; throw error; }
+  }, "the background writer's lock", 3000);
+  const temporary = file + `.menu-fixture-${process.pid}`;
+  try {
+    const kept = fs.existsSync(file) ? readJSON(file) : {};
+    write(temporary, encode({ ...kept, fixture: { folders: [], sessions } }));
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+    fs.rmdirSync(lock);
+  }
+}
+
+test("the Helper menu counts local turns, asks and background work and follows changes", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Helper menu facts");
+  const now = Date.now();
+  const work = Array.from({ length: 25 }, (_, n) => sessionOf({ id: `ses_work${n}`, title: `Work ${n}`, directory: here.home, updated: now - 100 + n }));
+  const asking = sessionOf({ id: "ses_asking", title: "Choose\n next step", directory: here.home, updated: now });
+  const finished = sessionOf({ id: "ses_finished", title: "Finished", directory: here.home });
+  const archived = sessionOf({ id: "ses_archived", title: "Archived", directory: here.home, archived: true });
+  const sub = sessionOf({ id: "ses_sub", title: "Subagent", directory: here.home, parent: work[0].id });
+  here.engine.sessions.push(...work, asking, finished, archived, sub);
+  for (const session of [...work, archived, sub]) here.engine.running.add(session.id);
+  const bot = "bot_scout", folder = path.join(here.home, "bots", bot);
+  const lead = sessionOf({ id: "ses_scout", directory: folder });
+  here.engine.sessions.push(lead);
+  asking.metadata = { kuvo: { startedBy: lead.id, line: [lead.id] } };
+  work[24].metadata = { kuvo: { startedBy: lead.id, line: [lead.id], by: { bot } } };
+  write(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Scout" }));
+  write(path.join(folder, "session"), lead.id);
+  write(path.join(here.home, "run/work-queue/queues/usr_you.json"), JSON.stringify({ formatVersion: 1, items: [
+    { id: "wqi_" + "a".repeat(20), title: "Needs you", status: "needs-you" },
+  ] }));
+  const resident = await here.start().ready();
+  const read = async () => {
+    const reply = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json;
+  };
+  await until(() => here.engine.subscribers() > 0, "the resident to follow asks and sessions");
+  const form = { id: "form_helper", sessionID: asking.id, title: "Choose next step", fields: [] };
+  here.engine.forms.set(asking.id, [form]);
+  here.engine.emit({ type: "form.created", data: { form } });
+  const initial = await until(async () => {
+    const facts = await read();
+    return facts.working === 25 && facts.asking.some(row => row.id === asking.id) && facts.waiting.bots === 1 && facts;
+  }, "the real session and ask facts");
+  assert.equal(initial.applies, false);
+  assert.equal(initial.sessions.length, 20);
+  assert.equal(initial.sessions[0].bot, "Scout");
+  assert.deepEqual(initial.sessions.map(row => row.id), work.slice(5).reverse().map(row => row.id));
+  assert.deepEqual(initial.waiting, (await request(resident, "GET", "kuvo/waiting")).json);
+  assert.deepEqual(initial.waiting, { sessions: 1, bots: 1, queue: 1 });
+  assert.equal(initial.asking[0].title, "Choose next step");
+  assert.ok(initial.asking[0].asks);
+  assert.equal(initial.busy, true);
+  assert.equal(initial.background, 0);
+  assert.equal(initial.computers[0].waiting, 1);
+  assert.deepEqual(initial.computers[0].sessions, initial.sessions);
+  assert.deepEqual(initial.computers[0].asking, initial.asking);
+  assert.deepEqual(initial.rings, []);
+  assert.equal((await request(resident, "POST", "kuvo/box/at-work", {})).status, 405);
+  const background = path.join(here.home, "run/work/background.json");
+  const task = id => ({ tasks: [{ id, since: Date.now() }] });
+  await menuBackground(background, {
+    ses_backgroundOnly: task("task_finished"), [work[1].id]: task("task_alreadyCounted"),
+    ses_expired: { tasks: [{ id: "task_expired", since: now - 7 * 3_600_000 }] },
+  });
+  const withBackground = await read();
+  assert.equal(withBackground.background, 1);
+  assert.equal(withBackground.working, 25, "the working session outside the first twenty is counted once");
+  await menuBackground(background, {});
+  const events = await openLine(resident, "", "kuvo/box/at-work/events", {}, 20_000);
+  try {
+    assert.equal(events.status, 200);
+    assert.equal(events.type, "application/x-ndjson");
+    const frames = events.frames();
+    const first = (await frames.next()).value;
+    assert.equal(first.working, 25);
+    assert.equal(first.background, 0);
+    here.engine.running.delete(work[1].id);
+    here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: work[1].id } });
+    await until(async () => (await read()).working === 24, "the finished turn to leave the active list");
+    let changed;
+    do { changed = await frames.next(); assert.equal(changed.done, false); } while (changed.value.working !== 24);
+    assert.equal(changed.value.background, 0);
+    assert.equal(changed.value.busy, true);
+    // A retained background task can outlive the session row.
+    await menuBackground(background, { ses_backgroundOnly: task("task_background") });
+    do { changed = await frames.next(); assert.equal(changed.done, false); } while (changed.value.background !== 1);
+    assert.equal(changed.value.working, 24);
+  } finally { events.close(); }
+});
+
+test("the Helper menu uses authenticated peer facts, and omits unknown and away counts", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("Helper peer facts");
+  const { main, member, spare } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const peer = await releaseMailPeer(t, relay, main, 2);
+  await releaseMailPeer(t, relay, main, 3);
+  const local = sessionOf({ id: "ses_local", title: "Local work", directory: here.home });
+  const bot = "bot_menu", folder = path.join(here.home, "bots", bot);
+  const lead = sessionOf({ id: "ses_menulead", directory: folder });
+  here.engine.sessions.push(local, lead);
+  write(path.join(folder, "bot.json"), encode({ kuvo: 1, id: bot, name: "Menu bot" }));
+  write(path.join(folder, "session"), lead.id);
+  here.engine.running.add(local.id);
+  const resident = await here.start().ready();
+  await peer.ready();
+  const menu = async () => {
+    const answer = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const read = async () => (await menu()).computers;
+  peer.announce({ version: "0.8.0" });
+  const known = await until(async () => {
+    const rows = await read();
+    return rows.find(row => row.key === member.key)?.reach === "connected" && rows;
+  }, "the older peer should be heard");
+  assert.equal(known[0].key, main.key);
+  assert.equal(known[0].here, true);
+  assert.deepEqual(known.slice(1).map(row => row.key), [member.key, spare.key]);
+  assert.equal(known[1].working, undefined);
+  assert.equal(known[1].waiting, undefined);
+  assert.deepEqual(known[1].sessions, []);
+  assert.deepEqual(known[1].asking, []);
+  assert.equal(known[2].reach, "connecting");
+  peer.announce({ working: 2, atWork: [{ id: "ses_one", title: "Ship\n release" }, { id: "bad id" }], waiting: 12,
+    asking: [{ id: "bad id" }, ...Array.from({ length: 11 }, (_, n) => ({ id: `ses_ask${n}`, title: `Ask ${n}`, asks: "asks\n a question" }))] });
+  const told = await until(async () => (await read()).find(row => row.key === member.key && row.waiting === 12), "the peer should say its current facts");
+  assert.equal(told.working, 2);
+  assert.deepEqual(told.sessions, [{ id: "ses_one", title: "Ship release" }]);
+  assert.equal(told.asking.length, 10);
+  assert.deepEqual(told.asking[0], { id: "ses_ask0", title: "Ask 0", asks: "asks a question" });
+  peer.activity([{ session: "ses_peerask", title: "Peer ask", state: "asking", line: [lead.id], bot }]);
+  await until(async () => (await menu()).waiting.bots === 1, "the bot's delegated ask on its other computer");
+  assert.deepEqual((await menu()).waiting, (await request(resident, "GET", "kuvo/waiting")).json);
+  peer.activity([]);
+  await until(async () => (await menu()).waiting.bots === 0, "the remote ask to clear");
+  const announced = await peer.receiveComputer(facts => facts.working === 1 && facts.waiting === 0);
+  assert.deepEqual(announced.atWork, [{ id: local.id, title: "Local work" }]);
+  assert.deepEqual(announced.asking, []);
+  write(path.join(here.home, "run/peer-reach.json"), JSON.stringify({ [member.key]: Date.now() }));
+  const away = await until(async () => (await read()).find(row => row.key === member.key && row.reach === "away"), "the peer should be found away");
+  assert.equal(away.working, undefined);
+  assert.equal(away.waiting, undefined);
+  assert.deepEqual(away.sessions, []);
+  assert.deepEqual(away.asking, []);
+  write(path.join(here.home, "run/reach-again.json"), JSON.stringify({ [member.key]: Date.now() }));
+  const connecting = await until(async () => (await read()).find(row => row.key === member.key && row.reach === "connecting"), "the active Connect request should be visible");
+  assert.equal(connecting.working, undefined);
+  peer.announce({ working: 1, atWork: [{ id: "ses_back" }], waiting: 0, asking: [] });
+  const back = await until(async () => (await read()).find(row => row.key === member.key && row.working === 1 && row.reach === "connected"), "the returning peer should be heard");
+  assert.deepEqual(back.sessions, [{ id: "ses_back" }]);
+  assert.equal(back.waiting, 0);
+  assert.deepEqual(back.asking, []);
+});
+
+test("the Helper menu projects account rings and follows readings and sign-out", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (!binary.typescript && process.env.KUVO_CONFORMANCE_AGENT_FIXTURE !== "1") {
+    return t.skip("Use the agent-runtime-fixture build for the plan-limit source stand-in.");
+  }
+  const { computer, relay } = await bench(t);
+  const here = await computer("Helper account rings");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const claude = { service: "claude", title: "Claude", boxes: [{ here: true }, { key: member.key }, { key: member.key }] };
+  const other = { service: "codex", title: "Codex · Work", boxes: [{ key: main.key }], rings: { short: { used: 1.4, level: "over" }, long: { used: "bad", level: "calm" } } };
+  let rows = [claude, other, { service: "ended", title: "Ended", ended: true }, { service: "invalid" },
+    { service: "gemini", title: "Gemini", boxes: [], rings: { short: { used: -0.2, level: "calm" } } }];
+  const streams = new Set();
+  if (binary.typescript) {
+    const service = createServer((req, res) => {
+      if (req.url === "/api/kuvo/limits") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(encode({ rows }));
+      }
+      if (req.url === "/api/kuvo/usage-events") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"type":"server.connected"}\n\n');
+        streams.add(res);
+        res.once("close", () => streams.delete(res));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    service.listen(0, "127.0.0.1");
+    await once(service, "listening");
+    t.after(() => { service.close(); service.closeAllConnections(); });
+    // The TypeScript resident leaves a running services owner in place.
+    const serviceOwner = launch(process.execPath, ["-e", "setTimeout(() => {}, 120_000)", "box-services"], here.env, here.home);
+    t.after(() => serviceOwner.stop());
+    write(path.join(here.home, "run/box-services.json"), encode({ formatVersion: 1, pid: serviceOwner.child.pid, port: service.address().port, password: "a".repeat(48) }));
+  }
+  const publish = next => {
+    rows = next;
+    if (binary.typescript) {
+      for (const stream of streams) stream.write('data: {"type":"kuvo.limits.updated","data":{}}\n\n');
+    } else write(path.join(here.home, "run/plan-limit-rows-fixture.json"), encode(rows));
+  };
+  publish(rows);
+  const resident = await here.start().ready();
+  const menu = async () => {
+    const answer = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const initial = await until(async () => {
+    const facts = await menu();
+    return facts.rings.length === 3 && facts;
+  }, "the limits source to publish its rows");
+  const expected = [{ service: "claude", title: "Claude" }, { service: "codex", title: "Codex · Work", short: { used: 1, level: "over" } },
+    { service: "gemini", title: "Gemini", short: { used: 0, level: "calm" } }];
+  assert.deepEqual(initial.rings, expected);
+  assert.deepEqual(initial.computers[0].rings, expected.slice(0, 2));
+  assert.deepEqual(initial.computers.find(row => row.key === member.key).rings, expected.slice(0, 1));
+  const events = await openLine(resident, "", "kuvo/box/at-work/events", {}, 40_000);
+  try {
+    const frames = events.frames();
+    assert.deepEqual((await frames.next()).value.rings, expected);
+    if (binary.typescript) await until(() => streams.size > 0, "the resident to follow its services limits events");
+    const reading = { ...claude, rings: { short: { used: 0.62, level: "calm" }, long: { used: 0.34, level: "calm" } } };
+    publish([reading]);
+    let changed;
+    do { changed = await frames.next(); assert.equal(changed.done, false); } while (changed.value.rings.length !== 1);
+    assert.deepEqual(changed.value.rings, [{ service: "claude", title: "Claude", short: reading.rings.short, long: reading.rings.long }]);
+    assert.deepEqual(changed.value.computers[0].rings, changed.value.rings);
+    assert.deepEqual(changed.value.computers.find(row => row.key === member.key).rings, changed.value.rings);
+    publish([]);
+    do { changed = await frames.next(); assert.equal(changed.done, false); } while (changed.value.rings.length !== 0);
+    assert.ok(changed.value.computers.every(row => row.rings.length === 0));
+  } finally { events.close(); }
+});
+
+test("the Helper menu applies only to an own-home Mac", async t => {
+  if (process.platform !== "darwin") return t.skip("Only a Mac's Helper has a menu.");
+  const binary = boxBinary();
+  const { computer, relay } = await bench(t);
+  const here = await computer("Helper menu applicability");
+  write(path.join(here.home, "box/kind"), "mac\n");
+  write(path.join(here.home, "run/mac-link.json"), encode({ phones: true, relay: relay.url, name: "Menu Mac", app: "0.8.0" }));
+  const child = startBox({ binary, home: here.home, relay, env: here.env, mac: true });
+  try {
+    const resident = await child.ready();
+    const answer = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual([answer.json.applies, answer.json.working, answer.json.background, answer.json.busy], [true, 0, 0, false]);
+    assert.equal(answer.json.computers[0].kind, "mac");
+    assert.equal(answer.json.computers[0].name, "Menu Mac");
+    const info = await request(resident, "GET", "kuvo/info");
+    assert.ok(info.json.features.includes("box.atWork"));
+  } finally { await child.stop(); }
+});
+
+
+test("the Helper menu includes a known session's background work in the list", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Helper retained background");
+  const bot = "bot_background", folder = path.join(here.home, "bots", bot);
+  const session = sessionOf({ id: "ses_background", title: "Background task", directory: folder });
+  here.engine.sessions.push(session);
+  write(path.join(folder, "bot.json"), encode({ kuvo: 1, id: bot, name: "Background bot" }));
+  write(path.join(folder, "session"), session.id);
+  const file = path.join(here.home, "run/work/background.json");
+  const task = id => ({ tasks: [{ id, since: Date.now() }] });
+  await menuBackground(file, { [session.id]: task("task_local"), ses_orphan: task("task_orphan") });
+  const resident = await here.start().ready();
+  const read = async () => {
+    const answer = await request(resident, "GET", "kuvo/box/at-work");
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const facts = await until(async () => { const facts = await read(); return facts.working === 1 && facts; }, "the known background session to be listed as working");
+  assert.deepEqual(facts.sessions, [{ id: session.id, title: session.title, bot: "Background bot" }]);
+  assert.equal(facts.background, 1);
+  assert.equal(facts.busy, true);
+  const list = await request(resident, "GET", "kuvo/sessions/list");
+  assert.equal(list.json.sessions[session.id].running, true);
+  const events = await openLine(resident, "", "kuvo/box/at-work/events", {}, 20_000);
+  try {
+    const frames = events.frames();
+    assert.equal((await frames.next()).value.working, 1);
+    await menuBackground(file, {});
+    // The engine's next session event observes the new background inventory too.
+    here.engine.emit({ type: "session.updated", data: { sessionID: session.id, info: session } });
+    let changed;
+    do { changed = await frames.next(); assert.equal(changed.done, false); } while (changed.value.busy);
+    assert.equal(changed.value.working, 0);
+    assert.equal(changed.value.background, 0);
+  } finally { events.close(); }
 });

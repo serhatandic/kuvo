@@ -799,12 +799,144 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **The wake tools on native Windows**: there's no `kuvo-wake` there, so they answer that it can't
-  be run. 5.1a's wake-ups on native Windows (`docs/architecture/windows.md`).
+- **The wake tools on native Windows**: done in 5.1e-3.
 - **stop_session from a coding agent's conversation**: refused as there, which finds only the
   engine's conversations as callers. 4.6.
-- **A wake tool's command cut short by the box stopping mid-run** (`runToolCommand`'s receipt): run
-  again when its call comes again. Its answer once given is kept, as any call's. Owner: 5.1a (the
-  wake-ups' commands).
+- **A wake tool's command cut short by the box stopping mid-run**: done in 5.1e-3.
 - Those following wake-ups are told as a tool changes them (`Wakes::changed`), as there.
 
+
+## 5.1c — notices
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `notices` (`Notices`, `Notice`, `Told`): kept in `run/notices/told.json` under its lock, short and in plain words, news ten minutes and what agents sent a day, three hundred at most; the history clients follow (`kuvo/notices`, 2.2) read again as each is kept | `notices/told.ts` `keepTold`, `readTold` |
+| `notices::news`: what's news in an event (a permission in a few plain words with what Always saves, a question, a failure with its reason, a reply that answers you: NOTIFY_RULE, `turn_for`, `answers_you`), where it opens and its project's name (`kuvo_services::git::ProjectNames`); from the engine's events and the coding agents' turns that ended (`Engine::agent_events`), followed in `Work::watch` | `notices/news.ts` `noticeFor`, `turnFor`, `answersYou`, `describePermission`, `describeForm`, `alwaysTitle`, `projectNameOf`; `engine/watch.ts`; `work/answers.ts` `sessionsWaitingOnServer` |
+| `notices::notify`: notify_user's sentence and limits (three an hour, twelve a day, two minutes apart, ten an hour from all agents, never the same sentence twice a day); the tool in `agent_tools::own` | `notices/notify.ts` |
+| `notices::words`: a reply's first sentence, Markdown taken off, addresses as names, a command as its programs, a reason only where it's words | `notices/sentence.ts`, `notices/plain.ts` |
+| `notices::mask`: what looks like a secret as dots, held to `box/test/fixtures/masking.json` | `notices/mask.ts` |
+
+### Proof
+
+- `KUVO_CONFORMANCE_AREA=notices`, a new area, on the machine and the Mac: a reply to you is news in
+  its first sentence; a lead's session answering it isn't; a failure with its reason; a permission
+  in a few plain words, its command never shown, so its buttons don't answer it, with what Always
+  saves. notify_user sends a sentence once; the same again, and nothing to say, are refused (on the
+  Mac only: the reference tells from a machine only through its bridge). Both pass against both
+  boxes; on the old Rust nothing was told and notify_user was refused.
+- `agents-codex.test.mjs`, a new case: a Codex conversation's reply to you is news. Both boxes.
+- Unit tests: the 41 masking cases; sentences, permissions and reasons; what began a turn; Always's
+  words; notify_user's limits.
+- Regressions: `tools` 10/10, `work` 15/15, `bots` 40/40, `agent-tools` 2/2, `agents-codex`,
+  `engine-sessions` 81/81, both boxes.
+- Linux (WSL, static musl): `notices` 4/4 (one skipped, as on the Mac), `tools` 10/10, `work`
+  15/15, `agent-tools` 2/2, `agents-codex` 54/54. Native Windows: not run for this part (the PC
+  was another row's).
+- Size: about 50,800 characters of Rust for about 50,500 of TypeScript: 1.0×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [notices-rule](../../box/test/notices-rule.test.ts) | 1, 4, 6 a reply to you, a lead's session's, a failure | `notices` scenario |
+| | 2, 3, 13 a bot's report and its own wake-up, a timer turn, a turn whose start is out of reach | `turn_for` and `answers_you` unit tests |
+| | 7 a question said as its question | `describe_form`'s unit test; `notice_for` |
+| | 8, 15 a reply's sentence | `words` unit tests |
+| | 9, 14, 16 notify_user once, its limits, all agents together, the same sentence after other writes | `notices` scenario; `past_limit`'s unit test |
+| | 12 a long turn read back to its start | `News::latest_turn`, unproven by a scenario |
+| | 5 a goal's word | retired with goal cards |
+| | 10 what agents send goes to your phones once | retired with phone push |
+| | 11 the history clients read | 2.2 |
+| [notices-plain](../../box/test/notices-plain.test.ts) | 1–7 commands, permissions, questions, finishes and asks in a few plain words | `words` unit tests and the `notices` scenario; the vault's, sandbox's and project asks' words with them (6.1) |
+| [masking](../../box/bridge-tests/masking.test.js) | the fixture | `mask`'s unit test |
+
+### Gaps and owners
+
+- **Holds and pushes to phones** (`notices/hold.ts`, `push.ts`, `run/held-notices.json`): retired
+  with phone push. The phone app is dropped for now and will be rebuilt as a new client, which can
+  bring its own delivery then. `kuvo/attention`'s leases stay (2.2).
+- **notify_user on a machine**: the Rust resident always tells (it is the bridge as well); the
+  reference tells from a machine only while its bridge runs.
+- **What the coding agents ask** (their cards): not news here yet; their turns' ends are. 4.x, with
+  their asks as events.
+- **Group chats' news** (`groupNotice`): 5.3. **A coding agent's update notice** (`updateNotice`):
+  4.x, with the agents' updates.
+- **Asks the box keeps** (`notices/asking.ts`: the vault's and the sandbox's): 6.1. **Usage
+  notices**: 5.4.
+- **A permission Auto's reviewer took up** is told as any other: the reviewer is 6.1.
+
+## 5.1e-3 — the wake tools on native Windows, and each wake command once
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `wakes::verbs` (`Wakes::run_verb`, `verb_in`): `kuvo-wake`'s add, watch, list and cancel for a conversation's or a bot's own wake-ups, for a computer that can't run the script (native Windows, which has no shell for it): the same folders, checks, limits and words, a time read as the script reads it on every computer (+30m, a time like 2026-10-16T09:00 on the folder's clock or with its zone, seconds), said as it says it. The client routes' `add_wake` and `add_watch` keep a summary and give back what they made | `keeper/kuvo-wake` (`add`, `watch`, `list`, `cancel`, `seconds`, `readable`, `summed`, `made`) |
+| `agent_tools::own`: the wake tools through the verbs on Windows, `kuvo-wake` elsewhere; with an operation, a command that changes something claimed in `run/tool-commands/<key>.json` and its result kept there (the TypeScript box's file), run in a task of its own so a call cut short doesn't stop it. Sent again: that result; while it runs here (or in the TypeScript box's worker): what it comes to; one whose run the box stopping cut off: "The command worker was interrupted after accepting the command.", never run again | `letters/own-tools.ts` `wakeTool`, `resumedWake`; `tool-command.ts` `runToolCommand`, `commandReceipt` |
+
+### Proof
+
+- A unit test runs the verbs and the script itself on the same bot folder (on Unix, where the script
+  runs): adding at a time, with a repeat and a summary, on weekdays (moved to the next weekday),
+  times that don't read, a repeat that doesn't, one in the past; a watch too often, with no check,
+  and one with a summary; the list; canceling one that isn't there and one by its letters; the list
+  after. Every answer is the same, ids aside. Another reads times as the script does.
+- `agent-tools.test.mjs`, a new case: a wake command whose run was cut off (claimed by a process
+  that's gone) says so and adds nothing; one sent twice with its operation is done once and says
+  the same. Passes against both boxes; the old Rust scheduled it again.
+- `tools`: the wake tools' scenario runs on native Windows again (the `unix` mark is gone); on
+  Windows it goes through the verbs and must say what `kuvo-wake` says on the Mac.
+- macOS, both boxes: `tools` 10/10, `bots` 40/40 (with the wake-up routes), `work` 15/15, `notices`
+  4/4, `agent-tools` 3/3. Linux (WSL, static musl): `tools` 10/10, `bots` 40/40, `notices` 4/4,
+  `agent-tools` 3/3. Native Windows, the Rust box: `tools` 10/10 (the wake tools through the
+  verbs), `bots` 40/40, `notices` 4/4 (one skipped, as elsewhere), `agent-tools` 3/3.
+
+### Gaps and owners
+
+- **A time in words** ("tomorrow 9am"): GNU `date` on Linux reads them, the BSD one on a Mac
+  doesn't; the verbs read what both do, as Windows has neither.
+- **A coding agent's conversation's wake-ups through its bridge** (`via`): with its conversations
+  as callers, 4.6.
+
+
+## 5.1d-1 — bots' old keys of their own
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `bots::own_keys`: as the resident starts, each bot's folder's settings (read as the engine reads them: comments, a last comma) without the servers that name a key of its own, noted first in `keys-gone.json`; a conversation open there connects them again; the keys go (not while an update is on trial, nor while this Mac's keys can't be reached or its move still owes the Keychain, tried again a minute later, twice as long each time); a bot whose settings can't be put right keeps its own | `bots/own-keys.ts` `settingsValue`, `dropOwnServers`, `dropBotsOwnServers`, `dropBotsOwnKeys`, `keepBotsOwnKeysGone`, `reconnectIn` |
+| `own_keys::keys_gone_note`, `forget_connected_keys` in what a bot is told (`Bots::told_now`, `freshen`): an integration it had a key for that isn't connected here, by its catalog name, and settings that still name its own | `keysGoneNote`, `forgetConnectedKeys` in `bots/tell.ts` |
+| `KeyStore::drop_bot_keys`: the host's (this Mac's Keychain) and the files in `box/keys`, `box/bot-keys` and `keys` | `keys.ts` `dropBotKeys` |
+| `upgrade::update_on_trial` reads the keeper's mark, `run/update-trial` (it read a file nothing writes) | `updates/update.ts` `updateOnTrial` |
+
+### Proof
+
+- `bot-keys.test.mjs`, two new cases against both boxes: as the box starts, a bot's server naming
+  its own key goes (its other server, and the settings' comment-free rest, stay), the key and an
+  earlier box's folder of bots' keys go, your own key stays, a bot whose settings can't be read
+  keeps its own; each is told what's so. While an update is on trial nothing goes; an integration
+  connected since is said no more and leaves the note. The trial case failed on the old Rust.
+- Unit tests: settings read as the engine reads them; a bot's own servers taken out and the rest
+  kept; another bot's key named there counts for nothing.
+- Regressions: `bots` 40/40, `integrations` 7/7, `tools` 10/10, both boxes on macOS; Linux (WSL):
+  `bots` 40/40, `integrations` 7/7, `bot-keys` 2/2. kuvo_services' integration tests pass (their
+  trial now written as the keeper writes it).
+- Size: about 14,100 characters of Rust for about 15,100 of TypeScript: 0.94×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bot-keys-gone](../../box/bridge-tests/bot-keys-gone.test.js) | 96, 120, 150, 163, 187 | `bot-keys.test.mjs`; `own_keys` unit tests |
+| | 209 settings that can't be rewritten | `drop_bots_own_servers` keeps that bot's keys; unproven by a case |
+| | 227 a bot's key among the box's own and an earlier Mac's folder | `drop_bot_keys` over the three folders; the case covers `box/keys` and `box/bot-keys` |
+| | 238, 247 a machine without a bridge; the gone key routes | the resident always starts it; the routes are gone (5.1b) |
+| [bot-keys-gone-host](../../box/bridge-tests/bot-keys-gone-host.test.js) | 51, 64, 79 this Mac's Keychain | `drop_bot_keys` asks the host as `key_names` does, tried again while it isn't answering; unproven by a case (no host stand-in in conformance) |
+
+### Gaps and owners
+
+- **A bot's conversation open as its servers go** is connected to this computer's own server two
+  seconds later, as there; proven only by reading.

@@ -6,8 +6,10 @@ mod install_media;
 mod install_released;
 mod bot_setup;
 mod model_stars;
+mod released_settings;
 mod serve;
 mod box_app;
+mod box_at_work;
 mod session_ownership;
 mod setup_search;
 #[cfg(target_os = "macos")]
@@ -168,6 +170,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let supervised =
         cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
+    let released_settings = match (word(0), word(1), args.len()) {
+        (Some("box"), Some("read" | "adopt" | "change"), 2) => word(1),
+        (Some("box"), Some("key"), 3) => word(1),
+        _ => None,
+    };
     let command = match (word(0), word(1), args.len()) {
         _ if serve || wipe => None,
         _ if join
@@ -179,11 +186,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || startup.is_some()
             || keeper.is_some()
             || probe.is_some()
-            || supervised =>
+            || supervised
+            || released_settings.is_some() =>
         {
             None
         }
-        (Some("route"), _, 1) => Some(ssh::Command::Route {
+        (Some("route"), _, 1) | (Some("box"), Some("route"), 2) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
         }),
@@ -258,6 +266,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{note}");
         }
         return Ok(ExitCode::from(outcome.status));
+    }
+    if let Some(verb) = released_settings {
+        return released_settings::run(&home, verb, word(2));
     }
     if identity {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
@@ -673,6 +684,41 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     }
 }
 
+fn refused_install_attempt(home: &Home) -> bool {
+    let checked = || -> Result<(), Box<dyn std::error::Error>> {
+        let bin = kuvo_keeper::fleet::selected(home)?.map_or_else(
+            || home.bin(),
+            |release| home.root().join(release.to_string()),
+        );
+        Ok(kuvo_move::install::check_preflight(home, &bin)?)
+    };
+    if let Err(error) = checked() {
+        println!(
+            "{}",
+            serde_json::json!({"result":"refused","message":error.to_string()})
+        );
+        return true;
+    }
+    false
+}
+
+const WIPE_WAIT: &str = "This computer’s wipe hasn’t finished.";
+
+fn wipe_waiting_status(home: &Home) -> serde_json::Value {
+    serde_json::json!({"verdict":"waits", "verb":null, "message":WIPE_WAIT,
+        "status":kuvo_move::rehome_status(home)})
+}
+
+fn install_wipe_offer(reply: &mut serde_json::Value, wipe: &kuvo_setup::wipe::InstallerWipe) {
+    if reply["verdict"] == "fresh"
+        && let Some(receipt) = wipe.receipt()
+    {
+        reply["verb"] = serde_json::Value::Null;
+        reply["offer"] = "reinstall-local".into();
+        reply["wipeReceipt"] = serde_json::json!(receipt);
+    }
+}
+
 fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
@@ -748,6 +794,14 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    if refused_install_attempt(&home) {
+        return Ok(ExitCode::FAILURE);
+    }
+    let wipe = kuvo_setup::wipe::installer_wipe(home.root(), true)?;
+    if wipe.waiting() {
+        println!("{}", wipe_waiting_status(&home));
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(media) = media {
         if !media.is_absolute() {
             return usage();
@@ -787,6 +841,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         return Ok(ExitCode::FAILURE);
     }
     let mut reply = serde_json::to_value(judge)?;
+    install_wipe_offer(&mut reply, &wipe);
     if reply["verdict"] == "two" {
         reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }

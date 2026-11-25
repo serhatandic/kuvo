@@ -172,13 +172,13 @@ fn random_letters(count: usize) -> String {
 }
 
 /// Something `kuvo-wake` would refuse, in its words (a client shows them).
-struct Said(String);
+pub(crate) struct Said(pub(crate) String);
 
 impl Wakes {
     /// A conversation's folder for its first wake-up or watch, made as `kuvo-wake` makes one:
     /// its session, its folder, and held while it's archived. None when it isn't a conversation
     /// here.
-    async fn folder_for(&self, session: &str) -> Option<PathBuf> {
+    pub(crate) async fn folder_for(&self, session: &str) -> Option<PathBuf> {
         if !folder::session_id(session) {
             return None;
         }
@@ -200,7 +200,14 @@ impl Wakes {
 
     /// A wake-up added as `kuvo-wake add` adds one: on the folder's clock, a weekday one moved to
     /// the next weekday at the same time.
-    fn add_wake(folder: &Path, due: i64, every: Option<&str>, note: &str) -> Result<(), Said> {
+    /// Its name (`<due>-<letters>[-<repeat>]`); `summary`, what its card shows.
+    pub(crate) fn add_wake(
+        folder: &Path,
+        due: i64,
+        every: Option<&str>,
+        summary: Option<&str>,
+        note: &str,
+    ) -> Result<String, Said> {
         let kept_in = || Said(format!("Couldn't keep it in {}.", folder.display()));
         if let Some(every) = every
             && !clock::repeats(every)
@@ -234,29 +241,34 @@ impl Wakes {
         };
         let wakes = folder.join("wakes");
         fs::create_dir_all(&wakes).map_err(|_| kept_in())?;
+        let letters = name.split('-').nth(1).unwrap_or_default().to_owned();
+        if let Some(summary) = summary {
+            let summaries = folder.join("summaries");
+            fs::create_dir_all(&summaries)
+                .and_then(|()| fs::write(summaries.join(&letters), summary))
+                .map_err(|_| kept_in())?;
+        }
         let fresh = folder.join(format!(".new-{name}"));
         fs::write(&fresh, note)
             .and_then(|()| fs::rename(&fresh, wakes.join(&name)))
             .map_err(|_| {
                 let _ = fs::remove_file(&fresh);
+                let _ = fs::remove_file(folder.join("summaries").join(&letters));
                 kept_in()
-            })
+            })?;
+        Ok(name)
     }
 
     /// A watch made as `kuvo-wake watch` makes one.
-    fn add_watch(folder: &Path, every: &str, check: &str, note: &str) -> Result<(), Said> {
-        let period = every.len() > 1 && {
-            let (count, unit) = every.split_at(every.len() - 1);
-            !count.starts_with('0')
-                && count.len() <= 6
-                && count.bytes().all(|b| b.is_ascii_digit())
-                && match (unit, count.parse::<u32>()) {
-                    ("m", Ok(count)) => count >= 5,
-                    ("h" | "d", Ok(count)) => count >= 1,
-                    _ => false,
-                }
-        };
-        if !period {
+    /// Its letters.
+    pub(crate) fn add_watch(
+        folder: &Path,
+        every: &str,
+        check: &str,
+        summary: Option<&str>,
+        note: &str,
+    ) -> Result<String, Said> {
+        if !period(every) {
             return Err(Said(format!(
                 "Couldn't read how often, \"{every}\". Use 5m or more, 2h or 1d."
             )));
@@ -276,13 +288,17 @@ impl Wakes {
             fs::write(fresh.join("check"), check)?;
             fs::write(fresh.join("note"), note)?;
             fs::write(fresh.join("next"), fire::now().to_string())?;
+            if let Some(summary) = summary {
+                fs::write(fresh.join("summary"), summary)?;
+            }
             fs::create_dir_all(folder.join("watches"))?;
             fs::rename(&fresh, folder.join("watches").join(&letters))
         })();
         made.map_err(|_| {
             let _ = fs::remove_dir_all(&fresh);
             Said(format!("Couldn't keep it in {}.", folder.display()))
-        })
+        })?;
+        Ok(letters)
     }
 
     async fn existing_or_new(&self, session: &str) -> Result<PathBuf, Refusal> {
@@ -330,7 +346,8 @@ impl Wakes {
                 format!("There are {WAKE_LIMIT} wake-ups waiting already. Cancel some first."),
             ));
         }
-        Self::add_wake(&folder, due.floor() as i64, every.as_deref(), &note)
+        Self::add_wake(&folder, due.floor() as i64, every.as_deref(), None, &note)
+            .map(drop)
             .map_err(|Said(words)| refused(StatusCode::BAD_REQUEST, words))?;
         self.changed();
         Ok(folder::read(&folder, Detail::Line))
@@ -356,7 +373,7 @@ impl Wakes {
         if folder::moving(&folder) {
             return Err(refused(StatusCode::CONFLICT, MOVING));
         }
-        Self::add_watch(&folder, &every, &check, &note)
+        Self::add_watch(&folder, &every, &check, None, &note)
             .map_err(|Said(words)| refused(StatusCode::BAD_REQUEST, words))?;
         self.changed();
         Ok(folder::read(&folder, Detail::Line))
@@ -577,6 +594,23 @@ fn restore_refusal() -> Refusal {
             "confirmRestoreRetry": true,
         }),
     )
+}
+
+/// Whether a watch's interval reads: 5m or more, 2h, 1d.
+pub(crate) fn period(every: &str) -> bool {
+    every.is_ascii()
+        && every.len() > 1
+        && {
+            let (count, unit) = every.split_at(every.len() - 1);
+            !count.starts_with('0')
+                && count.len() <= 6
+                && count.bytes().all(|b| b.is_ascii_digit())
+                && match (unit, count.parse::<u32>()) {
+                    ("m", Ok(count)) => count >= 5,
+                    ("h" | "d", Ok(count)) => count >= 1,
+                    _ => false,
+                }
+        }
 }
 
 /// Whether a client's repeat reads as one (`kuvo-wake` checks it further).

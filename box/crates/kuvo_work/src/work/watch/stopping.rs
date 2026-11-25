@@ -106,23 +106,10 @@ impl Work {
     ) -> (HashSet<String>, HashSet<String>) {
         let turns = working_now(engine).await;
         let mut working = turns.clone();
-        let file = self.home.join("run/work/background.json");
-        let kept = kuvo_store::files::text_of(&file)
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .unwrap_or_default();
-        let places = kept
-            .as_object()
-            .into_iter()
-            .flat_map(|places| places.values());
-        for place in places {
-            let sessions = place["sessions"].as_object().into_iter().flatten();
-            for (id, work) in sessions {
-                let work = serde_json::from_value::<Running>(work.clone()).ok();
-                if work.is_some_and(|work| work.counting(super::told::now()).is_some()) {
-                    working.insert(id.clone());
-                }
-            }
-        }
+        working.extend(kuvo_store::background::active_sessions(
+            &self.home.join("run"),
+            super::told::now(),
+        ));
         (working, turns)
     }
 

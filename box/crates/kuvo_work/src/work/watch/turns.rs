@@ -144,7 +144,7 @@ const FROM_SOMEONE: &[&str] = &[
     "[Decision changed]",
 ];
 
-fn written_by_you(message: &Value) -> bool {
+pub(crate) fn written_by_you(message: &Value) -> bool {
     let text = message["text"].as_str().unwrap_or_default();
     !message["metadata"]["kuvo"]["note"].is_object()
         && !NOT_YOURS.iter().any(|start| text.starts_with(start))
@@ -244,7 +244,7 @@ pub struct LastReply {
     pub whole: Vec<Value>,
 }
 
-async fn page(engine: &BotEngine, session: &str, query: &str) -> Option<Value> {
+pub(crate) async fn page(engine: &BotEngine, session: &str, query: &str) -> Option<Value> {
     let session =
         percent_encoding::utf8_percent_encode(session, percent_encoding::NON_ALPHANUMERIC);
     let path = format!("api/session/{session}/message?{query}");

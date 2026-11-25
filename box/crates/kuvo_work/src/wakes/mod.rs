@@ -12,6 +12,7 @@ mod fire;
 pub mod folder;
 mod inbox;
 mod routes;
+pub mod verbs;
 
 use std::{
     collections::HashSet,

@@ -262,6 +262,7 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        features.push("box.atWork");
         features.push("data.queued-device-authority");
         if self.backup_receiver {
             features.push("box.backups.relay");
@@ -300,36 +301,15 @@ impl View {
     }
 
     pub(crate) fn at_work(&self) -> Vec<GetKuvoComputersStatus200ComputersItemAtWorkItem> {
-        let Some(list) = self.local.list.as_ref() else {
-            return vec![];
-        };
-        let mut running: Vec<_> = list
-            .sessions
-            .iter()
-            .filter(|(_, row)| {
-                let facts = &row.facts;
-                facts.running == Some(true)
-                    && facts.asked.is_none()
-                    && facts.archived != Some(true)
-                    && facts.away != Some(true)
-                    && !matches!(facts.kind, lists::Kind::Subagent | lists::Kind::Hidden)
-            })
-            .collect();
-        running.sort_by(|(a_id, a), (b_id, b)| {
-            b.facts
-                .updated
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
-                .then(a_id.cmp(b_id))
-        });
-        running
+        self.local
+            .list
+            .as_ref()
             .into_iter()
+            .flat_map(lists::LocalList::working)
             .map(
-                |(id, row)| GetKuvoComputersStatus200ComputersItemAtWorkItem {
+                |(id, facts)| GetKuvoComputersStatus200ComputersItemAtWorkItem {
                     id: id.clone(),
-                    title: row
-                        .facts
+                    title: facts
                         .title
                         .as_deref()
                         .and_then(crate::directory::work_title),
@@ -989,6 +969,20 @@ impl Resident {
                     }
                     Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_))) => {
                         let now = clock();
+                        if let (relay::Event::Mail { key, envelope, .. }, Some(devices), Some(relay)) = (&event, &devices, &relay) {
+                            match devices.legacy_mail(*key, &envelope.0, now).await {
+                                Ok(Some(members)) => {
+                                    Arc::make_mut(&mut self.view.roster).members = members;
+                                    let hosts = self.view.roster.members.iter().filter_map(|member| member.host()).collect();
+                                    let _ = relay.sender.trust(grants.clone(), hosts).await;
+                                    if let Some(publisher) = &mut publisher {
+                                        publisher.request(self.view.clone(), now, Refresh::All);
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => eprintln!("Keeping released Mac roster: {error}"),
+                            }
+                        }
                         match tokio::task::spawn_blocking(move || {
                             let result = self.receive(event, now);
                             (self, result)
@@ -1414,8 +1408,15 @@ async fn publish_round(
     let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);
+    let mut asking = view
+        .local
+        .list
+        .as_ref()
+        .map_or_else(Vec::new, lists::LocalList::asking);
+    let waiting = asking.len();
+    asking.truncate(10);
     let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
-        "working":working, "atWork":active,
+        "working":working, "atWork":active, "waiting":waiting, "asking":asking,
     }});
     if let Some(system) = view.system.as_deref() {
         state["computer"]["system"] = json!(system);
