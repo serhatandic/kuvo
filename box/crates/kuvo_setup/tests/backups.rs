@@ -651,6 +651,7 @@ async fn wipe_exports_match_the_selected_bytes_before_recording_verification() {
         setup.handle(),
         None,
         None,
+        None,
     );
     let mut config = serde_json::json!({
         "version": 1, "enabled": true, "source": source, "key": key.expose(), "projects": [],
@@ -877,6 +878,7 @@ async fn vault_import_uses_a_separate_key_and_leaves_old_grants_behind() {
         setup.handle(),
         None,
         Some(target.clone()),
+        None,
     );
     let routes = routes.build(Default::default());
     for (given, status) in [(&archive_key, 409), (&key, 200)] {

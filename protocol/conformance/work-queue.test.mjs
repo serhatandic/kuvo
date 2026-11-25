@@ -3956,3 +3956,308 @@ test("an issue moved to another repository cannot be handed beside its live twin
   assert.match(result.json.text, /one item for each issue/);
   assert.equal((await ask("GET", "kuvo/work-queue/items/" + old)).json.item.handing, undefined);
 });
+test("unknown queue owners are left untouched even when they hold newer copies of local items", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const row = { id: "wqi_" + "A".repeat(20), number: 1, owner: "usr_you", title: "Ours", status: "todo", order: 1, created: stamp, updated: stamp };
+  const ours = path.join(root, "queues", "usr_you.json");
+  const theirs = path.join(root, "queues", "prj_copy.json");
+  const odd = path.join(root, "queues", "prj_odd.json");
+  const copy = JSON.stringify({ formatVersion: 1, owner: "prj_copy", items: [{ ...row, owner: "prj_copy", title: "Theirs", updated: { ...stamp, at: stamp.at + 60000 } }] });
+  const unknown = JSON.stringify({ formatVersion: 99, owner: "prj_odd", rows: [{ anything: true }] });
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(ours, JSON.stringify({ formatVersion: 1, owner: row.owner, items: [row] }));
+  write(theirs, copy);
+  write(odd, unknown);
+  const ask = studio.connect(await studio.start().ready());
+  const listed = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.json.items.map(item => item.title), ["Ours"]);
+  const changed = await ask("PATCH", "kuvo/work-queue/items/" + row.id, { title: "Still ours" }, { "x-kuvo-from": "app" });
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal(JSON.parse(readFileSync(ours)).items[0].title, "Still ours");
+  assert.equal(readFileSync(theirs, "utf8"), copy);
+  assert.equal(readFileSync(odd, "utf8"), unknown);
+  assert.equal(existsSync(path.join(root, "queues", "aside")), false);
+});
+
+test("restoring a deleted item with a future status returns it to Todo and records the change", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const row = { id: "wqi_" + "A".repeat(20), number: 1, owner: "usr_you", title: "Future status", status: "triage", order: 1, created: stamp, updated: stamp, removed: stamp };
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: row.owner, items: [row] }));
+  const ask = studio.connect(await studio.start().ready());
+  const route = "kuvo/work-queue/items/" + row.id;
+  const back = await ask("POST", route + "/restore", {}, { "x-kuvo-from": "app" });
+  assert.equal(back.status, 200, back.text);
+  assert.equal(back.json.item.status, "todo");
+  const saved = await ask("GET", route);
+  const event = saved.json.item.events.at(-1);
+  assert.deepEqual([event.kind, event.from, event.to, event.by], ["moved", "triage", "todo", { source: "kuvo", name: "Kuvo Code" }]);
+  assert.equal(saved.json.item.removed, undefined);
+});
+
+test("repeated reorders preserve their position even as order keys converge", { timeout: 90000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const rows = ["A", "B", "C"].map((title, index) => ({ id: "wqi_" + title.repeat(20), number: index + 1, owner: "usr_you", title, status: "todo", order: index + 1, created: stamp, updated: stamp }));
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: rows }));
+  const ask = studio.connect(await studio.start().ready());
+  for (let round = 0; round < 70; round++) {
+    const shifted = await ask("PATCH", "kuvo/work-queue/items/" + rows[round % 2 ? 1 : 2].id, { after: rows[0].id }, { "x-kuvo-from": "app" });
+    assert.equal(shifted.status, 200, shifted.text);
+  }
+  const listed = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+  assert.deepEqual(listed.json.items.map(item => item.title), ["A", "B", "C"]);
+});
+
+test("queue show explains both ends of saved mentions and manual links", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const session = { id: "ses_QueueRelations", title: "Author", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const ids = ["wqi_" + "A".repeat(20), "wqi_" + "B".repeat(20)];
+  const rows = ["Audit sign-in error copy", "Ship the form"].map((title, index) => ({ id: ids[index], owner: session.id, number: index + 1, title, order: index, status: "todo", created: stamp, updated: stamp }));
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", session.id + ".json"), JSON.stringify({ formatVersion: 1, owner: session.id, items: rows }));
+  const ask = studio.connect(await studio.start().ready());
+  const call = (name, args) => {
+    studio.engine.messages.set(session.id, [{ id: "msg_relations", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }]);
+    return ask("POST", "kuvo/work-queue/tools", { name, arguments: args, session: session.id });
+  };
+  const edit = await call("queue_update", { item: 1, body: "Coordinate with #2.", note: "🎨 See #2" });
+  assert.equal(edit.status, 200, edit.text);
+  assert.equal(edit.json.isError, false, edit.text);
+  const link = await ask("PATCH", "kuvo/work-queue/items/" + ids[0], { itemRelation: { item: ids[1], kind: "blocks" } }, { "x-kuvo-from": "app" });
+  assert.equal(link.status, 200, link.text);
+  const first = await call("queue_show", { item: 1 });
+  const second = await call("queue_show", { item: 2 });
+  assert.match(first.json.text, /blocks #2 Ship the form/);
+  assert.match(first.json.text, /mentions #2 Ship the form/);
+  assert.match(second.json.text, /blocked by #1 Audit sign-in error copy/);
+  assert.match(second.json.text, /mentioned in #1 Audit sign-in error copy/);
+  const detail = await ask("GET", "kuvo/work-queue/items/" + ids[0]);
+  assert.deepEqual(detail.json.item.notes[0].mentions, [{ item: ids[1], number: 2, start: 7, end: 9 }]);
+});
+test("reviewing held Work Queue items saves one decision and does not revive a deletion", { timeout: 60000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const point = "2026-11-19T000000.000Z-wipe-0123456789abcdef";
+  const root = path.join(studio.home, "backup");
+  const recovered = path.join(root, "recovered", point);
+  const ids = ["A", "B", "C", "D"].map(letter => "wqi_" + letter.repeat(20));
+  const key = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const queue = path.join(studio.home, "run", "work-queue");
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "restore.json"), JSON.stringify({ formatVersion: 1, state: "restored", id: point }));
+  for (const [index, id] of ids.entries()) {
+    const row = { id, owner: "usr_you", number: 80 + index, title: `Held ${index}`, status: "todo", body: "Keep the old context", order: 1, created: stamp, updated: stamp,
+      handing: { id: "wqh_" + "A".repeat(16), to: "ses_Old", key: "A".repeat(43), at: stamp.at, by: stamp.by },
+      files: [{ name: "note.txt", size: 4, type: "text/plain", at: stamp.at }, { name: "missing.txt", size: 2, type: "text/plain", at: stamp.at }] };
+    write(path.join(recovered, "work-queue-items", key(id) + ".json"), JSON.stringify(row));
+    write(path.join(recovered, "home", "run", "work-queue", "files", id, "note.txt"), "note");
+  }
+  write(path.join(studio.home, "run", "owned-data", "edit-deletions", key(ids[2]) + ".json"), JSON.stringify({ formatVersion: 1, id: ids[2], queue: "usr_you", at: stamp.at }));
+  const occupied = path.join(queue, "files", ids[3], "note.txt");
+  write(occupied, "Different live bytes");
+  const ask = studio.connect(await studio.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const route = "kuvo/box/backups/pending";
+  const listed = await ask("GET", route, undefined, app);
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(Object.fromEntries(listed.json.queueItems.map(item => [item.id, item.canKeep])), { [ids[0]]: true, [ids[1]]: true, [ids[2]]: false, [ids[3]]: true });
+  const decide = (id, operation, decision) => ask("POST", route, { kind: "queueItem", id, operation, decision }, app);
+  const kept = await decide(ids[0], "keep-held", "keep");
+  assert.equal(kept.status, 200, kept.text);
+  assert.deepEqual(kept.json, { id: ids[0], operation: "keep-held", decision: "keep", status: "committed" });
+  assert.deepEqual((await decide(ids[0], "keep-held", "keep")).json, kept.json);
+  // A process can stop after saving the item but before writing its review receipt.
+  rmSync(path.join(root, "reviewed", point, "work-queue-" + key(ids[0]) + ".json"));
+  assert.notEqual((await decide(ids[0], "wrong-review", "keep")).status, 200);
+  assert.deepEqual((await decide(ids[0], "keep-held", "keep")).json, kept.json);
+  assert.notEqual((await decide(ids[0], "other-review", "discard")).status, 200);
+  const detail = await ask("GET", "kuvo/work-queue/items/" + ids[0]);
+  assert.equal(detail.status, 200, detail.text);
+  assert.equal(detail.json.item.number, 80);
+  assert.equal(detail.json.item.handing, undefined);
+  assert.deepEqual(detail.json.item.files.map(file => file.name), ["note.txt"]);
+  assert.equal((await ask("GET", "kuvo/work-queue/items/" + ids[0] + "/files/note.txt")).text, "note");
+  assert.equal((await decide(ids[1], "discard-held", "discard")).status, 200);
+  assert.notEqual((await decide(ids[2], "keep-deleted", "keep")).status, 200);
+  const collision = await decide(ids[3], "keep-conflicting-file", "keep");
+  assert.notEqual(collision.status, 200);
+  assert.match(collision.json.message, /live file already uses/);
+  assert.equal(readFileSync(occupied, "utf8"), "Different live bytes");
+  assert.equal((await decide(ids[3], "discard-conflicting-file", "discard")).status, 200);
+  assert.equal((await ask("GET", "kuvo/work-queue/items/" + ids[1])).status, 404);
+  assert.equal((await ask("GET", "kuvo/work-queue/items/" + ids[2])).status, 404);
+  assert.deepEqual((await ask("GET", route, undefined, app)).json.queueItems.map(item => item.id), [ids[2]]);
+});
+test("a handed item without a number receives one from its new keeper", { timeout: 100000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const recipient = { id: "ses_PendingNumberTarget", title: "Recipient", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(recipient);
+  const setup = JSON.parse(readFileSync(path.join(studio.home, "run", "link.json"), "utf8")).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 1000);
+  recordRelayLease(path.join(studio.home, "run"), setup, { high: 1000, floor: 0, relay: lease });
+  const queue = path.join(lab.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const id = "wqi_" + "A".repeat(20);
+  const row = { id, owner: "usr_you", title: "Crossing without number", status: "todo", order: 1, created: stamp, updated: stamp,
+    handing: { id: "wqh_" + "A".repeat(16), to: recipient.id, key: main.key, name: recipient.title, at: stamp.at, by: stamp.by } };
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: row.owner, items: [row] }));
+  const target = studio.start();
+  const record = await target.ready();
+  await until(() => relay.has(Buffer.from(main.address, "base64url")), "The destination did not reach the relay.");
+  const source = lab.start();
+  const sourceRecord = await source.ready();
+  const ask = studio.connect(record), far = lab.connect(sourceRecord);
+  const arrival = await until(async () => {
+    const view = await ask("GET", "kuvo/work-queue?owner=" + recipient.id + "&glance=1");
+    return view.json?.items.find(row => row.id === id && !row.computer && row.number);
+  }, "The item did not arrive and receive a number.", 90000);
+  assert.equal(arrival.owner, recipient.id);
+  assert.ok(Number.isInteger(arrival.number) && arrival.number > 0);
+  await until(async () => {
+    const view = await far("GET", "kuvo/work-queue?owner=all&glance=1");
+    return view.json?.items.filter(row => row.id === id).length === 1 && view.json.items.find(row => row.id === id).computer?.name === "Studio";
+  }, "The source did not retire its pending copy.", 30000);
+});
+test("a canceled handoff cannot restore the source when the destination already has the item", { timeout: 65000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const id = "wqi_" + "A".repeat(20);
+  const stamp = { at: Date.now(), by: { user: true } };
+  const row = { id, number: 80, owner: "usr_you", title: "Already accepted", status: "todo", order: 1, updated: stamp, created: stamp };
+  const pathOf = computer => path.join(computer.home, "run", "work-queue", "queues", "usr_you.json");
+  for (const [computer, item] of [[studio, { ...row, removed: stamp }], [lab, row]]) {
+    write(path.join(computer.home, "run", "work-queue", "model.json"), '{"formatVersion":1,"model":2}');
+    write(pathOf(computer), JSON.stringify({ formatVersion: 1, owner: row.owner, items: [item] }));
+  }
+  await lab.start().ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The member did not reach the relay.");
+  const ask = studio.connect(await studio.start().ready());
+  await until(async () => (await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json?.items.some(item => item.id === id && item.computer?.name === "Lab"), "The destination's live copy did not arrive.", 60000);
+  const restored = await ask("POST", "kuvo/work-queue/items/" + id + "/restore", {}, { "x-kuvo-from": "app" });
+  assert.equal(restored.status, 400, restored.text);
+  assert.match(restored.json.message, /got there before its hand-off was called off/);
+  assert.deepEqual(JSON.parse(readFileSync(pathOf(studio))).items[0].removed, stamp);
+});
+test("an agent cannot undo its deleted GitHub item beside a live peer copy", { timeout: 65000 }, async t => {
+  const { computer, relay } = await bench(t);
+  let sourceGh, targetGh;
+  const studio = await computer("Studio", undefined, folder => { sourceGh = standInGh(folder); return sourceGh.env; });
+  const lab = await computer("Lab", undefined, folder => { targetGh = standInGh(folder); return targetGh.env; });
+  seedPeerSetup(studio.home, relay.url);
+  const { member } = seedPeerSetup(lab.home, relay.url, 2);
+  const ref = "gh:kuvo-test/app#12", url = "https://github.com/kuvo-test/app/issues/12";
+  const node = { __typename: "Issue", id: "I_12", number: 12, title: "Shared issue", url, state: "OPEN" };
+  for (const gh of [sourceGh, targetGh]) gh.answer({ data: { p0: { issueOrPullRequest: node } } });
+  const agent = { id: "ses_RestoreIssue", title: "Author", location: { directory: lab.home }, time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(agent);
+  const stamp = { at: Date.now(), by: { session: agent.id, name: agent.title } };
+  const item = (id, more = {}) => ({ id, owner: "usr_you", title: node.title, body: "", status: "todo", order: 1, created: stamp, updated: stamp,
+    source: { kind: "github", ref, url, host: "github.com", id: node.id }, ...more });
+  const live = item("wqi_" + "A".repeat(20)), removed = item("wqi_" + "B".repeat(20), { removed: stamp });
+  for (const [computer, row] of [[studio, live], [lab, removed]]) {
+    const queue = path.join(computer.home, "run", "work-queue");
+    write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+    write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [row] }));
+  }
+  const target = lab.start();
+  const record = await target.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The member did not reach the relay.");
+  await studio.start().ready();
+  const far = lab.connect(record);
+  const route = "kuvo/work-queue?owner=all&glance=1";
+  const both = await until(async () => {
+    const answer = await far("GET", route);
+    return answer.json?.items.some(row => row.id === live.id) && answer.json?.removed.some(row => row.id === removed.id) && answer.json;
+  }, "The live issue and deleted copy were not both visible.", 60000);
+  assert.equal(both.items.find(row => row.id === live.id).computer.name, "Studio");
+  const app = { "x-kuvo-from": "app" };
+  const chips = await far("POST", "kuvo/work-queue/refs", { refs: [ref] }, app);
+  assert.equal(chips.status, 200, chips.text);
+  assert.equal(chips.json.refs[ref].id, live.id);
+  const args = { item: removed.id, undo: true };
+  lab.engine.messages.set(agent.id, [{ id: "msg_restore_issue", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_remove", state: { status: "running", input: args } }] }]);
+  const restored = await far("POST", "kuvo/work-queue/tools", { name: "queue_remove", arguments: args, session: agent.id });
+  assert.equal(restored.status, 200, restored.text);
+  assert.equal(restored.json.isError, true, restored.text);
+  assert.match(restored.json.text, /one item for each issue/);
+  const saved = await far("GET", "kuvo/work-queue/items/" + removed.id);
+  assert.equal(saved.json.item.removed.at, stamp.at);
+});
+test("an unchanged GitHub reading does not retell the Work Queue after acknowledgement", { timeout: 150000 }, async t => {
+  const { computer, relay } = await bench(t);
+  let gh;
+  const studio = await computer("Studio", undefined, folder => { gh = standInGh(folder); return gh.env; });
+  const lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const root = path.join(studio.home, "run", "work-queue");
+  const id = "wqi_" + "A".repeat(20), ref = "gh:kuvo-test/app#12", key = "github.com/kuvo-test/app#12";
+  const url = "https://github.com/kuvo-test/app/issues/12";
+  const node = { __typename: "Issue", id: "I_12", number: 12, title: "An unchanged issue", url, state: "OPEN" };
+  const stamp = { at: Date.now() - 20000, by: { user: true } };
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [{ id, owner: "usr_you", title: node.title, status: "todo", order: 1, created: stamp, updated: stamp, source: { kind: "github", ref, url, host: "github.com", id: node.id } }] }));
+  gh.answer({ data: { p0: { issueOrPullRequest: node } } });
+  const cache = path.join(root, "seen.json");
+  write(cache, JSON.stringify({ reads: { [key]: { at: stamp.at, checked: Date.now(), value: { kind: "github", id: node.id, number: 12, title: node.title, url, state: "open" } } }, hosts: {} }));
+  const target = lab.start();
+  await target.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The member did not reach the relay.");
+  const ask = studio.connect(await studio.start().ready());
+  const saved = path.join(lab.home, "run", "work-queue", "peers", main.key + ".json");
+  const snapshot = () => existsSync(saved) && JSON.parse(readFileSync(saved, "utf8"));
+  const first = await until(() => {
+    const row = snapshot();
+    return row?.items?.some(item => item.id === id && item.seen?.state === "open") && row;
+  }, "The member did not hear the issue.", 60000);
+  const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
+  await wait(18000);
+  const settled = snapshot();
+  assert.ok(settled?.items?.some(item => item.id === id));
+  const expire = () => {
+    const kept = JSON.parse(readFileSync(cache));
+    kept.reads[key].checked = Date.now() - 600000;
+    write(cache, JSON.stringify(kept));
+  };
+  expire();
+  const refreshed = await ask("GET", "kuvo/work-queue?owner=all");
+  assert.equal(refreshed.status, 200, refreshed.text);
+  assert.equal(gh.queries().length, 1);
+  assert.equal(refreshed.json.items.find(item => item.id === id).seen.state, "open");
+  await wait(18000);
+  assert.equal(snapshot().id, settled.id);
+  assert.equal(snapshot().heard, settled.heard);
+  expire();
+  gh.answer({ data: { p0: { issueOrPullRequest: { ...node, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T00:00:00Z" } } } });
+  assert.equal((await ask("GET", "kuvo/work-queue?owner=all")).status, 200);
+  const closed = await until(() => {
+    const row = snapshot();
+    return row?.items?.some(item => item.id === id && item.seen?.state === "completed") && row;
+  }, "The changed GitHub reading was not told.", 30000);
+  assert.notEqual(closed.id, first.id);
+  assert.equal(closed.items.find(item => item.id === id).status, "done");
+});
