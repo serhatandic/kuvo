@@ -4,7 +4,10 @@
 //! come in pieces, so a directive split between them is held back until it's whole.
 
 use regex::Regex;
+use serde_json::{Value, json};
 use std::sync::LazyLock;
+
+use super::projection::TOOLS_SERVER;
 
 /// What its words become: words, or a file it made, to show.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,6 +143,95 @@ fn parse(directive: &str) -> Vec<Said> {
     // Its path as code, which the apps make a link to the file.
     let fence = if path.contains('`') { "``" } else { "`" };
     vec![Said::Text(format!("{fence}{path}{fence}"))]
+}
+
+/// Words with its directives read whole, a file it made named by its file name (a title).
+pub(crate) fn plain(text: &str) -> String {
+    let mut reader = Citations::default();
+    let mut said = reader.read(text);
+    said.extend(reader.end());
+    said.into_iter()
+        .map(|said| match said {
+            Said::Text(text) => text,
+            Said::Made(path) => std::path::Path::new(&path)
+                .file_name()
+                .map_or(path.clone(), |name| name.to_string_lossy().into_owned()),
+        })
+        .collect()
+}
+
+/// A reply of Codex's kept from before its directives were read (`:codex-…` in its words), as a
+/// reply now has it: its words without them, and each file it cites as what it made a file shown.
+/// None when it has none (or isn't Codex's: another agent's words may quote one, as words).
+pub(crate) fn kept_reply(row: &Value) -> Option<Value> {
+    let provider = row["model"]["providerID"].as_str()?;
+    if row["type"] != "assistant"
+        || crate::accounts::Provider::parse(provider)?.kind != crate::accounts::AgentKind::Codex
+    {
+        return None;
+    }
+    let parts = row["content"].as_array()?;
+    let directive = |part: &Value| {
+        part["type"] == "text" && part["text"].as_str().is_some_and(|text| text.contains(OPENING))
+    };
+    if !parts.iter().any(directive) {
+        return None;
+    }
+    let at = row["time"]["completed"]
+        .as_u64()
+        .or_else(|| row["time"]["created"].as_u64())
+        .unwrap_or_default();
+    let message = row["id"].as_str().unwrap_or_default();
+    let mut content: Vec<Value> = Vec::new();
+    let mut made = 0;
+    for part in parts {
+        if !directive(part) {
+            content.push(part.clone());
+            continue;
+        }
+        let mut reader = Citations::default();
+        let mut said = reader.read(part["text"].as_str().unwrap_or_default());
+        said.extend(reader.end());
+        let mut words = false;
+        for each in said {
+            match each {
+                Said::Text(text) => match content.last_mut() {
+                    Some(last) if words => {
+                        let joined = last["text"].as_str().unwrap_or_default().to_owned() + &text;
+                        last["text"] = json!(joined);
+                    }
+                    _ => {
+                        let mut kept = json!({ "type": "text", "text": text });
+                        if !part["time"].is_null() {
+                            kept["time"] = part["time"].clone();
+                        }
+                        content.push(kept);
+                        words = true;
+                    }
+                },
+                Said::Made(path) => {
+                    words = false;
+                    made += 1;
+                    // As a reply now has it: its words after it go on in a block of their own.
+                    content.push(json!({
+                        "type": "tool",
+                        "id": format!("cited-{message}-{made}"),
+                        "name": format!("{TOOLS_SERVER}_show_file"),
+                        "state": {
+                            "status": "completed",
+                            "input": { "path": path },
+                            "content": [{ "type": "text", "text": "Shown in the conversation." }],
+                        },
+                        "time": { "created": at, "ran": at, "completed": at },
+                    }));
+                }
+            }
+        }
+    }
+    content.retain(|part| part["type"] != "text" || part["text"].as_str().is_some_and(|text| !text.is_empty()));
+    let mut kept = row.clone();
+    kept["content"] = Value::Array(content);
+    Some(kept)
 }
 
 #[cfg(test)]

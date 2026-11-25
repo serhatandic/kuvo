@@ -30,6 +30,8 @@ use super::{
 
 const IDLE: Duration = Duration::from_secs(15 * 60);
 const INITIALIZE: Duration = Duration::from_secs(30);
+/// How long a stopped app-server, or a start under way, is waited for to end.
+const ENDS: Duration = Duration::from_secs(10);
 
 /// An app-server, as it runs now.
 pub(super) struct Server {
@@ -272,12 +274,32 @@ impl Shared {
             _ = halted.wait_for(|now| *now != shutdowns) => Err(stopped()),
         };
         if let Err(error) = initialized {
-            // One that won't start isn't left running: the next ask starts another.
+            // One that won't start isn't left running (the next ask starts another), nor its
+            // holder: it's gone before this says so.
             server.rpc.stop().await;
+            server.rpc.ended(ENDS).await;
             return Err(error);
         }
         server.rpc.notify("initialized", None).await;
+        server
+            .rpc
+            .note(Metadata::from_iter([("initialized".into(), Value::Bool(true))]))
+            .await;
         Ok(server)
+    }
+
+    /// An app-server an earlier resident left as it was starting, never initialized: of no use (Codex
+    /// refuses a second time), so it's stopped, its holder with it.
+    pub async fn discard(&self, controller: Controller) {
+        let options = Options {
+            framing: Framing::Bare,
+            first_id: 1,
+            filter: None,
+        };
+        let (rpc, _incoming) = Rpc::over(controller, options);
+        eprintln!("Stopping Codex app-server: never initialized");
+        rpc.stop().await;
+        rpc.ended(ENDS).await;
     }
 
     /// An app-server an earlier resident left held, this resident's own again as it is
@@ -558,6 +580,9 @@ impl Shared {
     /// Stops the app-server (and one starting: its start then fails).
     pub async fn shutdown(&self) {
         self.halt();
+        // A start under way ends first, and stops what it started: a holder isn't left starting
+        // as the resident goes.
+        let _ = tokio::time::timeout(ENDS, self.starting.lock()).await;
         let server = {
             let mut slot = self.slot.lock().await;
             slot.stops += 1;
@@ -566,6 +591,7 @@ impl Shared {
         if let Some(server) = server {
             eprintln!("Stopping Codex app-server: shutdown");
             server.rpc.stop().await;
+            server.rpc.ended(ENDS).await;
             self.stopped(server.id);
         }
     }
