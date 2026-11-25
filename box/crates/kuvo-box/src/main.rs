@@ -685,6 +685,23 @@ fn refused_install_attempt(home: &Home) -> bool {
     false
 }
 
+const WIPE_WAIT: &str = "This computer’s wipe hasn’t finished.";
+
+fn wipe_waiting_status(home: &Home) -> serde_json::Value {
+    serde_json::json!({"verdict":"waits", "verb":null, "message":WIPE_WAIT,
+        "status":kuvo_move::rehome_status(home)})
+}
+
+fn install_wipe_offer(reply: &mut serde_json::Value, wipe: &kuvo_setup::wipe::InstallerWipe) {
+    if reply["verdict"] == "fresh"
+        && let Some(receipt) = wipe.receipt()
+    {
+        reply["verb"] = serde_json::Value::Null;
+        reply["offer"] = "reinstall-local".into();
+        reply["wipeReceipt"] = serde_json::json!(receipt);
+    }
+}
+
 fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
@@ -763,6 +780,11 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     if refused_install_attempt(&home) {
         return Ok(ExitCode::FAILURE);
     }
+    let wipe = kuvo_setup::wipe::installer_wipe(home.root(), true)?;
+    if wipe.waiting() {
+        println!("{}", wipe_waiting_status(&home));
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(media) = media {
         if !media.is_absolute() {
             return usage();
@@ -802,6 +824,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         return Ok(ExitCode::FAILURE);
     }
     let mut reply = serde_json::to_value(judge)?;
+    install_wipe_offer(&mut reply, &wipe);
     if reply["verdict"] == "two" {
         reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }

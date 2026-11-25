@@ -70,6 +70,10 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     if super::refused_install_attempt(&home) {
         return Ok(1);
     }
+    let wipe = kuvo_setup::wipe::installer_wipe(home.root(), false)?;
+    if wipe.waiting() {
+        return Ok(wipe_waiting(&home, restart));
+    }
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = install::judge(&home, Some(&app), Platform::Mac, None)?;
     if let Some(message) = before.unreadable_move() {
@@ -143,6 +147,9 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     if restart && before.verdict == Verdict::Ours {
         files::create_private_dirs(&home.updates())?;
         let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
+        if kuvo_setup::wipe::installer_wipe(home.root(), false)?.waiting() {
+            return Ok(wipe_waiting(&home, restart));
+        }
         if fs::symlink_metadata(home.bin()).is_ok_and(|entry| entry.is_dir())
             && home.bin().join("kuvo-box").is_file()
         {
@@ -152,6 +159,11 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         let launched = LaunchAgent::for_account(&profile, real)
             .map(|agent| agent.start(&home, &app_id))
             .transpose()?;
+        if launched.is_some()
+            && let Some(receipt) = wipe.receipt()
+        {
+            kuvo_setup::wipe::finish_reinstall(home.root(), receipt)?;
+        }
         files::remove_tree_synced(&home.updates().join("install"))?;
         println!(
             "{}",
@@ -172,6 +184,9 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let (signed, envelope) = verified()?;
     files::create_private_dirs(&home.updates())?;
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
+    if kuvo_setup::wipe::installer_wipe(home.root(), false)?.waiting() {
+        return Ok(wipe_waiting(&home, restart));
+    }
     let media = staging::prepare_install(&home, &signed, source)?;
     if restart {
         let (result, set_aside) =
@@ -190,6 +205,9 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
                     Ok(started) => {
                         value["started"] = true.into();
                         value["message"] = started.message().into();
+                        if let Some(receipt) = wipe.receipt() {
+                            kuvo_setup::wipe::finish_reinstall(home.root(), receipt)?;
+                        }
                     }
                     Err(error) => {
                         value["result"] = "failed".into();
@@ -249,4 +267,14 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         files::remove_tree_synced(&home.updates().join("install"))?;
     }
     Ok(move_result.exit_code())
+}
+
+fn wipe_waiting(home: &Home, restart: bool) -> u8 {
+    println!(
+        "{}",
+        json!({"result":"waits", "verdict":"waits",
+        "message":if restart {super::WIPE_WAIT} else {"Another move is under way."},
+        "status":kuvo_move::rehome_status(home)})
+    );
+    4
 }

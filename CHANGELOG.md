@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The installer can finish a previously approved standalone computer wipe after a crash, then offer reinstall without touching replacement data.
+
 - An installer leaves an interrupted installation from a newer version untouched instead of offering to start over.
 
 - Kuvo Helper’s menu on a Rust computer shows current work, what waits on you, background work, and what your other computers last told it.
