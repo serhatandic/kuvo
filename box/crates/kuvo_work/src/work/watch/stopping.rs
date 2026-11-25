@@ -52,24 +52,53 @@ async fn asking_now(engine: &BotEngine, session: &str) -> bool {
 }
 
 /// A command a session left running ended: its process group signalled, as Stop on its row does,
-/// else the engine asked to end it.
-async fn end_command(engine: &BotEngine, job: &Value, folder: &str) {
+/// else the engine asked to end it. How (`signal`, `removed`), or none when neither went through.
+async fn end_command(engine: &BotEngine, job: &Value, folder: &str) -> Option<&'static str> {
     #[cfg(unix)]
     if let Some(pid) = job["pid"].as_i64().filter(|pid| *pid > 1)
         && let Ok(group) = i32::try_from(pid)
         // SAFETY: a signal to the process group the engine says leads this command.
         && unsafe { libc::kill(-group, libc::SIGTERM) } == 0
     {
-        return;
+        return Some("signal");
     }
     let path = format!(
         "api/shell/{}",
         encoded(job["id"].as_str().unwrap_or_default())
     );
-    let _ = match folder {
+    let removed = match folder {
         "" => engine.call(Method::DELETE, &path, None, WAIT).await,
         folder => engine.call_in(Method::DELETE, &path, folder, WAIT).await,
     };
+    removed.is_ok().then_some("removed")
+}
+
+/// The engine's command `id` (in `folder`, where it runs), as Stop on it finds it.
+pub enum EngineCommand {
+    /// The engine doesn't have it.
+    Unknown,
+    /// It has it, ended already.
+    Ended,
+    /// Stopped now: how (`signal`, `removed`).
+    Stopped(&'static str),
+    /// Running still: neither its signal nor removing it went through.
+    Stuck,
+}
+
+/// Stop on one of the engine's commands (`kuvo/shell/<id>/stop`).
+pub async fn stop_engine_command(engine: &BotEngine, id: &str, folder: &str) -> EngineCommand {
+    let path = format!("api/shell/{}", encoded(id));
+    let job = match folder {
+        "" => engine.call(Method::GET, &path, None, WAIT).await,
+        folder => engine.call_in(Method::GET, &path, folder, WAIT).await,
+    };
+    match job {
+        Err(_) => EngineCommand::Unknown,
+        Ok(job) if job["status"] != "running" => EngineCommand::Ended,
+        Ok(job) => end_command(engine, &job, folder)
+            .await
+            .map_or(EngineCommand::Stuck, EngineCommand::Stopped),
+    }
 }
 
 impl Work {
@@ -156,7 +185,7 @@ impl Work {
                 folder => engine.call_in(Method::GET, &path, folder, WAIT).await,
             };
             if let Some(job) = job.ok().filter(|job| job["status"] == "running") {
-                end_command(engine, &job, folder).await;
+                let _ = end_command(engine, &job, folder).await;
             }
         }
         for helper in &work.subagents {

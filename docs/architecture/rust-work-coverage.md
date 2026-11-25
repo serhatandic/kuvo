@@ -984,3 +984,38 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   started, rewriting `session.json` files nobody opened. Proven by the compat case "the current
   TypeScript beta's durable records survive opening" (it failed on the old Rust), 7/7 compat on
   both boxes, and `agents-claude`, `agents-codex` and `agents-claude-turns` on both.
+
+## 5.1 — routes the app calls (route audit)
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::asks`: `GET kuvo/asks` and its events, `POST kuvo/asks/<id>`: what the browser keeps asked (`run/browser-asks.json`, none while it isn't running), each in the conversation it's for (a subagent's, the one it works for) by that one's name, a machine naming itself; an answer that fits its ask given to the browser over `run/browser.sock`, the socket key first | `areas/asks.ts` `asksRoute`, `askAnswerRoute`, `readAsks`, `listedAsk`, `askAnswer`, `answerAsk`, `conversationOf` |
+| `serve/agents/shells.rs`: `GET kuvo/agents/api/shell/<id>/output` (from `cursor`, `limit` bytes at most, through `Background::output`), and `POST kuvo/shell/<id>/stop`: the engine's command's process group signalled, else the engine asked to remove it (`work::watch::stop_engine_command`); a coding agent's stopped through its agent (`removed`) | `agents/server.ts` (shell output), `agents/shells.ts` `shellOutput`; `areas/engine.ts` `stopShell`, `endShellJob` |
+| Add Agent: `marketplace::bots::AgentBots`, given by `Bots` (`bots::added`) as the box starts; options are the model picker's answer (`Engine::offered_here`, the engine's only while it runs) for the agent's suggested model, less Custom Auto lists and retiring or hidden models; Add checks, finds the bot a request made, starts the engine for an engine model, checks the model runs, and makes the bot (`Bots::make_with` and a `Setup`: its job, its scope and policies, its routines paused unless chosen) | `areas/marketplace.ts`, `marketplace/bots.ts` `botOptions`, `addBot`; `bots/make.ts` `makeBot` with a setup; `areas/wakes.ts` `seedRoutine` |
+
+### Proof
+
+- `asks.test.mjs` (new, both boxes): an ask listed in the conversation it's for by its name; answers
+  that don't fit refused, those that do given to a stand-in browser socket after the key; nothing
+  listed once the browser is gone. The `agents` fixtures' two asks scenarios now pass on Rust.
+- `agents-codex.test.mjs`, a new case (both boxes): what a command Codex left running printed, read
+  by cursor and limit; Stop on it ends it through Codex. `shells.test.mjs` (new, both boxes): Stop on
+  the engine's command signals its group, removes one without a process, and leaves one that ended.
+- `marketplace-agents.test.mjs` (new, both boxes): options offer the model that runs here and the
+  routine off; a bad routine, version or model is refused before anything's made; Add makes the
+  bot with its name, model, job, scope file, a weekly wake-up and paused; the same request again
+  gives the same bot. All failed on the old Rust (no routes, no models, 422).
+- Regressions: `work` 15/15, `bots` 40/40, `agents-codex` all, `library` 16/16, kuvo_services'
+  marketplace tests, all on macOS.
+
+### Gaps and owners
+
+- **The browser's process** is checked by its pid alone (TypeScript also reads its command line);
+  native Windows has no browser yet, so nothing is asked there.
+- **Asks told to your phones** (`watchAsks`) went with phone push (retired with 5.1c's holds).
+- **A bot on a coding agent's model** from Add Agent is refused as `POST kuvo/bots` refuses one
+  (the agents' bridge in `Bots::make`, 4.x).
+- `engine-models.test.mjs` has three cases failing on the tip without this work (the agents'
+  catalog now answers): for the engine row.

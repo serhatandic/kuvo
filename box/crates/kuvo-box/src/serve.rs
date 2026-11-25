@@ -192,6 +192,7 @@ pub async fn run(
     );
     agents::sessions::register(sessions.clone(), &mut routes);
     let agent_background = sessions.background().clone();
+    let shell_commands = agent_background.clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {
         // What its coding agents keep going, for the work routes and those that read the file.
         let _published = sessions
@@ -389,6 +390,10 @@ pub async fn run(
     .await;
     let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
     wakes.register(&mut routes);
+    // (A machine names itself on its asks; a Mac's own aren't named.)
+    let asks_machine = (kind != ComputerKind::Mac).then(|| bot_name.clone());
+    kuvo_work::asks::Asks::new(home, asks_machine, engine.clone()).register(&mut routes);
+    agents::shells::register(shell_commands, engine.clone(), &mut routes);
     let bots = kuvo_work::bots::Bots::new(
         kuvo_work::bots::Setting {
             home: home.to_owned(),
@@ -403,6 +408,10 @@ pub async fn run(
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
     );
     bots.register(&mut routes);
+    // (Add Agent in the Marketplace makes its bots here.)
+    resident_marketplace
+        .service
+        .give_agent_bots(Arc::new(bots.clone()));
     let bots_follow_engine = bots.follow_engine();
     // Bots' old keys of their own taken away, with no client there.
     let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
@@ -438,7 +447,11 @@ pub async fn run(
     work.notices.attach_told(Arc::new(move || {
         let (peers, run) = (told_peers.clone(), told_run.clone());
         let telling = kind == ComputerKind::Mac;
-        tokio::spawn(async move { peers.notices(kuvo_peers::notices::load(&run, telling)).await });
+        tokio::spawn(async move {
+            peers
+                .notices(kuvo_peers::notices::load(&run, telling))
+                .await
+        });
     }));
     work.register(&mut routes);
     let work_watch = work.watch();
@@ -733,6 +746,8 @@ fn info(
     features.extend_from_slice(kuvo_services::skills::FEATURES);
     features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
+    features.extend_from_slice(kuvo_work::asks::FEATURES);
+    features.push("shell.stop");
     if permits_pairing {
         features.push("devices.pair");
     }

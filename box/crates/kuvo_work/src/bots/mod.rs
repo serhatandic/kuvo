@@ -1,5 +1,6 @@
 //! This box's bots (PROTOCOL.md, "Per area"): listed with what each is doing now, and followed.
 
+mod added;
 mod edit;
 pub mod elsewhere;
 pub mod here;

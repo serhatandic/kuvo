@@ -704,6 +704,34 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).length, 1);
   });
 
+  test("what a command it left running printed is read from where it's asked, and Stop on its bar ends it through Codex", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("bt4", "npm run watch"),
+      ["item/commandExecution/outputDelta", { itemId: "bt4", delta: "watching\nrebuilt\n" }],
+      { terminals: [{ processId: "p-bt4", itemId: "bt4", command: "npm run watch" }] },
+    ]);
+    await box.codex.idles(id);
+    const bar = await until(async () => {
+      const read = await box.codex.work(`/${id}`);
+      return read.commands?.length === 1 && read;
+    }, "What it left running was never listed.");
+    const shell = `kuvo/agents/api/shell/${encodeURIComponent(bar.commands[0].id)}`;
+    const read = async (query) => request(box.codex.listener, "GET", `${shell}/output${query}`, undefined, { "x-kuvo-from": "app" });
+    await until(async () => (await read("?limit=1")).json?.data?.size === 17, "What it printed was never there.");
+    // (From byte 9 on, 7 at most: the app reads its end this way.)
+    assertMatch((await read("?cursor=9&limit=7")).json.data, { output: "rebuilt", cursor: 16, size: 17 });
+    assertMatch((await read("")).json.data, { output: "watching\nrebuilt\n", cursor: 17 });
+    assert.equal((await request(box.codex.listener, "GET", "kuvo/agents/api/shell/sh_nothing/output", undefined, { "x-kuvo-from": "app" })).status, 404);
+    // Stop on its bar: a coding agent's command, stopped through its agent.
+    const stopped = await request(box.codex.listener, "POST", `kuvo/shell/${encodeURIComponent(bar.commands[0].id)}/stop`, {}, { "x-kuvo-from": "app" }, 20000);
+    assert.equal(stopped.status, 200, stopped.text);
+    assert.deepEqual(stopped.json, { stopped: "removed" });
+    const thread = box.codex.agentState(id).codexThread;
+    await until(() => [...box.codex.sent("thread/backgroundTerminals/terminate"), ...box.codex.sent("thread/backgroundTerminals/clean")]
+      .some((message) => message.params.threadId === thread), "Codex was never told to end it.");
+    assert.equal((await request(box.codex.listener, "POST", "kuvo/shell/sh_nothing/stop", {}, { "x-kuvo-from": "app" })).status, 404);
+  });
+
   test("a command it waits on in the foreground is listed while it runs, with what it printed, and its Stop stops the turn", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       command("fg1", "npm test"),

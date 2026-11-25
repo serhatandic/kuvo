@@ -438,6 +438,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/agents/api/session/:id/background", feature: "agents", answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
   // Stop one command a coding agent runs (the bars over the composer): one its turn waits on stops that turn.
   { route: "DELETE kuvo/agents/api/shell/:id", feature: "agents", answers: { 200: object({}), 404: REFUSED } },
+  // What one printed, from byte `cursor` on (`limit` bytes at most); only its end is kept, so what's asked from before that comes from where it begins.
+  { route: "GET kuvo/agents/api/shell/:id/output", feature: "agents", answers: { 200: object({ location: object({ directory: string }), data: object({ output: string, cursor: number, size: number }) }), 404: REFUSED } },
   // The coding-agent conversations with a run under way now (`release-switch`: and the turns that
   // follow an engine model through this bridge).
   { route: "GET kuvo/agents/api/session/active", feature: "agents", answers: { 200: object({ data: any, "engineTurns?": list(string) }), 503: REFUSED } },
