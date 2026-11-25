@@ -598,6 +598,71 @@ test("signed out while it works: Codex is told to sign out, and the turn on it e
   }, (codex) => codex.seed(id, { directory: codex.root }));
 });
 
+describe("Codex in the session's modes, and MCP asks", { skip }, () => {
+  const box = resident();
+  const mcpAsk = (item, server, tool) => ({ ask: ["mcpServer/elicitation/request", { itemId: item, serverName: server, message: `Allow the ${server} MCP server to run tool "${tool}"?`, mode: "form", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", tool_name: tool } }] });
+
+  test("Approve All: a command Codex's own rules ask about (rm -f) runs, answered for you with no card", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ ask: ["item/commandExecution/requestApproval", { itemId: "aa1", command: "rm -f build.log" }] }]);
+    assert.deepEqual((await box.codex.answeredFor("aa1")).result, { decision: "accept" });
+    await box.codex.idles(id);
+    assert.deepEqual(await box.codex.permissions(id), []);
+  });
+
+  test("Approve All: an MCP tool Codex asks about runs, answered for you with no card", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("aa2", "docs", "search")]);
+    assertMatch((await box.codex.answeredFor("aa2")).result, { action: "accept" });
+    await box.codex.idles(id);
+  });
+
+  test("Ask First: another server's MCP tool asks as a permission card (No declines it); Kuvo Code's own tools don't ask", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("af1", "kuvo-browser", "show_file"), mcpAsk("af2", "docs", "write_page")], { ask: true });
+    assertMatch((await box.codex.answeredFor("af1")).result, { action: "accept" });
+    const card = await until(async () => (await box.codex.permissions(id))[0], "No card for the other server's tool.");
+    assertMatch(card, { action: "docs_write_page" });
+    await box.codex.replyPermission(id, card.id, "reject");
+    assertMatch((await box.codex.answeredFor("af2")).result, { action: "decline" });
+    await box.codex.idles(id);
+  });
+
+  test("Plan: another server's MCP tool, which may change things, still waits for your yes", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([mcpAsk("pl1", "docs", "write_page")], { plan: true });
+    // (In Plan it's the server's own question: a yes or no, its words as the server put them.)
+    const form = await until(async () => (await box.codex.forms(id))[0], "Nothing asked about the tool.");
+    assertMatch(form, { title: "docs asks", fields: [{ key: "ok", title: 'Allow the docs MCP server to run tool "write_page"?', type: "boolean" }] });
+    assert.deepEqual(await box.codex.permissions(id), []);
+    assert.equal((await box.codex.replyForm(id, form.id, { ok: true })).status, 200);
+    assertMatch((await box.codex.answeredFor("pl1")).result, { action: "accept" });
+    await box.codex.idles(id);
+  });
+
+  test("what an MCP server asks is its form, and the answers go back typed as it asked", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ ask: ["mcpServer/elicitation/request", { itemId: "fm1", serverName: "tickets", message: "Which ticket?", mode: "form",
+      requestedSchema: { type: "object", required: ["number"], properties: { number: { type: "integer", title: "Number" }, urgent: { type: "boolean", title: "Urgent" } } } }] }], { plan: true });
+    const form = await until(async () => (await box.codex.forms(id))[0], "No form.");
+    assertMatch(form, { title: "tickets asks", metadata: { kind: "mcp-elicitation", server: "tickets" } });
+    assertMatch(form.fields[0], { key: "number", title: "Number", description: "Which ticket?", required: true });
+    assert.equal((await box.codex.replyForm(id, form.id, { number: "42", urgent: "true" })).status, 200);
+    assert.deepEqual((await box.codex.answeredFor("fm1")).result, { action: "accept", content: { number: 42, urgent: true } });
+    await box.codex.idles(id);
+  });
+
+  test("the speed picked for its account: Standard goes as null, and nothing where none was picked", { timeout: 60000 }, async () => {
+    const turnOf = (id) => box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
+    write(path.join(box.codex.home, "box", "models.json"), JSON.stringify({ speeds: { [provider]: null } }));
+    try {
+      const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Standard." })]);
+      await box.codex.idles(id);
+      assert.equal(turnOf(id).params.serviceTier, null);
+    } finally {
+      fs.rmSync(path.join(box.codex.home, "box", "models.json"), { force: true });
+    }
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m2", text: "Its own." })]);
+    await box.codex.idles(id);
+    assert.equal("serviceTier" in turnOf(id).params, false);
+  });
+});
+
 /** The holder of the account's Codex app-server. */
 function heldCodex(home) {
   const folder = path.join(home, "run", "agents", "hold");

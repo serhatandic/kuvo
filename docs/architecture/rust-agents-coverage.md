@@ -799,13 +799,13 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 51–54, 56, 58–60, 62, 64 | Open (4.2): answers at a turn's edge, two cards, counting refusals. |
 | 61, 63, 65 | Ported. |
 | 66, 72, 73 | Ported (the policies Codex starts with; Plan declines an edit itself). |
-| 67–71 | Open (4.2): Approve All answering Codex's own rules and MCP asks, MCP elicitation in each mode. |
+| 67–71 | Ported: Approve All answers Codex's own asks and MCP tool asks with no card; Ask First asks for another server's tool and not for Kuvo Code's; in Plan another server's tool is its yes-or-no form; an MCP server's form comes back typed. |
 | 74–89 | 6.1 (Codex run whole in the sandbox, bots' memory with 5.1, attachments copied in). |
 | 90 | Ported (Computer Use plugins off at launch). |
 | 91–92 | Rust passes the relay's servers into the thread; conformance with the engine's servers open (4.2). |
 | 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
-| 109 | Fast ported; Standard (null) and none picked open (4.2). |
+| 109 | Ported (Fast, Standard as null, nothing where none was picked). |
 | 112–113 | Open: foreground commands listed while they run (background model). |
 | 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
 | 115–119 | Ported. |
@@ -819,7 +819,7 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 37/37 | 36/36, 1 skipped (Rust-only) | 6/6 |
+| macOS | 43/43 | 42/42, 1 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum | 22/22 at b255c5fc0 | — | 6/6 |
 | WSL2, Ubuntu 24.04 | 22/22 at b255c5fc0 | — | 6/6 |
 | Native Windows x64 | 22/22 at b255c5fc0 | — | 6/6 |
