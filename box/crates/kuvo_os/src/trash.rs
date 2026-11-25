@@ -7,14 +7,10 @@ pub fn move_entry(home: &Path, entry: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     if alternate.is_none() {
         if Path::new("/usr/bin/trash").is_file() {
-            let status = std::process::Command::new("/usr/bin/trash")
-                .arg(entry)
-                .status()?;
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other("trash failed"))
-            };
+            return trash_command(
+                std::process::Command::new("/usr/bin/trash").arg(entry),
+                std::time::Duration::from_secs(30),
+            );
         }
         let account = super::platform::Account::current()?;
         let env = std::env::vars_os().collect();
@@ -39,6 +35,39 @@ pub fn move_entry(home: &Path, entry: &Path) -> io::Result<()> {
     transfer(entry, &target)?;
     let _ = at.keep();
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn trash_command(
+    command: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> io::Result<()> {
+    use std::time::{Duration, Instant};
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("trash failed"))
+                };
+            }
+            Ok(None) if started.elapsed() < limit => {
+                std::thread::sleep(
+                    Duration::from_millis(10).min(limit.saturating_sub(started.elapsed())),
+                );
+            }
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(result.err().unwrap_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "trash took too long")
+                }));
+            }
+        }
+    }
 }
 
 fn transfer(from: &Path, to: &Path) -> io::Result<()> {
@@ -103,5 +132,18 @@ fn remove_entry(from: &Path, stat: &fs::Metadata) -> io::Result<()> {
         fs::remove_dir(from)
     } else {
         fs::remove_file(from)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn native_trash_command_is_stopped_at_its_deadline() {
+        let error = super::trash_command(
+            std::process::Command::new("/bin/sleep").arg("600"),
+            std::time::Duration::ZERO,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 }

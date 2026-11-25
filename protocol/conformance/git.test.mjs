@@ -1,7 +1,7 @@
 // Git, Changes, worktrees and projects (rust-box.md row 6.3b): the same answers from both boxes.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { scratch, until, write, openLine } from "./adapter.mjs";
@@ -10,7 +10,7 @@ import { bench } from "./bench.mjs";
 // git without your own settings: an empty file of the test's own.
 const gitIn = settings => (folder, ...args) => {
   const ran = spawnSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=Test", "-c", "user.email=test@example.com", ...args],
-    { cwd: folder, encoding: "utf8", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KUVO_") && !key.startsWith("CLAUDE_"))), GIT_CONFIG_GLOBAL: settings, GIT_CONFIG_NOSYSTEM: "1" } });
+    { cwd: folder, encoding: "utf8", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KUVO_") && !key.startsWith("CLAUDE_"))), HOME: path.dirname(settings), USERPROFILE: path.dirname(settings), GIT_CONFIG_GLOBAL: settings, GIT_CONFIG_NOSYSTEM: "1" } });
   assert.equal(ran.status, 0, ran.stderr);
   return ran.stdout;
 };
@@ -163,6 +163,11 @@ test("Changes lists, follows and edits the repository's real files", async t => 
     { path: "app/a.txt", group: "unstaged", status: "modified", scope: "unstaged", stage: "stage", additions: 1, deletions: 0, discard: "unstaged", discards: { kind: "changes", undoable: false } },
     { path: "README.md", group: "unstaged", status: "deleted", scope: "unstaged", stage: "stage", additions: 0, deletions: 1, discard: "unstaged", discards: { kind: "restore", undoable: true } },
     { path: "new.txt", group: "untracked", status: "added", scope: "unstaged", stage: "stage", discard: "trash", discards: { kind: "trash", undoable: true } },
+  ]);
+  const sub = await ask("GET", "kuvo/git/files?directory=" + encodeURIComponent(path.join(root, "app")));
+  assert.equal(sub.status, 200, sub.text);
+  assert.deepEqual(sub.json.files.map(({ group, path }) => [group, path]), [
+    ["staged", "app/a.txt"], ["staged", "app/new.txt"], ["unstaged", "app/a.txt"],
   ]);
   const diff = await action("changes", { path: "app/a.txt", scope: "unstaged" });
   assert.equal(diff.status, 200, diff.text);
@@ -368,4 +373,169 @@ test("Git and project directory queries accept Windows names without accepting p
   const parent = "?directory=" + encodeURIComponent(directory + "\\..\\elsewhere");
   assert.equal((await ask("GET", "kuvo/git/files" + parent)).status, 403);
   assert.equal((await ask("PUT", "kuvo/projects" + parent, {})).status, 403);
+});
+
+// A real repository per scenario. The caller can set a private shell or PATH before starting.
+async function repository(t, name, configure = () => ({})) {
+  const { computer } = await bench(t);
+  const box = await computer(name, undefined, folder => ({ KUVO_TEST_LOGIN_ENV: "off", ...configure(folder) }));
+  const root = path.join(box.home, "repo");
+  mkdirSync(path.join(root, "app"), { recursive: true });
+  const git = gitIn(box.env.GIT_CONFIG_GLOBAL);
+  git(root, "init", "-q");
+  git(root, "config", "user.name", "Test");
+  git(root, "config", "user.email", "test@example.com");
+  writeFileSync(path.join(root, "app", "a.txt"), "first\n");
+  writeFileSync(path.join(root, "outside.txt"), "first\n");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "first");
+  return { box, root, git, async start() {
+    const ask = box.connect(await box.start().ready());
+    return {
+      action: (route, fields = {}) => ask("POST", "kuvo/git/" + route, { directory: root, ...fields }),
+      listed: () => ask("GET", "kuvo/git/files?directory=" + encodeURIComponent(root)),
+    };
+  } };
+}
+
+test("Commit from a folder takes only its changes, including a new file, when nothing is staged", async t => {
+  const repo = await repository(t, "FolderCommit");
+  const { root, git } = repo;
+  const directory = path.join(root, "app");
+  writeFileSync(path.join(directory, "a.txt"), "edited\n");
+  writeFileSync(path.join(directory, "new.txt"), "new\n");
+  writeFileSync(path.join(root, "outside.txt"), "outside\n");
+  const { action } = await repo.start();
+  const diff = await action("changes", { directory });
+  assert.equal(diff.status, 200, diff.text);
+  assert.match(diff.json.patch, /\+edited/);
+  assert.doesNotMatch(diff.json.patch, /outside/);
+  assert.deepEqual(diff.json.untracked, ["app/new.txt"]);
+  const result = await action("commit", { directory, message: "Folder only" });
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").trim().split(/\r?\n/),
+    ["app/a.txt", "app/new.txt"]);
+  assert.equal(git(root, "show", "HEAD:app/a.txt"), "edited\n");
+  assert.equal(git(root, "show", "HEAD:app/new.txt"), "new\n");
+  assert.equal(git(root, "status", "--porcelain").trimEnd(), " M outside.txt");
+});
+
+test("the bare repository menu names its branches but cannot switch a nonexistent checkout", async t => {
+  const repo = await repository(t, "BareMenu");
+  const folder = path.join(repo.box.home, "bare-layout");
+  mkdirSync(folder);
+  repo.git(folder, "clone", "-q", "--bare", repo.root, ".bare");
+  writeFileSync(path.join(folder, ".git"), "gitdir: ./.bare\n");
+  const { action } = await repo.start();
+  const menu = await action("branches", { directory: folder });
+  assert.deepEqual([menu.status, menu.json], [200, {
+    repository: true, root: null, current: "main", branches: ["main"], pullRequest: false,
+  }]);
+  const switched = await action("switch", { directory: folder, branch: "main" });
+  assert.deepEqual([switched.status, switched.json.message], [422,
+    "This folder has no checkout of its own to switch. Switch branches in one of its worktrees."]);
+});
+
+test("a commit settles even while a post-commit hook's child keeps its pipes open", {
+  skip: process.platform === "win32" ? "The hook's Unix child PID is not a native Windows PID." : false,
+}, async t => {
+  const repo = await repository(t, "HookExit");
+  const { root, git } = repo;
+  write(path.join(root, ".git/hooks/post-commit"), "#!/bin/sh\nsleep 600 &\necho $! > .git/left.pid\n", { mode: 0o755 });
+  writeFileSync(path.join(root, "app/a.txt"), "edited\n");
+  const { action } = await repo.start();
+  try {
+    const result = await action("commit", { message: "Hook exit" });
+    assert.equal(result.status, 200, result.text);
+    assert.equal(git(root, "log", "-1", "--format=%s").trim(), "Hook exit");
+    const pid = Number(readFileSync(path.join(root, ".git/left.pid"), "utf8"));
+    assert.ok(pid > 1);
+    assert.doesNotThrow(() => process.kill(pid, 0), "the hook's child should still be running");
+  } finally {
+    const pidFile = path.join(root, ".git/left.pid");
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      if (pid > 1) try { process.kill(pid); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  }
+});
+
+test("staging runs the configured clean filter and committing runs the configured hook", async t => {
+  const repo = await repository(t, "RequestedPrograms");
+  const { root, git } = repo;
+  // Git runs its shell scripts on Windows too. The markers are inside .git, never part of a commit.
+  mkdirSync(path.join(root, ".git", "our-hooks"));
+  write(path.join(root, ".git", "our-hooks", "pre-commit"), "#!/bin/sh\nprintf hook > .git/hook-ran\n", { mode: 0o755 });
+  git(root, "config", "core.hooksPath", ".git/our-hooks");
+  git(root, "config", "filter.upper.clean", "tr a-z A-Z");
+  git(root, "config", "filter.upper.smudge", "tr A-Z a-z");
+  git(root, "config", "filter.upper.required", "true");
+  writeFileSync(path.join(root, ".gitattributes"), "app/a.txt filter=upper\n");
+  writeFileSync(path.join(root, "app/a.txt"), "edited\n");
+  const { action } = await repo.start();
+  const staged = await action("stage", { root, path: "app/a.txt", status: "modified" });
+  assert.equal(staged.status, 200, staged.text);
+  assert.equal(git(root, "show", ":app/a.txt"), "EDITED\n");
+  assert.equal(existsSync(path.join(root, ".git/hook-ran")), false);
+  const result = await action("commit", { message: "Filtered" });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(git(root, "show", "HEAD:app/a.txt"), "EDITED\n");
+  assert.equal(readFileSync(path.join(root, ".git/hook-ran"), "utf8"), "hook");
+  assert.equal(readFileSync(path.join(root, "app/a.txt"), "utf8"), "edited\n");
+});
+
+test("a touched file stored by the installed git-lfs filter is still unchanged in Changes", {
+  skip: process.platform === "win32" ? "The stand-in for installed git-lfs is a Unix executable script." : false,
+}, async t => {
+  const repo = await repository(t, "Lfs", folder => ({
+    PATH: path.join(folder, "tools") + path.delimiter + process.env.PATH,
+  }));
+  const { box, root, git } = repo;
+  const tool = path.join(path.dirname(box.home), "tools", "git-lfs");
+  write(tool, '#!/bin/sh\ncase "$1" in clean) tr a-z A-Z ;; *) cat ;; esac\n', { mode: 0o755 });
+  // Use the same installed tool for the fixture's Git commands and the resident.
+  const absolute = '"' + tool + '"';
+  git(root, "config", "filter.kept.clean", absolute + " clean -- %f");
+  git(root, "config", "filter.kept.smudge", absolute + " smudge -- %f");
+  git(root, "config", "filter.kept.required", "true");
+  writeFileSync(path.join(root, ".gitattributes"), "big.bin filter=kept\n");
+  writeFileSync(path.join(root, "big.bin"), "big\n");
+  git(root, "add", "-A");
+  git(root, "commit", "-qm", "Stored by git-lfs");
+  assert.equal(git(root, "show", "HEAD:big.bin"), "BIG\n");
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(path.join(root, "big.bin"), later, later);
+  const { action, listed } = await repo.start();
+  const changes = await action("changes");
+  assert.equal(changes.status, 200, changes.text);
+  assert.equal(changes.json.patch, "");
+  assert.deepEqual(changes.json.untracked, []);
+  const files = await listed();
+  assert.equal(files.status, 200, files.text);
+  assert.deepEqual(files.json.files, []);
+  assert.equal(files.json.uncommitted, false);
+});
+
+test("Mac commits reuse a recent login environment and keep private box variables out of hooks", {
+  skip: process.platform !== "darwin" ? "Only Mac user-requested commands refresh the login environment." : false,
+}, async t => {
+  const repo = await repository(t, "LoginCache", folder => ({
+    SHELL: path.join(folder, "login-shell"), KUVO_TEST_LOGIN_ENV: "on",
+    GPG_TTY: "inherited", KUVO_TEST_PRIVATE: "box-only",
+  }));
+  const { box, root } = repo;
+  const profile = path.join(path.dirname(box.home), "profile");
+  write(box.env.SHELL, `#!/bin/sh\n. "${profile}"\nshift\nexec /bin/sh -c "$1"\n`, { mode: 0o755 });
+  write(profile, "export GPG_TTY=first\nexport KUVO_TEST_PRIVATE=login-only\n");
+  write(path.join(root, ".git/hooks/pre-commit"), '#!/bin/sh\nprintf "%s|%s" "$GPG_TTY" "$KUVO_TEST_PRIVATE" > .git/seen\n', { mode: 0o755 });
+  const { action } = await repo.start();
+  const commit = async text => {
+    writeFileSync(path.join(root, "app/a.txt"), text + "\n");
+    const reply = await action("commit", { message: text });
+    assert.equal(reply.status, 200, reply.text);
+    return readFileSync(path.join(root, ".git/seen"), "utf8");
+  };
+  assert.equal(await commit("one"), "first|");
+  write(profile, "export GPG_TTY=second\n");
+  assert.equal(await commit("two"), "first|");
 });
