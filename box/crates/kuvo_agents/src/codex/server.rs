@@ -225,6 +225,8 @@ impl Shared {
             return Err(stopped());
         }
         slot.server = Some(server.clone());
+        drop(slot);
+        self.refresh_catalog(server.clone());
         Ok(server)
     }
 
@@ -344,7 +346,15 @@ impl Shared {
         slot.last_use = Some(Instant::now());
         drop(slot);
         self.watch_idle();
+        self.refresh_catalog(server.clone());
         Ok(server)
+    }
+
+    fn refresh_catalog(self: &Arc<Self>, server: Arc<Server>) {
+        let shared = self.clone();
+        tokio::spawn(async move {
+            let _ = shared.account.refresh_models(&shared, &server, false).await;
+        });
     }
 
     fn serve(

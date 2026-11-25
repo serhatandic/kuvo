@@ -19,7 +19,7 @@ use crate::{
     feed::Feed,
     program_updates::{
         Accounts, Changed, Hold, InstallResult, Maintenance, Program, ProgramUpdates, UpdateResult,
-        install, maintenance,
+        install,
         notices::{ProgramNow, Served, UpdateNotices, agents_update_themselves},
     },
     resident::ResidentAgents,
@@ -283,13 +283,13 @@ impl AccountRows {
         self.0.agents.feed()
     }
 
-    /// Each program's newest looked up (npm, Homebrew) as the resident starts, a minute after,
-    /// then every hour: its rows and notices say so.
+    /// Each program’s newest looked up daily, or when the agents settings are opened.
+    /// No version checks at resident startup.
     fn check_programs(&self) {
         let rows = Arc::downgrade(&self.0);
         tokio::spawn(async move {
-            let mut fresh = false;
             loop {
+                tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
                 let Some(inner) = rows.upgrade() else { return };
                 let rows = AccountRows(inner);
                 let mut programs: Vec<Entry> = Vec::new();
@@ -305,7 +305,7 @@ impl AccountRows {
                     let Some(definition) = entry.agent.program() else {
                         continue;
                     };
-                    let value = maintenance(&definition, fresh).await;
+                    let value = rows.0.updates.maintenance(&definition, false).await;
                     if rows.noted(&entry, value) {
                         for each in rows.0.agents.roster().all() {
                             if each.account.kind == entry.account.kind {
@@ -318,13 +318,6 @@ impl AccountRows {
                     }
                 }
                 drop(rows);
-                tokio::time::sleep(if fresh {
-                    Duration::from_secs(60 * 60)
-                } else {
-                    Duration::from_secs(60)
-                })
-                .await;
-                fresh = true;
             }
         });
     }
@@ -386,7 +379,7 @@ impl AccountRows {
         tokio::spawn(async move {
             // (Read afresh by the update: what its accounts list from here.)
             if let Some(definition) = entry.agent.program() {
-                let value = maintenance(&definition, false).await;
+                let value = rows.0.updates.maintenance(&definition, false).await;
                 rows.noted(&entry, value);
             }
             if updated {
@@ -404,7 +397,7 @@ impl AccountRows {
         let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let late = answered.clone();
         let asked = tokio::spawn(async move {
-            let value = maintenance(&definition, fresh).await;
+            let value = rows.0.updates.maintenance(&definition, fresh).await;
             if rows.noted(&account, value.clone()) && late.load(std::sync::atomic::Ordering::SeqCst)
             {
                 rows.feed().emit(

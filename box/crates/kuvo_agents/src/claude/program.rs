@@ -16,7 +16,7 @@ use kuvo_os::{
     process::{Spawn, Stdio},
 };
 use kuvo_store::home::Home;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -48,7 +48,7 @@ const UNKNOWN: u8 = 0;
 const PLAN: u8 = 1;
 const KEY: u8 = 2;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Status {
     logged_in: bool,
@@ -279,6 +279,68 @@ impl Program {
         which(OsStr::new("claude"), env, &folders)
     }
 
+    /// The catalog is produced only during a turn or sign-in, not by the picker.
+    pub fn catalog_file(&self) -> PathBuf {
+        self.home
+            .run()
+            .join("agents/claude/catalogs")
+            .join(format!("{}.json", self.account))
+    }
+
+    fn local_status(&self, env: &Environment) -> Status {
+        let record: serde_json::Value = self
+            .record_home()
+            .and_then(|folder| fs::read(folder.join(".claude.json")).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let account = &record["oauthAccount"];
+        let config = self.config_home(self.home.root());
+        let read = |name: &str| -> serde_json::Value {
+            config
+                .as_ref()
+                .and_then(|folder| fs::read(folder.join(name)).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default()
+        };
+        let credentials = read(".credentials.json");
+        let settings = read("settings.json");
+        let configured = |name| {
+            env_value(Platform::current(), env, name).is_some_and(|value| !value.is_empty())
+                || settings["env"][name]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+        };
+        let key = configured("ANTHROPIC_API_KEY")
+            || configured("ANTHROPIC_AUTH_TOKEN")
+            || settings["apiKeyHelper"]
+                .as_str()
+                .is_some_and(|helper| !helper.is_empty());
+        let cloud = [
+            ("CLAUDE_CODE_USE_BEDROCK", "bedrock"),
+            ("CLAUDE_CODE_USE_VERTEX", "vertex"),
+            ("CLAUDE_CODE_USE_FOUNDRY", "foundry"),
+        ]
+        .into_iter()
+        .find_map(|(name, service)| configured(name).then(|| service.to_owned()));
+        let oauth = account.is_object() && self.credentials_written() != SystemTime::UNIX_EPOCH;
+        Status {
+            logged_in: key || cloud.is_some() || oauth,
+            auth_method: if key || cloud.is_some() || account["organizationType"] == "api" {
+                "console_api_key".into()
+            } else if oauth {
+                "claude.ai".into()
+            } else {
+                "none".into()
+            },
+            email: account["emailAddress"].as_str().map(str::to_owned),
+            api_provider: cloud,
+            subscription_type: credentials["claudeAiOauth"]["subscriptionType"]
+                .as_str()
+                .or_else(|| account["subscriptionType"].as_str())
+                .map(str::to_owned),
+        }
+    }
+
     pub async fn probe(&self) -> io::Result<(AccountStatus, bool)> {
         let program = self.clone();
         tokio::task::spawn_blocking(move || program.probe_blocking()).await?
@@ -296,11 +358,11 @@ impl Program {
             ended: false,
             unchecked: false,
         };
-        let Some(executable) = self.executable(&env) else {
+        if self.executable(&env).is_none() {
             answer.message = Some("Install Claude Code, then sign in here.".into());
             return Ok((answer, false));
-        };
-        let status = native_status(executable, env, self.home.root())?;
+        }
+        let status = self.local_status(&env);
         answer.installed = true;
         answer.signed_in = status.logged_in;
         let key = !status.auth_method.is_empty() && status.auth_method != "claude.ai";
@@ -410,7 +472,11 @@ impl Program {
                 }),
                 completed: Box::new(move || {
                     let _ = program.forget_token();
-                    handle.block_on(models.clear());
+                    handle.block_on(async {
+                        models.clear().await;
+                        // This is explicitly a sign-in, so it may ask Claude for its models.
+                        let _ = models.refresh(program.clone()).await;
+                    });
                 }),
             })
         })

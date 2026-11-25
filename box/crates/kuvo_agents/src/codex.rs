@@ -377,7 +377,7 @@ impl Agent for Codex {
         Box::pin(async {
             self.shared.program.logout().await?;
             self.stop_all(true).await;
-            self.shared.account.forget_models();
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }
@@ -390,6 +390,7 @@ impl Agent for Codex {
             if self.shared.program.added() {
                 let _ = self.shared.program.logout().await;
             }
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }

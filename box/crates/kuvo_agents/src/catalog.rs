@@ -6,15 +6,16 @@ use crate::{
     roster::{Entry, Roster},
 };
 use futures_util::future::join_all;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Models {
     pub generation: Option<String>,
     pub complete: bool,
     pub models: Vec<Model>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Model {
     pub id: String,
     pub name: String,
@@ -28,7 +29,7 @@ pub struct Model {
     pub context: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Speed {
     pub id: String,
     pub name: String,

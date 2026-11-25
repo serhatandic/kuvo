@@ -434,6 +434,7 @@ parallel.
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: parity spike, ACP or HTTP (2 h). 4.7b: adapter, one held process per computer, catalog cache, sign-in paths, MCP config read by the box, bots and wake-ups pointed at it (6 ×2). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). | agents | 4.3, 3.2 | 24 | B |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
+| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, marketplace, session and settings follows, keeper, work and peer timers, and setup lease remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
 | 5.1 | 5.1a done: wake-ups and watches fired by the resident and the bot list; 5.1b done: making, changing, deleting and telling bots, on macOS, Windows and Linux; 5.1c-1 done: approval routes and the round that keeps conversations' rules; 5.1c-2 done: work settings, Keep This Mac Awake, oversight, work changes and the asks list; 5.1c-3 done: a bot's work (`kuvo/work?bot=`) from the session list; 5.1c-4 done: `kuvo/projects/new` and answering what's asked; 5.1c-5 done: models that can't answer now; 5.1c-6a and 6b done: the work watcher (live, catch-up, held finishes, late answers) and the engine's place in the background model; 5.1c-7 done: Stop on someone's work and Stop All; 5.1f-1 done: a lead's sessions here listed, stopped, summarized and answered from another computer, and their rows told it; 5.1f-2 done: work started here for a lead on another computer, its models and projects read, and its Stop All; 5.1e-1 done: the agents' work tools and letters (`kuvo/agent-tools`: sessions here and on your other computers, starts with a bot's limits, the start rate and 5.2's Work Queue link, models, projects, make_project, Stop All elsewhere, list_agents, send_message, read_conversation). Open: 5.1e-2 (the wake tools, set_job), the rest of 5.1c (notices and their holds) and 5.1d (held edits, bots elsewhere, bots' old keys). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
@@ -461,6 +462,44 @@ While the plan runs, the TypeScript box keeps taking fixes. Each fix lands with 
 conformance test, so the Rust lane for that area takes it in. Windows sessions 4–11 in
 [windows.md](windows.md) are replaced by 0.4, 1.3, 7.1 and 8.1–8.2. The native box is the Rust
 box.
+
+### 4.8 Idle work
+
+The resident should do nothing until there is useful work. The following intentionally change when
+work happens, not which computer owns it or the route shapes:
+
+- **Agent accounts and model lists:** Codex reads its native sign-in metadata and its last catalog
+  without starting an app-server; it refreshes the catalog when the app-server starts for work or
+  a sign-in completes. On first use it can read Codex's own model cache; without either cache the
+  catalog is incomplete (the resident must not pretend an unlisted model has gone). Claude reads
+  native sign-in metadata and a saved catalog, or offers its usual provisional models. Its first
+  real turn or sign-in discovers the complete catalog and context limits. Both keep disposable,
+  per-account catalogs under `run/agents` across resident restarts. The Rust-only timing cases in
+  `agents-codex` and `agents-claude` fail on the previous binary; the ordinary catalog cases exercise
+  the same account and model answers after work. Claim labels available only from a native probe
+  may be less specific until the agent does work. Plan usage probes belong to row 5.4.
+- **Agent program checks:** no version or installer check at resident startup. The agents settings
+  asks on first use or refresh; otherwise the check is daily. A local executable's canonical path,
+  modification time and length identify the last successful version read even after a resident
+  restart. Package release lookups keep their daily result. The `agents-updates` case checks that
+  reopening Settings and restarting do not run the unchanged executable, and a changed executable
+  gives its new version.
+
+Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
+relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second
+apart; IDLEW differences divided by ten. RSS is `ps`'s resident pages, including shared pages,
+not PSS. The connected sample includes a persistent line plus model and account requests.
+
+| Run | No client: RSS / processes / idle wakes/s | One client: total RSS / processes / idle wakes/s |
+|---|---|---|
+| Before 4.8, `27ed3c8e6` | 79,904 KiB / 1 / 2.8 | 144,720 KiB / 3 / 8.2 |
+| After the agent catalog and program changes | 77,440 KiB / 1 / 0.0 | 81,984 KiB / 1 / 0.0 |
+
+The baseline's other two live processes were the holder (18,288 KiB) and its scripted app-server
+(44,016 KiB); neither starts on the new route reads. The version command can run briefly when the
+agents settings is opened, not at startup. The wake readings are short OS samples on a busy Mac;
+zero reported idle wakes does not mean the remaining application timers have been removed. Repeat
+after the remaining work, including the keeper.
 
 ## 7. Release decisions
 

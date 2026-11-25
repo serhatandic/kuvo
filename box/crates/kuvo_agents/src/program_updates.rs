@@ -17,7 +17,7 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as Plain, OnceLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures_util::future::{BoxFuture, FutureExt, Shared};
@@ -29,9 +29,9 @@ pub use versions::{compare_versions, homebrew_keg, npm_global_prefix, version_in
 pub mod notices;
 
 /// How often what you have is read again, unless asked anew.
-const CHECKED_FOR: Duration = Duration::from_secs(10 * 60);
+const CHECKED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long npm's newest is kept.
-const NEWEST_FOR: Duration = Duration::from_secs(6 * 60 * 60);
+const NEWEST_FOR: Duration = CHECKED_FOR;
 /// An installer's longest run.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long what an update brought is news. Why one failed stays until it's seen.
@@ -70,7 +70,7 @@ impl Native {
 }
 
 /// What you have, the newest, and how to update.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Maintenance {
     pub installed: Option<String>,
     pub latest: Option<String>,
@@ -118,7 +118,6 @@ fn now_ms() -> u64 {
 /// What each program was found to be, and npm's newest, kept a while.
 #[derive(Default)]
 struct Known {
-    checked: HashMap<PathBuf, (Instant, Maintenance)>,
     newest: HashMap<String, (Instant, Option<String>)>,
 }
 
@@ -127,18 +126,67 @@ fn known() -> &'static Plain<Known> {
     KNOWN.get_or_init(Plain::default)
 }
 
-/// What you have, the newest, and how to update, asked at most every ten minutes unless `fresh`.
-pub async fn maintenance(definition: &Definition, fresh: bool) -> Maintenance {
+/// The actual installed file, including the target of a symlink. A replacement or modification
+/// invalidates what `--version` said, even for a request within the update-check interval.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct FileStamp {
+    path: PathBuf,
+    changed: SystemTime,
+    size: u64,
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let metadata = std::fs::metadata(&path).ok()?;
+    Some(FileStamp {
+        path,
+        changed: metadata.modified().ok()?,
+        size: metadata.len(),
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+struct Checked {
+    file: FileStamp,
+    at: u64,
+    value: Maintenance,
+}
+
+/// One file per executable, kept across resident restarts. A path is local to this computer.
+fn check_file(folder: &Path, executable: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    folder.join(format!(
+        "{}.json",
+        hex::encode(Sha256::digest(executable.as_os_str().as_encoded_bytes()))
+    ))
+}
+
+/// What you have, the newest, and how to update. The installed version is read only when its
+/// file changes. Remote checks are daily, or when the agents page explicitly asks for fresh data.
+pub async fn maintenance(definition: &Definition, fresh: bool, folder: &Path) -> Maintenance {
+    let file = check_file(folder, &definition.executable);
+    let gate = one_at_a_time(&format!("maintenance:{}", file.display()));
+    let _gate = gate.lock().await;
+    let Some(stamp) = file_stamp(&definition.executable) else {
+        return Maintenance::default();
+    };
+    let previous = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Checked>(&bytes).ok());
+    let same = previous.as_ref().filter(|before| before.file == stamp);
     if !fresh
-        && let Some((at, value)) = lock(known()).checked.get(&definition.executable)
-        && at.elapsed() < CHECKED_FOR
+        && let Some(before) = same
+        && now_ms().saturating_sub(before.at) < CHECKED_FOR.as_millis() as u64
     {
-        return value.clone();
+        return before.value.clone();
     }
-    let (installed, updater) = tokio::join!(
-        installed_version(&definition.executable),
-        resolve_updater(definition)
-    );
+    let installed = async {
+        if let Some(before) = same {
+            return before.value.installed.clone();
+        }
+        installed_version(&definition.executable).await
+    };
+    let (installed, updater) = tokio::join!(installed, resolve_updater(definition));
     // Homebrew's own newest, or none known: npm's may not have reached it.
     let latest = match (&updater.homebrew, &updater.latest, &definition.npm_package) {
         (true, latest, _) => latest.clone(),
@@ -155,10 +203,16 @@ pub async fn maintenance(definition: &Definition, fresh: bool) -> Maintenance {
         shown: updater.shown,
         env: updater.env,
     };
-    lock(known()).checked.insert(
-        definition.executable.clone(),
-        (Instant::now(), value.clone()),
-    );
+    // If an installer raced this check, a later request must read the new executable.
+    if file_stamp(&definition.executable).as_ref() == Some(&stamp) {
+        if let Ok(bytes) = serde_json::to_vec(&Checked {
+            file: stamp,
+            at: now_ms(),
+            value: value.clone(),
+        }) {
+            let _ = tokio::task::spawn_blocking(move || files::write_atomic(&file, &bytes)).await;
+        }
+    }
     value
 }
 
@@ -524,7 +578,11 @@ pub async fn update(
 ) -> UpdateResult {
     let one = one_at_a_time(&definition.name);
     let _one = one.lock().await;
-    let before = maintenance(definition, true).await;
+    let folder = install
+        .and_then(|(agents, _, _)| agents.parent())
+        .unwrap_or(temporary)
+        .join("run/agents/program-cache");
+    let before = maintenance(definition, true, &folder).await;
     let Some(command) = before.command.clone().filter(|command| !command.is_empty()) else {
         return UpdateResult {
             version: before.installed,
@@ -565,7 +623,7 @@ pub async fn update(
     {
         let _ = std::fs::remove_file(marker);
     }
-    let after = maintenance(definition, true).await;
+    let after = maintenance(definition, true, &folder).await;
     let changed = after.installed.is_some() && after.installed != before.installed;
     // Unchanged, it's up to date only if the newest is known to be what it has.
     if changed || (after.installed.is_some() && after.latest.is_some() && !after.is_outdated()) {
@@ -781,6 +839,15 @@ impl ProgramUpdates {
             accounts,
             changed,
         }
+    }
+
+    pub async fn maintenance(&self, definition: &Definition, fresh: bool) -> Maintenance {
+        let folder = self
+            .agents
+            .parent()
+            .unwrap_or(&self.agents)
+            .join("run/agents/program-cache");
+        maintenance(definition, fresh, &folder).await
     }
 
     pub fn with_hold(mut self, hold: Arc<dyn Hold>) -> Self {
@@ -1006,7 +1073,7 @@ impl ProgramUpdates {
                 let Some(definition) = agent.definition() else {
                     continue;
                 };
-                let found = maintenance(&definition, false).await;
+                let found = self.maintenance(&definition, false).await;
                 if found.command.is_some() && found.is_outdated() && !self.is_updating(&program) {
                     drop(self.update(agent, None));
                     started.push(program.clone());
