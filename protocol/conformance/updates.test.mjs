@@ -891,10 +891,11 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
   const hash = digest(packBytes ?? "signed target");
   let downloads = 0;
   let signed;
+  const waiting = [];
   const feed = createServer((req, res) => {
     if (req.url !== "/boxes.json") {
       downloads += 1;
-      if (holdPack) return;
+      if (holdPack) { waiting.push(res); return; }
       return packBytes ? res.end(packBytes) : res.writeHead(404).end();
     }
     res.end(signed);
@@ -909,7 +910,9 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
     KUVO_TEST_RELEASE_KEY: key.key,
   };
-  return { version, hash, signed, updateEnv, downloaded: () => downloads };
+  return { version, hash, signed, updateEnv, downloaded: () => downloads,
+    releasePack() { holdPack = false; for (const response of waiting.splice(0)) if (!response.destroyed) response.end(packBytes); },
+  };
 }
 
 
@@ -2082,16 +2085,19 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture, holdDow
   };
 }
 
-for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback"]) test({
+for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback", "same-engine", "same-engine-rollback"]) test({
   switch: "a differing engine finishes its turn and carries waiting work through a release switch",
   rollback: "a differing engine restores waiting work after a failed release trial",
   borrowed: "a differing engine leaves a borrowed worker's inbox alone",
   "holder-switch": "a signed differing-engine switch adopts the actual coding-agent holder",
   "holder-rollback": "a failed signed differing-engine trial adopts the same coding-agent holder after rollback",
+  "same-engine": "a signed server-only release keeps the actual engine and coding-agent holder running",
+  "same-engine-rollback": "a failed signed server-only trial retains the engine and coding-agent holder on rollback",
 }[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
   const rollback = mode.endsWith("rollback");
   const borrowed = mode === "borrowed";
-  const held = mode.startsWith("holder-");
+  const sameEngine = mode.startsWith("same-engine");
+  const held = mode.startsWith("holder-") || sameEngine;
   const holderProbe = process.env.KUVO_CONFORMANCE_HOLDER_PROBE;
   if (held && (!holderProbe || !path.isAbsolute(holderProbe) || !fs.existsSync(holderProbe))) {
     return t.skip("Set KUVO_CONFORMANCE_HOLDER_PROBE to the dedicated agent_holders test executable.");
@@ -2105,7 +2111,8 @@ for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-r
   });
   const { home, engine } = here;
   const workspace = path.join(home, "workspace");
-  const oldVersion = rollback ? "2.2.6" : "2.2.5", newVersion = rollback ? "2.2.7" : "2.2.6";
+  const oldVersion = sameEngine || rollback ? "2.2.6" : "2.2.5";
+  const newVersion = sameEngine ? oldVersion : rollback ? "2.2.7" : "2.2.6";
   const exe = process.platform === "win32" ? "opencode.exe" : "opencode";
   const oldEngine = borrowed ? path.join(here.env.HOME, `borrowed-${exe}`) : path.join(home, "engine", oldVersion, exe);
   const runtime = typescriptRuntime();
@@ -2172,14 +2179,14 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const members = { [`bin/${program}`]: rollback ? engineBytes : oldBinary, "bin/box-version": Buffer.from(targetVersion + "\n") };
     for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
     write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: targetVersion, engine: newVersion,
-      downgradeSafe: true, engines: [oldVersion, newVersion],
+      downgradeSafe: true, engines: [...new Set([oldVersion, newVersion])],
       files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
     const tar = path.join(release, "box.tar");
     assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
     const assets = await engineFeed(t, path.join(release, "engine"), engineBytes, { damageFirst: false });
     const system = process.platform === "win32" ? "windows" : process.platform;
     const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
-    const { hash, updateEnv } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
+    const { hash, updateEnv, releasePack } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { holdPack: sameEngine, engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
     write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
     write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
     write(path.join(home, previous, "bin/box-version"), current + "\n");
@@ -2208,6 +2215,89 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
         () => "the first resident must start its actual holder\n" + keeper.log(), 25000);
       assert.equal(startedHolder.resident, before.pid);
       assert.equal(startedHolder.generation, 1);
+    }
+    const finishHolder = async () => {
+      const finished = await until(() => checkpoint("agent-fixture-finished"),
+        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
+      assert.notEqual(finished.resident, startedHolder.resident);
+      assert.equal(finished.resident, readJSON(serve).pid);
+      assert.equal(finished.holder, startedHolder.holder);
+      assert.equal(finished.agent, startedHolder.agent);
+      assert.equal(finished.generation, 2);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
+      try {
+        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
+        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
+        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
+        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
+      } finally { db.close(); }
+    };
+    if (sameEngine) {
+      // These are the installed engine's generated files, not release assets.
+      const generated = ["config/opencode/plugins/kuvo-sandbox.js", "config/opencode/plugins/kuvo-defaults.js", "bin/kuvo-fence", "bin/kuvo-fence.js"];
+      const timestamp = new Date(1_700_000_000_000);
+      for (const file of generated) {
+        const destination = path.join(home, file);
+        write(destination, `generated ${file}\n`, { mode: 0o700 });
+        fs.utimesSync(destination, timestamp, timestamp);
+      }
+      const snapshot = () => generated.map(file => {
+        const destination = path.join(home, file), info = fs.statSync(destination);
+        return [file, digest(fs.readFileSync(destination)), info.mtimeMs, info.mode];
+      });
+      const originalFiles = snapshot();
+      const hold = path.join(home, "run/fleet-engine-hold.json");
+      const selected = `versions/${targetVersion}-${hash.slice(0, 12)}/bin`;
+      const selector = path.join(home, "active-release");
+      const sameWorker = () => {
+        const record = readJSON(path.join(home, "run/engine.json"));
+        assert.deepEqual([record.pid, record.port, record.version], [oldRecord.pid, oldRecord.port, oldVersion]);
+        assert.doesNotThrow(() => process.kill(worker.child.pid, 0));
+        assert.ok(engine.running.has(session), "the native turn is still running");
+        assert.deepEqual(snapshot(), originalFiles);
+        assert.equal(fs.existsSync(hold), false, "a server-only release must not hold the engine queue");
+        assert.equal(fs.existsSync(assets.calls), false, "the pin already installed is not downloaded again");
+      };
+      releasePack();
+      await until(() => {
+        sameWorker();
+        return fs.readFileSync(selector, "utf8") === selected;
+      }, "the signed server-only release should select without waiting for the native turn", peerTransferMs + keeperTrialMs);
+      sameWorker();
+      if (rollback) {
+        assert.doesNotThrow(() => process.kill(startedHolder.holder, 0));
+        assert.doesNotThrow(() => process.kill(startedHolder.agent, 0));
+        await until(() => {
+          sameWorker();
+          return fs.readFileSync(selector, "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous"));
+        }, "the actual failed trial should restore the earlier resident but not the engine", keeperTrialMs + peerTransferMs);
+      }
+      const after = await until(async () => {
+        try {
+          const record = readJSON(serve);
+          return record.pid !== before.pid && !fs.existsSync(path.join(home, "run/previous")) && (await request(record, "GET", "kuvo/info")).status === 200 && record;
+        } catch { return false; }
+      }, "the replacement resident should answer after its keeper verdict", keeperTrialMs + peerTransferMs);
+      sameWorker();
+      await finishHolder();
+      const active = await request(oldRecord, "GET", "api/session/active");
+      assert.equal(active.json.data[session].type, "busy");
+      const queued = await request(after, "POST", `api/session/${session}/prompt`, { id: "msg_sameEngineAfter", text: "queue after update", delivery: "queue" }, { "x-kuvo-from": "app" });
+      assert.equal(queued.status, 200, queued.text);
+      await until(() => engine.inboxes.get(session)?.some(row => row.id === "msg_sameEngineAfter"), "the new message should join the same engine's inbox");
+      assert.deepEqual(engine.inboxes.get(session).map(row => row.id), ["msg_inboxEngine", "msg_sameEngineAfter"]);
+      assert.deepEqual(engine.messages.get(session).map(row => row.id), ["msg_originalEngine"]);
+      assert.deepEqual(engine.interrupted, []);
+      assert.equal(engine.asked.filter(row => row.method === "DELETE" && row.path.includes("/inbox/")).length, 0);
+      assert.equal(engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt") && row.json?.text === "continue").length, 0);
+      assert.equal(fs.existsSync(path.join(home, "run/continue-after-update.json")), false);
+      const status = (await request(after, "GET", "kuvo/update")).json;
+      assert.equal(status.engineChange, undefined);
+      assert.equal(status.updating, null);
+      assert.equal(status.last.result, rollback ? "failed" : "updated");
+      assert.equal(status.version, rollback ? current : targetVersion);
+      return;
     }
     await until(() => {
       const failed = path.join(home, "run/fleet-cannot.json");
@@ -2345,23 +2435,7 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     assert.ok(received.text.includes(attached[0]));
     assert.deepEqual(received.files, [inline]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
-    if (held) {
-      const finished = await until(() => checkpoint("agent-fixture-finished"),
-        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
-      assert.notEqual(finished.resident, startedHolder.resident);
-      assert.equal(finished.resident, readJSON(serve).pid);
-      assert.equal(finished.holder, startedHolder.holder);
-      assert.equal(finished.agent, startedHolder.agent);
-      assert.equal(finished.generation, 2);
-      const { DatabaseSync } = await import("node:sqlite");
-      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
-      try {
-        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
-        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
-        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
-        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
-      } finally { db.close(); }
-    }
+    if (held) await finishHolder();
     const settled = (await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/update")).json;
     assert.equal(settled.updating, null);
     assert.equal(settled.engineChange, undefined);
