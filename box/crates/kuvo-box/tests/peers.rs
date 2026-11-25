@@ -752,12 +752,12 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         fixture(&a, &url, 1, Some(2));
         fixture(&b, &url, 2, Some(1));
         write(&b, "run/lists/sessions.json", json!({
-            "epoch":"b","seq":1,"sessions":{
-                SESSION:{"facts":{
+            "epoch":"b","seq":1,"floor":0,"gone":{},"sessions":{
+                SESSION:{"seq":1,"facts":{
                     "kind":"chat","directory":"/scratch","title":"Peer's session",
                     "created":10,"updated":20,"asked":30,"running":true,
                 },"place":"engine"},
-                ACTIVE:{"facts":{
+                ACTIVE:{"seq":1,"facts":{
                     "kind":"chat","directory":"/scratch","title":"Active session",
                     "created":10,"updated":21,"running":true,
                 },"place":"engine"}
@@ -1307,9 +1307,9 @@ async fn a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for
         });
         write(home.path(), "run/lists/runs-on.json", catalog.clone());
         write(home.path(), "run/lists/sessions.json", json!({
-            "epoch":"here","seq":1,"projects":{},"sessions":{
-                "ses_here":{"place":"engine","facts":{"kind":"chat","created":1,"updated":2,"directory":"/scratch"}},
-                "ses_switched":{"place":"engine","facts":{"kind":"chat","created":1,"updated":2,"directory":"/scratch"}},
+            "epoch":"here","seq":1,"floor":0,"gone":{},"projects":{},"sessions":{
+                "ses_here":{"seq":1,"place":"engine","facts":{"kind":"chat","created":1,"updated":2,"directory":"/scratch"}},
+                "ses_switched":{"seq":1,"place":"engine","facts":{"kind":"chat","created":1,"updated":2,"directory":"/scratch"}},
             },
         }));
         write(home.path(), &format!("run/peers/{key}/lists-v1.json"), json!({
@@ -1354,7 +1354,11 @@ async fn a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for
         let (status, announced) = request(&record, "GET", &location("ses_onlyAnnouncement"), None, false).await;
         assert_eq!(status, 200);
         assert_eq!(announced["on"]["id"], key);
-        assert_eq!(request(&record, "GET", &location("ses_absent"), None, false).await.0, 404);
+        // The kept list is pending on its engine until that is read again, so an unknown
+        // session may still appear: not ready, not gone (as TypeScript's `savedList`).
+        assert_eq!(request(&record, "GET", &location("ses_absent"), None, false).await, (503, json!({
+            "message":"The conversation’s engine isn’t answering.",
+        })));
         let (status, here) = request(&record, "GET", &location("ses_here"), None, false).await;
         assert_eq!((status, here), (200, json!({"place":"engine","running":false})));
         let (status, moved) = request(&record, "GET", &location("ses_switched"), None, false).await;
