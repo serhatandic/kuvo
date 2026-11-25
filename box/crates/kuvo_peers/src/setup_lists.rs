@@ -152,6 +152,11 @@ impl View {
             .pending(&self.reach, &self.announced, feature, kept)
     }
 
+    /// Whether the relay says a computer isn't there now.
+    pub fn away(&self, key: &ComputerKey) -> bool {
+        self.reach.away_since(&encode(key)).is_some()
+    }
+
     pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
         self.announced
             .get(&encode(key))

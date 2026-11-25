@@ -157,7 +157,7 @@ fn reply_of_last_turn(page: &[Value]) -> Option<String> {
 
 impl Work {
     /// The bot a conversation is, by its session.
-    fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
+    pub(crate) fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
         let names = crate::wakes::folder::names(&self.bots).into_iter();
         names
             .filter_map(|id| BotHere::read(&self.bots, &id))

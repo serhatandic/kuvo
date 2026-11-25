@@ -56,6 +56,7 @@ impl Elsewhere {
     /// The box's work is there: calls are taken from now on, and the rows of what it does for
     /// leads elsewhere told through `peers`.
     pub fn serve(&self, work: Work, peers: WorkHandle) -> tokio::task::JoinHandle<()> {
+        let _ = work.calls.set(peers.clone());
         let _ = self.work.set(work.clone());
         tokio::spawn(work.tell_rows(peers))
     }
@@ -122,7 +123,7 @@ impl RemoteWork for Elsewhere {
                 )));
             }
             if tool == Tool::AnswerAsk {
-                return Ok(work.admit_answer(&engine, call).await);
+                return Ok(work.admit_answer(&engine, &call.from, &call.request.args).await);
             }
             if tool == Tool::StartSession && !super::starts::start_call(call) {
                 return Ok(Admission::Reject("That isn't a call.".into()));
@@ -213,10 +214,14 @@ impl Work {
     /// What an answer from a lead elsewhere may give: refused here as its own tool would refuse
     /// it, or, for an allow, what the peers judge it by (the lead's own rules where it lives and
     /// this computer's, each on its own).
-    async fn admit_answer(&self, engine: &kuvo_engine::BotEngine, call: &MailedCall) -> Admission {
+    pub(super) async fn admit_answer(
+        &self,
+        engine: &kuvo_engine::BotEngine,
+        lead: &str,
+        args: &serde_json::Map<String, Value>,
+    ) -> Admission {
         let refused = |text: String| Admission::Refused(Answer::refused(text));
-        let args = &call.request.args;
-        let (data, permission) = match self.ask_to_answer(engine, &call.from, args).await {
+        let (data, permission) = match self.ask_to_answer(engine, lead, args).await {
             Err(said) => return refused(said.text),
             Ok((_, Ask::Question(_))) => return Admission::Ready,
             Ok((data, Ask::Permission(permission))) => (data, permission),

@@ -93,7 +93,7 @@ pub fn is_archived(session: &Value) -> bool {
         || truthy(&metadata["kuvo"]["archived"])
 }
 
-fn truthy(value: &Value) -> bool {
+pub(crate) fn truthy(value: &Value) -> bool {
     !matches!(value, Value::Null | Value::Bool(false)) && value != 0 && value != ""
 }
 
@@ -109,7 +109,7 @@ const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMER
     .remove(b'(')
     .remove(b')');
 
-fn encoded(id: &str) -> String {
+pub(crate) fn encoded(id: &str) -> String {
     percent_encoding::utf8_percent_encode(id, COMPONENT).to_string()
 }
 

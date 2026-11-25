@@ -2,6 +2,7 @@
 //! (`kuvo/work/settings`), this Mac kept awake while agents work, what bots just did to their
 //! sessions (`kuvo/work/oversight`) and when each bot's work last changed (`kuvo/work/events`).
 
+pub mod agent_tools;
 pub mod answers;
 pub mod asks;
 pub mod bot;
@@ -66,6 +67,8 @@ pub struct Work {
     /// Starters with lines added from outside the watcher, for it to send.
     wakes: tokio::sync::mpsc::UnboundedSender<String>,
     added: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    /// Calls to the computers this one's leads have sessions on, once the peers run.
+    calls: std::sync::Arc<std::sync::OnceLock<kuvo_peers::remote_work::WorkHandle>>,
 }
 
 impl Work {
@@ -81,6 +84,7 @@ impl Work {
         Self {
             wakes,
             added: std::sync::Arc::new(std::sync::Mutex::new(Some(added))),
+            calls: std::sync::Arc::default(),
             settings,
             records: Records::new(&home.join("run")),
             unanswering: Unanswerings::new(&home.join("run")),
@@ -175,6 +179,7 @@ impl Work {
     }
 
     pub fn register(&self, routes: &mut Registry) {
+        self.register_tools(routes);
         let stops = std::sync::Arc::new(watch::Stops(self.clone()));
         self.list.engine().attach_work_stops(stops);
         let work = self.clone();
