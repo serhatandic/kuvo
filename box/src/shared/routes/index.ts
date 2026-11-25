@@ -11,6 +11,7 @@ import { BOT_ROUTES } from "./bots";
 import { BOX_ROUTES } from "./box";
 import { BROWSER_ROUTES } from "./browser";
 import { CHANGES_ROUTES } from "./changes";
+import { CUSTOM_AUTO_ROUTES } from "./custom-auto";
 import { GROUP_ROUTES } from "./groups";
 import { INTEGRATION_ROUTES } from "./integrations";
 import { LIBRARY_ROUTES } from "./library";
@@ -56,6 +57,7 @@ export const ROUTES: RouteShape[] = [
   ...BOX_ROUTES,
   ...BROWSER_ROUTES,
   ...CHANGES_ROUTES,
+  ...CUSTOM_AUTO_ROUTES,
   ...MAC_ROUTES,
   ...MOVE_ROUTES,
   ...GROUP_ROUTES,

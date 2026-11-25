@@ -4,7 +4,7 @@ use super::*;
 
 const NOT_A_LIST: &str =
     "The engine's permissions here aren't a list of rules: change them in its settings file.";
-const ACTIONS: [(&str, &str, Option<&str>); 8] = [
+pub(super) const ACTIONS: [(&str, &str, Option<&str>); 8] = [
     (
         "edit",
         "Edit files",
@@ -26,20 +26,20 @@ const ACTIONS: [(&str, &str, Option<&str>); 8] = [
     ("subagent", "Hand work to subagents", None),
     ("skill", "Use skills", None),
 ];
-const EFFECTS: [(&str, &str); 3] = [
+pub(super) const EFFECTS: [(&str, &str); 3] = [
     ("allow", "Allow"),
     ("ask", "Ask First"),
     ("deny", "Don't Allow"),
 ];
 
-fn engine_default(action: &str) -> &'static str {
+pub(super) fn engine_default(action: &str) -> &'static str {
     if action == "external_directory" {
         "ask"
     } else {
         "allow"
     }
 }
-fn choice<'a>(rules: &'a Value, action: &str) -> Option<&'a str> {
+pub(super) fn choice<'a>(rules: &'a Value, action: &str) -> Option<&'a str> {
     rules
         .as_array()?
         .iter()

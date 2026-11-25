@@ -7,6 +7,7 @@ pub mod background;
 pub mod catalog;
 pub mod claude;
 pub mod codex;
+pub mod custom_auto;
 pub mod feed;
 pub mod file_change;
 mod foreground;

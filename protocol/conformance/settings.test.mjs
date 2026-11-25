@@ -244,3 +244,151 @@ test("Storage measures files by category and only the recorded outside worktree"
   assert.ok(folder.value>=120000 && folder.value<1000000);
   assert.equal(row(page,"manage-worktrees").section,"worktrees");
 });
+
+const allRows = page => page.groups.flatMap(g => g.rows.flatMap(r => [r,...(r.items ?? [])]));
+const item = (page,id) => allRows(page).find(r=>r.id===id);
+const action = (r,id) => [...(r.actions??[]),...(r.add?[r.add]:[])].find(a=>a.id===id);
+const opening = (r,id) => Object.fromEntries(action(r,id).form.fields.map(f=>[f.id,f.value??""]));
+const perform = (ask,section,r,id,values,headers,check=false) =>
+  ask("POST",`kuvo/settings/${section}/${encodeURIComponent(r.id)}/${id}${check?"/check":""}`,
+    {was:action(r,id).form?.revision??r.revision,...(values===undefined?{}:{values})},headers);
+
+test("Git migration takes a legacy prefix and a Mac's preferences once", async t => {
+  const {computer} = await bench(t);
+  const box = await computer("Migration");
+  write(path.join(box.home,"box/opencode.json"),'{"unrelated":true}');
+  write(path.join(box.home,"box/git.json"),'{"branchPrefix":"legacy/","unknown":42}');
+  const ask = box.connect(await box.start().ready());
+  assert.equal(row((await ask("GET","kuvo/settings/git")).json,"branch-prefix").value,"legacy/");
+  let answer=await ask("POST","kuvo/git/settings/move",{branchPrefix:"mac/",commitInstructions:"  Be brief.  "});
+  assert.equal(answer.status,200,answer.text);
+  assert.equal(answer.json.moved,true);
+  assert.equal(row((await ask("GET","kuvo/settings/git")).json,"commit-instructions").value,"Be brief.");
+  answer=await ask("POST","kuvo/git/settings/move",{pullRequestInstructions:"Not taken"});
+  assert.equal(answer.status,200,answer.text);
+  assert.equal(answer.json.moved,false);
+  assert.equal(JSON.parse(readFileSync(path.join(box.home,"box/git.json"),"utf8")).branchPrefix,undefined);
+  assert.equal(JSON.parse(readFileSync(path.join(box.home,"box/git.json"),"utf8")).unknown,42);
+});
+
+test("Agents keeps independent custom records and refuses invalid or stale forms", async t => {
+  const {computer} = await bench(t);
+  const box = await computer("Agents Settings");
+  write(path.join(box.home,"box/opencode.json"),'{"agents":{"Reviewer":{"description":"Reviews changes.","mode":"subagent","unknown":42}}}');
+  write(path.join(box.env.HOME,".claude","agents","fixture.md"),"---\nname: Fixture Reviewer\ndescription: Checks findings.\n---\nReview the findings.");
+  const ask = box.connect(await box.start().ready());
+  const page=await ask("GET","kuvo/settings/agents");
+  assert.equal(page.status,200,page.text);
+  const list=row(page.json,"agents");
+  assert.ok(list.items.some(r=>r.id==="agent-build"));
+  const values=opening(list,"add");
+  const invalid=await perform(ask,"agents",list,"add",{...values,name:"Reviewer"},undefined,true);
+  assert.equal(invalid.status,200,invalid.text);
+  assert.equal(invalid.json.ready,false);
+  const made=await perform(ask,"agents",list,"add",{...values,name:"Bug Hunter",description:"Finds bugs.",system:"Report the findings."});
+  assert.equal(made.status,200,made.text);
+  assert.ok(item(made.json,"agent-Bug Hunter"));
+  const saved=JSON.parse(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"));
+  assert.equal(saved.agents["Bug Hunter"].description,"Finds bugs.");
+  assert.equal(saved.agents.Reviewer.unknown,42);
+  const imported=item(made.json,"claude-fixture-reviewer");
+  assert.ok(imported);
+  const brought=await perform(ask,"agents",imported,"import");
+  assert.equal(brought.status,200,brought.text);
+  const kept=JSON.parse(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"));
+  assert.deepEqual(kept.agents["fixture-reviewer"],{mode:"subagent",description:"Checks findings.",system:"Review the findings."});
+  const original=item(made.json,"agent-Bug Hunter");
+  const edit=await perform(ask,"agents",original,"edit",{...opening(original,"edit"),description:"Finds issues."});
+  assert.equal(edit.status,200,edit.text);
+  const stale=await perform(ask,"agents",original,"edit",{...opening(original,"edit"),description:"Stale"});
+  assert.equal(stale.status,409,stale.text);
+  const gone=await perform(ask,"agents",item(edit.json,original.id),"delete");
+  assert.equal(gone.status,200,gone.text);
+  assert.equal(item(gone.json,original.id),undefined);
+});
+
+test("Custom Auto keeps list revisions, form checks, order and limits in its own file", async t => {
+  const {computer} = await bench(t);
+  const box=await computer("Model Lists");
+  const {startClaudeBridge}=await import("./claude.mjs");
+  const bridge=await startClaudeBridge(boxBinary(),box.home,box.env,{engine:box.engine});
+  t.after(async()=>{await bridge?.stop()});
+  const ask=box.connect(await box.start().ready());
+  const root="kuvo/agents/api/kuvo/auto";
+  const answer=await ask("GET",root);
+  assert.equal(answer.status,200,answer.text);
+  const page=await ask("GET","kuvo/settings/custom-auto");
+  assert.equal(page.status,200,page.text);
+  const lists=row(page.json,"lists");
+  const invalid=await perform(ask,"custom-auto",lists,"add",{name:42},undefined,true);
+  assert.equal(invalid.status,200,invalid.text);
+  assert.equal(invalid.json.ready,false);
+  const added=await perform(ask,"custom-auto",lists,"add",{name:"Features"});
+  assert.equal(added.status,200,added.text);
+  const list=row(added.json,"lists").items.find(r=>r.title==="Features");
+  assert.ok(list);
+  const edited=await perform(ask,"custom-auto",list,"edit",{name:"Build"});
+  assert.equal(edited.status,200,edited.text);
+  const stale=await perform(ask,"custom-auto",list,"edit",{name:"Old"});
+  assert.equal(stale.status,409,stale.text);
+  const moved=await perform(ask,"custom-auto",item(edited.json,list.id),"up");
+  assert.equal(moved.status,200,moved.text);
+  assert.equal(row(moved.json,"lists").items[0].title,"Build");
+  const persisted=JSON.parse(readFileSync(path.join(box.home,"agents/auto.json"),"utf8"));
+  assert.equal(persisted.lists[0].name,"Build");
+  assert.equal((await ask("DELETE",root+"/limits")).status,200);
+});
+
+test("Vault Settings forms never return values and edits keep the empty secret unchanged", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Vault Settings");
+  const {randomBytes,generateKeyPairSync,sign}=await import("node:crypto");
+  const signing=generateKeyPairSync("ed25519");
+  const mac=randomBytes(32).toString("base64url");
+  const id=randomBytes(12).toString("hex");
+  const linkFile=path.join(box.home,"run/link.json");
+  write(linkFile,JSON.stringify({ ...JSON.parse(readFileSync(linkFile,"utf8")), id, macs:[mac],
+    macSigns:{[mac]:signing.publicKey.export({type:"spki",format:"der"}).subarray(-32).toString("base64url")} }));
+  const ask=box.connect(await box.start().ready());
+  const at=Date.now(),nonce=randomBytes(20).toString("base64url");
+  const proof=sign(null,Buffer.from(`kuvo-vault-key\0${id}\0${at}\0${nonce}`),signing.privateKey).toString("base64url");
+  assert.equal((await ask("POST","kuvo/vault/key",{mac,at,nonce,proof})).status,200);
+  const header={"x-kuvo-from":"app"};
+  const secret=randomBytes(24).toString("base64url");
+  const page=await ask("GET","kuvo/settings/vault",undefined,header);
+  assert.equal(page.status,200,page.text);
+  const list=row(page.json,"items");
+  const values={...opening(list,"add"),kind:"login",name:"Fixture login",site:"example.test",username:"tester",password:secret,signInOnly:true};
+  const added=await perform(ask,"vault",list,"add",values,header);
+  assert.equal(added.status,200,added.text);
+  assert.ok(!added.text.includes(secret));
+  const login=row(added.json,"items").items.find(i=>i.title==="Fixture login");
+  assert.ok(login);
+  const edit=opening(login,"edit");
+  assert.equal(edit.password,"");
+  const saved=await perform(ask,"vault",login,"edit",{...edit,username:"other"},header);
+  assert.equal(saved.status,200,saved.text);
+  assert.ok(!saved.text.includes(secret));
+  const actual=await ask("GET","kuvo/vault",undefined,header);
+  const record=actual.json.items.find(i=>i.name==="Fixture login");
+  assert.equal(record.username,"other");
+  assert.deepEqual((await ask("POST",`kuvo/vault/items/${record.id}/same`,{values:{password:secret}},header)).json,{same:true});
+  const untrusted=await ask("GET","kuvo/settings/vault");
+  assert.deepEqual(untrusted.json.groups,[]);
+  assert.ok(!untrusted.text.includes(secret));
+  // The signed request is bound to this exact outer route, not to a nested
+  // vault read. Its authority is usable only during the admitted request.
+  if (!boxBinary().typescript) {
+    const pause=row(saved.json,"pause");
+    const route="kuvo/settings/vault";
+    const body={row:"pause",was:pause.revision,value:true};
+    const at=Date.now(),nonce=randomBytes(20).toString("base64url");
+    const hash=createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    const proof=sign(null,Buffer.from(`kuvo-vault-request\0${id}\0${at}\0${nonce}\0PATCH\0${route}\0${hash}`),signing.privateKey).toString("base64url");
+    const signed={"x-kuvo-vault-proof":Buffer.from(JSON.stringify({mac,at,nonce,proof})).toString("base64url")};
+    const paused=await ask("PATCH",route,body,signed);
+    assert.equal(paused.status,200,paused.text);
+    assert.equal(row(paused.json,"pause").value,true);
+    assert.notEqual((await ask("PATCH",route,body,signed)).status,200);
+  }
+});

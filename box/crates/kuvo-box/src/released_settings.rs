@@ -30,6 +30,7 @@ pub fn run(
             SettingsRead::Problem(message) => json!({"status":409,"message":message}),
         },
         "adopt" if mac => {
+            kuvo_services::git_preferences::keep_old_branch_prefix(&config);
             let settings = match config.read_settings() {
                 SettingsRead::Ok(settings) => settings,
                 SettingsRead::Problem(_) => Default::default(),
@@ -42,7 +43,13 @@ pub fn run(
             } else {
                 serde_json::from_str(&input)?
             };
-            kuvo_move::adopt_legacy_settings(home.root(), &shown_root(home.root()), &seed)?
+            let mut reply =
+                kuvo_move::adopt_legacy_settings(home.root(), &shown_root(home.root()), &seed)?;
+            kuvo_services::git_preferences::keep_old_branch_prefix(&config);
+            if let SettingsRead::Ok(settings) = config.read_settings() {
+                reply["settings"] = json!(settings);
+            }
+            reply
         }
         "change" if !config.owns_settings() => {
             json!({"status":409,"message":"This machine's settings aren't its own yet."})
