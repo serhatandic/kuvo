@@ -1,5 +1,5 @@
 use super::store::{Item, Store, file_name};
-use kuvo_store::files::{self, FileStamp};
+use kuvo_store::files;
 use std::{
     fs::{File, Metadata, OpenOptions},
     io::{self, Read},
@@ -174,7 +174,9 @@ pub(super) fn verify_handoff_file(
     Ok(())
 }
 
-fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
+type FolderIdentity = (u64, u128, Option<i128>);
+
+fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FolderIdentity>> {
     paths
         .iter()
         .map(|path| {
@@ -183,7 +185,10 @@ fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
             if !info.is_dir() || is_link(&info) {
                 return None;
             }
-            files::opened_file_stamp(&folder).ok()
+            // A sibling write can change the directory's revision without replacing it.
+            // Verify its identity; the opened attachment still uses its complete stamp.
+            let stamp = files::opened_file_stamp(&folder).ok()?;
+            Some((stamp.device, stamp.file, stamp.created_ns))
         })
         .collect()
 }
