@@ -23,7 +23,7 @@ use kuvo_keeper::{
 use kuvo_peers::{
     directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
     reach::UpdatePresence,
-    setup_lists::{BridgeAdmission, BridgeUpdate, ResidentPeers, UpdatePublication, View},
+    setup_lists::{BridgeAdmission, BridgeUpdate, Reader, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
@@ -80,6 +80,7 @@ enum CheckReply {
 }
 
 struct FeedCheck {
+    started: Instant,
     manual: bool,
     round: Option<String>,
     task: JoinHandle<io::Result<Option<FeedRelease>>>,
@@ -217,6 +218,7 @@ pub fn start(
     };
     let task = tokio::spawn(async move {
         let mut peers = fleet.peers.reader();
+        let mut update_view = peers.view();
         let mut setup = fleet.setup.clone();
         let mut engine = fleet.engine.states();
         let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
@@ -240,7 +242,7 @@ pub fn start(
             let deadline = fleet.next_round();
             tokio::select! {
                 _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {},
-                changed = peers.changed() => if changed.is_err() { return },
+                changed = update_peers_changed(&mut peers, &mut update_view) => if changed.is_err() { return },
                 changed = setup.changed() => if !changed { return },
                 changed = engine.changed() => if changed.is_err() { return },
                 _ = files.changed() => {},
@@ -256,6 +258,41 @@ pub fn start(
         }
     });
     Some(Worker { checks, step, task })
+}
+
+/// Transfer chunks, conversation mail and local publications also advance the shared
+/// peer watch. Do not run a fleet round for every chunk; only changes to the inputs
+/// of the release barrier and its rows need an immediate round.
+async fn update_peers_changed(
+    peers: &mut Reader,
+    before: &mut Arc<View>,
+) -> Result<(), watch::error::RecvError> {
+    loop {
+        peers.changed().await?;
+        let now = peers.now();
+        let after = peers.view();
+        let changed = before.relay_connected != after.relay_connected
+            || before.roster.here != after.roster.here
+            || before.roster.main != after.roster.main
+            || before.roster.name != after.roster.name
+            || before.roster.members.len() != after.roster.members.len()
+            || before
+                .roster
+                .members
+                .iter()
+                .zip(&after.roster.members)
+                .any(|(a, b)| {
+                    a.key != b.key
+                        || a.address != b.address
+                        || a.name != b.name
+                        || a.kind != b.kind
+                        || before.peer_updates(&a.key, now) != after.peer_updates(&b.key, now)
+                });
+        *before = after;
+        if changed {
+            return Ok(());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -824,6 +861,7 @@ impl Fleet {
                         (self.fetcher.clone(), self.url.clone(), self.key.clone());
                     self.step.send_replace(Some(Step::Checking));
                     self.checking = Some(FeedCheck {
+                        started: Instant::now(),
                         manual,
                         round: (!manual).then_some(round),
                         task: tokio::spawn(async move { fetcher.check(&url, &key).await }),
@@ -946,9 +984,10 @@ impl Fleet {
                             let Some(mail) = mail else {
                                 return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&local, &progress)
-                                .await
-                                .map_err(|_| retry::Failure::download(prepared.clone(), error))?
+                            mail.pull(&local, &progress).await.map_err(|peer_error| {
+                                eprintln!("Peer release fallback: {peer_error}");
+                                retry::Failure::download(prepared.clone(), error)
+                            })?
                         }
                     };
                     if !local.matches_bytes(&pack) {
@@ -1040,6 +1079,19 @@ impl Fleet {
         }
 
         if let Some(candidate) = candidate {
+            // A promoted main can finish preparation and start its feed check in
+            // the same event round. Give that actual request one old-round grace
+            // to get on the wire before replacing this resident; don't wait for
+            // its response (the feed may be unavailable).
+            if (standalone || local_main)
+                && prepared
+                && self
+                    .checking
+                    .as_ref()
+                    .is_some_and(|check| check.started.elapsed() < Duration::from_secs(2))
+            {
+                return Ok(());
+            }
             let authorized = if standalone || local_main {
                 let (ready, reachable) = barrier(&view, now, &candidate);
                 candidate.primary_may_switch(&self.home, now, ready, reachable)?

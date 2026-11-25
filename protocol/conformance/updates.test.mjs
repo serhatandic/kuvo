@@ -3759,7 +3759,11 @@ Buffer.from = function (value, encoding, ...args) {
     const returnMs = failover || bridgeBeta || shellKeepers ? releaseReturnMs : peerOnly ? 120000 : 65000;
     await until(() => {
       const failure = (failover || bridgeBeta) && refused();
-      if (failure?.version === version) throw new Error(failure.reason);
+      if (failure?.version === version) {
+        const announcements = path.join(away.home, "run/peer-agents.json");
+        const peers = fs.existsSync(announcements) ? Object.values(readJSON(announcements)).map(({ computer, heard }) => ({ computer, heard })) : [];
+        throw new Error(`${failure.reason}\nReturning peer facts: ${JSON.stringify(peers)}\n${diagnose()}`);
+      }
       return confirmed(away);
     }, diagnose, returnMs);
     await until(async () => {

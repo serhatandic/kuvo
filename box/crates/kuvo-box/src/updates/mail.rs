@@ -1,6 +1,7 @@
 //! Target packs over the existing authenticated peer release mail.
 
 use std::{
+    collections::HashSet,
     io,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -23,7 +24,7 @@ use serde_json::{Number, Value, json};
 use tokio::{
     sync::{Semaphore, broadcast, mpsc},
     task::{JoinHandle, JoinSet},
-    time::timeout,
+    time::{Instant, timeout, timeout_at},
 };
 
 use super::Check;
@@ -31,6 +32,10 @@ use super::Check;
 const WINDOW: usize = 16;
 const MIRROR_REQUESTS: usize = 4;
 const QUIET: Duration = Duration::from_secs(60);
+// A returning member can receive its signed candidate before the peer-list
+// projection has accepted the holder's announcement. This is a one-shot wait
+// during preparation, not a resident polling interval.
+const HOLDER_ANNOUNCEMENT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Default)]
 pub(super) struct PullProgress(Arc<Mutex<Option<f64>>>);
@@ -169,58 +174,86 @@ impl Mail {
         progress: &PullProgress,
     ) -> io::Result<Vec<u8>> {
         let mut events = self.relay.subscribe().ok_or_else(unavailable)?;
-        let view = self.reader.view();
-        let now = self.reader.now();
-        let mut peers: Vec<_> = view
-            .roster
-            .members
-            .iter()
-            .filter_map(|member| {
-                let (away, facts) = view.peer_updates(&member.key, now);
-                if away {
-                    return None;
-                }
-                let installing = facts.staged.as_ref().is_some_and(|stage| {
-                    stage.version == release.version && stage.sha256 == release.sha256
-                });
-                let installed = facts.kuvo.as_deref() == Some(&release.version)
-                    && facts.installed_sha256.as_deref() == Some(&release.sha256);
-                let offered = facts
-                    .release_manifest
-                    .as_ref()
-                    .filter(|_| facts.candidate.as_deref() == Some(&release.version))
-                    .and_then(|envelope| Candidate::verify(envelope.clone(), &self.key).ok())
-                    .filter(|candidate| candidate.local().ok().as_ref() == Some(release))
-                    .and_then(|candidate| {
-                        Some(
-                            candidate.pack_digest(facts.release_target.as_deref()?)?
-                                == release.sha256,
-                        )
+        let mut reader = self.reader.clone();
+        let mut attempted = HashSet::new();
+        let mut announce_until = Instant::now() + HOLDER_ANNOUNCEMENT;
+        loop {
+            let view = reader.view();
+            let now = reader.now();
+            let mut peers: Vec<_> = view
+                .roster
+                .members
+                .iter()
+                .filter(|member| !attempted.contains(&member.key))
+                .filter_map(|member| {
+                    let (away, facts) = view.peer_updates(&member.key, now);
+                    if away {
+                        return None;
+                    }
+                    let installing = facts.staged.as_ref().is_some_and(|stage| {
+                        stage.version == release.version && stage.sha256 == release.sha256
                     });
-                let priority = if installing || installed {
-                    0
-                } else if offered == Some(true) {
-                    1
-                } else if offered.is_some() || self.can_mirror(&facts, release) {
-                    2
-                } else {
-                    return None;
-                };
-                Some((member.host()?, priority))
-            })
-            .collect();
-        peers.sort_by_key(|(_, priority)| *priority);
-        for (peer, priority) in peers {
-            if let Ok(Ok(pack)) = timeout(
-                kuvo_keeper::fleet::peer_transfer_limit(),
-                self.pull_from(&mut events, &peer, release, progress, priority == 2),
-            )
-            .await
+                    let installed = facts.kuvo.as_deref() == Some(&release.version)
+                        && facts.installed_sha256.as_deref() == Some(&release.sha256);
+                    let offered = facts
+                        .release_manifest
+                        .as_ref()
+                        .filter(|_| facts.candidate.as_deref() == Some(&release.version))
+                        .and_then(|envelope| Candidate::verify(envelope.clone(), &self.key).ok())
+                        .filter(|candidate| candidate.local().ok().as_ref() == Some(release))
+                        .and_then(|candidate| {
+                            Some(
+                                candidate.pack_digest(facts.release_target.as_deref()?)?
+                                    == release.sha256,
+                            )
+                        });
+                    let priority = if installing || installed {
+                        0
+                    } else if offered == Some(true) {
+                        1
+                    } else if offered.is_some() || self.can_mirror(&facts, release) {
+                        2
+                    } else {
+                        return None;
+                    };
+                    Some((member.host()?, priority))
+                })
+                .collect();
+            peers.sort_by_key(|(_, priority)| *priority);
+            if let Some((peer, priority)) = peers.into_iter().next() {
+                attempted.insert(peer.key);
+                match timeout(
+                    kuvo_keeper::fleet::peer_transfer_limit(),
+                    self.pull_from(&mut events, &peer, release, progress, priority == 2),
+                )
+                .await
+                {
+                    Ok(Ok(pack)) => return Ok(pack),
+                    Ok(Err(error)) => eprintln!("Peer release transfer: {error}"),
+                    Err(_) => eprintln!("Peer release transfer timed out"),
+                }
+                // Peer facts can change during a long transfer. Choose the next
+                // holder from the live view rather than the original snapshot.
+                announce_until = Instant::now() + HOLDER_ANNOUNCEMENT;
+                continue;
+            }
+            if view
+                .roster
+                .members
+                .iter()
+                .all(|member| attempted.contains(&member.key))
+                || !matches!(
+                    timeout_at(announce_until, reader.changed()).await,
+                    Ok(Ok(()))
+                )
             {
-                return Ok(pack);
+                return Err(if attempted.is_empty() {
+                    io::Error::other("No other computer has announced the requested release.")
+                } else {
+                    unavailable()
+                });
             }
         }
-        Err(unavailable())
     }
 
     fn can_mirror(&self, facts: &UpdateFacts, release: &ReleaseRef) -> bool {

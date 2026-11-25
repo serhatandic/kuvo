@@ -405,16 +405,24 @@ async fn sync_peer_snapshots(
     let mut art_rx = match &artifacts { ArtifactHandle::Ready(s) => Some(s.subscribe()), _ => None };
     let mut lib_rx = match &library { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
     let mut sent = HashMap::<([u8; 32], &'static str), SentCopy>::new();
+    // A peer can announce agents before its Library receiver is installed. Modern
+    // recipients explicitly say they are ready, so an initial copy cannot be lost.
+    let mut requested = HashSet::new();
+    let mut ready = HashSet::new();
     let mut cached = None;
     let mut source_watches = FileSet::new(WatchHub::default());
     loop {
-        let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut cached, &mut sent, &mut source_watches).await;
+        let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut cached, &mut sent, &mut requested, &mut ready, &mut source_watches).await;
 
         tokio::select! {
             res = events.recv() => match res {
                 Ok(event) => match event.as_ref() {
                     RelayEvent::Mail { key, envelope, .. } => {
                         let key_str = encode(key);
+                        if envelope.0.get("ask").and_then(Value::as_str) == Some("library-copy") {
+                            ready.insert(*key);
+                            sent.retain(|(recipient, _), _| recipient != key);
+                        }
                         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
                         let mut updated = false;
                         for (field, file) in [("libraryCopy", LIBRARY_FILE), ("outputCopy", OUTPUTS_FILE)] {
@@ -428,17 +436,30 @@ async fn sync_peer_snapshots(
                                 }
                             }
                         }
-                        if updated { seq = seq.wrapping_add(1); let _ = notify.send(seq); }
+                        if updated {
+                            ready.insert(*key);
+                            seq = seq.wrapping_add(1); let _ = notify.send(seq);
+                        }
                     }
-                    RelayEvent::Connected(_) | RelayEvent::Disconnected(_) => sent.clear(),
+                    RelayEvent::Connected(_) | RelayEvent::Disconnected(_) => {
+                        sent.clear(); requested.clear(); ready.clear();
+                    },
                     RelayEvent::Gone { address, replaced: true } => {
                         if let Some(member) = peers.view().roster.at_address(*address) {
                             sent.retain(|(key, _), _| *key != member.key);
+                            requested.remove(&member.key); ready.remove(&member.key);
+                        }
+                    }
+                    RelayEvent::Unreachable(address) | RelayEvent::Gone { address, replaced: false } => {
+                        if let Some(member) = peers.view().roster.at_address(*address) {
+                            sent.retain(|(key, _), _| *key != member.key);
+                            ready.remove(&member.key);
+                            // The peer view will clear the request when it learns the peer is away.
                         }
                     }
                     _ => {}
                 },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sent.clear(); cached = None; }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sent.clear(); requested.clear(); ready.clear(); cached = None; }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
             _ = recv_broadcast(&mut art_rx) => cached = None,
@@ -485,17 +506,39 @@ async fn legacy_due(at: Option<tokio::time::Instant>) {
 async fn push_snapshot(
     peers: &Reader, relay: &RelayHandle, artifacts: &ArtifactHandle, library: &LibraryHandle,
     cached: &mut Option<Content>, sent: &mut HashMap<([u8; 32], &'static str), SentCopy>,
+    requested: &mut HashSet<[u8; 32]>, ready: &mut HashSet<[u8; 32]>,
     sources: &mut FileSet,
 ) -> Option<tokio::time::Instant> {
     let view = peers.view();
     let recipients = view.roster.members.iter().filter(|member| member.address.is_some() && !view.away(&member.key)).collect::<Vec<_>>();
     sent.retain(|(key, _), _| recipients.iter().any(|member| member.key == *key));
+    requested.retain(|key| recipients.iter().any(|member| member.key == *key));
+    // Relay mail and the peer projection are independently scheduled. A ready
+    // request may precede the new roster or Connected view; keep it until a
+    // real disconnect/unreachable rather than dropping it on a stale view.
     if !view.relay_connected || recipients.is_empty() {
-        sent.clear();
         *cached = None;
         sources.clear();
         return None;
     }
+    for member in &recipients {
+        if view.advertises(&member.key, CHANGES_FEATURE) && !requested.contains(&member.key) {
+            let payload = Map::from_iter([("ask".into(), json!("library-copy"))]);
+            if relay.sender.mail(Host { address: member.address.expect("filtered"), key: member.key }, Envelope(payload)).await.is_ok() {
+                requested.insert(member.key);
+            }
+        }
+    }
+    let recipients = recipients.into_iter().filter(|member| {
+        if view.advertises(&member.key, CHANGES_FEATURE) {
+            ready.contains(&member.key)
+        } else {
+            // An unknown peer may be modern; wait for its first announcement
+            // instead of treating startup as an old client and mailing too early.
+            view.has_announcement(&member.key) || ready.contains(&member.key)
+        }
+    }).collect::<Vec<_>>();
+    if recipients.is_empty() { return None; }
     let content = cached.get_or_insert_with(|| {
         let mut content = Vec::new();
         let mut add = |field, value: Value| {

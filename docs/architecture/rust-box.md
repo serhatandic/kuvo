@@ -487,7 +487,9 @@ work happens, not which computer owns it or the route shapes:
 
 - **Library and Outputs:** independent content hashes and per-recipient ledgers mean an unchanged
   Library is not sent with a changed output. Stores, file-parent and bot-description watches and
-  peer membership/reconnect events update the copies. New and returning computers get a full copy.
+  peer membership/reconnect events update the copies. Modern computers request the initial copy
+  after their own receiver is ready (`ask: "library-copy"`); new and returning computers get a full
+  copy without relying on a periodic resend to recover startup mail.
   Rust peers advertise `data.library-change-copy` and no longer age out Library content merely
   because it hasn't changed. A released peer without that capability still gets the old 60-second
   refresh while connected (its standing rules require it); no such timer runs with no peers or
@@ -517,6 +519,13 @@ work happens, not which computer owns it or the route shapes:
   process and keeper scenarios exercise the exit notification and matching stop identity. Update
   rounds follow setup, peers, files and engine, and sleep until the next check when there is no
   release to prepare; active release progress and switch barriers still have a short deadline.
+  A failed direct release download can wait for a holder announcement during preparation and
+  chooses the next holder from the current peer view after a transfer fails, rather than from a
+  frozen snapshot. Fleet rounds follow changes in release facts rather than each transfer chunk;
+  authenticated part mail reaches transfer subscribers without queuing a durable peer-list rebuild
+  for each part. A newly promoted main's started feed request gets a one-shot old-round grace
+  before replacing its resident, without waiting for the feed's response. The failover and
+  alternate-holder progress cases cover these active paths.
   Wake-ups sleep until their next due time and watch their folders, with a minute deadline only
   for active watches or blocked work. Approval changes use live channels/file watches with a
   one-shot grace for initial conversation writes. Peer lists follow local and ownership changes;
@@ -561,6 +570,8 @@ not PSS. The connected sample includes a persistent line plus model and account 
 | After the agent catalog and program changes | 77,440 KiB / 1 / 0.0 | 81,984 KiB / 1 / 0.0 |
 | After all eight idle changes (debug resident) | 80,800 KiB / 1 / 0.0 | 85,648 KiB / 1 / 0.0 |
 | After all eight changes, with keeper as well | 99,408 KiB / 2 / 0.0 | 104,304 KiB / 2 / 0.0 |
+| Final optimized (opt-level 1, stripped) resident | 48,096 KiB / 1 / 0.0 | 46,400 KiB / 1 / 0.0 |
+| Final optimized resident and keeper | 61,024 KiB / 2 / 0.0 | 65,520 KiB / 2 / 0.0 |
 
 The baseline's other two live processes were the holder (18,288 KiB) and its scripted app-server
 (44,016 KiB); neither starts on the new route reads. The version command can run briefly when the
@@ -569,7 +580,9 @@ zero reported idle wakes is not a count of all application timer callbacks. The 
 uses a lease-capable stand-in and records zero relay lease calls before and after connecting the
 client, with no native agent launched. The direct resident is the like-for-like memory comparison:
 its connected RSS fell 40.8%, and its unconnected RSS is within 1.2% of baseline. The keeper sample
-is supplemental (there was no before-keeper sample).
+is supplemental (there was no before-keeper sample). The separate optimized sample is the
+same final code in the build used for SSH Add and cross-platform checks, not a like-for-like
+comparison against the debug baseline.
 
 ## 7. Release decisions
 

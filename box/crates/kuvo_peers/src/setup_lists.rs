@@ -229,6 +229,11 @@ impl View {
         self.reach.away_since(&encode(key)).is_some()
     }
 
+    /// A peer has announced itself on the wire, including older peers without features.
+    pub fn has_announcement(&self, key: &ComputerKey) -> bool {
+        self.announced.contains_key(&encode(key))
+    }
+
     pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
         self.announced
             .get(&encode(key))
