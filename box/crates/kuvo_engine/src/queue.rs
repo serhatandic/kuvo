@@ -322,12 +322,16 @@ impl QueueStore {
         prompt: &Prompt,
         words: Option<&str>,
         from: Option<String>,
-        before: Option<&str>,
-        inbox: &[Inbox],
+        before: Option<(&str, &[Inbox])>,
+        engine_target: bool,
     ) -> io::Result<bool> {
         let current = self.get(session).await?;
         let arriving = current.arriving(&prompt.id);
-        if !current.paused
+        let release = engine_target
+            && (crate::release::holding(&self.run)
+                || (crate::release::releasing(&self.run) && !current.waiting.is_empty()));
+        if !release
+            && !current.paused
             && !current
                 .limit_stop
                 .as_ref()
@@ -336,7 +340,8 @@ impl QueueStore {
         {
             return Ok(false);
         }
-        if prompt.delivery == Delivery::Steer
+        if !release
+            && prompt.delivery == Delivery::Steer
             && !arriving
             && current.inbox_moved.is_empty()
             && !current
@@ -373,11 +378,49 @@ impl QueueStore {
                 state.came_held.push(prompt.id.clone());
                 state.paused = true;
             } else {
-                state.restore_before(waiting, before, inbox);
+                let (anchor, inbox) =
+                    before.map_or((None, &[][..]), |(anchor, inbox)| (Some(anchor), inbox));
+                state.restore_before(waiting, anchor, inbox);
             }
         })
         .await?;
         Ok(true)
+    }
+
+    pub(crate) async fn release_pending(
+        &self,
+        engine: &Engine,
+        lease: Option<&Lease>,
+    ) -> io::Result<bool> {
+        for (session, state) in self.index().await? {
+            if state.paused
+                || state.limit_stop.is_some()
+                || state.waiting.is_empty()
+                || engine
+                    .agent_session(&session)
+                    .await
+                    .map_err(|_| {
+                        io::Error::other("Could not check the owner of a waiting message.")
+                    })?
+                    .is_some()
+            {
+                continue;
+            }
+            if let Some(lease) = lease {
+                match engine
+                    .call::<Value>(lease, Method::GET, &sessions::path(&session), None)
+                    .await
+                {
+                    // Preserve this queue, but a confirmed absent session has
+                    // no turn to release and must not hold every other update.
+                    Err(error) if error.missing() => continue,
+                    Err(error) => return Err(io::Error::other(error)),
+                    Ok(_) => {}
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn clear(&self, session: &str, id: &str) -> io::Result<Queue> {
@@ -492,8 +535,12 @@ impl Queue {
             if let Some(stop) = &self.limit_stop {
                 value["line"] = json!(limit::line(home, stop));
             }
-        } else if !self.waiting.is_empty() && !self.inbox_moved.is_empty() {
-            value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+        } else if !self.waiting.is_empty() {
+            if crate::release::holding(&home.join("run")) {
+                value["line"] = json!(crate::release::HOLD_LINE);
+            } else if !self.inbox_moved.is_empty() {
+                value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+            }
         }
         value
     }
@@ -1080,6 +1127,13 @@ pub(crate) async fn advance(
     id: &str,
     how: Advance,
 ) -> Result<bool, Refusal> {
+    if release_holds(engine, target) {
+        return if how == Advance::AfterTurn {
+            Ok(true)
+        } else {
+            advance_held(engine, session, id).await
+        };
+    }
     let current = engine.queues.get(session).await.map_err(save_failed)?;
     let running = is_running(engine, target, session)
         .await
@@ -1145,7 +1199,58 @@ pub(crate) async fn advance(
     Ok(true)
 }
 
-async fn is_running(engine: &Engine, target: Target<'_>, session: &str) -> Result<bool, api::Error> {
+fn release_holds(engine: &Engine, target: Target<'_>) -> bool {
+    matches!(target, Target::Engine(_)) && crate::release::holding(&engine.home.join("run"))
+}
+
+// Send Now and Steer edit the saved queue during a release hold; they never
+// interrupt the old engine or start a turn on it.
+async fn advance_held(engine: &Engine, session: &str, id: &str) -> Result<bool, Refusal> {
+    if saved_removal(engine, session, id)
+        .await
+        .map_err(save_failed)?
+        .is_some_and(|row| !row.complete)
+    {
+        return Ok(false);
+    }
+    let current = engine.queues.get(session).await.map_err(save_failed)?;
+    if !current.contains(id) {
+        return Ok(false);
+    }
+    if engine
+        .queues
+        .waiting_prompt(id)
+        .await
+        .map_err(save_failed)?
+        .is_none()
+    {
+        return Err(save_failed(io::Error::other(
+            "A waiting message could not be read.",
+        )));
+    }
+    let saved = engine
+        .queues
+        .put(session, |queue| {
+            if let Some(at) = queue.waiting.iter().position(|row| row.id == id) {
+                let row = queue.waiting.remove(at);
+                queue.waiting.insert(0, row);
+                queue.release();
+                queue.held.retain(|held| held != id);
+                queue.came_held.retain(|held| held != id);
+                queue.order.retain(|ordered| ordered != id);
+                queue.order.insert(0, id.to_owned());
+            }
+        })
+        .await
+        .map_err(save_failed)?;
+    Ok(saved.waiting.first().is_some_and(|row| row.id == id))
+}
+
+async fn is_running(
+    engine: &Engine,
+    target: Target<'_>,
+    session: &str,
+) -> Result<bool, api::Error> {
     target.is_running(engine, session).await
 }
 
@@ -1163,7 +1268,7 @@ pub(crate) async fn resume_move(
     movement: &str,
 ) -> Result<(), Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit(engine, session, Some(movement)).await?;
+    let _admitted = crate::session_move::admit_turn(engine, session, Some(movement)).await?;
     resume_on(engine, target, session).await.map(|_| ())
 }
 
@@ -1179,6 +1284,9 @@ async fn resume_on(engine: &Engine, target: Target<'_>, session: &str) -> Result
         .put(session, Queue::release)
         .await
         .map_err(save_failed)?;
+    if release_holds(engine, target) {
+        return Ok(saved.shown(&engine.home));
+    }
     if !is_running(engine, target, session)
         .await
         .map_err(queue_failed)?
@@ -1992,7 +2100,9 @@ async fn remove_reply(
             if crate::query(&call.request.path, "arriving").as_deref() == Some("1") {
                 if send::was_sent(engine, &session, &id).await?
                     || match lease.as_ref() {
-                        Some(lease) => reached(engine, lease.target(), &session, &id).await.unwrap_or(false),
+                        Some(lease) => reached(engine, lease.target(), &session, &id)
+                            .await
+                            .unwrap_or(false),
                         None => false,
                     }
                 {
@@ -2216,7 +2326,11 @@ impl Engine {
     /// Keep the old engine's inboxes before a coordinated release switch.
     /// A failed inventory or transfer leaves the engine in place and can be retried.
     pub async fn keep_inboxes(&self) -> io::Result<usize> {
-        let Some(lease) = self.acquire(Demand::Existing).await else {
+        self.keep_inboxes_with(Demand::Existing).await
+    }
+
+    pub(crate) async fn keep_inboxes_with(&self, demand: Demand) -> io::Result<usize> {
+        let Some(lease) = self.acquire(demand).await else {
             return Ok(0);
         };
         let ids = inbox_inventory(self, &lease).await?;
@@ -2812,12 +2926,16 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         return Ok(());
     };
     let lease = place.target();
+    let engine_held = release_holds(engine, lease);
     let saved = engine.queues.get(session).await?;
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());
     }
     if matches!(operation, QueueEvent::Drain)
-        && (saved.paused || saved.limit_stop.is_some() || !saved.inbox_moved.is_empty())
+        && (engine_held
+            || saved.paused
+            || saved.limit_stop.is_some()
+            || !saved.inbox_moved.is_empty())
     {
         return Ok(());
     }
@@ -2827,7 +2945,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         {
             return Ok(());
         }
-        if matches!(operation, QueueEvent::Failed(_)) {
+        if matches!(operation, QueueEvent::Failed(_)) && !engine_held {
             let page = lease.recent(engine, session, 6).await.unwrap_or_default();
             if page
                 .iter()

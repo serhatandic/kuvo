@@ -57,7 +57,11 @@ On macOS, TypeScript passes C1–C3, C5–C8, C10–C11, U1–U3 and U5–U7. Ru
 C1–C11 and U1–U8. The Rust workspace compile check passes. The Mac-built static
 x86-64 musl binary passes C1–C11, U1–U3 and U5–U8 in WSL 2 and in a single
 lokum container capped at one CPU and 1 GB. The native Windows binary passes
-C1–C8, C10–C11, U1–U3 and U5–U6. The Unix wipe cases are skipped there.
+C1–C8, C10–C11, U1–U3 and U5–U6. The Unix wipe cases are skipped there. The
+[native wipe scenario](../../box/crates/kuvo-box/tests/windows_wipe.rs) covers U7 on Windows:
+the resident runs from inside the home, hands the erase to a copy of itself in the receipts
+folder and exits. The copy detaches and erases the home, and the reinstall at the same path
+deletes the copy. The wipe is refused while the installation's sign-in task is registered.
 The original TypeScript
 fake SSH host, alias, WSL 1 refusal and device-revocation scenarios pass as
 reference checks. The Windows PC’s WSL 2 account joined a Rust setup,

@@ -18,7 +18,7 @@ OpenCode 2.2.6 on macOS, Linux, WSL2 and native Windows.
 | `box/test/engine-own-tools.test.ts` | 4 | Tool registration, compatibility settings, old app-folder exclusion, and generated launch tools follow in 4.1, 6.1 and 7.3. |
 | `box/bridge-tests/own-box-engine.test.js` | 3 | Installed-pin startup and adoption cover the worker lifecycle. Helper launch notes, normalization of the old shell launcher’s HOME, and keeper configuration refusal follow in 7.1 and 7.3. |
 | `box/bridge-tests/start-session.test.js` | 5 | Session ancestry, marking/refusal, worktree admission, new worktree filing and sibling-folder filing follow in 3.2 and 6.3. |
-| `box/bridge-tests/engine-swap.test.js` | 4 | Held turns and ordered sends, rollback after bad launch, bounded hold expiry, and the downgrade fence are the old engine swap. The replacement release paths follow in 3.2 and 7.2. |
+| `box/bridge-tests/engine-swap.test.js` | 4 | Held turns and ordered sends, rollback after bad launch, bounded hold expiry, and the downgrade fence are the old engine swap. U74–U76 in 7.2 prove the versioned release hold, worker ownership, saved inbox, rollback, queue edits, inline attachments, and update status. Coding-agent engine-model fallback remains with 4.1. |
 | `box/bridge-tests/update-engine-turn.test.js` | 3 | A resident restart keeping the engine is covered. A full release switch with a live turn, waiting on a background shell at release switch, and a bridge turn finishing through handover follow in 4.1 and 7.2. |
 | `box/bridge-tests/bridge.test.js`, API forwarding and path vectors | 2 | Authenticated body and header passthrough, a forged client password, refused paths, event streaming/cancellation and all 100 forwarded engine path vectors. Phone message parts and named-agent rewriting, integration enrichment and agent-bridge routes are gaps. |
 | Same file, engine unavailable and info timestamp | 2 | Passive and stopped status, retry wording, and the discovery timestamp surfaced in `kuvo/info`. |
@@ -447,6 +447,7 @@ records or runtime endpoint they hold.
 | `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signed shared values and outcomes, and local checkpoint projection |
 | `run/link.seen`, `run/link.version` | 7.3 | Legacy Mac activity and link version markers |
 | `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
+| `run/fleet-engine-hold.json` | 7.2 | Rust release-drain record. The hold survives the keeper verdict and releases saved prompts before clearing; the five-minute deadline and one-minute defer use the fleet timing rules. |
 | `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
 | `run/prompt-receipts`, `run/prompt-receipts/*.json` | Unread by released readers | `rg -n -F prompt-receipts box/src box/crates gpui` finds only the Rust send journal. Released clients read the route, queue and transcript. Scoped and listing receipts use separate records. |
 | `run/queue-removals/spent/*` | Identical | Both boxes now write the same empty marker keyed by session, draft and edit receipt. An earlier queue differential compared empty bytes with Rust's JSON `null`. |

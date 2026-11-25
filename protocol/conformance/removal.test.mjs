@@ -414,6 +414,13 @@ test("a departing member clears credentials and keeps its work before acknowledg
   } finally {
     kept.close();
   }
+  // A departed computer that starts again must leave its released work untouched,
+  // or it could no longer rejoin without a merge.
+  await resident.stop();
+  resident = member.start();
+  const restarted = member.connect(await resident.ready());
+  const outputs = await restarted("GET", "kuvo/artifacts/storage");
+  assert.equal(outputs.status, 200, outputs.text);
   const next = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(next.status, 201, next.text);
   const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN

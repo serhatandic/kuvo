@@ -198,14 +198,24 @@ pub(crate) async fn admit(
     session: &str,
     activating: Option<&str>,
 ) -> Result<PromptWrite, Refusal> {
-    admit_write(engine, session, activating, false).await
+    admit_write(engine, session, activating, false, true).await
+}
+
+pub(crate) async fn admit_turn(
+    engine: &Engine,
+    session: &str,
+    activating: Option<&str>,
+) -> Result<PromptWrite, Refusal> {
+    let independent = crate::release::holding(&engine.home.join("run"))
+        && engine.agent_session(session).await?.is_some();
+    admit_write(engine, session, activating, false, independent).await
 }
 
 pub(crate) async fn admit_queue_hold(
     engine: &Engine,
     session: &str,
 ) -> Result<PromptWrite, Refusal> {
-    admit_write(engine, session, None, true).await
+    admit_write(engine, session, None, true, true).await
 }
 
 async fn admit_write(
@@ -213,6 +223,7 @@ async fn admit_write(
     session: &str,
     activating: Option<&str>,
     queue_hold: bool,
+    release_allowed: bool,
 ) -> Result<PromptWrite, Refusal> {
     let run = engine.home.join("run");
     let session = session.to_owned();
@@ -230,6 +241,8 @@ async fn admit_write(
         let write = PromptWrite(marker);
         if frozen(&run, &session, activating.as_deref(), queue_hold)? {
             Ok::<_, io::Error>(None)
+        } else if !release_allowed && crate::release::holding(&run) {
+            Err(io::ErrorKind::WouldBlock.into())
         } else {
             Ok(Some(write))
         }
@@ -238,6 +251,9 @@ async fn admit_write(
     match admission {
         Ok(Ok(Some(write))) => Ok(write),
         Ok(Ok(None)) => Err(Refusal::new(StatusCode::CONFLICT, HELD)),
+        Ok(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(crate::release::turn_refusal())
+        }
         Ok(Err(error)) => Err(fence_failure(error)),
         Err(error) => Err(fence_failure(error)),
     }
@@ -342,7 +358,7 @@ fn write_prefix(session: &str) -> String {
     hex::encode(Sha256::digest(session.as_bytes()))
 }
 
-fn in_flight(folder: &Path, prefixes: &HashSet<String>) -> io::Result<bool> {
+fn in_flight(folder: &Path, prefixes: Option<&HashSet<String>>) -> io::Result<bool> {
     for entry in entries(folder)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -354,7 +370,7 @@ fn in_flight(folder: &Path, prefixes: &HashSet<String>) -> io::Result<bool> {
         }) else {
             continue;
         };
-        if !prefixes.contains(hash) {
+        if prefixes.is_some_and(|prefixes| !prefixes.contains(hash)) {
             continue;
         }
         if ProcessIdentity::read(pid)?.is_some() {
@@ -363,6 +379,11 @@ fn in_flight(folder: &Path, prefixes: &HashSet<String>) -> io::Result<bool> {
         files::remove_file_synced(&entry.path())?;
     }
     Ok(false)
+}
+
+pub(crate) async fn writes_in_flight(home: &Path) -> io::Result<bool> {
+    let folder = home.join("run/move-prompt-writes");
+    tokio::task::spawn_blocking(move || in_flight(&folder, None)).await?
 }
 
 #[derive(Debug)]
@@ -514,9 +535,14 @@ impl SessionMove {
                 queue.letter_wait_reason(&self.engine.home),
             ));
         }
-        if queue::reached(&self.engine, queue::Target::Engine(&self.lease), session, &letter.id)
-            .await
-            .map_err(fence_failure)?
+        if queue::reached(
+            &self.engine,
+            queue::Target::Engine(&self.lease),
+            session,
+            &letter.id,
+        )
+        .await
+        .map_err(fence_failure)?
         {
             return Ok(LetterDelivery::Accepted);
         }
@@ -541,7 +567,7 @@ impl SessionMove {
                 Some(&letter.words),
                 Some(letter.from),
                 None,
-                &[],
+                true,
             )
             .await
             .map_err(fence_failure)?
@@ -558,7 +584,13 @@ impl SessionMove {
         if letter.steer {
             prompt.delivery = queue::Delivery::Steer;
         }
-        crate::send::post(&self.engine, queue::Target::Engine(&self.lease), session, &prompt).await?;
+        crate::send::post(
+            &self.engine,
+            queue::Target::Engine(&self.lease),
+            session,
+            &prompt,
+        )
+        .await?;
         Ok(LetterDelivery::Accepted)
     }
 
@@ -676,14 +708,19 @@ impl SessionMove {
         unpaused: &[String],
     ) -> Result<(), MoveEngineError> {
         for session in unpaused {
-            queue::resume_move(&self.engine, queue::Target::Engine(&self.lease), session, move_id)
-                .await
-                .map_err(|error| {
-                    MoveEngineError::Storage(io::Error::other(format!(
-                        "Activating the move queue: {}",
-                        error.reply().status
-                    )))
-                })?;
+            queue::resume_move(
+                &self.engine,
+                queue::Target::Engine(&self.lease),
+                session,
+                move_id,
+            )
+            .await
+            .map_err(|error| {
+                MoveEngineError::Storage(io::Error::other(format!(
+                    "Activating the move queue: {}",
+                    error.reply().status
+                )))
+            })?;
         }
         Ok(())
     }
@@ -709,7 +746,7 @@ impl SessionMove {
         loop {
             let folder = folder.clone();
             let prefixes = prefixes.clone();
-            let busy = tokio::task::spawn_blocking(move || in_flight(&folder, &prefixes))
+            let busy = tokio::task::spawn_blocking(move || in_flight(&folder, Some(&prefixes)))
                 .await
                 .map_err(|error| MoveEngineError::Storage(io::Error::other(error)))?
                 .map_err(MoveEngineError::Storage)?;

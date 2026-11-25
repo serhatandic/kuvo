@@ -218,11 +218,111 @@ pub(crate) async fn http(
     forward(engine, request, cancel).await
 }
 
+async fn hold_prompt(
+    engine: &Engine,
+    session: &str,
+    request: &DispatchRequest,
+) -> Result<(bool, Option<Vec<u8>>), Refusal> {
+    use crate::queue::{Delivery, Prompt};
+    let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+    let id = match body.get("id") {
+        Some(id) => id
+            .as_str()
+            .filter(|id| crate::send::valid_id(id))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                Refusal::new(
+                    StatusCode::BAD_REQUEST,
+                    "This message couldn’t be queued. Send it again as a new message.",
+                )
+            })?,
+        None => crate::send::new_id(engine)?,
+    };
+    if !body["text"].is_string() {
+        return Err(crate::release::turn_refusal());
+    }
+    let _turn = engine.turn(session).await;
+    if engine
+        .queues
+        .get(session)
+        .await
+        .map_err(|error| {
+            eprintln!("Reading a waiting message: {error}");
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "This computer couldn’t save the message. Try sending it again.",
+            )
+        })?
+        .contains(&id)
+    {
+        return Ok((true, None));
+    }
+    // Use the same raw attachment normalizer as an immediate prompt, after
+    // checking its durable ID. If the hold ends, forward these bytes instead
+    // of copying the attachment a second time.
+    let converted = crate::attachments::raw(engine, request).await;
+    let body = converted
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or(body);
+    let text = body["text"]
+        .as_str()
+        .ok_or_else(crate::release::turn_refusal)?;
+    let prompt = Prompt {
+        id,
+        text: text.into(),
+        delivery: if body["delivery"] == "queue" {
+            Delivery::Queue
+        } else {
+            Delivery::Steer
+        },
+        files: body["files"].as_array().cloned().unwrap_or_default(),
+        metadata: body
+            .get("metadata")
+            .filter(|value| value.is_object())
+            .cloned(),
+    };
+    let waiting = engine
+        .queues
+        .keep(session, &prompt, None, None, None, true)
+        .await
+        .map_err(|error| {
+            eprintln!("Saving a waiting message: {error}");
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "This computer couldn’t save the message. Try sending it again.",
+            )
+        })?;
+    Ok((waiting, converted))
+}
+
 async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationToken) -> Reply {
     let path = request.path.split('?').next().unwrap_or_default();
+    let mut prepared_body = None;
     let _admitted = if let Some(id) = crate::session_move::prompt_target(&request.method, path) {
-        match crate::session_move::admit(&engine, &id, None).await {
-            Ok(write) => Some(write),
+        let prompt = path.ends_with("/prompt");
+        let decision = path.contains("/permission/") || path.contains("/form/");
+        let admitted = if prompt || decision {
+            crate::session_move::admit(&engine, &id, None).await
+        } else {
+            crate::session_move::admit_turn(&engine, &id, None).await
+        };
+        match admitted {
+            Ok(write) => {
+                if prompt
+                    && (crate::release::holding(&engine.home.join("run"))
+                        || crate::release::releasing(&engine.home.join("run")))
+                {
+                    match hold_prompt(&engine, &id, &request).await {
+                        Ok((true, _)) => {
+                            return Reply::json(StatusCode::OK, json!({"waits": true}));
+                        }
+                        Ok((false, body)) => prepared_body = body,
+                        Err(error) => return error.reply(),
+                    }
+                }
+                Some(write)
+            }
             Err(error) => return error.reply(),
         }
     } else {
@@ -280,7 +380,10 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
         }
     }
     if !matches!(request.method, Method::GET | Method::HEAD) && !request.body.is_empty() {
-        let body = crate::attachments::raw(&engine, &request).await;
+        let body = match prepared_body {
+            Some(body) => Some(body),
+            None => crate::attachments::raw(&engine, &request).await,
+        };
         outgoing = outgoing.body(body.map_or(request.body, Into::into));
     }
     let send = async {

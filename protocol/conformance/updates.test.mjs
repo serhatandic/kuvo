@@ -14,10 +14,11 @@ import { gzipSync } from "node:zlib";
 
 import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
 import "./update-helper.mjs";
 
-const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
+const { peerTransferMs, keeperTrialMs, releaseDrainMs, releaseDrainRetryMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
 const releaseReturnMs = peerTransferMs + keeperTrialMs;
 const firstPreparationMs = 90_000;
 const leaseElectionMs = 30_000;
@@ -275,7 +276,7 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
-async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {} } = {}) {
+async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}, engineVersion = "2.2.6" } = {}) {
   const key = keypair();
   const version = "0.8.0";
   const hash = digest(packBytes ?? "signed target");
@@ -293,7 +294,7 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
   await once(feed, "listening");
   t.after(() => { feed.close(); feed.closeAllConnections(); });
   const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
-  signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
+  signed = encode(envelope({ kuvo: "box/1", version, engine: engineVersion, spreads: true,
     launch: "rust", pack, packs: { [target]: pack }, ...engines }, key));
   const updateEnv = {
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
@@ -333,7 +334,7 @@ test("a failed fleet download can be retried for the same signed target", { time
 });
 
 async function pairedUpdateComputers(t) {
-  const { computer, leases } = await bench(t);
+  const { computer, leases, relay } = await bench(t);
   const make = name => computer(name, undefined, folder => {
     privateWindowsHome(path.join(folder, "box"));
     return {};
@@ -348,7 +349,7 @@ async function pairedUpdateComputers(t) {
   const joined = await member.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   await old.stop();
-  return { main, member };
+  return { main, member, relay };
 }
 
 async function runsOn(record) {
@@ -365,7 +366,7 @@ async function runsOn(record) {
 test("the returning bridge stays out of work placement during its Rust trial", { timeout: 60000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust resident's trial announcement.");
-  const { main, member } = await pairedUpdateComputers(t);
+  const { main, member, relay } = await pairedUpdateComputers(t);
   const { body, key } = box(t);
   const feed = createServer((_request, response) => response.writeHead(404).end());
   feed.listen(0, "127.0.0.1");
@@ -387,10 +388,14 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   write(path.join(member.home, previous, "boxes.json"), bridge);
   write(trial, previous + "/bin");
   const sender = "ses_confirmedWork", recipient = "ses_returningWork";
-  for (const [computer, id] of [[main, sender], [member, recipient]]) {
+  const mainChild = "ses_childOfReturning", memberChild = "ses_childOfConfirmed";
+  for (const [computer, id, child, lead] of [[main, sender, mainChild, recipient], [member, recipient, memberChild, sender]]) {
     const directory = path.join(computer.home, "chats");
     fs.mkdirSync(directory, { recursive: true });
     computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
+    computer.engine.sessions.push({ ...sessionOf({ id: child, title: child, directory }), metadata: {
+      kuvo: { startedBy: lead, line: [lead], wake: ["finished"], depth: 1 },
+    } });
   }
   const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
   const [observer, returning] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
@@ -410,6 +415,33 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     try { return readJSON(path.join(member.home, "run/peer-agents.json"))[mainKey]?.features?.includes("moves.two-computers"); }
     catch { return false; }
   }, "the returning resident should know the confirmed main");
+  const codec = await referenceMailCodec(t);
+  const mail = (from, to, peer, fields) => {
+    const source = readJSON(path.join(from.home, "run/link.json"));
+    const destination = readJSON(path.join(to.home, "run/link.json"));
+    const secret = Buffer.from(source.key, "base64url"), key = Buffer.from(peer, "base64url");
+    const payload = codec.frame(codec.Frame.mail, 0, codec.sealOneWay(encode({ at: Date.now(), ...fields }), secret, key).message);
+    const packet = { from: relayAddress(Buffer.from(source.secret, "base64url")),
+      to: relayAddress(Buffer.from(destination.secret, "base64url")), payload };
+    relay.replay(packet);
+    return { packet, secret, key };
+  };
+  const calls = [];
+  for (const [from, to, lead, child, peer, callerKey] of [
+    [main, member, sender, memberChild, peerKey, mainKey],
+    [member, main, recipient, mainChild, mainKey, peerKey],
+  ]) {
+    write(path.join(to.home, "run/work/homes.json"), encode({ [lead]: { key: callerKey, at: Date.now() } }));
+    const id = from === main ? "cal_trialStopWorkMain0001" : "cal_trialStopWorkMember0001";
+    const file = path.join(from.home, "run/outbox/sending", id + ".json");
+    const at = Date.now();
+    const call = { tool: "stop_session", args: { session: child }, as: { name: "Lead", free: true, rules: [] } };
+    const saved = { call, from: lead, to: "", peer, at, wait: false, quiet: true };
+    write(file, encode(saved));
+    // An already in-flight authenticated request must be ignored during the trial too.
+    const inFlight = mail(from, to, peer, { call: { id, from: lead, made: at, at, ...call } });
+    calls.push({ id, file, to, child, inFlight, result: path.join(to.home, "run/work/call-results", id + ".json") });
+  }
   const pending = [];
   for (const [computer, local, remote, here, there] of [
     [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
@@ -435,6 +467,14 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     assert.equal(places.json.places.find(place => place.key === to)?.ok, false);
   }
 
+  // Four half-second remote-work rounds: a held call cannot be used as the normal away probe.
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  for (const { file, to, child, result } of calls) {
+    assert.equal(readJSON(file).sentTo, undefined, "the held call must not be marked sent");
+    assert.equal(fs.existsSync(result), false, "an in-flight call must not be accepted on trial");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 0);
+  }
+
   // The keeper owns confirmation. Publish its saved result and let the resident observe it.
   fs.unlinkSync(trial);
   await until(() => facts()?.kuvo === body.version && !facts()?.switching, "the main should hear the confirmed Rust release");
@@ -447,6 +487,22 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     await until(() => computer.engine.messages.get(session)?.some(message => message.text?.includes("Work after confirmation")),
       "the remote work should arrive in the conversation");
     assert.equal(computer.engine.messages.get(session).filter(message => message.text?.includes("Work after confirmation")).length, 1);
+  }
+  await until(() => calls.every(({ result }) => fs.existsSync(result)),
+    "the saved work calls should reach the actual resident adapter after confirmation", 20000);
+  for (const { id, to, child, inFlight } of calls) {
+    // The exact packet held on trial is valid, not just an unrecognized wire shape.
+    const before = relay.delivered.length;
+    relay.replay(inFlight.packet);
+    await until(() => relay.delivered.slice(before).some(({ from, to, payload }) => {
+      if (!from.equals(inFlight.packet.to) || !to.equals(inFlight.packet.from)) return false;
+      const packet = codec.readFrame(payload);
+      if (packet?.kind !== codec.Frame.mail) return false;
+      const value = JSON.parse(codec.openOneWay(packet.body, inFlight.secret, inFlight.key).payload);
+      return value.delivered?.id === id && value.delivered.ok === true;
+    }), "the receiver should acknowledge a replay of the previously held call");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1,
+      "the real stop call must take effect once, only after confirmation");
   }
   const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
   assert.equal(direct.status, 202, direct.text);
@@ -862,6 +918,372 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture } = {}) 
   };
 }
 
+for (const mode of ["switch", "rollback", "borrowed"]) test({
+  switch: "a differing engine finishes its turn and carries waiting work through a release switch",
+  rollback: "a differing engine restores waiting work after a failed release trial",
+  borrowed: "a differing engine leaves a borrowed worker's inbox alone",
+}[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
+  const rollback = mode === "rollback";
+  const borrowed = mode === "borrowed";
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust keeper and engine supervisor.");
+  const { computer } = await bench(t);
+  const here = await computer("engine-release-drain", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { home, engine } = here;
+  const workspace = path.join(home, "workspace");
+  const oldVersion = rollback ? "2.2.6" : "2.2.5", newVersion = rollback ? "2.2.7" : "2.2.6";
+  const exe = process.platform === "win32" ? "opencode.exe" : "opencode";
+  const oldEngine = borrowed ? path.join(here.env.HOME, `borrowed-${exe}`) : path.join(home, "engine", oldVersion, exe);
+  const runtime = typescriptRuntime();
+  const fixture = process.platform === "darwin" && !path.isAbsolute(runtime)
+    ? process.env.PATH.split(path.delimiter).map(folder => path.join(folder, runtime)).find(file => fs.existsSync(file))
+    : process.platform === "darwin" ? runtime : process.execPath;
+  assert.ok(fixture, "The Mac engine fixture needs a self-contained Bun executable");
+  const engineBytes = fs.readFileSync(fixture);
+  write(oldEngine, engineBytes, { mode: 0o700 });
+  // The stand-in's durable session data stays in the test harness, like the
+  // engine's database. Each verified engine process has its own listening address.
+  write(path.join(workspace, "serve"), `const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const portArg = process.argv.indexOf("--port");
+// The failed trial is a signed fixture that passes the release probe but
+// exits rather than answering as a resident. Engine workers get --port.
+if (portArg < 0) process.exit(1);
+const port = Number(process.argv[portArg + 1]);
+const server = http.createServer((request, response) => {
+  const forward = http.request({ host: "127.0.0.1", port: ${engine.record.port}, path: request.url,
+    method: request.method, headers: request.headers }, reply => {
+    response.writeHead(reply.statusCode, reply.headers); reply.pipe(response);
+  });
+  forward.on("error", () => response.destroy());
+  response.on("close", () => forward.destroy());
+  request.pipe(forward);
+});
+server.listen(port, "127.0.0.1", () => console.log(server.address().port));
+process.on("exit", () => fs.writeFileSync(path.join(__dirname, "exit-" + process.pid), ""));
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) process.exit(0); }, 50).unref();
+`);
+  if (rollback) write(path.join(home, "selftest"), `process.exit(process.argv.slice(2).join(" ") === "--engine ${newVersion}" ? 0 : 1);`);
+  const worker = launch(oldEngine, ["serve", "--port", "0", "--hostname", "127.0.0.1"], here.env, workspace, "pipe");
+  let port = "";
+  worker.child.stdout.on("data", chunk => { port += chunk; });
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const previous = "versions/0.8.0-beta.1-000000000000";
+  const current = "0.8.0-beta.1";
+  const targetVersion = "0.8.0";
+  const release = path.join(here.env.HOME, "release");
+  let keeper;
+  let keeperEnv;
+  const keep = (...args) => {
+    const result = spawnSync(binary.file, ["keep", ...args], { env: keeperEnv, cwd: home, encoding: "utf8", timeout: 15000 });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  try {
+    await until(() => /^\d+\s*$/.test(port), () => "the earlier engine did not listen\n" + worker.log());
+    const oldRecord = { ...engine.record, version: oldVersion, pid: worker.child.pid, port: Number(port) };
+    write(path.join(home, "run/engine.json"), encode(oldRecord));
+    const session = "ses_engineDrain";
+    engine.sessions.push(sessionOf({ id: session, title: "Engine drain", directory: workspace }));
+    engine.runAfterPrompt = "msg_originalEngine";
+    for (const [id, text] of [["msg_originalEngine", "original turn"], ["msg_inboxEngine", "earlier inbox"]]) {
+      const response = await fetch(`http://127.0.0.1:${oldRecord.port}/api/session/${session}/prompt`, {
+        method: "POST", body: JSON.stringify({ id, text, delivery: "queue" }) });
+      assert.equal(response.status, 200);
+    }
+    assert.ok(engine.running.has(session));
+    const tree = path.join(release, "tree");
+    const oldBinary = fs.readFileSync(binary.file);
+    const members = { [`bin/${program}`]: rollback ? engineBytes : oldBinary, "bin/box-version": Buffer.from(targetVersion + "\n") };
+    for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
+    write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: targetVersion, engine: newVersion,
+      downgradeSafe: true, engines: [oldVersion, newVersion],
+      files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
+    const tar = path.join(release, "box.tar");
+    assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+    const assets = await engineFeed(t, path.join(release, "engine"), engineBytes, { damageFirst: false });
+    const system = process.platform === "win32" ? "windows" : process.platform;
+    const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
+    const { hash, updateEnv } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
+    write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
+    write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
+    write(path.join(home, previous, "bin/box-version"), current + "\n");
+    keeperEnv = { ...here.env, KUVO_HOME: home, ...updateEnv };
+    keep("select", `${previous}/bin`);
+    keeper = launch(binary.file, ["keep"], keeperEnv, home);
+    const serve = path.join(home, "run/serve.json");
+    const before = await until(async () => {
+      try { const record = readJSON(serve); return (await request(record, "GET", "kuvo/info")).status === 200 && record; } catch { return false; }
+    }, () => "the earlier resident did not answer\n" + keeper.log(), 25000);
+    await until(() => {
+      const failed = path.join(home, "run/fleet-cannot.json");
+      if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
+      return fs.existsSync(path.join(home, "run/fleet-ready.json"));
+    }, () => `the signed target should be prepared\n${fs.readFileSync(path.join(home, "run/serve.log"), "utf8").slice(-4000)}\n${keeper.log()}`, 120000);
+    const hold = path.join(home, "run/fleet-engine-hold.json");
+    await until(() => fs.existsSync(hold), "the updater should hold new engine work while the old turn finishes", 15000);
+    assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+    assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+    assert.ok(engine.running.has(session));
+    const app = { "x-kuvo-from": "app" };
+    const changeHold = fields => {
+      write(hold + ".test", encode({ ...readJSON(hold), ...fields }));
+      fs.renameSync(hold + ".test", hold);
+    };
+    if (borrowed) {
+      // An engine outside this home's engine directory is borrowed, even when
+      // its authenticated health endpoints answer. Give several fleet rounds
+      // to check it before its hold expires.
+      const engineRecord = path.join(home, "run/engine.json");
+      assert.deepEqual(readJSON(engineRecord), oldRecord);
+      // Losing the record must not make an already borrowed process ours.
+      fs.rmSync(engineRecord);
+      changeHold({ since: Date.now() - releaseDrainMs + 12000 });
+      engine.running.delete(session);
+      await until(() => readJSON(hold).stage === "deferred", "a borrowed worker should defer the switch", releaseDrainRetryMs);
+      assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+      assert.equal(worker.child.exitCode, null);
+      assert.equal(fs.existsSync(engineRecord), false);
+      assert.equal(engine.asked.filter(row => row.method === "DELETE" && row.path.includes("/inbox/")).length, 0, "a borrowed inbox must never be moved");
+      assert.deepEqual(engine.inboxes.get(session).map(item => item.id), ["msg_inboxEngine"]);
+      return;
+    }
+    if (!rollback) {
+      // Exercise the persisted deadline instead of sleeping five minutes.
+      const deferred = await request(before, "POST", `api/session/${session}/prompt`, { id: "msg_deferredEngine", text: "wait then retry", delivery: "queue" }, app);
+      assert.equal(deferred.status, 200, deferred.text);
+      assert.deepEqual(deferred.json, { waits: true });
+      changeHold({ since: Date.now() - releaseDrainMs - 1000 });
+      await until(() => readJSON(hold).stage === "deferred", "an expired drain should release the queue and defer the update", releaseDrainRetryMs);
+      assert.ok(readJSON(hold).retryAt > Date.now());
+      assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+      assert.deepEqual(engine.inboxes.get(session).map(item => item.id), ["msg_inboxEngine", "msg_deferredEngine"]);
+      changeHold({ retryAt: Date.now() - 1 });
+      await until(() => fs.existsSync(hold) && readJSON(hold).stage === "holding", "the signed release should retry after the defer time", releaseDrainRetryMs);
+    }
+    const queued = await request(before, "POST", `kuvo/sessions/${session}/send`, { id: "msg_afterEngine", words: "after the switch" }, { "x-kuvo-from": "app" });
+    assert.equal(queued.status, 200, queued.text);
+    assert.deepEqual(queued.json, { waits: true });
+    const inline = { name: "held-note.txt", uri: "data:text/plain;base64," + Buffer.from("held note bytes").toString("base64") };
+    const raw = { id: "msg_rawEngine", text: "a raw prompt behind the held send", delivery: "queue", files: [inline] };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await request(before, "POST", `api/session/${session}/prompt`, raw, app);
+      assert.equal(response.status, 200, response.text);
+      assert.deepEqual(response.json, { waits: true });
+    }
+    if (!rollback) {
+      const promoted = await request(before, "POST", `kuvo/sessions/${session}/queue/${raw.id}/now`, {}, app);
+      assert.equal(promoted.status, 200, promoted.text);
+      assert.equal(promoted.json.waiting[0].id, raw.id);
+      assert.deepEqual(engine.interrupted, []);
+    }
+    const status = await request(before, "GET", "kuvo/update", undefined, app);
+    assert.equal(status.status, 200, status.text);
+    assert.equal(status.json.updating, "installing");
+    assert.deepEqual(status.json.engineChange, { stage: "holding", from: oldVersion, to: newVersion,
+      line: "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after." });
+    const blocked = await request(before, "POST", `api/session/${session}/command`, { command: "test" }, app);
+    assert.equal(blocked.status, 503, blocked.text);
+    assert.equal(blocked.json.engineChanging, true);
+    const ask = { id: "per_drain", sessionID: session, action: "edit", resources: ["notes.txt"] };
+    engine.permissions.set(session, [ask]);
+    const answered = await request(before, "POST", `api/session/${session}/permission/${ask.id}/reply`, { decision: "once" }, app);
+    assert.equal(answered.status, 200, answered.text);
+    assert.deepEqual(engine.permissions.get(session), []);
+    const made = await request(before, "POST", "kuvo/sessions", { title: "Made during drain", task: "Start when the engine is ready", chat: true, approval: "askFirst" }, app);
+    assert.equal(made.status, 200, made.text);
+    const madeSession = made.json.session;
+    assert.ok(madeSession);
+    assert.equal(engine.messages.get(madeSession)?.length ?? 0, 0, "a new conversation's first task must also wait");
+    if (!rollback) {
+      // A saved queue can outlive its engine session (for example after a
+      // deletion that occurred while the resident was away). It must not
+      // prevent the other conversations from resuming or updates from finishing.
+      const gone = "ses_goneDuringDrain";
+      engine.sessions.push(sessionOf({ id: gone, title: "Vanished", directory: workspace }));
+      const saved = await request(before, "POST", `api/session/${gone}/prompt`, { id: "msg_goneEngine", text: "keep these words", delivery: "queue" }, app);
+      assert.deepEqual(saved.json, { waits: true });
+      engine.sessions = engine.sessions.filter(row => row.id !== gone);
+    }
+    const earlier = rollback ? ["msg_inboxEngine"] : ["msg_inboxEngine", "msg_deferredEngine"];
+    assert.deepEqual(engine.inboxes.get(session).map(item => item.id), earlier);
+    const earlierReads = engine.asked.length;
+    engine.open.add(workspace);
+    engine.shells = [{ id: "shell_drain", status: "running", folder: workspace }];
+    engine.running.delete(session);
+    engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+    await until(() => engine.asked.slice(earlierReads).filter(row => row.path === "/api/shell").length >= 2, "the updater must check commands left running after a turn");
+    assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+    assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+    assert.ok(fs.existsSync(hold));
+    engine.shells = [];
+    const selected = `versions/${targetVersion}-${hash.slice(0, 12)}/bin`;
+    if (rollback) {
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && fs.existsSync(path.join(home, "run/previous")), "the keeper should try the signed target", keeperTrialMs);
+      assert.ok(fs.existsSync(hold), "the queue stays held during the failed health trial");
+      assert.equal(fs.existsSync(path.join(home, "run/engine.json")), false, "no engine starts before the keeper verdict");
+      assert.deepEqual(engine.messages.get(session).map(message => message.id), ["msg_originalEngine"]);
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous")),
+        () => "the keeper did not restore the previous release\n" + keeper.log(), keeperTrialMs + 15000);
+    } else {
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && !fs.existsSync(path.join(home, "run/previous")),
+        () => "the keeper did not confirm the new release\n" + keeper.log(), keeperTrialMs);
+    }
+    await until(() => {
+      try { const record = readJSON(path.join(home, "run/engine.json")); return record.version === (rollback ? oldVersion : newVersion) && record.pid !== oldRecord.pid; } catch { return false; }
+    }, "the selected release's engine should start after the trial", 30000);
+    await worker.exited;
+    await until(() => !fs.existsSync(hold) && engine.messages.get(session)?.some(message => message.id === "msg_rawEngine"),
+      () => `the waiting work should reach the selected engine and clear the fleet hold: ${fs.existsSync(hold) ? fs.readFileSync(hold, "utf8") : "no hold"}`, 30000);
+    assert.deepEqual(engine.messages.get(session).filter(message => message.type === "user").map(message => message.id),
+      rollback ? ["msg_originalEngine", ...earlier, "msg_afterEngine", raw.id]
+        : ["msg_originalEngine", raw.id, ...earlier, "msg_afterEngine"]);
+    const attachedRoot = path.join(home, "attachments", session);
+    const attached = fs.readdirSync(attachedRoot).map(folder => path.join(attachedRoot, folder, inline.name));
+    assert.equal(attached.length, 1, "retrying the held raw prompt doesn't copy its attachment twice");
+    assert.equal(fs.readFileSync(attached[0], "utf8"), "held note bytes");
+    const received = engine.messages.get(session).find(message => message.id === raw.id);
+    assert.ok(received.text.includes(attached[0]));
+    assert.deepEqual(received.files, [inline]);
+    assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
+    if (!rollback) {
+      assert.equal(readJSON(path.join(home, "run/waiting/msg_goneEngine.json")).text, "keep these words");
+      assert.deepEqual(readJSON(path.join(home, "run/queues.json")).ses_goneDuringDrain.waiting.map(row => row.id), ["msg_goneEngine"]);
+    }
+  } finally {
+    let currentEngine;
+    try { currentEngine = readJSON(path.join(home, "run/engine.json")); } catch {}
+    if (keeper) {
+      try { keep("off"); await until(() => keeper.child.exitCode !== null, () => keeper.log(), 15000); }
+      finally { await keeper.stop(); }
+    }
+    write(path.join(workspace, "fixture-stop"), "");
+    if (currentEngine && currentEngine.pid !== worker.child.pid) {
+      await until(() => {
+        if (fs.existsSync(path.join(workspace, `exit-${currentEngine.pid}`))) return true;
+        try { process.kill(currentEngine.pid, 0); return false; }
+        catch (error) { return error.code === "ESRCH"; }
+      }, "the replacement fixture engine should exit");
+    }
+    await worker.stop();
+  }
+});
+
+async function releaseHeldSession(t) {
+  const binary = boxBinary();
+  const { computer } = await bench(t);
+  const here = await computer("release-queue-controls", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const session = "ses_releaseQueue";
+  here.engine.sessions.push(sessionOf({ id: session, title: "Held work", directory: here.home }));
+  here.engine.running.add(session);
+  const ready = await here.start().ready();
+  const run = path.join(here.home, "run");
+  const now = Date.now();
+  const change = { from: "0.0.0", to: "2.2.6", since: now, stage: "holding" };
+  // Reopen the durable release state used by each implementation. No feed or
+  // keeper changes are needed to exercise the normal queue and update routes.
+  if (binary.typescript) {
+    write(path.join(run, ".updating/pid"), String(process.pid));
+    write(path.join(run, "update-engine-hold.json"), encode({ formatVersion: 1, ...change, holding: now, pid: process.pid }));
+  } else {
+    write(path.join(run, "fleet-engine-hold.json"), encode({ formatVersion: 1, ...change, release: "0.8.0:fixture",
+      owner: { pid: process.pid, startIdentity: "fixture" }, retryAt: null }));
+  }
+  return { ...here, ready, session, route: `kuvo/sessions/${session}/queue`, app: { "x-kuvo-from": "app" } };
+}
+
+test("a release hold lets the waiting queue be edited without starting a turn", async t => {
+  const { engine, ready, session, route, app } = await releaseHeldSession(t);
+  const ids = ["msg_holdFirst", "msg_holdSecond", "msg_holdThird"];
+  for (const id of ids) {
+    const sent = await request(ready, "POST", `api/session/${session}/prompt`, { id, text: id, delivery: "queue" }, app);
+    assert.equal(sent.status, 200, sent.text);
+    assert.deepEqual(sent.json, { waits: true });
+  }
+  const pause = async () => {
+    const held = await request(ready, "POST", route + "/hold", {}, app);
+    assert.equal(held.status, 200, held.text);
+    assert.equal(held.json.paused, true);
+  };
+  await pause();
+  const now = await request(ready, "POST", `${route}/${ids[2]}/now`, {}, app);
+  assert.equal(now.status, 200, now.text);
+  assert.equal(now.json.paused, false);
+  assert.deepEqual(now.json.waiting.map(row => row.id), [ids[2], ids[0], ids[1]]);
+  await pause();
+  const steer = await request(ready, "POST", `${route}/${ids[1]}/steer`, {}, app);
+  assert.equal(steer.status, 200, steer.text);
+  assert.equal(steer.json.paused, false);
+  assert.deepEqual(steer.json.waiting.map(row => row.id), [ids[1], ids[2], ids[0]]);
+  await pause();
+  const resumed = await request(ready, "POST", route + "/resume", {}, app);
+  assert.equal(resumed.status, 200, resumed.text);
+  assert.equal(resumed.json.paused, false);
+  assert.deepEqual(resumed.json.waiting.map(row => row.id), [ids[1], ids[2], ids[0]]);
+  assert.equal((await request(ready, "POST", route + "/msg_missing/now", {}, app)).status, 404);
+  assert.deepEqual(engine.messages.get(session) ?? [], []);
+  assert.deepEqual(engine.inboxes.get(session) ?? [], []);
+  assert.deepEqual(engine.interrupted, []);
+});
+
+test("the update status explains the engine release hold", async t => {
+  const { ready, app } = await releaseHeldSession(t);
+  const answer = await request(ready, "GET", "kuvo/update", undefined, app);
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json.engineChange, { stage: "holding", from: "0.0.0", to: "2.2.6",
+    line: "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after." });
+});
+
+test("a release hold saves a raw prompt's inline attachment", async t => {
+  const { engine, home, ready, session, app } = await releaseHeldSession(t);
+  const id = "msg_heldAttachment";
+  const words = "the attached note";
+  const inline = { name: "note.txt", uri: "data:text/plain;base64," + Buffer.from(words).toString("base64") };
+  const answer = await request(ready, "POST", `api/session/${session}/prompt`, { id, text: "Read the note", delivery: "queue", files: [inline] }, app);
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json, { waits: true });
+  const root = path.join(home, "attachments", session);
+  const saved = fs.readdirSync(root).map(folder => path.join(root, folder, "note.txt"));
+  assert.equal(saved.length, 1);
+  assert.equal(fs.readFileSync(saved[0], "utf8"), words);
+  const payload = readJSON(path.join(home, "run/waiting", id + ".json"));
+  assert.ok(payload.text.includes(saved[0]));
+  assert.deepEqual(engine.messages.get(session) ?? [], []);
+  assert.deepEqual(engine.inboxes.get(session) ?? [], []);
+});
+
+test("a signed release without rollback compatibility leaves the earlier engine in place", t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("The Rust preparation guard runs before the engine download.");
+  const { home, release, key, body, update } = box(t);
+  const before = { pid: process.pid, version: "2.2.5", password: "fixture", port: 12345 };
+  write(path.join(home, "run/engine.json"), encode(before));
+  const tree = path.join(release, "tree");
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const members = { [`bin/${program}`]: Buffer.from("fixture never runs"), "bin/box-version": Buffer.from(body.version + "\n") };
+  for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: body.version, engine: body.engine,
+    downgradeSafe: true, engines: [body.engine], files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const tar = path.join(release, "box.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 15000 }).status, 0);
+  const pack = gzipSync(fs.readFileSync(tar));
+  const descriptor = { ...body.pack, sha256: digest(pack) };
+  const answer = update(envelope({ ...body, launch: "rust", pack: descriptor, packs: { [target]: descriptor } }, key), pack);
+  assert.deepEqual(answer, { result: "failed", version: body.version,
+    message: "The new engine hasn't been checked for going back to the engine running here." });
+  assert.deepEqual(readJSON(path.join(home, "run/engine.json")), before);
+  assert.equal(fs.readFileSync(path.join(home, "bin/box-version"), "utf8"), "0.8.0-beta.1\n");
+  assert.equal(fs.existsSync(path.join(home, "run/fleet-ready.json")), false);
+  assert.equal(fs.existsSync(path.join(home, "run/fleet-engine-hold.json")), false);
+});
+
 test("a failed engine download can retry preparation for the same signed release", { timeout: 180000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
@@ -1105,7 +1527,215 @@ test("Rust prepares its target without changing the selected release and its kee
 
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
-test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
+async function referenceMailCodec(t) {
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const isolated = { ...isolatedEnv(root), KUVO_HOME: path.join(root, "box") };
+  const before = Object.fromEntries(Object.keys(isolated).map(key => [key, process.env[key]]));
+  Object.assign(process.env, isolated);
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  let wireAPI;
+  try { wireAPI = await import(pathToFileURL(wireFixture).href); }
+  finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  return wireAPI;
+}
+
+async function releaseMailPeer(t, relay, observer, seed) {
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await referenceMailCodec(t);
+  const wire = relay.device(Buffer.alloc(32, 50 + seed));
+  t.after(() => wire.leave());
+  const address = Buffer.from(observer.address, "base64url");
+  const key = Buffer.from(observer.key, "base64url"), secret = Buffer.alloc(32, seed);
+  return {
+    ready: () => until(() => relay.has(address), "the resident must connect"),
+    offline: () => until(() => !relay.has(address), "the earlier resident must disconnect"),
+
+    send: release => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), release }), secret, key).message)),
+    announce: computer => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), agents: { at: Date.now(), list: [], computer } }), secret, key).message)),
+    async receive(match) {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        const packet = readFrame((await wire.next(Math.max(1, deadline - Date.now()))).subarray(17));
+        if (packet?.kind !== Frame.mail) continue;
+        const value = JSON.parse(openOneWay(packet.body, secret, key).payload).release;
+        if (value && match(value)) return value;
+      }
+      assert.fail("the expected signed release mail did not arrive");
+    },
+  };
+}
+
+test("release mail sends the signed pack for a computer with a different target", { timeout: 45000 }, async t => {
+  const binary = boxBinary();
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  if (binary.typescript || !fs.existsSync(wireFixture)) return t.skip("Uses the Rust target-pack mail with a reference wire peer.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Mixed target holder");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const version = "0.8.0";
+  const localBytes = Buffer.from("this computer's signed pack");
+  const foreignBytes = Buffer.alloc(70013, 42);
+  const foreignTarget = target === "x86_64-unknown-linux-musl" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-musl";
+  const key = keypair();
+  let signed, downloads = 0, online = true, damaged = true;
+  const feed = createServer((req, res) => {
+    if (req.url === "/boxes.json") return res.end(signed);
+    if (req.url === "/foreign.tar.gz") {
+      downloads++;
+      return online ? res.end(damaged ? Buffer.from("damaged") : foreignBytes) : res.writeHead(404).end();
+    }
+    res.writeHead(404).end();
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const local = { url: `${url}/local.tar.gz`, sha256: digest(localBytes) };
+  const foreign = { url: `${url}/foreign.tar.gz`, sha256: digest(foreignBytes) };
+  signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true, launch: "rust",
+    pack: local, packs: { [target]: local, [foreignTarget]: foreign } }, key));
+  const selected = `versions/${version}-${local.sha256.slice(0,12)}/bin`;
+  const folder = path.join(here.home, path.dirname(selected));
+  write(path.join(here.home, "active-release"), selected + "\n");
+  write(path.join(folder, "boxes.json"), signed);
+  write(path.join(folder, "pack"), localBytes);
+  write(path.join(folder, "bin/box-version"), version + "\n");
+  const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  let child = here.start(binary, updateEnv);
+  const peer = await releaseMailPeer(t, relay, main, 2);
+  const resident = await child.ready();
+  await peer.ready();
+  peer.announce({ kuvo: version, releaseTarget: foreignTarget, installedSha256: foreign.sha256 });
+  const heard = path.join(here.home, "run/peer-agents.json");
+  await until(() => fs.existsSync(heard) && readJSON(heard)[member.key]?.computer?.releaseTarget === foreignTarget,
+    "the holder should hear its member before the request");
+  const { send, receive } = peer;
+  const header = async sha256 => {
+    send({ want: version, sha256 });
+    try { return await receive(value => value.version === version && (value.none || value.boxes)); }
+    catch (error) { throw new Error(`${error.message} for ${sha256 === local.sha256 ? "local" : "foreign"}\n${child.log()}`, { cause: error }); }
+  };
+  await until(async () => (await request(resident, "GET", "kuvo/setup")).json.computers.length === 2,
+    "the local resident must publish the two-computer setup");
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.deepEqual(await header(digest("not in the signed manifest")), { version, none: true });
+  assert.equal(downloads, 0);
+  assert.deepEqual(await header(foreign.sha256), { version, none: true });
+  assert.equal(downloads, 1);
+  assert.equal(fs.existsSync(path.join(folder, `relay-pack-${foreign.sha256}`)), false);
+  damaged = false;
+  const offered = await header(foreign.sha256);
+  assert.equal(offered.boxes, signed.toString());
+  assert.equal(offered.size, foreignBytes.length);
+  assert.equal(downloads, 2);
+  const chunks = [];
+  for (let part = 0; part * 30000 < foreignBytes.length; part++) {
+    send({ version, sha256: foreign.sha256, part });
+    const answer = await receive(value => value.version === version && value.i === part && value.d);
+    assert.equal(answer.sha256, foreign.sha256);
+    chunks.push(Buffer.from(answer.d, "base64"));
+  }
+  assert.deepEqual(Buffer.concat(chunks), foreignBytes);
+  online = false;
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.equal((await header(foreign.sha256)).size, foreignBytes.length);
+  // A hash-less legacy request cannot receive an earlier foreign response.
+  send({ version, part: 0 });
+  assert.deepEqual(Buffer.from((await receive(value => value.version === version && value.i === 0 && value.d)).d, "base64"), localBytes);
+  const earlier = readJSON(heard)[member.key].at;
+  await child.stop();
+  await peer.offline();
+  child = here.start(binary, updateEnv);
+  const restarted = await child.ready();
+  await peer.ready();
+  peer.announce({ kuvo: version, releaseTarget: foreignTarget, installedSha256: foreign.sha256 });
+  await until(() => readJSON(heard)[member.key]?.at > earlier, "the restarted holder must hear its member");
+  assert.ok(fs.existsSync(path.join(folder, `relay-pack-${foreign.sha256}`)));
+  assert.equal((await request(restarted, "GET", "kuvo/setup")).json.computers.length, 2);
+  assert.equal((await request(restarted, "GET", "kuvo/update")).json.version, version);
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.equal((await header(foreign.sha256)).size, foreignBytes.length);
+  assert.equal(downloads, 2, "the donor retains the verified bytes across restart while the pack URL is unavailable");
+  assert.equal(fs.readFileSync(path.join(here.home, "active-release"), "utf8").trim(), selected);
+  assert.deepEqual(fs.readFileSync(path.join(folder, "pack")), localBytes);
+});
+test("a computer prepares its own signed pack from a holder on another target", { timeout: releaseReturnMs + firstPreparationMs }, async t => {
+  const binary = boxBinary();
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  if (binary.typescript || !fs.existsSync(wireFixture)) return t.skip("Uses Rust target-pack mail with a reference wire peer.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Mixed target recipient");
+  const { member } = seedPeerSetup(here.home, relay.url, 2);
+  const version = "0.8.0", previous = "0.8.0-beta.1";
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const release = path.join(here.env.HOME, "release");
+  const tree = path.join(release, "tree");
+  const files = { [`bin/${program}`]: fs.readFileSync(binary.file), "bin/box-version": Buffer.from(version + "\n") };
+  if (process.platform !== "win32") {
+    for (const name of ["kuvo-start", "kuvo-setsid"]) files[`bin/${name}`] = fs.readFileSync(new URL(`../../box/src/keeper/${name}`, import.meta.url));
+  }
+  for (const [file, bytes] of Object.entries(files)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  fs.mkdirSync(path.join(tree, "bin/opencode-plugins"));
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", version, launch: "rust", engine: "2.2.6",
+    files: Object.fromEntries(Object.entries(files).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const tar = path.join(release, "signed.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+  const pack = gzipSync(fs.readFileSync(tar), { level: 1 });
+  const engine = await engineFeed(t, path.join(release, "engine"), undefined, { damageFirst: false });
+  const system = process.platform === "win32" ? "windows" : process.platform;
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const feed = createServer((_req, res) => res.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const local = { url: `${url}/local.tar.gz`, sha256: digest(pack) };
+  const foreignTarget = target === "x86_64-unknown-linux-musl" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-musl";
+  const foreign = { url: `${url}/foreign.tar.gz`, sha256: digest("other architecture bytes") };
+  const key = keypair();
+  const signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true, launch: "rust",
+    pack: foreign, packs: { [target]: local, [foreignTarget]: foreign }, [system]: { [arch]: engine.build } }, key)).toString();
+  write(path.join(here.home, "bin/box-version"), previous + "\n");
+  write(path.join(here.home, "run/engine.json"), encode({ ...here.engine.record, version: "2.2.6" }));
+  const child = here.start(binary, { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key });
+  const donor = await releaseMailPeer(t, relay, member, 1);
+  await child.ready();
+  await donor.ready();
+  donor.announce({ kuvo: previous, releaseTarget: foreignTarget, candidate: version, releaseManifest: signed,
+    staged: { version, sha256: foreign.sha256 } });
+  const asked = await donor.receive(value => value.want === version);
+  assert.deepEqual(asked, { want: version, sha256: local.sha256 });
+  donor.send({ version, sha256: local.sha256, boxes: signed, size: pack.length });
+  const served = new Set();
+  const parts = Math.ceil(pack.length / 30000);
+  while (served.size < parts) {
+    const { part, sha256 } = await donor.receive(value => value.version === version && Number.isInteger(value.part));
+    assert.equal(sha256, local.sha256);
+    const start = part * 30000;
+    assert.ok(start < pack.length);
+    donor.send({ version, sha256, i: part, d: pack.subarray(start, start + 30000).toString("base64") });
+    served.add(part);
+  }
+  const marker = path.join(here.home, "run/fleet-ready.json");
+  await until(() => {
+    const failed = path.join(here.home, "run/fleet-cannot.json");
+    if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
+    return fs.existsSync(marker);
+  }, () => `the requested target was not prepared\n${child.log()}`, firstPreparationMs);
+  assert.deepEqual(readJSON(marker), { version, sha256: local.sha256 });
+  const retained = path.join(here.home, `versions/${version}-${local.sha256.slice(0, 12)}`);
+  assert.equal(digest(fs.readFileSync(path.join(retained, "pack"))), local.sha256);
+  assert.equal(fs.readFileSync(path.join(retained, "boxes.json"), "utf8"), signed);
+  assert.equal(fs.readFileSync(path.join(here.home, "bin/box-version"), "utf8").trim(), previous);
+  assert.equal(fs.existsSync(path.join(here.home, `versions/${version}-${foreign.sha256.slice(0,12)}`)), false);
+});
+
+test("the main takes a signed release from a member already running it", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true }));
 test("a release pulled over relay reports its checked progress on both computers", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true, pullProgress: true }));
 test("peer transfer keeps its checked progress after the first holder times out", { timeout: failoverTestMs + peerTransferMs },
   t => fleetRun(t, { aheadMember: true, pullProgress: true, secondSource: true }));
@@ -1534,7 +2164,8 @@ Buffer.from = function (value, encoding, ...args) {
     if (pullProgress) await checkPullProgress();
     else startOnline();
     if (aheadMember) {
-      await until(() => confirmed(main), diagnose, pullProgress ? releaseReturnMs : firstPreparationMs);
+      await until(() => confirmed(main), diagnose, releaseReturnMs);
+      t.diagnostic(`Retained pack transfer and keeper confirmation: ${Math.round(performance.now() - began)} ms`);
       assert.equal(active(member), selected);
       assert.equal(active(away), initial(away));
       assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");

@@ -73,7 +73,7 @@ impl Writer {
         target: QueueTarget,
         method: forward_core::Method,
         action: Option<String>,
-        body: Option<Value>,
+        mut body: Option<Value>,
         local: bool,
     ) -> Result<Value, Refusal> {
         if !local {
@@ -96,6 +96,32 @@ impl Writer {
                 json!({"message":format!("{} needs an update before it can keep attached files. Update it and try again.", target.computer["name"].as_str().unwrap_or_default()),"computer":target.computer}),
             ));
         }
+        if let Some(fields) = body.as_mut()
+            && fields["files"]
+                .as_array()
+                .is_some_and(|files| !files.is_empty())
+        {
+            let given = fields["files"].clone();
+            let name = target.computer["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let files = self.files.clone();
+            match tokio::task::spawn_blocking(move || files.for_peer(&given, &name))
+                .await
+                .map_err(internal)?
+            {
+                Ok(carried) => fields["files"] = carried,
+                Err(error) => {
+                    use http_body_util::BodyExt;
+                    let reply = error.reply();
+                    let bytes = reply.body.collect().await.map_err(internal)?.to_bytes();
+                    let mut value: Value = serde_json::from_slice(&bytes).map_err(internal)?;
+                    value["computer"] = target.computer;
+                    return Err(Refusal::json(reply.status, value));
+                }
+            }
+        }
         let relation = body
             .as_ref()
             .is_some_and(|body| body.get("itemRelation").is_some());
@@ -103,9 +129,8 @@ impl Writer {
         let mut result = self
             .forward
             .call(
-                target.key,
-                target.computer.clone(),
-                target.id.clone(),
+                &target,
+                tools::item_name(&target.previous),
                 method,
                 action,
                 body,
@@ -215,14 +240,13 @@ impl Writer {
                     .await
             }
             RequestKind::Agent => Ok(self.peer_tool(act).await),
-            RequestKind::LabelEdit => {
-                labels::peer_edit(
-                    &self.store,
-                    &self.setup,
-                    act.body.unwrap_or_default()["value"].clone(),
-                )
-                .await
-            }
+            RequestKind::LabelEdit => labels::peer_edit(
+                &self.store,
+                &self.setup,
+                act.body.unwrap_or_default()["value"].clone(),
+            )
+            .await
+            .inspect(|_| self.retell.again()),
             RequestKind::LabelRestore => {
                 let value = act.body.unwrap_or_default()["value"].clone();
                 if value.get("dryRun").is_some_and(|given| given != false) {

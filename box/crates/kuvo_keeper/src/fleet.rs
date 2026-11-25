@@ -73,6 +73,10 @@ impl Candidate {
     pub fn version(&self) -> &str {
         self.signed.version()
     }
+
+    pub fn engine(&self) -> &str {
+        self.signed.engine()
+    }
     pub fn old_enough_for_automatic_check(&self) -> bool {
         self.signed.released().is_some_and(|release| {
             jiff::Timestamp::now()
@@ -423,21 +427,37 @@ impl HeldPack {
             let Ok(candidate) = Candidate::verify(text, key) else {
                 continue;
             };
-            let reference = candidate.local()?;
-            if reference.version != version
-                || target.is_some_and(|target| reference.target().ok() != Some(target))
-                || hash.is_some_and(|hash| hash != reference.sha256)
+            let local = candidate.local()?;
+            if local.version != version
+                || target
+                    .as_ref()
+                    .is_some_and(|target| local.target().ok().as_ref() != Some(target))
             {
                 continue;
             }
-            let pack = folder.join("pack");
+            let (reference, name) = match hash {
+                Some(hash) if hash != local.sha256 => {
+                    let Some(pack) = candidate.signed.rust_pack_by_hash(hash) else {
+                        continue;
+                    };
+                    if target.is_none() {
+                        continue;
+                    }
+                    (
+                        candidate.signed.reference(pack),
+                        format!("relay-pack-{hash}"),
+                    )
+                }
+                _ => (local, "pack".into()),
+            };
+            let pack = folder.join(&name);
             let Ok(path) = pack.canonicalize() else {
                 continue;
             };
             if path
                 != root
                     .join(folder.strip_prefix(home.root()).map_err(io::Error::other)?)
-                    .join("pack")
+                    .join(name)
                 || !fs::symlink_metadata(&pack)?.is_file()
             {
                 continue;
@@ -455,6 +475,58 @@ impl HeldPack {
             }
         }
         Ok(None)
+    }
+
+    /// A peer may need a different target of the release we already retain.
+    /// Keep only signed, verified archives beside that release, never in its bin.
+    pub async fn mirror(
+        home: &Home,
+        key: &str,
+        version: &str,
+        hash: &str,
+        fetcher: &Fetcher,
+    ) -> io::Result<Option<Self>> {
+        if let Some(held) = Self::find(home, key, version, Some(hash))? {
+            return Ok(Some(held));
+        }
+        let Some(source) = Self::find(home, key, version, None)? else {
+            return Ok(None);
+        };
+        let Some(pack) = source.candidate.signed.rust_pack_by_hash(hash) else {
+            return Ok(None);
+        };
+        if source._lease.is_none() || source.reference.sha256 == hash {
+            return Ok(None);
+        }
+        let reference = source.candidate.signed.reference(pack);
+        let path = source
+            .reference
+            .target()?
+            .folder(home.root())
+            .join(format!("relay-pack-{hash}"));
+        let bytes = download(
+            &fetcher.0,
+            &pack.url,
+            staging::MAX_PACK,
+            peer_transfer_limit(),
+        )
+        .await?;
+        tokio::task::spawn_blocking(move || {
+            if !reference.matches_bytes(&bytes) {
+                return Err(io::Error::other("The pack isn't what the release says."));
+            }
+            files::write_secret(&path, &bytes)?;
+            let file = File::open(path)?;
+            Ok(Some(Self {
+                candidate: source.candidate,
+                reference,
+                size: bytes.len(),
+                file,
+                _lease: source._lease,
+            }))
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     pub fn part(&mut self, index: usize) -> io::Result<Option<Vec<u8>>> {

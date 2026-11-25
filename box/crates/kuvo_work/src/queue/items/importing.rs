@@ -30,7 +30,7 @@ impl Writer {
                         bad("Say whose queue it goes in (owner): a conversation's address.")
                     })?
                     .to_owned();
-                writer.admit(&owner)?;
+                writer.admit_async(&owner).await?;
                 let home = writer.store.clone();
                 let setup = writer.setup.queue_setup();
                 let parsed = tokio::task::spawn_blocking(move || {
@@ -50,7 +50,7 @@ impl Writer {
         given: Value,
         actor: Value,
     ) -> Result<Value, Refusal> {
-        self.admit(&owner)?;
+        self.admit_async(&owner).await?;
         let store = self.store.clone();
         let setup = self.setup.queue_setup();
         let parsed = tokio::task::spawn_blocking(move || {
@@ -64,11 +64,11 @@ impl Writer {
 
     async fn import(&self, owner: String, backlog: Backlog, who: Value) -> Result<Value, Refusal> {
         let guard = self.lock().await?;
-        self.admit(&owner)?;
         let now = Timestamp::now().as_millisecond();
         let used = self.numbers.used().await.map_err(storage_refusal)?;
         let writer = self.clone();
-        let (mut book, plan, compaction) = tokio::task::spawn_blocking(move || {
+        let (mut book, plan, compaction, numberable) = tokio::task::spawn_blocking(move || {
+            writer.admit(&owner)?;
             let (items, compaction) = writer.changes(now)?;
             let mut book = Book::new(items);
             let elsewhere = told::known_numbers(&writer.store).map_err(storage_refusal)?;
@@ -81,7 +81,8 @@ impl Writer {
                 now,
                 &who,
             )?;
-            Ok::<_, Refusal>((book, plan, compaction))
+            let numberable = writer.numberable(&book.items);
+            Ok::<_, Refusal>((book, plan, compaction, numberable))
         })
         .await
         .map_err(internal)??;
@@ -102,7 +103,8 @@ impl Writer {
             .claim(has_claims, restores, high, now)
             .await
             .map_err(storage_refusal)?;
-        let (waiting, freshly_used) = book.settle(grant, |item| self.may_number(item), now);
+        let (waiting, freshly_used) =
+            book.settle(grant, |item| Self::may_number(item, &numberable), now);
         let allocated = self
             .numbers
             .allocate_with_used(waiting.len(), freshly_used, highest(&book.items), now)

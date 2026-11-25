@@ -26,6 +26,7 @@ mod proxy;
 mod queue;
 mod raw_prompts;
 mod receipt_index;
+mod release;
 mod search;
 mod send;
 mod session_list;

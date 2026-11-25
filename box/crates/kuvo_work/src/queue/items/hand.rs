@@ -51,7 +51,7 @@ impl Writer {
             )));
         }
         let display = tools::item_name(&Value::Object(item.saved.clone()));
-        if view.local.ownership.frozen.contains(&owner) {
+        if self.session_scope(&owner)?.held {
             return Err(bad(
                 "That conversation is moving to another computer, with its Work Queue: try again once it's there.",
             ));
@@ -74,10 +74,7 @@ impl Writer {
             if let Some(twin) = far.items.iter().find(|twin| {
                 twin["id"] != item.id
                     && twin["computer"]["key"] == peer_key
-                    && source["ref"]
-                        .as_str()
-                        .zip(twin["source"]["ref"].as_str())
-                        .is_some_and(|(same, other)| same.eq_ignore_ascii_case(other))
+                    && self.refs.same_source(source, &twin["source"])
             }) {
                 let queue = twin["owner"].as_str().unwrap_or_default();
                 return Err(bad(format!(

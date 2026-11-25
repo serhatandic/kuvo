@@ -114,6 +114,42 @@ impl ClientFiles {
         })
     }
 
+    /// A remote keeper receives bytes, never a path on the requesting computer.
+    pub fn for_peer(&self, given: &Value, computer: &str) -> Result<Value, Refusal> {
+        let Some(entries) = given.as_array() else {
+            return Ok(given.clone());
+        };
+        if entries.len() > MOST_FILES {
+            return Err(refused("An item keeps 50 files at most."));
+        }
+        let mut total = 0;
+        let mut carried = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let (bytes, name) = self.client_file(entry, true)?;
+            total += bytes.len();
+            if total > 4_000_000 {
+                return Err(Refusal::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        "These files are too big to send to {computer} with one change (4 MB in all at most). Attach fewer or smaller files."
+                    ),
+                ));
+            }
+            if entry["uri"]
+                .as_str()
+                .is_some_and(|uri| self.inline.is_match(uri))
+            {
+                carried.push(entry.clone());
+            } else {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                carried.push(
+                    json!({"uri":format!("data:{};base64,{data}",media_type(&name)),"name":name}),
+                );
+            }
+        }
+        Ok(carried.into())
+    }
+
     pub fn stage_agent(
         &self,
         store: &Store,

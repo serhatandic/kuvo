@@ -6,6 +6,27 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Work waiting for a computer’s first Rust update is sent only after that computer confirms the update.
+- Rust computers hold Work Queue changes while the conversation moves, and keep saved mentions linked when their item receives a number. Local attachments selected for work kept on another computer travel with their file contents.
+
+- Rust computers preserve Work Queue mentions when a conversation moves, return recoverable old import numbers, and retry unacknowledged queue updates promptly. Label restore previews identify an unreachable main computer.
+
+- When one computer cannot download an update, another can send the right build even if they use different systems.
+
+- Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
+- Saved Work Queue attachments on Rust computers stay available while other work is being saved.
+
+- After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
+
+- A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
+
+- When a Rust computer needs a different engine for an update, current work finishes first and new messages wait. They go in order once the new release is ready or the previous one is restored.
+- After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
+
+- Rust computers reuse fresh GitHub Work Queue readings from your other computers and refuse to restore or hand over an item beside a live copy of the same issue.
+
+- A computer removed from your setup can be added back after it restarts; it no longer says it has setup data that needs a merge.
+- Work Queue history on Rust computers no longer records an edit just because an old item lacked empty fields, and an interrupted local handoff is cleaned up on the next write.
 - Assigning personal Work Queue items to a local bot moves them into its queue on Rust computers.
 - Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.
 - Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.

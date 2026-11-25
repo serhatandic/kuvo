@@ -98,12 +98,14 @@ pub async fn register(
     });
     follow(registry, lists.clone());
 
+    let retell = told::Retell::default();
     let restore_labels = labels::Restores::new(
         store.clone(),
         setup.clone(),
         memory.clone(),
         peers.clone(),
         super::forward::Forward::new(store.clone(), owners.clone(), relay.clone()),
+        retell.clone(),
     );
     restore_labels.register(registry);
     let reads = PeerReads {
@@ -120,8 +122,17 @@ pub async fn register(
         store.clone(),
         setup.clone(),
         super::forward::Forward::new(store.clone(), owners.clone(), relay.clone()),
+        retell.clone(),
     );
-    let runtime = items::register(registry, setup, engine, relay, reads.clone(), owners);
+    let runtime = items::register(
+        registry,
+        setup,
+        engine,
+        relay,
+        reads.clone(),
+        owners,
+        retell,
+    );
 
     let here = lists.clone();
     registry.register::<get_kuvo_work_queue_refs::Spec, _, _>(Access::Any, move |call| {
@@ -202,6 +213,10 @@ pub struct Runtime {
 impl Runtime {
     pub fn record_edits(&self) -> Arc<dyn kuvo_setup::RecordEdits> {
         self._writer.edits.clone()
+    }
+
+    pub fn queue_review(&self) -> Arc<dyn kuvo_setup::backup::QueueReview> {
+        self._writer.review.clone()
     }
 
     pub fn peer_reads(&self) -> PeerReads {
@@ -393,6 +408,7 @@ pub(super) fn storage_refusal(error: Error) -> Refusal {
                 "message": error.to_string(),
             }),
         ),
+        Error::Migration(message) => Refusal::new(StatusCode::BAD_REQUEST, message),
         _ => internal(error),
     }
 }

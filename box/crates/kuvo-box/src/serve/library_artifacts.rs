@@ -82,7 +82,11 @@ impl ResidentLibraryArtifacts {
         let mut tasks = Vec::new();
         let (artifact_handle, library_handle, folders) = match store_res {
             Ok(store) => {
-                save_citation_checkpoints(&artifacts_root, &checkpoints);
+                // An unchanged checkpoint stays as it is: a departed computer's
+                // released work must not change by starting again.
+                if checkpoints != prev {
+                    save_citation_checkpoints(&artifacts_root, &checkpoints);
+                }
                 let lib_res = LibraryService::open(
                     &library_root,
                     LibraryOptions {

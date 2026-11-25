@@ -207,13 +207,13 @@ impl Reader {
                 continue;
             };
             let seen = &item["seen"];
-            if let Some(checked) = seen["checked"].as_i64().or_else(|| seen["at"].as_i64())
+            if let Some(checked) = seen["checked"].as_f64().or_else(|| seen["at"].as_f64())
                 && seen["gone"] != true
-                && now - checked
+                && (now as f64 - checked)
                     < if done(&seen["state"]) {
-                        FRESH_DONE
+                        FRESH_DONE as f64
                     } else {
-                        BACK_OFF
+                        BACK_OFF as f64
                     }
             {
                 continue;

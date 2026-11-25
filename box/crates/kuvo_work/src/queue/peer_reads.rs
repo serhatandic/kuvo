@@ -176,14 +176,39 @@ impl PeerReads {
     }
 
     fn detail(&self, item: &Item, all: &[Item]) -> Result<Value, super::store::Error> {
-        Ok(view::detail(
+        let sessions = Sessions::read(self.sessions.latest_record());
+        let far = told::items_elsewhere(
+            &self.store,
+            all,
+            &self.peers.view(),
+            "all",
+            &sessions,
+            &[],
+            self.peers.now(),
+        )?;
+        let mut answer = view::detail(
             item,
             all,
+            &far.items,
             &self.refs,
             &Seen::read(&self.store)?,
-            &Sessions::read(self.sessions.latest_record()),
+            &sessions,
             &Assignees::read(&self.store),
-        ))
+        );
+        if self.store.move_fences().map_or_else(
+            |_| {
+                self.peers
+                    .view()
+                    .local
+                    .ownership
+                    .frozen
+                    .contains(&item.owner)
+            },
+            |fences| !fences.permits(&item.owner, |_| true),
+        ) {
+            view::held(&mut answer["item"]);
+        }
+        Ok(answer)
     }
 
     pub(super) async fn item(&self, name: String, client: bool) -> Result<Value, Refusal> {

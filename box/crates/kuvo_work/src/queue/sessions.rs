@@ -29,12 +29,15 @@ impl Sessions {
             .unwrap_or_default()
     }
 
-    pub fn title(&self, id: &str) -> &str {
+    pub fn known_title(&self, id: &str) -> Option<&str> {
         self.sessions
             .get(id)
             .and_then(|row| row.facts.title.as_deref())
             .filter(|title| !title.is_empty())
-            .unwrap_or("New Session")
+    }
+
+    pub fn title(&self, id: &str) -> &str {
+        self.known_title(id).unwrap_or("New Session")
     }
 
     pub fn started_by(&self, id: &str) -> Option<&str> {

@@ -7,6 +7,7 @@ mod hand;
 mod importing;
 mod offline;
 mod peer_actions;
+mod review;
 mod session_links;
 mod started;
 mod tools;
@@ -50,6 +51,7 @@ use kuvo_store::{
 use kuvo_wire::mail::Envelope;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -93,7 +95,9 @@ struct Writer {
     engine: Engine,
     reads: PeerReads,
     forward: Forward,
+    owners: ownership::Handle,
     revisions: Arc<offline::Revisions>,
+    retell: told::Retell,
 }
 
 pub(super) fn register(
@@ -103,6 +107,7 @@ pub(super) fn register(
     relay: Option<RelayHandle>,
     reads: PeerReads,
     owners: ownership::Handle,
+    retell: told::Retell,
 ) -> Runtime {
     let PeerReads {
         store,
@@ -112,10 +117,12 @@ pub(super) fn register(
         ..
     } = &reads;
     let writer = Writer {
+        retell,
         revisions: Arc::new(offline::Revisions::new()),
         numbers: Numbers::new(store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
-        forward: Forward::new(store.clone(), owners, relay.clone()),
+        forward: Forward::new(store.clone(), owners.clone(), relay.clone()),
+        owners,
         sessions: sessions.clone(),
         engine: engine.clone(),
         store: store.clone(),
@@ -215,6 +222,7 @@ pub(super) fn register(
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
+    pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
 }
 
 impl Drop for Runtime {
@@ -238,6 +246,7 @@ impl Writer {
         let mut upkeep = tokio::time::interval(Duration::from_secs(2));
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
+        let review = Arc::new(self.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -257,7 +266,11 @@ impl Writer {
                 }
             }
         });
-        Runtime { task, edits }
+        Runtime {
+            task,
+            edits,
+            review,
+        }
     }
 
     async fn upkeep(
@@ -305,6 +318,9 @@ impl Writer {
             {
                 send(relay, peer, json!({"ask":ask}), now).await;
             }
+            if self.retell.take() {
+                exchange.snapshots.again();
+            }
             exchange
                 .snapshots
                 .publish(&self.reads, relay, self.setup.queue_setup(), now)
@@ -320,6 +336,9 @@ impl Writer {
         envelope: &Value,
         exchange: &mut Exchange,
     ) -> Result<(), Error> {
+        if envelope["ask"] == "agents" && self.peers.view().roster.member(key).is_some() {
+            exchange.snapshots.reset(key);
+        }
         let queue = &envelope["workQueue"];
         if !queue.is_object()
             || queue["memory"].as_bool() == Some(true)
@@ -436,10 +455,28 @@ impl Writer {
         .map_err(io::Error::other)?
     }
 
-    fn may_number(&self, item: &Item) -> bool {
+    // Read durable ownership once per possible owner, on the disk worker while
+    // the queue lock is held. A move starting afterwards must wait for that lock.
+    fn numberable(&self, items: &[Item]) -> HashSet<String> {
+        items
+            .iter()
+            .filter(|item| {
+                (item.number.is_none() || book::wanted(item).is_some())
+                    && item.source().is_none()
+                    && !item.saved.contains_key("handing")
+            })
+            .map(|item| item.owner.as_str())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|owner| self.admit(owner).is_ok())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn may_number(item: &Item, owners: &HashSet<String>) -> bool {
         item.source().is_none()
             && !item.saved.contains_key("handing")
-            && self.admit(&item.owner).is_ok()
+            && owners.contains(&item.owner)
     }
 
     async fn number_waiting(&self, received: Option<Grant>) -> Result<(), Error> {
@@ -453,10 +490,15 @@ impl Writer {
         })
         .await
         .map_err(io::Error::other)??;
-        let store = self.store.clone();
-        let items = tokio::task::spawn_blocking(move || store.items())
-            .await
-            .map_err(io::Error::other)??;
+        let writer = self.clone();
+        let (items, numberable, sync_mentions) = tokio::task::spawn_blocking(move || {
+            let items = writer.store.items()?;
+            let numberable = writer.numberable(&items);
+            let sync_mentions = crate::queue::mentions::before_numbering(&items);
+            Ok::<_, Error>((items, numberable, sync_mentions))
+        })
+        .await
+        .map_err(io::Error::other)??;
         let mut book = book::Book::new(items);
         let now = Timestamp::now().as_millisecond();
         let grant = match received {
@@ -466,7 +508,7 @@ impl Writer {
                 let claims = book
                     .items
                     .iter()
-                    .filter(|item| item.removed.is_none() && self.may_number(item))
+                    .filter(|item| item.removed.is_none() && Self::may_number(item, &numberable))
                     .filter_map(|item| {
                         let number = book::wanted(item)?;
                         (!book::flag(item, "backGranted")
@@ -489,7 +531,7 @@ impl Writer {
                     .await?
             }
         };
-        let (waiting, used) = book.settle(grant, |item| self.may_number(item), now);
+        let (waiting, used) = book.settle(grant, |item| Self::may_number(item, &numberable), now);
         let assigned = self
             .numbers
             .allocate_with_used(waiting.len(), used, highest(&book.items), now)
@@ -500,6 +542,9 @@ impl Writer {
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            if let Some(before) = sync_mentions {
+                book.sync_mentions(&writer, &before);
+            }
             book.save(&writer, now).map_err(|error| {
                 io::Error::other(format!(
                     "Cannot persist Work Queue numbers (status {}).",
@@ -577,6 +622,7 @@ impl Writer {
             let Prepared::Replay(value) = prepared else {
                 unreachable!()
             };
+            self.retell.again();
             return Ok(value);
         };
         let assigned = self
@@ -607,6 +653,7 @@ impl Writer {
             document.save(&writer.store).map_err(storage_refusal)?;
             published.commit();
             compaction.finish(&writer, now)?;
+            writer.retell.again();
             Ok(answer)
         })
         .await
@@ -689,6 +736,7 @@ impl Writer {
     async fn change(&self, name: String, removal: Removal) -> Result<Value, Refusal> {
         self.change_as(name, removal, json!({"user":true}), None)
             .await
+            .inspect(|_| self.retell.again())
     }
 
     async fn change_as(
@@ -763,20 +811,28 @@ impl Writer {
                     if agent {
                         edit::refuse_handing(item)?;
                     }
+                    let far = told::items_elsewhere(
+                        &writer.store, &all, &writer.peers.view(), "all",
+                        &super::sessions::Sessions::default(), &[], now,
+                    ).map_err(storage_refusal)?;
+                    if let Some(other) = far.items.iter().find(|other| other["id"] == item.id) {
+                        let computer = other["computer"]["name"].as_str().unwrap_or_default();
+                        return Err(bad(format!("{display} is on {computer} now (it got there before its hand-off was called off): change it there.")));
+                    }
                     if let Some(source) = item.source() {
-                        let ref_of = |value: &Value| {
-                            writer.refs.issue(value["ref"].as_str().unwrap_or_default())
-                                .map(|issue| issue.key())
-                                .unwrap_or_else(|| format!("{}:{}", value["kind"], value["ref"]).to_lowercase())
-                        };
-                        let source_key = ref_of(source);
-                        if let Some(other) = all.iter().find(|other| other.id != item.id && other.removed.is_none()
-                            && other.source().is_some_and(|other| {
-                                ref_of(other) == source_key || source.get("id").is_some_and(|id| other["id"] == *id)
-                            }))
-                        {
-                            return Err(bad(format!("Another item is {} now, in the queue of {}: one item for each issue, so this one stays deleted.",
-                                source["ref"].as_str().unwrap_or_default(), other.owner)));
+                        let twin = all.iter().find(|other| other.id != item.id && other.removed.is_none()
+                            && other.source().is_some_and(|other| writer.refs.same_source(source, other)))
+                            .map(|other| {
+                                let sessions = super::sessions::Sessions::read(writer.sessions.latest_record());
+                                let title = (!agent).then(|| sessions.known_title(&other.owner)).flatten();
+                                let queue = title.map_or_else(|| other.owner.clone(), |title| format!("\"{title}\""));
+                                format!("in the queue of {queue}")
+                            })
+                            .or_else(|| far.items.iter().find(|other| other["id"] != item.id && writer.refs.same_source(source, &other["source"]))
+                                .map(|other| format!("on {}", other["computer"]["name"].as_str().unwrap_or_default())));
+                        if let Some(where_) = twin {
+                            return Err(bad(format!("Another item is {} now, {where_}: one item for each issue, so this one stays deleted.",
+                                source["ref"].as_str().unwrap_or_default())));
                         }
                     }
                     append_event(saved, json!({"at":now,"by":who,"kind":"restored"}));
@@ -813,61 +869,122 @@ impl Writer {
         .map_err(internal)?
     }
 
+    async fn admit_async(&self, owner: &str) -> Result<(), Refusal> {
+        let writer = self.clone();
+        let owner = owner.to_owned();
+        tokio::task::spawn_blocking(move || writer.admit(&owner))
+            .await
+            .map_err(internal)?
+    }
+
+    fn session_scope(&self, owner: &str) -> Result<ownership::Scope, Refusal> {
+        self.owners
+            .scope(owner, None)
+            .map_err(|_| bad("This queue is held while its owner changes."))
+    }
+
     fn admit(&self, owner: &str) -> Result<(), Refusal> {
-        let view = self.peers.view();
-        if view.local.ownership.frozen.contains(owner) {
-            let message = if owner.starts_with("grp_") {
-                "This group chat is moving to another computer, with its Work Queue: try again once it's there."
-            } else {
-                "That conversation is moving to another computer, with its Work Queue: try again once it's there."
-            };
-            return Err(bad(message));
-        }
-        let scope = if owner.starts_with("ses_") {
-            RecordScope::Session
+        if owner.starts_with("ses_") {
+            let scope = self.session_scope(owner)?;
+            if let Some(other) = scope.owner.filter(|owner| !owner.local) {
+                return Err(bad(format!(
+                    "Open this queue on {} to change it.",
+                    other.name
+                )));
+            }
+            if scope.held {
+                return Err(bad("This queue is held while its owner changes."));
+            }
         } else if owner.starts_with("grp_") {
-            RecordScope::Group
-        } else {
-            return Ok(());
-        };
-        if let Some(here) = view
-            .owner_of(scope, owner, self.peers.now())
-            .filter(|owner| !owner.local)
-        {
-            return Err(bad(format!(
-                "Open this queue on {} to change it.",
-                here.name
-            )));
+            // The group admission/seat route is integrated in row 5.3.
+            let view = self.peers.view();
+            if let Some(other) = view
+                .owner_of(RecordScope::Group, owner, self.peers.now())
+                .filter(|owner| !owner.local)
+            {
+                return Err(bad(format!(
+                    "Open this queue on {} to change it.",
+                    other.name
+                )));
+            }
+            if !self
+                .store
+                .move_fences()
+                .map_err(storage_refusal)?
+                .permits(owner, |_| true)
+            {
+                return Err(bad("This queue is held while its owner changes."));
+            }
         }
         Ok(())
     }
 
     async fn lock(&self) -> Result<OwnedLock, Refusal> {
         let root = self.store.root.clone();
-        blocking(move || {
-            files::create_private_dirs(&root)?;
-            migration::migrate(&root)?;
-            Ok(store::exclusive(
-                &root.join(".lock"),
-                Duration::from_secs(3),
-            )?)
-        })
-        .await
+        blocking(move || lock_queue(&root)).await
+    }
+
+    fn lock_here(&self) -> Result<OwnedLock, Refusal> {
+        lock_queue(&self.store.root).map_err(storage_refusal)
     }
 
     fn strict_items(&self, now: i64) -> Result<(Vec<String>, Vec<Item>), Refusal> {
         let mut owners = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut repeated = std::collections::HashSet::new();
         for file in queue_files(&self.store.root.join("queues")) {
             if let Some(owner) = file
                 .file_stem()
                 .and_then(|name| name.to_str())
                 .filter(|name| owner_id(name))
             {
-                self.read_owner(owner, now)?;
+                let document = self.read_owner(owner, now)?;
+                for row in &document.items {
+                    if let Some(id) = row["id"].as_str().filter(|id| store::item_id(id))
+                        && row["title"].is_string()
+                        && !seen.insert(id.to_owned())
+                    {
+                        repeated.insert(id.to_owned());
+                    }
+                }
                 owners.push(owner.to_owned());
             }
         }
-        Ok((owners, self.store.items().map_err(storage_refusal)?))
+        let items = self.store.items().map_err(storage_refusal)?;
+        // A handoff can leave the old row behind if the source write was interrupted.
+        // Remove only duplicate rows after all owner files have been validated,
+        // keeping the same winner as ordinary reads, before the next mutation.
+        if !repeated.is_empty() {
+            let winners = items
+                .iter()
+                .filter(|item| repeated.contains(&item.id))
+                .map(|item| (item.id.as_str(), item.owner.as_str()))
+                .collect::<std::collections::HashMap<_, _>>();
+            for owner in &owners {
+                let mut document = self.read_owner(owner, now)?;
+                let before = document.items.len();
+                let mut kept = std::collections::HashSet::new();
+                document.items.retain(|row| {
+                    let Some(id) = row["id"].as_str() else {
+                        return true;
+                    };
+                    !row["title"].is_string()
+                        || winners.get(id).is_none_or(|winner| {
+                            *winner == owner.as_str() && kept.insert(id.to_owned())
+                        })
+                });
+                if document.items.len() != before {
+                    if document.items.is_empty() {
+                        files::remove_file_synced(&document.path)
+                            .map_err(Error::from)
+                            .map_err(storage_refusal)?;
+                    } else {
+                        document.save(&self.store).map_err(storage_refusal)?;
+                    }
+                }
+            }
+        }
+        Ok((owners, items))
     }
 
     fn read_owner(&self, owner: &str, now: i64) -> Result<Document, Refusal> {
@@ -994,6 +1111,15 @@ impl Document {
         let run = store.root.parent().expect("Work Queue under run");
         files::write_atomic_through(&self.path, &bytes, run).map_err(Into::into)
     }
+}
+
+fn lock_queue(root: &Path) -> Result<OwnedLock, Error> {
+    files::create_private_dirs(root)?;
+    migration::migrate(root)?;
+    Ok(store::exclusive(
+        &root.join(".lock"),
+        Duration::from_secs(3),
+    )?)
 }
 
 fn aside(path: &Path, owner: &str, now: i64) -> Refusal {

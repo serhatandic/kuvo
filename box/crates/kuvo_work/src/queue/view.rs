@@ -217,6 +217,7 @@ pub(super) fn list(
     peers: &View,
 ) -> Result<Value, Error> {
     let all = store.items()?;
+    let moving = store.move_fences().ok();
     let seen = Seen::read(store)?;
     let mut labels = labels::shown(store, setup)?;
     let assignees = Assignees::read(store);
@@ -263,6 +264,12 @@ pub(super) fn list(
         .filter(|item| query.finds(item, &labels))
     {
         let mut row = summary(item, today, references, &seen, sessions, &assignees);
+        if moving.as_ref().map_or_else(
+            || peers.local.ownership.frozen.contains(&item.owner),
+            |fences| !fences.permits(&item.owner, |_| true),
+        ) {
+            held(&mut row);
+        }
         row["labels"] = json!(
             item.labels
                 .iter()
@@ -573,6 +580,7 @@ pub(super) fn mutation(item: &Item, assignees: &Assignees) -> Value {
 pub(super) fn detail(
     item: &Item,
     all: &[Item],
+    far: &[Value],
     references: &References,
     seen: &Seen,
     sessions: &Sessions,
@@ -603,7 +611,7 @@ pub(super) fn detail(
     row["files"] = json!(item.files);
     row["links"] = json!(item.links);
     row["handed"] = json!(item.handed);
-    row["itemRelations"] = json!(refs::relations(item, all));
+    row["itemRelations"] = json!(refs::relations(item, all, far));
     row["bodyMentions"] = json!(bound_mentions(&index["body"]));
     row["canLinkItems"] = (item.removed.is_none() && row.get("handing").is_none()).into();
     json!({"item": row})
@@ -754,6 +762,13 @@ pub(super) fn can_elsewhere(row: &Value, peers: &View, away: bool, client: bool)
     can["assign"] = false.into();
     can["attach"] = (can["attach"] == true && has("work-queue.attachments")).into();
     can
+}
+
+pub(super) fn held(row: &mut Value) {
+    row["can"] = json!({"edit":false,"set":false,"assign":false,"close":false,"delete":false,"restore":false,"attach":false,"why":"Its conversation is moving to another computer: it can be changed once it's there."});
+    if row.get("canLinkItems").is_some() {
+        row["canLinkItems"] = false.into();
+    }
 }
 
 fn can(row: &Value) -> Value {

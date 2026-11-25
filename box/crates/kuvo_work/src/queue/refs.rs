@@ -43,6 +43,25 @@ impl References {
         })
     }
 
+    pub fn same_source(&self, a: &Value, b: &Value) -> bool {
+        let key = |source: &Value| {
+            let reference = source["ref"].as_str()?;
+            Some(
+                self.issue(reference)
+                    .map(|issue| issue.key())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}:{reference}",
+                            source["kind"].as_str().unwrap_or_default()
+                        )
+                        .to_lowercase()
+                    }),
+            )
+        };
+        a["id"].as_str().is_some_and(|id| b["id"] == id)
+            || key(a).is_some_and(|name| key(b).as_ref() == Some(&name))
+    }
+
     pub fn parse<'a>(&self, text: &'a str) -> Option<Reference<'a>> {
         let text = text.trim();
         if item_id(text) {
@@ -154,7 +173,7 @@ fn number_of(text: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-pub(super) fn relations(item: &Item, items: &[Item]) -> Vec<Value> {
+pub(super) fn relations(item: &Item, items: &[Item], far: &[Value]) -> Vec<Value> {
     if item.removed.is_some() {
         return Vec::new();
     }
@@ -171,13 +190,32 @@ pub(super) fn relations(item: &Item, items: &[Item]) -> Vec<Value> {
             links.push((&other.id, "mentioned-in"));
         }
     }
+    for other in far {
+        if let Some(id) = other["id"].as_str().filter(|id| *id != item.id)
+            && array(other.get("mentionTargets"))
+                .iter()
+                .any(|target| target.as_str() == Some(item.id.as_str()))
+        {
+            links.push((id, "mentioned-in"));
+        }
+    }
     links
         .into_iter()
         .filter_map(|(target, kind)| {
-            let other = live.iter().find(|other| other.id == target)?;
-            let mut row = json!({"id": other.id, "title": other.title, "kind": kind});
-            if let Some(number) = other.number {
-                row["number"] = json!(number);
+            if let Some(other) = live.iter().find(|other| other.id == target) {
+                let mut row = json!({"id":other.id,"title":other.title,"kind":kind});
+                if let Some(number) = other.number {
+                    row["number"] = json!(number);
+                }
+                return Some(row);
+            }
+            if !matches!(kind, "mentions" | "mentioned-in") {
+                return None;
+            }
+            let other = far.iter().find(|other| other["id"] == target)?;
+            let mut row = json!({"id":target,"title":other["title"],"kind":kind});
+            if let Some(number) = other.get("number") {
+                row["number"] = number.clone();
             }
             Some(row)
         })

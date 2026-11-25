@@ -1,5 +1,5 @@
 use super::store::{Item, Store, file_name};
-use kuvo_store::files::{self, FileStamp};
+use kuvo_store::files;
 use std::{
     fs::{File, Metadata, OpenOptions},
     io::{self, Read},
@@ -174,7 +174,9 @@ pub(super) fn verify_handoff_file(
     Ok(())
 }
 
-fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
+type FolderIdentity = (u64, u128, Option<i128>);
+
+fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FolderIdentity>> {
     paths
         .iter()
         .map(|path| {
@@ -183,7 +185,10 @@ fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
             if !info.is_dir() || is_link(&info) {
                 return None;
             }
-            files::opened_file_stamp(&folder).ok()
+            // A sibling write can change the directory's revision without replacing it.
+            // Verify its identity; the opened attachment still uses its complete stamp.
+            let stamp = files::opened_file_stamp(&folder).ok()?;
+            Some((stamp.device, stamp.file, stamp.created_ns))
         })
         .collect()
 }
@@ -230,4 +235,52 @@ fn open(path: &Path, directory: bool) -> io::Result<File> {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     options.open(path)
+}
+
+/// Keep recovered attachment names and metadata; a retry may reuse identical bytes,
+/// but must never replace another saved file.
+pub(super) fn restore_files(
+    source: &Store,
+    target: &Store,
+    item: &Item,
+) -> io::Result<Vec<serde_json::Value>> {
+    let mut kept = Vec::new();
+    for attachment in &item.files {
+        let Some(name) = attachment["name"].as_str().filter(|name| file_name(name)) else {
+            continue;
+        };
+        let Some(mut saved) = open_saved(source, &item.id, name) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        saved.read_to_end(&mut bytes)?;
+        let parent = move_files_root(target, true)?.expect("created attachment root");
+        let folder = parent.join(&item.id);
+        files::create_private_dirs(&folder)?;
+        let metadata = open(&folder, true)?.metadata()?;
+        if !metadata.is_dir() || is_link(&metadata) {
+            return Err(io::Error::other("Invalid Work Queue attachment directory."));
+        }
+        let destination = folder.join(name);
+        match files::write_new(&destination, &bytes) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let equal = open_saved(target, &item.id, name)
+                    .and_then(|mut file| {
+                        let mut current = Vec::new();
+                        file.read_to_end(&mut current).ok()?;
+                        Some(current == bytes)
+                    })
+                    .unwrap_or(false);
+                if !equal {
+                    return Err(io::Error::other(
+                        "A live file already uses that attachment name.",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        kept.push(attachment.clone());
+    }
+    Ok(kept)
 }

@@ -24,6 +24,8 @@ pub(super) enum Error {
     Format(#[from] format::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Migration(String),
 }
 
 pub(super) fn exclusive(
@@ -51,6 +53,12 @@ impl Store {
         Self {
             root: home.join("run").join("work-queue"),
         }
+    }
+
+    pub fn move_fences(&self) -> Result<kuvo_peers::moves::BackupFences, Error> {
+        Ok(kuvo_peers::moves::BackupFences::read(
+            self.root.parent().expect("Work Queue under run"),
+        )?)
     }
 
     pub fn items(&self) -> Result<Vec<Item>, Error> {

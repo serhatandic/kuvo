@@ -565,6 +565,7 @@ pub(super) fn register(
     store: Store,
     setup: SetupHandle,
     forward: super::forward::Forward,
+    retell: super::told::Retell,
 ) {
     let here = store.clone();
     let accepted = setup.clone();
@@ -584,6 +585,7 @@ pub(super) fn register(
         let store = store.clone();
         let setup = setup.clone();
         let forward = forward.clone();
+        let retell = retell.clone();
         async move {
             let caller = call.request.caller;
             if !super::routes::work_queue_client(&caller) {
@@ -598,12 +600,12 @@ pub(super) fn register(
                     && let Some((main, computer)) = forward.legacy_label_main(&selected.primary)
                 {
                     let saved = forward.owner_write(main, computer, EDIT_ROUTE, body).await?;
-                    return with_receipt(saved);
+                    return with_receipt(saved).inspect(|_| retell.again());
                 }
-                return with_receipt(managed_value(store, setup, selected, Some(caller), edit).await?);
+                return with_receipt(managed_value(store, setup, selected, Some(caller), edit).await?).inspect(|_| retell.again());
             }
             tokio::task::spawn_blocking(move || local_save(&store, edit)).await
-                .map_err(super::routes::internal)?.and_then(super::routes::typed)
+                .map_err(super::routes::internal)?.and_then(super::routes::typed).inspect(|_| retell.again())
         }
     });
 }

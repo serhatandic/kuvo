@@ -59,13 +59,6 @@ impl Writer {
             return Ok(Some(Answer::refused(hand.id, "That isn't an item.", false)));
         };
         let view = self.peers.view();
-        if view.local.ownership.frozen.contains(&hand.to) {
-            return Ok(Some(Answer::refused(
-                hand.id,
-                "That conversation is moving between computers: it comes again once it's there.",
-                true,
-            )));
-        }
         let here = &view.roster.name;
         let owner = match self.engine.tool_session_owner(&hand.to).await {
             Ok(Some((owner, _, false))) => owner,
@@ -91,13 +84,6 @@ impl Writer {
                 )));
             }
         };
-        if checkpointed && self.admit(&owner).is_err() {
-            return Ok(Some(Answer::refused(
-                hand.id,
-                "Waiting for the destination queue’s ownership to settle.",
-                true,
-            )));
-        }
         let guard = self.lock().await.map_err(hand_error)?;
         let writer = self.clone();
         let from = from.to_owned();
@@ -135,6 +121,22 @@ impl Writer {
             carries_evidence,
             checkpointed,
         } = arrival;
+        // Recheck under the same queue lock as move packing and placement.
+        // A held owner cannot accept new bytes, even via a legacy handoff.
+        if self.session_scope(&owner).is_ok_and(|scope| scope.held) {
+            return Ok(Answer::refused(
+                hand.id,
+                "That conversation is moving between computers: it comes again once it's there.",
+                true,
+            ));
+        }
+        if self.admit(&owner).is_err() {
+            return Ok(Answer::refused(
+                hand.id,
+                "Waiting for the destination queue’s ownership to settle.",
+                true,
+            ));
+        }
         let id = &hand.id;
         let (all, compaction) = self.changes(now).map_err(hand_error)?;
         if self
@@ -158,19 +160,12 @@ impl Writer {
             ));
         }
         if let Some(twin) = item.source().and_then(|source| {
-            let reference = self.refs.issue(source["ref"].as_str()?)?.key();
             all.iter().find(|other| {
                 other.id != item.id
                     && other.removed.is_none()
                     && other
                         .source()
-                        .and_then(|source| {
-                            self.refs
-                                .issue(source["ref"].as_str()?)
-                                .map(|issue| issue.key())
-                        })
-                        .as_ref()
-                        == Some(&reference)
+                        .is_some_and(|other| self.refs.same_source(source, other))
             })
         }) {
             let reference = twin

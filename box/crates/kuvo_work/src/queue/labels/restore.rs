@@ -3,7 +3,7 @@
 use super::*;
 use crate::queue::forward::Forward;
 use kuvo_peers::{
-    memory_read::{Answer, Handle, Kind, Read, Standing},
+    memory_read::{self, Answer, Handle, Kind, Read, Standing},
     setup_lists::Reader,
 };
 use kuvo_protocol::routes::{
@@ -126,6 +126,7 @@ pub(in crate::queue) struct Restores {
     reads: Handle,
     peers: Reader,
     forward: Forward,
+    retell: super::super::told::Retell,
 }
 
 impl Restores {
@@ -135,6 +136,7 @@ impl Restores {
         reads: Handle,
         peers: Reader,
         forward: Forward,
+        retell: super::super::told::Retell,
     ) -> Self {
         Self {
             store,
@@ -142,6 +144,7 @@ impl Restores {
             reads,
             peers,
             forward,
+            retell,
         }
     }
 
@@ -219,30 +222,32 @@ impl Restores {
             return self.here(request, dry_run).await;
         };
         let primary = kuvo_wire::keys::decode_exact(&setup.primary).ok_or_else(no_main)?;
-        let feature = if dry_run { PREVIEW } else { APPLY };
-        match self.reads.standing(primary, feature) {
-            Standing::Ready => {}
-            Standing::Away => return Err(no_main()),
-            Standing::Unavailable => {
-                return Err(Refusal::new(
-                    StatusCode::CONFLICT,
-                    if dry_run {
-                        "Update the box on the main computer before previewing a restore from another computer."
-                    } else {
-                        "Update the box on the main computer before restoring labels from another computer."
-                    },
-                ));
-            }
-        }
+        let view = self.peers.view();
+        let computer = view.roster.member(&primary).ok_or_else(no_main)?;
         if !dry_run {
-            let view = self.peers.view();
-            let computer = view.roster.member(&primary).ok_or_else(no_main)?;
+            match self.reads.standing(primary, APPLY) {
+                Standing::Ready => {}
+                Standing::Away => return Err(no_main()),
+                Standing::Unavailable => {
+                    return Err(Refusal::new(
+                        StatusCode::CONFLICT,
+                        "Update the box on the main computer before restoring labels from another computer.",
+                    ));
+                }
+            }
             let location = json!({"key":setup.primary,"name":computer.name,"kind":computer.kind});
             return self
                 .forward
                 .owner_write(primary, location, ROUTE, request)
                 .await;
         }
+        if !view.advertises(&primary, PREVIEW) || !view.advertises(&primary, memory_read::FEATURE) {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                "Update the box on the main computer before previewing a restore from another computer.",
+            ));
+        }
+        let name = computer.name.clone();
         let body = request.as_object().cloned();
         let read = Read {
             area: Some("ownership".into()),
@@ -250,11 +255,18 @@ impl Restores {
             kind: Kind::Record,
             body,
         };
-        let answer = self
-            .reads
-            .request(primary, read)
-            .await
-            .map_err(|_| no_main())?;
+        let answer = self.reads.request(primary, read).await.map_err(|error| {
+            let message = match error {
+                memory_read::Error::Unreachable => {
+                    format!("{name} isn't reachable. Try again once it's back.")
+                }
+                memory_read::Error::UnknownPeer | memory_read::Error::SetupChanged => {
+                    return no_main();
+                }
+                _ => format!("{name} didn't answer the read. Try again in a moment."),
+            };
+            Refusal::new(StatusCode::SERVICE_UNAVAILABLE, message)
+        })?;
         if answer.status == 200 {
             Ok(answer.value)
         } else {
@@ -299,6 +311,7 @@ impl Restores {
         };
         let mut answer = json!(plan);
         if let Some(save) = save {
+            self.retell.again();
             answer["save"] = json!(save);
         }
         Ok(answer)
