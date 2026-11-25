@@ -89,11 +89,11 @@ fn price(event: &Observation, kind: Kind, pricing: &Pricing, fallback: Option<&s
 }
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
     super::engine_codex_history::schema(db)?;
+    super::engine_hosted_history::schema(db)?;
     super::cursor_history_store::schema(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS native_price(source TEXT NOT NULL,position INTEGER NOT NULL,ordinal INTEGER NOT NULL,model TEXT,tokens INTEGER NOT NULL,cost REAL,unknown INTEGER NOT NULL,fallback TEXT,
           PRIMARY KEY(source,position,ordinal));
-          CREATE TABLE IF NOT EXISTS hosted_call(call TEXT PRIMARY KEY, provider TEXT NOT NULL, at INTEGER NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL,cost REAL NOT NULL,scanned INTEGER NOT NULL);
-          CREATE INDEX IF NOT EXISTS hosted_call_at ON hosted_call(at);")
+          ")
 }
 pub fn put(
     db: &Connection,
@@ -386,31 +386,7 @@ pub fn own(
             slots,
         });
     }
-    let mut hosted = BTreeMap::<String, (i64, Slots)>::new();
-    let mut query=db.prepare(&format!("SELECT provider,at/{SLOT}*{SLOT},model,SUM(tokens),SUM(cost),MAX(scanned) FROM hosted_call WHERE at>=? GROUP BY provider,at/{SLOT},model"))?;
-    let mut rows = query.query([now - 35 * DAY])?;
-    while let Some(row) = rows.next()? {
-        let provider: String = row.get(0)?;
-        let (scanned, slots) = hosted.entry(provider).or_default();
-        *scanned = (*scanned).max(row.get(5)?);
-        slots.add(row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
-    }
-    for (provider, (scanned, slots)) in hosted {
-        out.push(Account {
-            identity: identities.get(&provider).cloned(),
-            provider,
-            service: "opencode".into(),
-            agent: None,
-            account: None,
-            label: None,
-            scanned: Some(scanned),
-            places: vec![],
-            billed: true,
-            wide: false,
-            cut: false,
-            slots,
-        });
-    }
+    out.extend(super::engine_hosted_history::own(db, now, identities)?);
     if let Some(account) = super::engine_codex_history::account(db, now, identities)? {
         out.push(account);
     }
@@ -422,10 +398,11 @@ pub fn own(
         "codex" if row.agent.is_some() => 1,
         "grok" => 2,
         "codex" => 3,
-        "opencode" => 4,
-        "cursor" => 5,
-        "antigravity" => 6,
-        _ => 7,
+        "opencode" if row.provider == "opencode-go" => 4,
+        "opencode" => 5,
+        "cursor" => 6,
+        "antigravity" => 7,
+        _ => 8,
     });
     Ok(out)
 }

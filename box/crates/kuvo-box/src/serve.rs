@@ -485,7 +485,7 @@ pub async fn run(
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
-    let resets = kuvo_services::usage::resets::Resets::new(
+    let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
         limits.clone(),
         Arc::new(usage::ResetPort {
@@ -493,6 +493,12 @@ pub async fn run(
             limits: limits.clone(),
         }),
     );
+    if let Some(relay) = peers.relay_handle() {
+        resets = resets.with_peers(Arc::new(usage_peers::ResetTransport {
+            directory: peers.reader(),
+            relay,
+        }));
+    }
     resets.follow_sign_ins();
     kuvo_services::usage::resets::register(&mut routes, resets.clone());
     let work = kuvo_work::work::Work::new(
@@ -504,7 +510,7 @@ pub async fn run(
         bots.clone(),
     )
     .with_limits(limits.clone())
-    .with_resets(resets);
+    .with_resets(resets.clone());
     work.attach_start_link(work_queue.start_link());
     // (What it tells, read again for the clients that follow it.)
     let (told_peers, told_run) = (peers.clone(), home.join("run"));
@@ -603,6 +609,7 @@ pub async fn run(
             peers.reader(),
             relay,
             setup.handle(),
+            resets.clone(),
         ))
     });
     let history_peers = peers.relay_handle().map(|relay| {

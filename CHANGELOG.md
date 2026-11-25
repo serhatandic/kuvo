@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
+
 - Usage history includes Cursor account-wide events and ChatGPT subscription calls made through the engine; Claude file-owned accounts can spend reset grants, and usage warnings do not repeat when another computer takes over the same window.
 
 - Usage history and Insights combine saved readings from your other computers, keep them when a computer is away, and group the same model under one name. Insights opens from compact indexed totals instead of re-reading each call.

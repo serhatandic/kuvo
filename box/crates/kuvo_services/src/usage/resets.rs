@@ -1,8 +1,6 @@
 //! A reset spends the user's plan credit. The offer is short lived; a spend and
 //! its maker's request and credit are kept before it can leave this computer.
-use super::{
-    limits::{Account, Service, now},
-};
+use super::limits::{Account, Service, now};
 use http::StatusCode;
 use kuvo_protocol::{
     JsonStatus, Route, RouteSpec,
@@ -64,11 +62,109 @@ pub trait Port: Send + Sync {
     fn refresh<'a>(&'a self, provider: &'a str) -> futures_util::future::BoxFuture<'a, ()>;
 }
 
+/// Authenticated usage seat mail. Only the offered row and idempotent request
+/// name cross the boundary. Actual provider targets stay with the holder.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResetMail {
+    pub kind: ResetKind,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<RemoteAsk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<RemoteAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always: Option<RemoteDecision>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResetKind {
+    Reset,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteAsk {
+    pub id: String,
+    pub row: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unasked: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteAnswer {
+    pub id: String,
+    pub outcome: Outcome,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteDecision {
+    pub row: String,
+    pub on: bool,
+    pub at: u64,
+}
+impl ResetMail {
+    pub fn ask(ask: RemoteAsk) -> Self {
+        Self {
+            kind: ResetKind::Reset,
+            at: now(),
+            ask: Some(ask),
+            answer: None,
+            always: None,
+        }
+    }
+    pub fn answer(answer: RemoteAnswer) -> Self {
+        Self {
+            kind: ResetKind::Reset,
+            at: now(),
+            ask: None,
+            answer: Some(answer),
+            always: None,
+        }
+    }
+    pub fn decision(always: RemoteDecision) -> Self {
+        Self {
+            kind: ResetKind::Reset,
+            at: now(),
+            ask: None,
+            answer: None,
+            always: Some(always),
+        }
+    }
+}
+/// The resident's existing relay and authenticated setup directory.
+pub trait PeerTransport: Send + Sync {
+    fn known(&self) -> bool;
+    fn member(&self, key: &str) -> bool;
+    fn reachable(&self, key: &str) -> bool;
+    fn send<'a>(
+        &'a self,
+        key: &'a str,
+        mail: ResetMail,
+    ) -> futures_util::future::BoxFuture<'a, bool>;
+}
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn shared_row(row: &str) -> bool {
+    row.split_once('#').is_some_and(|(service, id)| {
+        matches!(service, "codex" | "claude")
+            && id.len() == 16
+            && id.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
 #[derive(Clone)]
 struct Confirm {
     row: String,
     at: u64,
-    account: Account,
+    account: Option<Account>,
+    via: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -80,7 +176,10 @@ enum State {
 struct Spend {
     id: String,
     row: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    via: Option<String>,
     request: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<String>,
@@ -99,6 +198,8 @@ struct Spend {
 struct Decision {
     on: bool,
     at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Journal {
@@ -119,6 +220,11 @@ pub struct Resets {
     file: PathBuf,
     port: Arc<dyn Port>,
     inner: Arc<Mutex<Inner>>,
+    transport: Option<Arc<dyn PeerTransport>>,
+    pending: Arc<
+        std::sync::Mutex<BTreeMap<(String, String), tokio::sync::oneshot::Sender<RemoteAnswer>>>,
+    >,
+    remote_gate: Arc<Mutex<()>>,
 }
 
 fn refusal(status: StatusCode, message: impl Into<String>) -> Refusal {
@@ -169,7 +275,14 @@ impl Resets {
                 journal,
                 confirms: BTreeMap::new(),
             })),
+            transport: None,
+            pending: Default::default(),
+            remote_gate: Default::default(),
         }
+    }
+    pub fn with_peers(mut self, transport: Arc<dyn PeerTransport>) -> Self {
+        self.transport = Some(transport);
+        self
     }
     fn save(&self, journal: &Journal) -> Answer<()> {
         let bytes = serde_json::to_vec(journal).map_err(failure)?;
@@ -224,6 +337,7 @@ impl Resets {
         if let Some(old) = changed.seen.insert(account.provider.clone(), row.into()) {
             if let Some(decision) = changed.allowed.get_mut(&old) {
                 decision.on = false;
+                decision.from = None;
                 decision.at = now().max(decision.at.saturating_add(1));
             }
         }
@@ -232,18 +346,25 @@ impl Resets {
         Ok(())
     }
     pub async fn always(&self, row: Option<&str>, provider: Option<&str>, on: bool) -> Answer<()> {
-        let (account, row) = self
-            .limits
-            .reset_account(row, provider)
+        let local = self.limits.reset_account(row, provider);
+        let row = local
+            .as_ref()
+            .map(|(_, row)| row.clone())
+            .or_else(|| {
+                row.filter(|r| self.limits.row(r).is_some())
+                    .map(str::to_owned)
+            })
             .ok_or_else(|| missing("No account of yours by that name has resets."))?;
-        if account.identity.is_none() {
+        if !shared_row(&row) {
             return Err(conflict(
                 "This account doesn't say who it is yet, so Always Allow can't be kept for it.",
             ));
         }
         let mut inner = self.inner.lock().await;
         let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
-        self.see(journal, &account, &row)?;
+        if let Some((account, _)) = local {
+            self.see(journal, &account, &row)?;
+        }
         let mut changed = journal.clone();
         let at = now().max(
             changed
@@ -251,16 +372,12 @@ impl Resets {
                 .get(&row)
                 .map_or(0, |d| d.at.saturating_add(1)),
         );
-        changed.allowed.insert(row, Decision { on, at });
+        changed.allowed.insert(row, Decision { on, at, from: None });
         self.save(&changed)?;
         *journal = changed;
         Ok(())
     }
     pub async fn offer(&self, row: &str) -> Answer<Value> {
-        let (account, _) = self
-            .limits
-            .reset_account(Some(row), None)
-            .ok_or_else(|| missing("No account of yours by that name."))?;
         let card = self
             .limits
             .row(row)
@@ -286,9 +403,41 @@ impl Resets {
                 "None of your computers can use this account's resets now.",
             ));
         }
+        let holder = &reset["on"];
+        let (account, via) = if holder["here"] == true {
+            (
+                Some(
+                    self.limits
+                        .reset_account(Some(row), None)
+                        .ok_or_else(|| {
+                            conflict("This computer's sign-in can't use this account's resets.")
+                        })?
+                        .0,
+                ),
+                None,
+            )
+        } else {
+            let key = holder["key"].as_str().ok_or_else(|| {
+                conflict("None of your computers can use this account's resets now.")
+            })?;
+            if !self.transport.as_ref().is_some_and(|t| t.reachable(key)) {
+                return Err(refusal(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "{} can't be reached now: its reset is used there.",
+                        holder["name"]
+                            .as_str()
+                            .unwrap_or("The computer with its sign-in")
+                    ),
+                ));
+            }
+            (None, Some(key.to_owned()))
+        };
         let mut inner = self.inner.lock().await;
         let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
-        self.see(journal, &account, row)?;
+        if let Some(account) = &account {
+            self.see(journal, account, row)?;
+        }
         let always = Self::allowed(journal, row);
         let at = now();
         let confirm = format!("rsc_{}", random::<12>()?);
@@ -301,9 +450,10 @@ impl Resets {
                 row: row.into(),
                 at,
                 account,
+                via,
             },
         );
-        let mut offer = json!({"confirm":confirm,"row":row,"service":card["service"],"count":count,"on":self.limits.here(),"always":always,"expires":at+CONFIRM_FOR});
+        let mut offer = json!({"confirm":confirm,"row":row,"service":card["service"],"count":count,"on":holder,"always":always,"expires":at+CONFIRM_FOR});
         if reset["refills"].as_array().is_some_and(|a| !a.is_empty()) {
             offer["refills"] = reset["refills"].clone();
         }
@@ -332,6 +482,27 @@ impl Resets {
         by: Option<&str>,
         unasked: bool,
     ) -> Answer<Value> {
+        let remote = {
+            let inner = self.inner.lock().await;
+            let journal = inner.journal.as_ref().map_err(failure)?;
+            journal
+                .spends
+                .iter()
+                .find(|s| {
+                    s.row == row && (s.id == confirm || s.also.iter().any(|id| id == confirm))
+                })
+                .and_then(|s| s.via.clone())
+                .or_else(|| {
+                    inner
+                        .confirms
+                        .get(confirm)
+                        .filter(|c| c.row == row)
+                        .and_then(|c| c.via.clone())
+                })
+        };
+        if let Some(via) = remote {
+            return self.spend_remote(row, confirm, by, unasked, &via).await;
+        }
         // Serialize spending, not the rest of usage, so two clients never choose the same credit
         // concurrently. No cancellation window exists between the journal and the maker's call.
         let mut inner = self.inner.lock().await;
@@ -362,14 +533,14 @@ impl Resets {
             journal
                 .spends
                 .iter()
-                .position(|s| s.row == row && matches!(s.state, State::Sending))
+                .position(|s| s.row == row && s.via.is_none() && matches!(s.state, State::Sending))
         });
         let account = if let Some(i) = open {
             self.limits
                 .reset_account(Some(row), Some(&journal.spends[i].provider))
                 .map(|(a, _)| a)
         } else {
-            ticket.map(|c| c.account)
+            ticket.and_then(|c| c.account)
         };
         let Some(account) = account else {
             return Ok(self.done(row, Outcome::NotNow, open.is_some()));
@@ -378,7 +549,7 @@ impl Resets {
         // person even if previously attempted under Always Allow.
         self.see(journal, &account, row)?;
         if (unasked || existing.is_some_and(|i| journal.spends[i].unasked))
-            && !Self::allowed(journal, row)
+            && (!Self::allowed(journal, row) || self.transport.as_ref().is_some_and(|t| !t.known()))
         {
             let mut done = self.done(row, Outcome::Failed, open.is_some());
             done["message"] = json!(
@@ -401,6 +572,7 @@ impl Resets {
                 id: confirm.into(),
                 row: row.into(),
                 provider: account.provider.clone(),
+                via: None,
                 request: random::<16>()?,
                 target: None,
                 also: vec![],
@@ -425,9 +597,15 @@ impl Resets {
                 changed.spends[i].target = Some(target.clone());
                 self.save(&changed)?;
                 *journal = changed;
-                self.port
-                    .consume(&account, &journal.spends[i].request, &target)
-                    .await
+                if confirm.split_once(':').is_some_and(|(from, _)| {
+                    !self.transport.as_ref().is_some_and(|t| t.member(from))
+                }) {
+                    Outcome::NotNow
+                } else {
+                    self.port
+                        .consume(&account, &journal.spends[i].request, &target)
+                        .await
+                }
             }
             Err(outcome) => outcome,
         };
@@ -450,6 +628,308 @@ impl Resets {
         }
         eprintln!("Plan reset of {}: {outcome:?}", account.provider);
         Ok(self.done(row, outcome, still_open))
+    }
+
+    async fn spend_remote(
+        &self,
+        row: &str,
+        confirm: &str,
+        by: Option<&str>,
+        unasked: bool,
+        via: &str,
+    ) -> Answer<Value> {
+        // Remote waits never hold the local journal: a peer may be asking for
+        // a different account in the opposite direction at the same time.
+        let _remote = self.remote_gate.lock().await;
+        let (id, ask, prior) = {
+            let mut inner = self.inner.lock().await;
+            let ticket = inner
+                .confirms
+                .get(confirm)
+                .filter(|c| {
+                    c.row == row
+                        && c.via.as_deref() == Some(via)
+                        && now().saturating_sub(c.at) <= CONFIRM_FOR
+                })
+                .cloned();
+            let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
+            let existing = journal.spends.iter().position(|s| {
+                s.row == row
+                    && s.via.as_deref() == Some(via)
+                    && (s.id == confirm || s.also.iter().any(|id| id == confirm))
+            });
+            if let Some(i) = existing {
+                if matches!(journal.spends[i].state, State::Done) {
+                    return Ok(self.done(
+                        row,
+                        journal.spends[i].outcome.unwrap_or(Outcome::Unknown),
+                        false,
+                    ));
+                }
+            } else if ticket.is_none() {
+                return Err(conflict(
+                    "That confirmation has expired: ask for the reset again.",
+                ));
+            }
+            let open = existing.or_else(|| {
+                journal.spends.iter().position(|s| {
+                    s.row == row
+                        && s.via.as_deref() == Some(via)
+                        && matches!(s.state, State::Sending)
+                })
+            });
+            if unasked && journal.allowed.get(row).is_some_and(|d| !d.on) {
+                let mut done = self.done(row, Outcome::Failed, open.is_some());
+                done["message"] = json!(
+                    "Always Allow is off for this account now: nothing was used. Ask the user first."
+                );
+                return Ok(done);
+            }
+            if !self.transport.as_ref().is_some_and(|t| t.member(via)) {
+                let mut done = self.done(row, Outcome::NotNow, open.is_some());
+                done["message"] = json!(if open.is_some() {
+                    "The computer with its sign-in isn't one of yours now, so it can't be asked again from here. An earlier try may have gone through: nothing more was used."
+                } else {
+                    "The computer with its sign-in isn't one of yours now, so it doesn't use your resets: nothing was used."
+                });
+                return Ok(done);
+            }
+            if !self.transport.as_ref().is_some_and(|t| t.reachable(via)) {
+                return Ok(self.done(row, Outcome::NotNow, open.is_some()));
+            }
+            let mut changed = journal.clone();
+            let i = if let Some(i) = open {
+                let spend = &mut changed.spends[i];
+                if existing.is_none() {
+                    spend.also.push(confirm.into());
+                    if spend.also.len() > 20 {
+                        spend.also.remove(0);
+                    }
+                }
+                if !unasked {
+                    spend.unasked = false;
+                }
+                i
+            } else {
+                changed.spends.push(Spend {
+                    id: confirm.into(),
+                    row: row.into(),
+                    provider: String::new(),
+                    via: Some(via.into()),
+                    request: confirm.into(),
+                    target: None,
+                    also: vec![],
+                    by: by.map(|s| s.chars().take(200).collect()),
+                    unasked,
+                    at: now(),
+                    state: State::Sending,
+                    outcome: None,
+                });
+                changed.spends.len() - 1
+            };
+            self.save(&changed)?;
+            *journal = changed;
+            let spend = &journal.spends[i];
+            let ask = RemoteAsk {
+                id: spend.id.clone(),
+                row: row.into(),
+                by: spend.by.clone(),
+                unasked: spend.unasked,
+            };
+            (spend.id.clone(), ask, open.is_some())
+        };
+        let key = (via.to_owned(), id.clone());
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .expect("reset answers")
+            .insert(key.clone(), send);
+        let sent = if let Some(transport) = &self.transport {
+            transport.send(via, ResetMail::ask(ask)).await
+        } else {
+            false
+        };
+        let result = if sent {
+            tokio::time::timeout(std::time::Duration::from_secs(45), receive)
+                .await
+                .ok()
+                .and_then(Result::ok)
+        } else {
+            None
+        };
+        self.pending.lock().expect("reset answers").remove(&key);
+        let Some(answer) = result else {
+            return Ok(self.done(
+                row,
+                if sent {
+                    Outcome::Unknown
+                } else {
+                    Outcome::NotNow
+                },
+                prior || sent,
+            ));
+        };
+        if !answer.open && !answer.outcome.open() {
+            let mut inner = self.inner.lock().await;
+            let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
+            let mut changed = journal.clone();
+            if let Some(s) = changed
+                .spends
+                .iter_mut()
+                .find(|s| s.id == id && s.via.as_deref() == Some(via))
+            {
+                s.state = State::Done;
+                s.outcome = Some(answer.outcome);
+                self.save(&changed)?;
+                *journal = changed;
+            }
+        }
+        let mut done = self.done(row, answer.outcome, answer.open);
+        if let Some(message) = answer.message {
+            done["message"] = json!(message);
+        }
+        Ok(done)
+    }
+    pub fn take_answer(&self, from: &str, answer: RemoteAnswer) {
+        if valid_id(&answer.id) {
+            if let Some(send) = self
+                .pending
+                .lock()
+                .expect("reset answers")
+                .remove(&(from.to_owned(), answer.id.clone()))
+            {
+                let _ = send.send(answer);
+            }
+        }
+    }
+    pub async fn take_decision(&self, from: &str, decision: RemoteDecision) -> Answer<()> {
+        if !shared_row(&decision.row) || !self.transport.as_ref().is_some_and(|t| t.member(from)) {
+            return Ok(());
+        }
+        let mut inner = self.inner.lock().await;
+        let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
+        if journal
+            .allowed
+            .get(&decision.row)
+            .is_some_and(|d| d.at > decision.at || d.at == decision.at && (!d.on || decision.on))
+        {
+            return Ok(());
+        }
+        let mut changed = journal.clone();
+        changed.allowed.insert(
+            decision.row,
+            Decision {
+                on: decision.on,
+                at: decision.at,
+                from: Some(from.into()),
+            },
+        );
+        self.save(&changed)?;
+        *journal = changed;
+        Ok(())
+    }
+    pub async fn decisions(&self) -> Vec<RemoteDecision> {
+        let mut inner = self.inner.lock().await;
+        let Ok(journal) = inner.journal.as_mut() else {
+            return vec![];
+        };
+        if let Some(transport) = &self.transport
+            && transport.known()
+        {
+            let mut changed = journal.clone();
+            changed
+                .allowed
+                .retain(|_, d| d.from.as_ref().is_none_or(|from| transport.member(from)));
+            if changed.allowed.len() != journal.allowed.len() && self.save(&changed).is_ok() {
+                *journal = changed;
+            }
+        }
+        journal
+            .allowed
+            .iter()
+            .filter(|(_, d)| d.from.is_none())
+            .map(|(row, d)| RemoteDecision {
+                row: row.clone(),
+                on: d.on,
+                at: d.at,
+            })
+            .collect()
+    }
+    pub async fn take_ask(&self, from: &str, ask: RemoteAsk) -> RemoteAnswer {
+        let failed = |message: &str| RemoteAnswer {
+            id: ask.id.clone(),
+            outcome: Outcome::Failed,
+            open: false,
+            message: Some(message.into()),
+        };
+        if !valid_id(&ask.id) || !shared_row(&ask.row) {
+            return failed("That isn't a reset request.");
+        }
+        if !self.transport.as_ref().is_some_and(|t| t.member(from)) {
+            return failed("The computer isn't one of yours now: nothing was used.");
+        }
+        let key = format!("{from}:{}", ask.id);
+        {
+            let mut inner = self.inner.lock().await;
+            let known = inner.journal.as_ref().is_ok_and(|j| {
+                j.spends.iter().any(|s| {
+                    s.row == ask.row && (s.id == key || s.also.iter().any(|id| id == &key))
+                })
+            });
+            if known && !ask.unasked {
+                if let Ok(journal) = inner.journal.as_mut() {
+                    let mut changed = journal.clone();
+                    if let Some(spend) = changed.spends.iter_mut().find(|s| {
+                        s.row == ask.row
+                            && (s.id == key || s.also.iter().any(|id| id == &key))
+                            && s.unasked
+                    }) {
+                        spend.unasked = false;
+                        if self.save(&changed).is_err() {
+                            return failed("Couldn't keep the confirmed reset request.");
+                        }
+                        *journal = changed;
+                    }
+                }
+            }
+            if !known {
+                let Some((account, _)) = self.limits.reset_account(Some(&ask.row), None) else {
+                    return failed("This computer's sign-in can't use this account's resets.");
+                };
+                inner.confirms.insert(
+                    key.clone(),
+                    Confirm {
+                        row: ask.row.clone(),
+                        at: now(),
+                        account: Some(account),
+                        via: None,
+                    },
+                );
+            }
+        }
+        // A peer may not substitute a provider or credit target. The local
+        // account and its maker choose those, just as for a local confirmation.
+        let result = self
+            .spend(&ask.row, &key, ask.by.as_deref(), ask.unasked)
+            .await;
+        let answer = match result {
+            Ok(done) => done,
+            Err(error) => return failed(&refusal_words(error).await),
+        };
+        let outcome = serde_json::from_value(answer["outcome"].clone()).unwrap_or(Outcome::Unknown);
+        let open = self.inner.lock().await.journal.as_ref().is_ok_and(|j| {
+            j.spends.iter().any(|s| {
+                s.row == ask.row
+                    && (s.id == key || s.also.iter().any(|id| id == &key))
+                    && matches!(s.state, State::Sending)
+            })
+        });
+        RemoteAnswer {
+            id: ask.id,
+            outcome,
+            open,
+            message: answer["message"].as_str().map(str::to_owned),
+        }
     }
 
     pub async fn spend_for(

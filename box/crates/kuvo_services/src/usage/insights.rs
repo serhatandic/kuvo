@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -949,16 +949,34 @@ impl Service {
     fn fold_engine(&self, paths: Vec<PathBuf>) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
         let prices = self.pricing()?;
-        let place = native_index::place_of(self.machine_identity(), &self.engine_folder(), None);
+        let folder = self.engine_folder();
+        let computer = self.machine_identity();
+        let place = native_index::place_of(computer, &folder, None);
+        let go = native_index::place_of(computer, &folder, Some("opencode:opencode-go"));
+        let zen = native_index::place_of(computer, &folder, Some("opencode:opencode"));
+        let key_of = |path: &Path| {
+            format!(
+                "scan/rust-engine-v1/{}",
+                hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
+            )
+        };
+        // Directory enumeration is tiny and lets a deleted channel lose its history
+        // without reopening unchanged databases or touching durable Insights events.
+        if let Ok(kept) = super::engine_index::databases(&folder) {
+            let _gate = self.gate.lock().expect("insights gate");
+            let db = self.open()?;
+            let keys = kept.iter().map(|path| key_of(path)).collect::<Vec<_>>();
+            super::engine_hosted_history::retain(&db, &keys)?;
+        }
         let mut failed = false;
         for path in paths {
+            if !path.is_file() {
+                continue;
+            }
             let _gate = self.gate.lock().expect("insights gate");
             let result = (|| -> Result<()> {
                 let mut db = self.open()?;
-                let key = format!(
-                    "scan/rust-engine-v1/{}",
-                    hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
-                );
+                let key = key_of(&path);
                 let checkpoint = get(&db, &key)?
                     .and_then(|v| serde_json::from_value::<super::engine_index::Checkpoint>(v).ok())
                     .unwrap_or_default();
@@ -969,14 +987,24 @@ impl Service {
                     &path,
                     now - 366 * DAY,
                     &checkpoint,
+                    |version| super::engine_hosted_history::reset(&tx, &key, version),
                     |record, sessions| {
                         decoded += 1;
                         super::engine_codex_history::observe(&tx, &key, &record, &prices)?;
+                        super::engine_hosted_history::observe(&tx, &key, &record)?;
                         self.accept_engine(&tx, &mut seq, now, &prices, record, sessions)
                     },
                 )?;
                 if let Some(next) = next {
                     super::engine_codex_history::source(&tx, &key, next.sign_in, now, &place)?;
+                    super::engine_hosted_history::source(
+                        &tx,
+                        &key,
+                        &path.to_string_lossy(),
+                        now,
+                        &go,
+                        &zen,
+                    )?;
                     set(&tx, &key, &serde_json::to_value(next)?)?;
                     set(&tx, &format!("{key}/decoded"), &json!(decoded))?;
                     set(&tx, "sequence", &json!(seq))?;
@@ -1038,33 +1066,6 @@ impl Service {
             return Ok(());
         }
         let provider = record.provider.as_deref().unwrap_or("opencode");
-        if !human && matches!(provider, "opencode-go" | "opencode") {
-            if let Some(billed) = record.cost.filter(|n| n.is_finite() && *n >= 0.) {
-                let usage = record.usage.as_ref().cloned().unwrap_or_default();
-                let total = usage["total"].as_u64().unwrap_or_else(|| {
-                    ["input", "output", "reasoning"]
-                        .into_iter()
-                        .map(|key| usage[key].as_u64().unwrap_or(0))
-                        .chain([
-                            usage["cache"]["read"].as_u64().unwrap_or(0),
-                            usage["cache"]["write"].as_u64().unwrap_or(0),
-                        ])
-                        .fold(0u64, u64::saturating_add)
-                });
-                db.execute(
-                    "INSERT OR REPLACE INTO hosted_call VALUES(?,?,?,?,?,?,?)",
-                    params![
-                        record.call,
-                        provider,
-                        record.created,
-                        record.model.as_deref().unwrap_or(""),
-                        total.min(1_000_000_000_000_000),
-                        billed,
-                        now
-                    ],
-                )?;
-            }
-        }
         let account = record
             .observed_account
             .clone()
