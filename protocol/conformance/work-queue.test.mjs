@@ -37,6 +37,49 @@ async function withQueue(run) {
   }
 }
 
+test("an idle Work Queue parks until a durable edit needs numbering", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || !["darwin", "linux"].includes(process.platform)) {
+    return t.skip("The Rust debug timer reporter uses a Unix signal.");
+  }
+  const root = scratch();
+  const home = path.join(root, "box");
+  privateHome(home);
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  const relay = await localRelay();
+  const box = startBox({binary, home, relay, mac: true,
+    env: {...isolatedEnv(root), KUVO_TEST_TIMER_REPORT: "1"}});
+  t.after(async () => { await box.stop(); await relay.close(); rmSync(root, { recursive: true, force: true }); });
+  const record = await box.ready();
+  const reports = path.join(home, "run", "timer-fires");
+  if (!existsSync(reports)) return t.skip("Use a debug executable with timer reporting.");
+  const report = path.join(reports, String(record.pid) + ".json");
+  const sample = async () => {
+    const before = existsSync(report) ? JSON.parse(readFileSync(report)).sequence : 0;
+    process.kill(record.pid, "SIGUSR1");
+    return until(() => {
+      if (!existsSync(report)) return false;
+      const read = JSON.parse(readFileSync(report));
+      return read.sequence > before && read;
+    }, "the owned resident didn't report timer counts");
+  };
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const before = await sample();
+  await new Promise(resolve => setTimeout(resolve, 4500));
+  const after = await sample();
+  assert.equal(after.timers["work-queue.exchange"], before.timers["work-queue.exchange"],
+    "an empty Work Queue must not run periodic exchange rounds");
+  const stamp = {at: Date.now(), by: {name: "Fixture"}};
+  const row = {id: "wqi_" + "A".repeat(20), owner: "usr_you", title: "A durable external edit",
+    status: "todo", priority: "normal", order: 1, created: stamp, updated: stamp};
+  const file = path.join(home, "run", "work-queue", "queues", "usr_you.json");
+  write(file, JSON.stringify({formatVersion: 1, owner: "usr_you", items: [row]}));
+  await until(() => {
+    const kept = JSON.parse(readFileSync(file));
+    return Number.isInteger(kept.items[0].number);
+  }, "a durable queue change did not wake its numbering", 10000);
+});
+
 test("old categories become statuses and labels and the original bytes are kept", { timeout: 30000 }, () =>
   withQueue(async (queue, start) => {
     const file = path.join(queue, "queues", "usr_you.json");

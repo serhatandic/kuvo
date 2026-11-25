@@ -140,6 +140,33 @@ impl Reach {
         UpdatePresence { away_for, heard }
     }
 
+    /// The next instant at which kept reach facts can change a displayed
+    /// standing without another relay event. Healthy copies renew before this.
+    pub(crate) fn next_standing_change(
+        &self, key: &str, seen: Option<Millis>, heard: Option<Millis>,
+        release: Option<ReleaseState>, now: Millis,
+    ) -> Option<Millis> {
+        let away = self.away_since(key);
+        let mut next = None;
+        let mut add = |at: Millis| {
+            if at > now { next = Some(next.map_or(at, |before: Millis| before.min(at))); }
+        };
+        if away.is_none() {
+            if let Some(at) = seen { add(at.saturating_add(COPY_QUIET_AFTER).saturating_add(1)); }
+            if let Some(at) = heard { add(at.saturating_add(HEARD_FOR).saturating_add(1)); }
+        }
+        if away.is_some() || seen.is_some_and(|at| now.saturating_sub(at) > COPY_QUIET_AFTER) {
+            let since = seen.unwrap_or_default().max(away.unwrap_or_default());
+            if since != 0 {
+                let grace = if matches!(release, Some(ReleaseState::Ready | ReleaseState::Updating)) {
+                    SWITCH_GRACE
+                } else { LIVE_FOR };
+                add(since.saturating_add(grace));
+            }
+        }
+        next
+    }
+
     pub fn copy_standing(
         &self,
         key: &str,
@@ -204,6 +231,22 @@ fn read_times(path: &Path) -> BTreeMap<String, Number> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_standing_deadline_exists_only_until_kept_facts_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reach = Reach::default();
+        let seen = 1_000_000;
+        assert_eq!(reach.next_standing_change("peer", None, None, None, seen), None);
+        let quiet = seen + COPY_QUIET_AFTER + 1;
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, None, seen), Some(quiet));
+        assert_eq!(reach.copy_standing("peer", Some(seen), None, quiet - 1), Standing::Live);
+        assert!(reach.copy_standing("peer", Some(seen), None, quiet).away());
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, None, quiet), None);
+        let away = seen + 10_000;
+        reach.unreachable(dir.path(), "peer", away).unwrap();
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, Some(ReleaseState::Updating), away), Some(away + SWITCH_GRACE));
+    }
 
     #[test]
     fn brief_unreachable_drop_stays_live_and_clears_on_hearing_back() {

@@ -303,14 +303,18 @@ impl Views {
     }
 
     async fn read(&self, query: Arc<Query>, wait: Duration) -> Result<Value, Refusal> {
-        if !query.glance {
+        self.read_with_deadline(query, wait).await.map(|(value, _)| value)
+    }
+
+    async fn read_with_deadline(&self, query: Arc<Query>, wait: Duration) -> Result<(Value, Option<i64>), Refusal> {
+        let next = if !query.glance {
             let here = self.clone();
             let selected = query.clone();
             let issues = blocking(move || here.visible_sources(&selected)).await?;
             self.github
                 .read_seen(self.parser.clone(), issues, wait)
-                .await;
-        }
+                .await
+        } else { None };
 
         let here = self.clone();
         let key = self
@@ -319,7 +323,7 @@ impl Views {
             .roster
             .here
             .map_or_else(String::new, |key| kuvo_wire::keys::encode(&key));
-        blocking(move || {
+        let value = blocking(move || {
             view::list(
                 &here.store,
                 &query,
@@ -330,7 +334,8 @@ impl Views {
                 &here.peers.view(),
             )
         })
-        .await
+        .await?;
+        Ok((value, next))
     }
 }
 
@@ -358,25 +363,67 @@ fn follow(registry: &mut Registry, views: Views) {
             let _ = tokio::task::spawn_blocking(move || kuvo_store::files::create_private_dirs(&peers)).await;
             let mut files = watchers.subscribe(folder, Options { recursive: true, create: false }).await.ok();
             let mut catalog = reader.sessions.clone();
+            let mut peers = reader.peers.clone();
+            let mut peer_view = peers.view();
+            let mut setup = reader.setup.clone();
+            let mut readings = reader.github.changes();
+            let mut bots_files = kuvo_os::watch::FileSet::new(watchers.clone());
+            if let Some(home) = folder.parent().and_then(std::path::Path::parent) {
+                bots_files.set_child_files(home.join("bots"), ["bot.json", "session"]);
+            }
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
                 loop {
-                    let Ok(value) = reader.read(query.clone(), Duration::ZERO).await else { break };
+                    let Ok((value, read_at)) = reader.read_with_deadline(query.clone(), Duration::ZERO).await else { break };
+                    let date = jiff::Zoned::now();
+                    // Today is part of the answer, even when the queue is empty.
+                    let midnight = date.date().checked_add(jiff::Span::new().days(1)).ok()
+                        .and_then(|tomorrow| tomorrow.at(0, 0, 0, 0).to_zoned(date.time_zone().clone()).ok())
+                        .map(|when| when.timestamp().as_millisecond());
+
                     if last.as_ref() != Some(&value) {
                         let answer: events::Status200 = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
                         last = Some(value);
                         yield JsonLine::new(answer)?;
                     }
-                    tokio::select! {
-                        () = call.cancel.cancelled() => break,
-                        () = queue_change(&mut files) => {},
-                        changed = catalog.changed() => if !changed { break },
-                        () = timer_fires::sleep(Timer::WorkQueueFollow, Duration::from_secs(3)) => {},
+                    // Ignore peer traffic that cannot change the queue's routing or standing.
+                    loop {
+                        let now = jiff::Timestamp::now().as_millisecond();
+                        let peer_now = peers.now();
+                        let peer_deadline = peer_view.next_standing_change(peer_now)
+                            .map(|at| now.saturating_add(at.saturating_sub(peer_now)));
+                        let deadline = [read_at, midnight, peer_deadline].into_iter().flatten().min();
+                        let relevant = tokio::select! {
+                            () = call.cancel.cancelled() => return,
+                            () = queue_change(&mut files) => true,
+                            _ = bots_files.changed() => true,
+                            changed = catalog.changed() => if !changed { return } else { true },
+                            changed = setup.changed() => if !changed { return } else { true },
+                            changed = readings.changed() => if changed.is_err() { return } else { true },
+                            changed = peers.changed() => {
+                                if changed.is_err() { return; }
+                                let current = peers.view();
+                                let changed = super::items::queue_routing_changed(&peer_view, &current, peers.now());
+                                peer_view = current;
+                                changed
+                            }
+                            () = wait_follow(deadline) => true,
+                        };
+                        if relevant { break; }
                     }
                 }
             }))
         }
     });
+}
+
+async fn wait_follow(at: Option<i64>) {
+    if let Some(at) = at {
+        let delay = at.saturating_sub(jiff::Timestamp::now().as_millisecond()).max(1) as u64;
+        timer_fires::sleep(Timer::WorkQueueFollow, Duration::from_millis(delay)).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn queue_change(watcher: &mut Option<Subscription>) {

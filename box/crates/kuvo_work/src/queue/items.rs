@@ -37,7 +37,7 @@ use kuvo_peers::{
     directory::RecordScope,
     ownership,
     relay::{RelayEvent, RelayHandle},
-    setup_lists::Reader,
+    setup_lists::{Reader, View},
 };
 use kuvo_protocol::routes::{
     delete_kuvo_work_queue_items_item as delete, post_kuvo_work_queue_items as add,
@@ -255,13 +255,12 @@ struct Exchange {
     offline: std::collections::HashMap<String, i64>,
     handings: hand::Delivery,
     settled_migration: bool,
+    waiting_numbers: bool,
 }
 
 impl Writer {
     fn start(self, relay: Option<RelayHandle>) -> Runtime {
         let mut incoming = relay.as_ref().and_then(RelayHandle::subscribe);
-        let mut upkeep = timer_fires::interval(Timer::WorkQueueExchange, Duration::from_secs(2));
-        upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
         let review = Arc::new(self.clone());
         let link = session_links::StartLink(self.clone());
@@ -269,20 +268,104 @@ impl Writer {
         let archive_forward = Arc::new(self.forward.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
+            let mut setup = self.setup.clone();
+            let mut peers = self.peers.clone();
+            let mut view = peers.view();
+            let mut sessions = self.sessions.clone();
+            let mut engine = self.engine.states();
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let root = &self.store.root;
+            let run = root.parent().expect("Work Queue under run");
+            files.set_targets(
+                vec![
+                    root.join("numbers.json"), root.join("labels.json"), root.join("model.json"),
+                    root.join("seen.json"),
+                ],
+                vec![
+                    (root.join("queues"), false), (root.join("peers"), false),
+                    (run.join("owned-data/edit-outbox"), false),
+                ],
+            );
+            let mut lease_files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let mut bots_files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let bots_root = run.parent().expect("run under home").join("bots");
+            let mut watch_bots = !view.roster.members.is_empty();
+            if watch_bots {
+                bots_files.set_child_files(bots_root.clone(), ["bot.json", "session"]);
+            }
+            // Subscribe before recovery; FileSet re-reads once its native watch is armed.
+            let mut next = self.exchange_round(relay.as_ref(), &mut exchange).await;
+            let mut watch_lease = exchange.waiting_numbers;
+            if watch_lease {
+                lease_files.set_files(vec![run.join("setup-relay-lease.json")]);
+            }
             loop {
-                let result = tokio::select! {
-                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut exchange).await,
+                let changed = tokio::select! {
+                    _ = wait_exchange(next) => true,
+                    _ = files.changed() => { exchange.snapshots.invalidate(); true }
+                    _ = lease_files.changed(), if watch_lease => true,
+                    _ = bots_files.changed(), if watch_bots => {
+                        exchange.snapshots.invalidate();
+                        true
+                    }
+                    _ = self.retell.changed() => { exchange.snapshots.invalidate(); true }
+                    changed = setup.changed() => {
+                        if !changed { return; }
+                        exchange.snapshots.invalidate();
+                        true
+                    }
+                    changed = peers.changed() => {
+                        if changed.is_err() { return; }
+                        let current = peers.view();
+                        let changed = queue_routing_changed(&view, &current, peers.now());
+                        view = current;
+                        let wanted = !view.roster.members.is_empty();
+                        if wanted != watch_bots {
+                            watch_bots = wanted;
+                            if wanted {
+                                bots_files.set_child_files(bots_root.clone(), ["bot.json", "session"]);
+                            } else {
+                                bots_files.clear();
+                            }
+                        }
+                        if changed { exchange.snapshots.invalidate(); }
+                        changed
+                    }
+                    changed = sessions.changed() => {
+                        if !changed { return; }
+                        exchange.snapshots.invalidate();
+                        true
+                    }
+                    changed = engine.changed(), if !exchange.settled_migration => {
+                        if changed.is_err() { return; }
+                        true
+                    }
                     message = next_mail(&mut incoming) => {
                         match (relay.as_ref(), message.as_deref()) {
-                            (Some(relay), Some(RelayEvent::Mail { key, envelope, .. })) => {
-                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut exchange).await
+                            (Some(relay), Some(RelayEvent::Mail { key, envelope, .. }))
+                                if envelope.0.get("workQueue").is_some() || envelope.0.get("ask").is_some_and(|ask| ask == "agents") => {
+                                let value = Value::Object(envelope.0.clone());
+                                if value["workQueue"]["told"].is_object() { exchange.snapshots.invalidate(); }
+                                if let Err(error) = self.received(relay, key, &value, &mut exchange).await {
+                                    eprintln!("Work Queue mail: {error}");
+                                }
+                                true
                             }
-                            _ => Ok(()),
+                            (_, None) => { exchange.snapshots.invalidate(); true }
+                            _ => false
                         }
                     }
                 };
-                if let Err(error) = result {
-                    eprintln!("Work Queue exchange: {error}");
+                if changed {
+                    next = self.exchange_round(relay.as_ref(), &mut exchange).await;
+                    if watch_lease != exchange.waiting_numbers {
+                        watch_lease = exchange.waiting_numbers;
+                        if watch_lease {
+                            lease_files.set_files(vec![run.join("setup-relay-lease.json")]);
+                        } else {
+                            lease_files.clear();
+                        }
+                    }
                 }
             }
         });
@@ -296,11 +379,21 @@ impl Writer {
         }
     }
 
+    async fn exchange_round(&self, relay: Option<&RelayHandle>, exchange: &mut Exchange) -> Option<i64> {
+        match self.upkeep(relay, exchange).await {
+            Ok(next) => next,
+            Err(error) => {
+                eprintln!("Work Queue exchange: {error}");
+                Some(Timestamp::now().as_millisecond().saturating_add(2_000))
+            }
+        }
+    }
+
     async fn upkeep(
         &self,
         relay: Option<&RelayHandle>,
         exchange: &mut Exchange,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<i64>, Error> {
         if let Some(setup) = self.setup.queue_setup()
             && let Some(accepted) = setup.labels
         {
@@ -316,40 +409,52 @@ impl Writer {
             }
         }
         let now = Timestamp::now().as_millisecond();
+        let mut next = None;
         if !exchange.settled_migration {
             exchange.settled_migration = self.settle_migration(now).await?;
+            if !exchange.settled_migration {
+                // A real unfinished migration may need another engine response.
+                earlier(&mut next, now.saturating_add(2_000));
+            }
         }
         let local_max = self.local_max().await?;
         let grants = self.numbers.answer_own(local_max, now).await?;
-        if grants.is_some() || self.waiting().await? {
+        let waiting = self.waiting().await?;
+        if grants.is_some() || waiting {
             self.number_waiting(grants).await?;
         }
-        self.retry_offline(relay, now, &mut exchange.offline)
-            .await?;
-        self.send_handings(relay, &mut exchange.handings, now)
-            .await?;
-        if let Some(relay) = relay {
-            let local_max = self.local_max().await?;
-            if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
-                && let Some(key) = kuvo_wire::keys::decode_exact(&main)
-                && let Some(peer) = self
-                    .peers
-                    .view()
-                    .roster
-                    .member(&key)
-                    .and_then(|member| member.host())
-            {
-                send(relay, peer, json!({"ask":ask}), now).await;
-            }
-            if self.retell.take() {
-                exchange.snapshots.again();
-            }
-            exchange
-                .snapshots
-                .publish(&self.reads, relay, self.setup.queue_setup(), now)
-                .await?;
+        exchange.waiting_numbers = waiting || self.numbers.request_deadline(now).await?.is_some();
+        if let Some(at) = self.retry_offline(relay, now, &mut exchange.offline).await? {
+            earlier(&mut next, at);
         }
-        Ok(())
+        if let Some(at) = self.send_handings(relay, &mut exchange.handings, now).await? {
+            earlier(&mut next, at);
+        }
+        if self.retell.take() {
+            exchange.snapshots.again();
+        }
+        if let Some(relay) = relay {
+            let view = self.peers.view();
+            let main = self.setup.queue_setup().filter(|setup| !setup.main_here && !setup.merging)
+                .and_then(|setup| kuvo_wire::keys::decode_exact(&setup.primary))
+                .filter(|key| view.relay_connected && !view.away(key))
+                .and_then(|key| view.roster.member(&key).and_then(|member| member.host()));
+            if let Some(peer) = main {
+                let local_max = self.local_max().await?;
+                if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
+                    && kuvo_wire::keys::decode_exact::<32>(&main) == Some(peer.key)
+                {
+                    send(relay, peer, json!({"ask":ask}), now).await;
+                }
+                if let Some(at) = self.numbers.request_deadline(now).await? {
+                    earlier(&mut next, at);
+                }
+            }
+            if let Some(at) = exchange.snapshots.publish(&self.reads, relay, self.setup.queue_setup(), now).await? {
+                earlier(&mut next, at);
+            }
+        }
+        Ok(next)
     }
 
     async fn received(
@@ -463,11 +568,13 @@ impl Writer {
     }
 
     async fn waiting(&self) -> Result<bool, Error> {
-        let store = self.store.clone();
+        let writer = self.clone();
         tokio::task::spawn_blocking(move || {
-            store.items().map(|items| {
+            writer.store.items().map(|items| {
+                let numberable = writer.numberable(&items);
                 items.iter().any(|item| {
                     item.removed.is_none()
+                        && numberable.contains(&item.owner)
                         && item.source().is_none()
                         && !item.saved.contains_key("handing")
                         && (item.number.is_none() || book::wanted(item).is_some())
@@ -1064,13 +1171,47 @@ impl Writer {
     }
 }
 
+fn earlier(next: &mut Option<i64>, at: i64) {
+    *next = Some(next.map_or(at, |before| before.min(at)));
+}
+
+async fn wait_exchange(at: Option<i64>) {
+    if let Some(at) = at {
+        let delay = at.saturating_sub(Timestamp::now().as_millisecond()).max(1) as u64;
+        timer_fires::sleep(Timer::WorkQueueExchange, Duration::from_millis(delay)).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Only membership, actual standing/capability and move ownership can change
+/// which computer should receive the pending queue work.
+pub(super) fn queue_routing_changed(before: &View, after: &View, now: i64) -> bool {
+    let roster = |view: &View| {
+        view.roster.members.iter().map(|member| {
+            let caps = [
+                told::FEATURE, "data.offline-edits", "data.queued-device-authority",
+                hand::MOVE_FEATURE, "data.forward-evidence",
+            ].map(|feature| view.advertises(&member.key, feature));
+            (member.key, member.address, member.name.clone(), member.kind,
+                view.away(&member.key), view.standing(member.key, now),
+                view.peer_updates(&member.key, now).0, caps)
+        }).collect::<Vec<_>>()
+    };
+    before.relay_connected != after.relay_connected
+        || before.roster.here != after.roster.here
+        || before.roster.main != after.roster.main
+        || roster(before) != roster(after)
+        || !before.same_ownership_routes(after)
+}
+
 async fn next_mail(
     incoming: &mut Option<tokio::sync::broadcast::Receiver<Arc<RelayEvent>>>,
 ) -> Option<Arc<RelayEvent>> {
     while let Some(receiver) = incoming.as_mut() {
         match receiver.recv().await {
             Ok(event) => return Some(event),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return None,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => *incoming = None,
         }
     }

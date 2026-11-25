@@ -461,6 +461,7 @@ pub struct FileSet {
     hub: WatchHub,
     paths: Vec<PathBuf>,
     folders: Vec<(PathBuf, bool)>,
+    child_files: Option<(PathBuf, BTreeSet<std::ffi::OsString>)>,
     watches: BTreeMap<PathBuf, (Targets, JoinHandle<()>)>,
     tx: mpsc::UnboundedSender<()>,
     rx: mpsc::UnboundedReceiver<()>,
@@ -470,6 +471,19 @@ struct Targets {
     names: BTreeSet<PathBuf>,
     all: bool,
     recursive: bool,
+    child_names: BTreeSet<std::ffi::OsString>,
+}
+
+impl Targets {
+    fn matches(&self, path: &Path) -> bool {
+        self.all
+            || path.as_os_str().is_empty()
+            || self.names.contains(path)
+            || (!self.child_names.is_empty()
+                && (path.components().count() <= 1
+                    || path.components().count() == 2
+                        && path.file_name().is_some_and(|name| self.child_names.contains(name))))
+    }
 }
 
 impl FileSet {
@@ -479,6 +493,7 @@ impl FileSet {
             hub,
             paths: Vec::new(),
             folders: Vec::new(),
+            child_files: None,
             watches: BTreeMap::new(),
             tx,
             rx,
@@ -487,6 +502,7 @@ impl FileSet {
     pub fn clear(&mut self) {
         self.paths.clear();
         self.folders.clear();
+        self.child_files = None;
         for (_, (_, task)) in std::mem::take(&mut self.watches) {
             task.abort();
         }
@@ -504,8 +520,21 @@ impl FileSet {
     pub fn set_targets(&mut self, paths: Vec<PathBuf>, folders: Vec<(PathBuf, bool)>) {
         self.paths = paths;
         self.folders = folders;
+        self.child_files = None;
         self.bind();
     }
+    /// Watch a stable parent recursively for direct child folders appearing
+    /// or disappearing, and named files within those children. Never keep
+    /// handles inside a removable child (on Windows that prevents renames).
+    pub fn set_child_files(
+        &mut self, folder: PathBuf, names: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
+    ) {
+        self.paths.clear();
+        self.folders.clear();
+        self.child_files = Some((folder, names.into_iter().map(Into::into).collect()));
+        self.bind();
+    }
+
     fn bind(&mut self) {
         let mut wanted = BTreeMap::<PathBuf, Targets>::new();
         fn named(wanted: &mut BTreeMap<PathBuf, Targets>, mut path: PathBuf) {
@@ -538,6 +567,14 @@ impl FileSet {
                 let target = wanted.entry(folder.clone()).or_default();
                 target.all = true;
                 target.recursive |= *recursive;
+            }
+        }
+        if let Some((folder, names)) = &self.child_files {
+            named(&mut wanted, folder.clone());
+            if folder.is_dir() {
+                let target = wanted.entry(folder.clone()).or_default();
+                target.recursive = true;
+                target.child_names.extend(names.iter().cloned());
             }
         }
         self.watches.retain(|folder, (names, task)| {
@@ -575,11 +612,7 @@ impl FileSet {
                 while let Some(notice) = sub.recv().await {
                     match notice {
                         Notice::Changed { paths }
-                            if !paths.iter().any(|path| {
-                                names_for_task.all
-                                    || path.as_os_str().is_empty()
-                                    || names_for_task.names.contains(path)
-                            }) =>
+                            if !paths.iter().any(|path| names_for_task.matches(path)) =>
                         {
                             continue;
                         }
@@ -596,5 +629,24 @@ impl FileSet {
 impl Drop for FileSet {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(test)]
+mod file_set_tests {
+    use super::*;
+
+    #[test]
+    fn child_file_selection_does_not_report_a_bots_unrelated_work() {
+        let target = Targets {
+            recursive: true,
+            child_names: ["bot.json".into(), "session".into()].into(),
+            ..Targets::default()
+        };
+        assert!(target.matches(Path::new("bot_ada")));
+        assert!(target.matches(Path::new("bot_ada/bot.json")));
+        assert!(target.matches(Path::new("bot_ada/session")));
+        assert!(!target.matches(Path::new("bot_ada/memory.json")));
+        assert!(!target.matches(Path::new("bot_ada/files/bot.json")));
     }
 }

@@ -144,7 +144,14 @@ async function withKeeper() {
       } catch { return false; }
     }, () => `Keeper did not start its resident: ${keeper.log()}`, 25000);
     const pids = [keeper.child.pid, record.pid];
-    const more = () => ({ leaseCalls: leases.calls.length });
+    const heard = path.join(base.HOME, "codex-heard.jsonl");
+    const more = () => ({
+      leaseCalls: leases.calls.length,
+      agentStarts: fs.existsSync(heard)
+        ? fs.readFileSync(heard, "utf8").trim().split("\n")
+            .filter(Boolean).map(JSON.parse).filter(row => row.argv).length
+        : 0,
+    });
     await delay(3000);
     await sample(home, pids, "keeper + resident, no client", more);
     line = await app(record);

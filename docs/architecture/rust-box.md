@@ -618,6 +618,59 @@ sessions 81/81 and the number allocation/failover cases 14/14. Workspace test ch
 TypeScript check passed. The remaining 4.8 work inventories other idle timers and measures
 actual timer callbacks, rather than relying on the operating system's idle-wake estimate alone.
 
+**Debug timer measurement.** `scripts/measure-idle-box.mjs` uses a private fixture home, signed-in
+scripted Codex, and real local relay connection. Build a debug executable, then run
+`KUVO_BOX_BIN=<debug binary> scripts/heavy.sh box node scripts/measure-idle-box.mjs` (optionally
+`--keeper` or `--follow`). It samples exact fixture PIDs after a three-second settle for 65 seconds
+in each condition. The debug-only signal handler writes cumulative per-subsystem counters on
+request; it does not create a recurring reporter. A counter records a completed timer future,
+not timer registration/cancellation or ordinary file/channel/relay notification. Release builds
+have no counters or reporter. Native watcher fallbacks on unsupported filesystems are a separate
+platform mechanism, not application timer callbacks.
+
+The counter baseline, after the original eight changes and the merged 5.1/5.4 work, is the
+optimized debug build of `4d245022b` with instrumentation. It shows why the earlier short OS
+idle-wake estimate alone was insufficient:
+
+| Sample | RSS KiB | Processes | Timer callbacks in 65s | Callbacks/s |
+|---|---:|---:|---:|---:|
+| Resident, no client | 49,264 | 1 | 267 | 4.11 |
+| Resident, one client | 54,144 | 1 | 283 | 4.35 |
+| Keeper + resident, no client | 61,936 | 2 | 267 | 4.11 |
+| Keeper + resident, one client | 66,656 | 2 | 283 | 4.35 |
+| Resident, one client following hot pages | 55,504 | 1 | 391 | 6.01 |
+
+The four largest sources were remote work (130 rounds plus 13 row checks), moves (65), Work Queue
+exchange (32–33), and durable delivery (13), per 65 seconds. Smaller unconditional rounds came
+from bot held edits, peer waiting, engine lifetime, sign-in expiry and daily backup checks.
+Transport heartbeats are distinct: the local relay fired two, and the connected line thirteen.
+The usage service's actual connected-client demand deadline fired once only with a client.
+The direct fixture recorded zero native-agent starts; the keeper added no timer callbacks.
+The hot-page sample follows sessions, bots, work, background and the Work Queue on one line;
+the extra timer fires were background/work (32 each), bots and Work Queue follow (22 each).
+
+**Work Queue exchange (follow-up).** The resident recovers once, then watches the queue's
+owner files, numbers, labels, peer copies and pending edit outbox. A successful writer also
+notifies the exchange immediately. Setup, session inventory, relevant peer routing and actual
+lease reservation changes are events; a quiet lease renewal is not a reason to reread the queue.
+The number request, unacknowledged snapshot, offline edit and handing each keep their own retry
+or expiry deadline only while there is such work. A snapshot is computed on change and its
+unchanged acknowledged edition is never retold. Bot descriptions are watched at their stable
+parent, without holding removable child folders. The followed list uses those changes, the
+actual next date/peer-standing boundary and due GitHub readings; it no longer reprojects every
+three seconds. The GitHub read itself remains throttled by the visible issue's cache expiry or
+the host's backoff, and a read's completion notifies followers. The new Rust debug conformance
+case both proves that an empty queue has no two-second exchange timer and writes an unnumbered
+item outside a route to prove the file event numbers it. It failed on the instrumented baseline
+(two exchange callbacks in the observation window). After the change the 65-second no-client
+sample had 235 callbacks (3.61/s, 48,864 KiB), and the client following hot pages had 336 (5.17/s,
+55,632 KiB). Both Work Queue counters were zero in both samples, compared with 32–33 exchange
+callbacks and 22 follow callbacks before. There was still one resident process and no agent start.
+The Mac Work Queue suite passed 147 cases in its first run; the one failing explicit GitHub
+refresh case and three related cases passed after restricting the passive lock retry delay to
+followers (an explicit read can immediately try a newly freed lock). TypeScript passed 145,
+with three conditional skips. Both new watcher/deadline unit cases passed.
+
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.

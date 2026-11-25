@@ -313,6 +313,39 @@ impl View {
         self.reach.copy_standing(&key, seen.into(), release, now)
     }
 
+    /// Compare routing evidence, not timestamps or an agent's activity.
+    /// This avoids re-reading a queue merely because an unchanged peer heartbeat arrived.
+    pub fn same_ownership_routes(&self, other: &Self) -> bool {
+        if !Arc::ptr_eq(&self.local, &other.local) && self.local.ownership != other.local.ownership {
+            return false;
+        }
+        if Arc::ptr_eq(&self.announced, &other.announced) { return true; }
+        self.roster.members.iter().all(|peer| {
+            let key = encode(&peer.key);
+            match (self.announced.get(&key), other.announced.get(&key)) {
+                (None, None) => true,
+                (Some(before), Some(after)) => {
+                    before.owns == after.owns && before.groups == after.groups
+                        && (before.owns.is_some() || before.list.iter()
+                            .map(|agent| (&agent.session, &agent.kind, &agent.id))
+                            .eq(after.list.iter().map(|agent| (&agent.session, &agent.kind, &agent.id))))
+                }
+                _ => false,
+            }
+        })
+    }
+
+    pub fn next_standing_change(&self, now: Millis) -> Option<Millis> {
+        self.roster.members.iter().filter_map(|peer| {
+            let key = encode(&peer.key);
+            let announcement = self.announced.get(&key);
+            self.reach.next_standing_change(
+                &key, self.lists.get(&peer.key).map(|copy| copy.seen),
+                announcement.and_then(|said| said.heard), announcement.and_then(Announcement::release), now,
+            )
+        }).min()
+    }
+
     pub fn owner_of(&self, scope: RecordScope, id: &str, now: Millis) -> Option<Owner> {
         let mut ownership = self.local.ownership.clone();
         if scope == RecordScope::Session && self.local.holds(id) {

@@ -399,9 +399,9 @@ impl Writer {
         relay: Option<&RelayHandle>,
         now: i64,
         retry: &mut HashMap<String, i64>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<i64>, Error> {
         let Some(id) = self.identity() else {
-            return Ok(());
+            return Ok(None);
         };
         let outbox = OwnedOutbox::new(&self.store);
         let saved = outbox.clone();
@@ -410,13 +410,15 @@ impl Writer {
             .await
             .map_err(io::Error::other)??;
         let mut remaining = HashSet::new();
+        let mut next = None;
         for mut entry in entries {
             let Some(mut draft) = entry.queued_edit.take() else {
                 continue;
             };
             let operation = draft.edit.operation.clone();
             remaining.insert(operation.clone());
-            if retry.get(&operation).is_some_and(|last| now - last < 5_000) {
+            if let Some(last) = retry.get(&operation).filter(|last| now - **last < 5_000) {
+                earlier(&mut next, last.saturating_add(5_000));
                 continue;
             }
             let authority = self.authority(&draft);
@@ -449,7 +451,8 @@ impl Writer {
                 let Some(host) = view.roster.member(&peer).and_then(|member| member.host()) else {
                     continue;
                 };
-                if !self.forward.admits(peer)
+                if !view.relay_connected || view.away(&peer)
+                    || !self.forward.admits(peer)
                     || !view.advertises(&peer, FEATURE)
                     || !view.advertises(&peer, AUTHORITY)
                 {
@@ -467,6 +470,7 @@ impl Writer {
                         }
                     }
                     retry.insert(operation, now);
+                    earlier(&mut next, now.saturating_add(5_000));
                 }
             } else {
                 retry.insert(operation, now);
@@ -477,11 +481,13 @@ impl Writer {
                     tokio::task::spawn_blocking(move || saved.finish(&setup, &own, receipt))
                         .await
                         .map_err(io::Error::other)??;
+                } else {
+                    earlier(&mut next, now.saturating_add(5_000));
                 }
             }
         }
         retry.retain(|operation, _| remaining.contains(operation));
-        Ok(())
+        Ok(next)
     }
 
     pub(super) async fn receive_offline(

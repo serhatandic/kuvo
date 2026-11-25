@@ -24,7 +24,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 const FORMAT: ObjectFormat = ObjectFormat::additive("Work Queue peer summary");
@@ -642,16 +642,26 @@ pub(super) fn items_elsewhere(
     Ok(merged)
 }
 
-/// Coalesce successful client writes until the next resident exchange tick.
+/// A successful writer wakes the exchange and coalesces further edits.
 #[derive(Clone, Default)]
-pub(super) struct Retell(Arc<AtomicBool>);
+pub(super) struct Retell(Arc<RetellState>);
+
+#[derive(Default)]
+struct RetellState {
+    dirty: AtomicBool,
+    changed: tokio::sync::Notify,
+}
 
 impl Retell {
     pub fn again(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.dirty.store(true, Ordering::Release);
+        self.0.changed.notify_one();
+    }
+    pub async fn changed(&self) {
+        self.0.changed.notified().await;
     }
     pub fn take(&self) -> bool {
-        self.0.swap(false, Ordering::AcqRel)
+        self.0.dirty.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -659,12 +669,8 @@ impl Retell {
 #[derive(Default)]
 pub(super) struct Delivery {
     sent: HashMap<ComputerKey, DeliveryTo>,
-    current: Option<Snapshot>,
-}
-
-struct Snapshot {
-    told: Told,
-    marks: Vec<Option<SystemTime>>,
+    current: Option<Told>,
+    dirty: bool,
 }
 
 struct DeliveryTo {
@@ -675,7 +681,12 @@ struct DeliveryTo {
 }
 
 impl Delivery {
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
     pub fn again(&mut self) {
+        self.invalidate();
         for sent in self.sent.values_mut().filter(|sent| !sent.kept) {
             sent.soon = true;
         }
@@ -712,102 +723,77 @@ impl Delivery {
         );
     }
 
+    /// Return only deadlines for editions that still need to reach a reachable peer.
     pub async fn publish(
         &mut self,
         reads: &super::peer_reads::PeerReads,
         relay: &RelayHandle,
         setup: Option<kuvo_setup::QueueSetup>,
         now: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<i64>, Error> {
         let super::peer_reads::PeerReads {
-            store,
-            peers,
-            refs,
-            sessions,
-            ..
+            store, peers, refs, sessions, ..
         } = reads;
         let view = peers.view();
-        let targets: Vec<_> = view
-            .roster
-            .members
-            .iter()
-            .filter(|peer| {
-                view.advertises(&peer.key, FEATURE) && !view.standing(peer.key, now).away()
-            })
+        let targets: Vec<_> = view.roster.members.iter()
+            .filter(|peer| view.relay_connected && view.advertises(&peer.key, FEATURE)
+                && !view.standing(peer.key, now).away())
             .filter_map(|peer| peer.host())
             .collect();
         if targets.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
-        let store = store.clone();
-        let sessions = sessions.clone();
-        let refs = refs.clone();
-        let before = self
-            .current
-            .as_ref()
-            .map(|before| (before.told.at, before.marks.clone()));
-        let changed = tokio::task::spawn_blocking(move || {
-            let marks = [
-                "queues",
-                "labels.json",
-                "numbers.json",
-                "peers",
-                "seen.json",
-            ]
-            .map(|name| {
-                std::fs::metadata(store.root.join(name))
-                    .and_then(|file| file.modified())
-                    .ok()
-            })
-            .to_vec();
-            if before
-                .as_ref()
-                .is_some_and(|(at, before)| before == &marks && now.saturating_sub(*at) <= 60_000)
-            {
-                return Ok::<_, Error>(None);
-            }
-            let sessions = super::sessions::Sessions::read(sessions.latest_record());
-            let told = outgoing(&store, &refs, &sessions, &view, setup.as_ref(), now)?;
-            Ok(Some(Snapshot { told, marks }))
-        })
-        .await
-        .map_err(io::Error::other)??;
-        if let Some(latest) = changed {
-            self.current = Some(latest);
+        if self.dirty || self.current.is_none() {
+            let store = store.clone();
+            let sessions = sessions.clone();
+            let refs = refs.clone();
+            self.current = Some(tokio::task::spawn_blocking(move || {
+                let sessions = super::sessions::Sessions::read(sessions.latest_record());
+                outgoing(&store, &refs, &sessions, &view, setup.as_ref(), now)
+            }).await.map_err(io::Error::other)??);
+            self.dirty = false;
         }
-        let Some(told) = self.current.as_ref().map(|current| &current.told) else {
-            return Ok(());
-        };
+        let told = self.current.as_ref().expect("a snapshot for a reachable target");
         let id = told.id.clone();
-        let targets: Vec<_> = targets
-            .into_iter()
-            .filter(|peer| self.due(&peer.key, &id, now))
-            .collect();
-        if targets.is_empty() {
-            return Ok(());
+        let mut next = None;
+        let mut due = Vec::new();
+        for target in targets {
+            if self.due(&target.key, &id, now) {
+                due.push(target);
+            } else if let Some(before) = self.sent.get(&target.key) {
+                if before.id != id || !before.kept {
+                    let wait = if before.id != id || before.soon { 15_000 } else { 60_000 };
+                    earlier(&mut next, before.sent.saturating_add(wait));
+                }
+            }
+        }
+        if due.is_empty() {
+            return Ok(next);
         }
         let Some(mails) = fitted(told, now) else {
-            return Ok(());
+            return Ok(next);
         };
-        for target in targets {
+        for target in due {
             let mut sent = true;
             for mail in &mails {
-                if relay
-                    .sender
-                    .mail(target.clone(), mail.clone())
-                    .await
-                    .is_err()
-                {
+                if relay.sender.mail(target.clone(), mail.clone()).await.is_err() {
                     sent = false;
                     break;
                 }
             }
             if sent {
                 self.sent(target.key, id.clone(), now);
+                earlier(&mut next, now.saturating_add(60_000));
+            } else {
+                earlier(&mut next, now.saturating_add(2_000));
             }
         }
-        Ok(())
+        Ok(next)
     }
+}
+
+fn earlier(next: &mut Option<i64>, at: i64) {
+    *next = Some(next.map_or(at, |before| before.min(at)));
 }
 
 fn fitted(told: &Told, now: i64) -> Option<Vec<kuvo_wire::mail::Envelope>> {
