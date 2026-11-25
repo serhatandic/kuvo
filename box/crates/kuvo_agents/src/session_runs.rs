@@ -467,6 +467,21 @@ impl SessionRuns {
     }
 
     /// The conversation's mode from its next message on.
+    /// Puts the conversation on `model` from its next turn: one of an agent connected here.
+    /// `None` when the conversation isn't here; otherwise the model it was on, when it changed.
+    pub async fn select_model(
+        &self,
+        session: &str,
+        model: Value,
+        agents: &ResidentAgents,
+    ) -> io::Result<Option<Option<Value>>> {
+        let connected = model["providerID"]
+            .as_str()
+            .and_then(Provider::parse)
+            .is_some_and(|provider| agents.roster().find(&provider).is_some());
+        self.store.select_model(session, model, connected).await
+    }
+
     pub async fn select_agent(&self, session: &str, agent: &str) -> io::Result<bool> {
         self.store.select_agent(session, agent).await
     }

@@ -17,6 +17,7 @@ const areas = new Map([
   ["agents-codex", "./agents-codex.test.mjs"],
   ["agents-codex-live", "./agents-codex-live.test.mjs"],
   ["agents-updates", "./agents-updates.test.mjs"],
+  ["agents-session-reads", "./agents-session-reads.test.mjs"],
   ["agent-accounts", "./agent-accounts.test.mjs"],
   ["agent-sessions", "./agent-sessions.test.mjs"],
   ["agent-turn-fixture", "./agent-turn-fixture.test.mjs"],

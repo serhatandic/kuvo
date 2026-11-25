@@ -22,7 +22,9 @@ use serde_json::{Map, Value};
 use kuvo_protocol::routes::{
     delete_kuvo_agents_api_session_id_background as stop_background,
     delete_kuvo_agents_api_shell_id as stop_command,
+    get_kuvo_agents_api_session_active as active, get_kuvo_agents_api_session_id as read,
     get_kuvo_agents_api_session_id_message as transcript,
+    post_kuvo_agents_api_session_id_model as select_model,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
@@ -30,6 +32,7 @@ use percent_encoding::percent_decode_str;
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::{broadcast, watch};
 
+#[derive(Clone)]
 pub(crate) struct Inventory {
     pub store: SessionStore,
     pub running: Option<SessionRuns>,
@@ -443,4 +446,69 @@ impl TranscriptQuery {
             filter: get("parentID").or_else(|| parts.next().map(str::to_owned)),
         }
     }
+}
+
+/// The conversations with a run under way, one as clients read it, and its model: for every
+/// agent, from the resident's own runs.
+pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
+    let running = inventory.clone();
+    routes.register::<active::Spec, _, _>(Access::Any, move |call| {
+        let inventory = running.clone();
+        async move {
+            let busy: serde_json::Map<String, Value> = inventory
+                .running
+                .as_ref()
+                .map(|runs| runs.running().iter().map(|id| (id.clone(), serde_json::json!({ "type": "busy" }))).collect())
+                .unwrap_or_default();
+            let mut answer = serde_json::json!({ "data": busy });
+            // (No turn here follows an engine model.)
+            if call.request.path.split_once('?').is_some_and(|(_, query)| query.split('&').any(|pair| pair.split('=').next() == Some("release-switch"))) {
+                answer["engineTurns"] = serde_json::json!([]);
+            }
+            Ok(RouteReply::json::<200>(serde_json::from_value(answer).map_err(|error| super::refuse(error.into()))?))
+        }
+    });
+
+    let reading = inventory.clone();
+    routes.register::<read::Spec, _, _>(Access::Any, move |call| {
+        let inventory = reading.clone();
+        async move {
+            let given = call.param("id").unwrap_or_default();
+            let id = percent_decode_str(given).decode_utf8().map_err(|_| missing(given))?.into_owned();
+            // `context=0`: as saved, without asking its agent for its model's window.
+            let saved = call.request.path.split_once('?').is_some_and(|(_, query)| query.split('&').any(|pair| pair == "context=0"));
+            let session = if saved {
+                inventory.store.read(&id).await.map_err(super::refuse)?.map(|header| session_view::for_clients(header.into_fields(), &inventory.home))
+            } else {
+                AgentSessionSource::session(&inventory, &id).await.map_err(super::refuse)?
+            };
+            let session = session.ok_or_else(|| missing(&id))?;
+            Ok(RouteReply::json::<200>(read::Status200 { data: Value::Object(session) }))
+        }
+    });
+
+    routes.register::<select_model::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+        let inventory = inventory.clone();
+        async move {
+            let given = call.param("id").unwrap_or_default();
+            let id = percent_decode_str(given).decode_utf8().map_err(|_| missing(given))?.into_owned();
+            let (Some(runs), Some(agents)) = (&inventory.running, &inventory.agents) else {
+                return Err(super::refuse(std::io::ErrorKind::Unsupported.into()));
+            };
+            let model = call.body["model"].clone();
+            let changed = runs.select_model(&id, model.clone(), agents).await.map_err(super::refuse)?;
+            let Some(changed) = changed else {
+                return Err(missing(&id));
+            };
+            if let Some(previous) = changed {
+                let mut data = serde_json::json!({ "sessionID": id, "model": model });
+                if !previous.is_null() {
+                    data["previous"] = previous;
+                }
+                let directory = inventory.store.read(&id).await.ok().flatten().and_then(|header| header.directory().map(str::to_owned));
+                agents.feed().emit_from("session.model.selected", data, directory);
+            }
+            Ok(RouteReply::json::<200>(select_model::Status200 {}))
+        }
+    });
 }

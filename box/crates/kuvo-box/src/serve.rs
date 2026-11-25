@@ -222,6 +222,7 @@ pub async fn run(
             Some(Arc::new(runs.clone())),
         );
         agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
+        agents::sessions::register_reads(inventory.clone(), &mut routes);
         agents::turns::register(runs, &mut routes);
         engine
             .with_agent_model_source(Arc::new(agents::Models {
