@@ -190,6 +190,7 @@ pub async fn run(
     );
     agents::sessions::register(sessions.clone(), &mut routes);
     let agent_background = sessions.background().clone();
+    let shell_commands = agent_background.clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {
         // What its coding agents keep going, for the work routes and those that read the file.
         let _published = sessions
@@ -382,6 +383,7 @@ pub async fn run(
     // (A machine names itself on its asks; a Mac's own aren't named.)
     let asks_machine = (kind != ComputerKind::Mac).then(|| bot_name.clone());
     kuvo_work::asks::Asks::new(home, asks_machine, engine.clone()).register(&mut routes);
+    agents::shells::register(shell_commands, engine.clone(), &mut routes);
     let bots = kuvo_work::bots::Bots::new(
         kuvo_work::bots::Setting {
             home: home.to_owned(),
@@ -726,6 +728,7 @@ fn info(
     features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     features.extend_from_slice(kuvo_work::asks::FEATURES);
+    features.push("shell.stop");
     if permits_pairing {
         features.push("devices.pair");
     }

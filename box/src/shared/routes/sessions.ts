@@ -438,6 +438,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/agents/api/session/:id/background", feature: "agents", answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
   // Stop one command a coding agent runs (the bars over the composer): one its turn waits on stops that turn.
   { route: "DELETE kuvo/agents/api/shell/:id", feature: "agents", answers: { 200: object({}), 404: REFUSED } },
+  // What one printed, from byte `cursor` on (`limit` bytes at most); only its end is kept, so what's asked from before that comes from where it begins.
+  { route: "GET kuvo/agents/api/shell/:id/output", feature: "agents", answers: { 200: object({ location: object({ directory: string }), data: object({ output: string, cursor: number, size: number }) }), 404: REFUSED } },
   // A coding-agent conversation's mode (`build`, `plan`, an agent of yours) from its next message.
   { route: "POST kuvo/agents/api/session/:id/agent", feature: "agents", body: any, answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
   // Summarize a coding-agent conversation now, or once its turn ends (`waiting`).

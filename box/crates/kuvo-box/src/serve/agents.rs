@@ -35,6 +35,7 @@ use serde_json::json;
 pub(super) mod asks;
 pub(super) mod background;
 pub(super) mod sessions;
+pub(super) mod shells;
 pub(super) mod tools;
 pub(super) mod turns;
 

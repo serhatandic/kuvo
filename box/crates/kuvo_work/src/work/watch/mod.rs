@@ -14,7 +14,7 @@ pub mod told;
 pub mod tools;
 pub mod turns;
 
-pub use stopping::Stops;
+pub use stopping::{EngineCommand, Stops, stop_engine_command};
 
 use std::{
     collections::{HashMap, HashSet},
