@@ -89,6 +89,40 @@ impl Policy {
         }
     }
 
+    /// Whether an agent may run on its own, asking nothing (Approve All): no
+    /// rule of the session's or the agent's holds anything back, and Blocks
+    /// are known and stop nothing. Plan, and Auto outside the sandbox, never.
+    pub fn approves_all(&self, plan: bool) -> bool {
+        const AGENT_ACTIONS: [&str; 10] = [
+            "*",
+            "edit",
+            "write",
+            "patch",
+            "shell",
+            "bash",
+            "read",
+            "webfetch",
+            "websearch",
+            "external_directory",
+        ];
+        let defaults = Self::new(PathBuf::new(), None).agent_rules;
+        !plan
+            && !self.auto_without_sandbox
+            && self
+                .session_rules
+                .iter()
+                .all(|rule| rule.effect == Effect::Allow)
+            && !self.agent_rules.iter().any(|rule| {
+                rule.effect != Effect::Allow
+                    && AGENT_ACTIONS.contains(&rule.action.as_str())
+                    && !defaults.contains(rule)
+            })
+            && self
+                .blocks
+                .as_ref()
+                .is_some_and(|blocks| blocks.iter().all(|rule| rule.effect != Effect::Deny))
+    }
+
     /// Capture file information at the resident's I/O boundary before
     /// evaluating a question about paths.
     pub fn observe_paths(&mut self, ask: &PermissionAsk) {

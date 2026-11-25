@@ -23,7 +23,7 @@ const CHOICES: [Compaction; 4] = [
 const DEFAULT: Compaction = Compaction::At(400_000);
 
 impl Compaction {
-    fn id(self) -> String {
+    pub fn id(self) -> String {
         match self {
             Self::At(tokens) => tokens.to_string(),
             Self::Never => "never".into(),
@@ -126,13 +126,22 @@ mod tests {
     #[test]
     fn summarizing_follows_each_agents_margin() {
         let at = Compaction::At(400_000);
-        assert_eq!(summarize_at(AgentKind::Codex, Some(1_000_000), at), Some(400_000));
+        assert_eq!(
+            summarize_at(AgentKind::Codex, Some(1_000_000), at),
+            Some(400_000)
+        );
         assert_eq!(summarize_at(AgentKind::Codex, Some(400_000), at), None);
         assert_eq!(summarize_at(AgentKind::Cursor, None, at), None);
         let never = Compaction::Never;
         assert_eq!(summarize_at(AgentKind::Claude, Some(200_000), never), None);
-        assert_eq!(summarize_at(AgentKind::Claude, Some(500_000), never), Some(400_000));
-        assert_eq!(summarize_at(AgentKind::Claude, Some(1_000_000), never), None);
+        assert_eq!(
+            summarize_at(AgentKind::Claude, Some(500_000), never),
+            Some(400_000)
+        );
+        assert_eq!(
+            summarize_at(AgentKind::Claude, Some(1_000_000), never),
+            None
+        );
         assert_eq!(summarize_at(AgentKind::Grok, None, never), None);
     }
 

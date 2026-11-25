@@ -11,7 +11,7 @@ use crate::{
     },
     resident::ResidentAgents,
     runtime::AdoptedTurn,
-    session::{Decision, Outcome, Prompt, Thread, TurnInput, TurnKind},
+    session::{Decision, Outcome, PermissionMode, Prompt, Thread, TurnInput, TurnKind},
     session_store::SessionStore,
     turn_projection::{Projection, record_failed_start},
     turn_runtime::RunningTurn,
@@ -851,7 +851,7 @@ impl Service {
     async fn begin(
         &self,
         session: &str,
-        input: TurnInput,
+        mut input: TurnInput,
         mut policy: Policy,
         remembered: watch::Sender<Vec<Allowance>>,
         note: Option<Map<String, Value>>,
@@ -898,6 +898,12 @@ impl Service {
             store: self.store.clone(),
             session: session.into(),
         });
+        // As the reference's sessions say (`approvesAll`): from its rules and Blocks.
+        input.permissions = if policy.approves_all().await {
+            PermissionMode::ApproveAll
+        } else {
+            PermissionMode::AskFirst
+        };
         let writer = Projection::start(
             self.store.clone(),
             session.into(),

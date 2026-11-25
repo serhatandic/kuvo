@@ -34,6 +34,7 @@ use crate::{
         Steer, SteerReceipt, Thread, TurnError, TurnEvent, TurnInput, TurnKind, TurnResult,
         TurnSink, VendorState,
     },
+    told::instructions_note,
 };
 
 use super::{
@@ -44,7 +45,6 @@ use super::{
     program::Program,
     projection::Projection,
     tasks::{self, Tasks},
-    told::instructions_note,
     wire,
 };
 

@@ -177,11 +177,11 @@ async fn follow(rpc: Rpc, mut incoming: tokio::sync::mpsc::Receiver<Incoming>, s
     let result: io::Result<()> = async {
         while let Some(message) = incoming.recv().await {
             match message {
-                Incoming::Notification { method, params } if method == "text" => {
+                Incoming::Notification { method, params, .. } if method == "text" => {
                     let delta = params["text"].as_str().unwrap_or_default().to_owned();
                     say(&sink, TurnEvent::TextDelta { kind: TextKind::Text, block: None, delta }).await?;
                 }
-                Incoming::Notification { method, params } if method == "done" => {
+                Incoming::Notification { method, params, .. } if method == "done" => {
                     let outcome = if params["interrupted"] == true {
                         Outcome::Interrupted
                     } else {
@@ -192,7 +192,7 @@ async fn follow(rpc: Rpc, mut incoming: tokio::sync::mpsc::Receiver<Incoming>, s
                     rpc.stop().await;
                     return Ok(());
                 }
-                Incoming::Request { id, method, params } if method == "approve" => {
+                Incoming::Request { id, method, params, .. } if method == "approve" => {
                     let ask = PermissionAsk {
                         id: id.to_string(),
                         tool_call_id: None,
