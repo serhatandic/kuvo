@@ -1012,12 +1012,24 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const queued = await request(before, "POST", `kuvo/sessions/${session}/send`, { id: "msg_afterEngine", words: "after the switch" }, { "x-kuvo-from": "app" });
     assert.equal(queued.status, 200, queued.text);
     assert.deepEqual(queued.json, { waits: true });
-    const raw = { id: "msg_rawEngine", text: "a raw prompt behind the held send", delivery: "queue" };
+    const inline = { name: "held-note.txt", uri: "data:text/plain;base64," + Buffer.from("held note bytes").toString("base64") };
+    const raw = { id: "msg_rawEngine", text: "a raw prompt behind the held send", delivery: "queue", files: [inline] };
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await request(before, "POST", `api/session/${session}/prompt`, raw, app);
       assert.equal(response.status, 200, response.text);
       assert.deepEqual(response.json, { waits: true });
     }
+    if (!rollback) {
+      const promoted = await request(before, "POST", `kuvo/sessions/${session}/queue/${raw.id}/now`, {}, app);
+      assert.equal(promoted.status, 200, promoted.text);
+      assert.equal(promoted.json.waiting[0].id, raw.id);
+      assert.deepEqual(engine.interrupted, []);
+    }
+    const status = await request(before, "GET", "kuvo/update", undefined, app);
+    assert.equal(status.status, 200, status.text);
+    assert.equal(status.json.updating, "installing");
+    assert.deepEqual(status.json.engineChange, { stage: "holding", from: oldVersion, to: newVersion,
+      line: "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after." });
     const blocked = await request(before, "POST", `api/session/${session}/command`, { command: "test" }, app);
     assert.equal(blocked.status, 503, blocked.text);
     assert.equal(blocked.json.engineChanging, true);
@@ -1072,7 +1084,15 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     await until(() => !fs.existsSync(hold) && engine.messages.get(session)?.some(message => message.id === "msg_rawEngine"),
       () => `the waiting work should reach the selected engine and clear the fleet hold: ${fs.existsSync(hold) ? fs.readFileSync(hold, "utf8") : "no hold"}`, 30000);
     assert.deepEqual(engine.messages.get(session).filter(message => message.type === "user").map(message => message.id),
-      ["msg_originalEngine", ...earlier, "msg_afterEngine", "msg_rawEngine"]);
+      rollback ? ["msg_originalEngine", ...earlier, "msg_afterEngine", raw.id]
+        : ["msg_originalEngine", raw.id, ...earlier, "msg_afterEngine"]);
+    const attachedRoot = path.join(home, "attachments", session);
+    const attached = fs.readdirSync(attachedRoot).map(folder => path.join(attachedRoot, folder, inline.name));
+    assert.equal(attached.length, 1, "retrying the held raw prompt doesn't copy its attachment twice");
+    assert.equal(fs.readFileSync(attached[0], "utf8"), "held note bytes");
+    const received = engine.messages.get(session).find(message => message.id === raw.id);
+    assert.ok(received.text.includes(attached[0]));
+    assert.deepEqual(received.files, [inline]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
     if (!rollback) {
       assert.equal(readJSON(path.join(home, "run/waiting/msg_goneEngine.json")).text, "keep these words");
@@ -1095,6 +1115,92 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     }
     await worker.stop();
   }
+});
+
+async function releaseHeldSession(t) {
+  const binary = boxBinary();
+  const { computer } = await bench(t);
+  const here = await computer("release-queue-controls", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const session = "ses_releaseQueue";
+  here.engine.sessions.push(sessionOf({ id: session, title: "Held work", directory: here.home }));
+  here.engine.running.add(session);
+  const ready = await here.start().ready();
+  const run = path.join(here.home, "run");
+  const now = Date.now();
+  const change = { from: "0.0.0", to: "2.2.6", since: now, stage: "holding" };
+  // Reopen the durable release state used by each implementation. No feed or
+  // keeper changes are needed to exercise the normal queue and update routes.
+  if (binary.typescript) {
+    write(path.join(run, ".updating/pid"), String(process.pid));
+    write(path.join(run, "update-engine-hold.json"), encode({ formatVersion: 1, ...change, holding: now, pid: process.pid }));
+  } else {
+    write(path.join(run, "fleet-engine-hold.json"), encode({ formatVersion: 1, ...change, release: "0.8.0:fixture",
+      owner: { pid: process.pid, startIdentity: "fixture" }, retryAt: null }));
+  }
+  return { ...here, ready, session, route: `kuvo/sessions/${session}/queue`, app: { "x-kuvo-from": "app" } };
+}
+
+test("a release hold lets the waiting queue be edited without starting a turn", async t => {
+  const { engine, ready, session, route, app } = await releaseHeldSession(t);
+  const ids = ["msg_holdFirst", "msg_holdSecond", "msg_holdThird"];
+  for (const id of ids) {
+    const sent = await request(ready, "POST", `api/session/${session}/prompt`, { id, text: id, delivery: "queue" }, app);
+    assert.equal(sent.status, 200, sent.text);
+    assert.deepEqual(sent.json, { waits: true });
+  }
+  const pause = async () => {
+    const held = await request(ready, "POST", route + "/hold", {}, app);
+    assert.equal(held.status, 200, held.text);
+    assert.equal(held.json.paused, true);
+  };
+  await pause();
+  const now = await request(ready, "POST", `${route}/${ids[2]}/now`, {}, app);
+  assert.equal(now.status, 200, now.text);
+  assert.equal(now.json.paused, false);
+  assert.deepEqual(now.json.waiting.map(row => row.id), [ids[2], ids[0], ids[1]]);
+  await pause();
+  const steer = await request(ready, "POST", `${route}/${ids[1]}/steer`, {}, app);
+  assert.equal(steer.status, 200, steer.text);
+  assert.equal(steer.json.paused, false);
+  assert.deepEqual(steer.json.waiting.map(row => row.id), [ids[1], ids[2], ids[0]]);
+  await pause();
+  const resumed = await request(ready, "POST", route + "/resume", {}, app);
+  assert.equal(resumed.status, 200, resumed.text);
+  assert.equal(resumed.json.paused, false);
+  assert.deepEqual(resumed.json.waiting.map(row => row.id), [ids[1], ids[2], ids[0]]);
+  assert.equal((await request(ready, "POST", route + "/msg_missing/now", {}, app)).status, 404);
+  assert.deepEqual(engine.messages.get(session) ?? [], []);
+  assert.deepEqual(engine.inboxes.get(session) ?? [], []);
+  assert.deepEqual(engine.interrupted, []);
+});
+
+test("the update status explains the engine release hold", async t => {
+  const { ready, app } = await releaseHeldSession(t);
+  const answer = await request(ready, "GET", "kuvo/update", undefined, app);
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json.engineChange, { stage: "holding", from: "0.0.0", to: "2.2.6",
+    line: "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after." });
+});
+
+test("a release hold saves a raw prompt's inline attachment", async t => {
+  const { engine, home, ready, session, app } = await releaseHeldSession(t);
+  const id = "msg_heldAttachment";
+  const words = "the attached note";
+  const inline = { name: "note.txt", uri: "data:text/plain;base64," + Buffer.from(words).toString("base64") };
+  const answer = await request(ready, "POST", `api/session/${session}/prompt`, { id, text: "Read the note", delivery: "queue", files: [inline] }, app);
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json, { waits: true });
+  const root = path.join(home, "attachments", session);
+  const saved = fs.readdirSync(root).map(folder => path.join(root, folder, "note.txt"));
+  assert.equal(saved.length, 1);
+  assert.equal(fs.readFileSync(saved[0], "utf8"), words);
+  const payload = readJSON(path.join(home, "run/waiting", id + ".json"));
+  assert.ok(payload.text.includes(saved[0]));
+  assert.deepEqual(engine.messages.get(session) ?? [], []);
+  assert.deepEqual(engine.inboxes.get(session) ?? [], []);
 });
 
 test("a signed release without rollback compatibility leaves the earlier engine in place", t => {

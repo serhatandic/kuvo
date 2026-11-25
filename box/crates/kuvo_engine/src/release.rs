@@ -91,6 +91,21 @@ impl Engine {
         Ok(hold)
     }
 
+    /// The existing update-status shape, while a differing engine is held.
+    pub async fn release_change(&self) -> io::Result<Option<(serde_json::Value, bool)>> {
+        Ok(self
+            .release_hold()
+            .await?
+            .filter(|hold| hold.stage == Stage::Holding)
+            .map(|hold| {
+                let installing = hold.owned() && !self.home.join("run/previous").exists();
+                (
+                    json!({"stage":"holding", "from":hold.from, "to":hold.to, "line":HOLD_LINE}),
+                    installing,
+                )
+            }))
+    }
+
     async fn save_release_hold(&self, hold: &Hold) -> io::Result<()> {
         disk::durable(self.home.join("run").join(HOLD), hold.clone()).await
     }
