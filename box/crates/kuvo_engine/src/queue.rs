@@ -1127,6 +1127,13 @@ pub(crate) async fn advance(
     id: &str,
     how: Advance,
 ) -> Result<bool, Refusal> {
+    if release_holds(engine, target) {
+        return if how == Advance::AfterTurn {
+            Ok(true)
+        } else {
+            advance_held(engine, session, id).await
+        };
+    }
     let current = engine.queues.get(session).await.map_err(save_failed)?;
     let running = is_running(engine, target, session)
         .await
@@ -1192,6 +1199,53 @@ pub(crate) async fn advance(
     Ok(true)
 }
 
+fn release_holds(engine: &Engine, target: Target<'_>) -> bool {
+    matches!(target, Target::Engine(_)) && crate::release::holding(&engine.home.join("run"))
+}
+
+// Send Now and Steer edit the saved queue during a release hold; they never
+// interrupt the old engine or start a turn on it.
+async fn advance_held(engine: &Engine, session: &str, id: &str) -> Result<bool, Refusal> {
+    if saved_removal(engine, session, id)
+        .await
+        .map_err(save_failed)?
+        .is_some_and(|row| !row.complete)
+    {
+        return Ok(false);
+    }
+    let current = engine.queues.get(session).await.map_err(save_failed)?;
+    if !current.contains(id) {
+        return Ok(false);
+    }
+    if engine
+        .queues
+        .waiting_prompt(id)
+        .await
+        .map_err(save_failed)?
+        .is_none()
+    {
+        return Err(save_failed(io::Error::other(
+            "A waiting message could not be read.",
+        )));
+    }
+    let saved = engine
+        .queues
+        .put(session, |queue| {
+            if let Some(at) = queue.waiting.iter().position(|row| row.id == id) {
+                let row = queue.waiting.remove(at);
+                queue.waiting.insert(0, row);
+                queue.release();
+                queue.held.retain(|held| held != id);
+                queue.came_held.retain(|held| held != id);
+                queue.order.retain(|ordered| ordered != id);
+                queue.order.insert(0, id.to_owned());
+            }
+        })
+        .await
+        .map_err(save_failed)?;
+    Ok(saved.waiting.first().is_some_and(|row| row.id == id))
+}
+
 async fn is_running(
     engine: &Engine,
     target: Target<'_>,
@@ -1202,7 +1256,7 @@ async fn is_running(
 
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit_turn(engine, session, None).await?;
+    let _admitted = crate::session_move::admit(engine, session, None).await?;
     let lease = command_target(engine, session).await?;
     resume_on(engine, lease.target(), session).await
 }
@@ -1230,6 +1284,9 @@ async fn resume_on(engine: &Engine, target: Target<'_>, session: &str) -> Result
         .put(session, Queue::release)
         .await
         .map_err(save_failed)?;
+    if release_holds(engine, target) {
+        return Ok(saved.shown(&engine.home));
+    }
     if !is_running(engine, target, session)
         .await
         .map_err(queue_failed)?
@@ -1735,7 +1792,7 @@ where
     let engine = engine.clone();
     let work = async move {
         let _turn = engine.turn(&session).await;
-        let _admitted = crate::session_move::admit_turn(&engine, &session, None).await?;
+        let _admitted = crate::session_move::admit(&engine, &session, None).await?;
         let lease = command_target(&engine, &session).await?;
         if !advance(&engine, lease.target(), &session, &id, how).await? {
             return Err(not_waiting());
@@ -2868,9 +2925,8 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
     let Some(place) = Place::passive(engine, session).await else {
         return Ok(());
     };
-    let engine_held =
-        matches!(place, Place::Engine(_)) && crate::release::holding(&engine.home.join("run"));
     let lease = place.target();
+    let engine_held = release_holds(engine, lease);
     let saved = engine.queues.get(session).await?;
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());

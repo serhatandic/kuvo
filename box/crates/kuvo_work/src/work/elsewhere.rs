@@ -12,18 +12,22 @@ use std::{
 };
 
 use kuvo_peers::{
-    calls::{Admission, Answer, MailedCall, RemoteWork, Tool, WorkFuture},
+    calls::{
+        Admission, Answer, MailedCall, Permission, RemoteWork, Resource, Rule, Tool, WorkFuture,
+    },
     directory::ComputerKey,
     outbox::Id,
     remote_work::WorkHandle,
     work_rows::{Row, RowsByLead},
 };
 
+use serde_json::{Value, json};
+
 use super::{
     Work,
     watch::{
         started_by,
-        tools::{line_of, working_now},
+        tools::{Ask, line_of, working_now},
     },
 };
 
@@ -73,7 +77,7 @@ impl RemoteWork for Elsewhere {
             let tool = call.request.tool;
             if !matches!(
                 tool,
-                Tool::ListSessions | Tool::StopSession | Tool::CompactSession
+                Tool::ListSessions | Tool::StopSession | Tool::CompactSession | Tool::AnswerAsk
             ) {
                 return Ok(Admission::Reject(
                     "That isn't something another computer can do here.".into(),
@@ -98,6 +102,9 @@ impl RemoteWork for Elsewhere {
                     "There's no session {session} on this computer."
                 )));
             }
+            if tool == Tool::AnswerAsk {
+                return Ok(work.admit_answer(&engine, call).await);
+            }
             Ok(Admission::Ready)
         })
     }
@@ -116,6 +123,14 @@ impl RemoteWork for Elsewhere {
                 }
                 Tool::StopSession => work.stop_session_tool(&engine, lead, args).await,
                 Tool::CompactSession => work.compact_session_tool(&engine, lead, args).await,
+                Tool::AnswerAsk => {
+                    let as_lead = &call.request.lead;
+                    let by = match &as_lead.bot {
+                        Some(bot) => json!({ "bot": bot.bot, "name": bot.name }),
+                        None => json!({ "name": as_lead.name }),
+                    };
+                    work.answer_ask_tool(&engine, lead, by, args).await
+                }
                 _ => {
                     return Err(not_now(
                         "That isn't something another computer can do here.",
@@ -145,6 +160,49 @@ impl RemoteWork for Elsewhere {
 }
 
 impl Work {
+    /// What an answer from a lead elsewhere may give: refused here as its own tool would refuse
+    /// it, or, for an allow, what the peers judge it by (the lead's own rules where it lives and
+    /// this computer's, each on its own).
+    async fn admit_answer(&self, engine: &kuvo_engine::BotEngine, call: &MailedCall) -> Admission {
+        let refused = |text: String| Admission::Refused(Answer::refused(text));
+        let args = &call.request.args;
+        let (data, permission) = match self.ask_to_answer(engine, &call.from, args).await {
+            Err(said) => return refused(said.text),
+            Ok((_, Ask::Question(_))) => return Admission::Ready,
+            Ok((data, Ask::Permission(permission))) => (data, permission),
+        };
+        match args.get("decision").and_then(Value::as_str) {
+            Some("deny") => return Admission::Ready,
+            Some("allow") => {}
+            _ => return refused("Say allow or deny (decision).".into()),
+        }
+        if let Some(why) = self.ask_first_refusal(&data) {
+            return refused(why);
+        }
+        let checks = self.allow_checks(engine, &data, &permission).await;
+        let approvals = crate::approval::Approvals::new(&self.home, self.settings.is_mac());
+        let local_rules = approvals.permissions_here().unwrap_or_default();
+        let title = data["title"].as_str().filter(|title| !title.is_empty());
+        Admission::Permission(Permission {
+            title: title.unwrap_or("New Session").to_owned(),
+            ask_first: false,
+            // (The sandbox's state is 6.1's: until then nothing here counts as run in it.)
+            sandboxed: false,
+            checks: checks
+                .into_iter()
+                .map(|(action, value)| Resource { action, value })
+                .collect(),
+            local_rules: local_rules
+                .into_iter()
+                .map(|rule| Rule {
+                    action: rule.action,
+                    resource: rule.resource,
+                    effect: rule.effect,
+                })
+                .collect(),
+        })
+    }
+
     /// The rows of the sessions here whose lead lives elsewhere, by lead: each session's leads are
     /// the first conversation above it, up its starters, that isn't here, and those in its line
     /// that aren't. Which computer each lives on is the peers' to say. None where the engine

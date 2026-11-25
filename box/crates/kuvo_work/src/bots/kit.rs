@@ -402,12 +402,10 @@ mod tests {
     fn kit(is_mac: bool, zone_yours: bool) -> Kit {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("bin")).unwrap();
-        std::fs::copy(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../src/shared/bot-words.json"
-            ),
+        // Built in, so the test runs on a computer without this checkout.
+        std::fs::write(
             home.path().join("bin/bot-words.json"),
+            include_str!("../../../../src/shared/bot-words.json"),
         )
         .unwrap();
         Kit::read(

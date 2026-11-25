@@ -6,6 +6,7 @@ pub mod answers;
 pub mod asks;
 pub mod bot;
 pub mod elsewhere;
+pub mod policy;
 pub mod projects;
 pub mod records;
 pub mod settings;
