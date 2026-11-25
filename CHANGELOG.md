@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Saved Work Queue attachments on Rust computers stay available while other work is being saved.
+
 - After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
 
 - Rust computers reuse fresh GitHub Work Queue readings from your other computers and refuse to restore or hand over an item beside a live copy of the same issue.
