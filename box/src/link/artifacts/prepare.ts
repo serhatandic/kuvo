@@ -87,7 +87,11 @@ export async function prepareArtifactServices(root: string, bots: string, sessio
         return undefined
       }
     })
-    try { writeSecret(checkpoint, JSON.stringify(checkpoints)) }
+    // An unchanged checkpoint stays as it is: a departed computer's released work
+    // must not change by starting again.
+    const same = (a: Checkpoints, b: Checkpoints) => Object.keys(a).length === Object.keys(b).length
+      && Object.entries(a).every(([id, revision]) => b[id] === revision)
+    try { if (!same(previous, checkpoints)) writeSecret(checkpoint, JSON.stringify(checkpoints)) }
     catch (error) { console.error("artifacts: could not checkpoint saved citations", error) }
     return { prepared }
   } catch (error) {
