@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, fs, path::{Path, PathBuf}, time::Duration};
 
-use kuvo_store::{format::ObjectFormat, locks::OwnedLock};
+use kuvo_store::locks::OwnedLock;
 use serde_json::{Map, Value};
 
 use crate::config::{ConfigPaths, SERVERS, SettingChange, SettingsChanged, SettingsRead, is_own_home_mac, map_value_at, read_settings_file, rewrite_key_refs, sorted_json, write_settings_file};
@@ -151,11 +151,10 @@ fn write_upgrade(catalog: &[CatalogIntegration], popular: Option<&Map<String, Va
     if let Some(t) = trouble && (!keys_gone.is_empty() || !changes.is_empty()) { eprintln!("Integrations couldn't be brought up to date: {t}"); }
 }
 
+/// Whether an update is on trial (`run/update-trial`, as the keeper marks it): what can't come
+/// back with the version before waits until it's confirmed.
 pub fn update_on_trial(home: &Path) -> bool {
-    let p = home.join("run/update-trial.json");
-    if !p.exists() { return false; }
-    let _ = ObjectFormat::additive("update trial").read(&p);
-    true
+    home.join("run/update-trial").exists()
 }
 
 fn find_kuvo_keys(val: &Value, out: &mut Vec<String>) {
