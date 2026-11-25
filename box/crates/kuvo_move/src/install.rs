@@ -69,7 +69,14 @@ impl Judgement {
 
 /// An interrupted making can authorize recovery. Validate both records before
 /// deciding whether this installation needs either recovery path.
-pub fn check_attempts(home: &Home) -> Result<(), Error> {
+pub fn check_preflight(home: &Home, installed_bin: &Path) -> Result<(), Error> {
+    let format = ObjectFormat::additive("Installed Box receipt");
+    if format
+        .read(&installed_bin.join(".installed.json"))?
+        .is_none()
+    {
+        format.read(&home.updates().join("installed.json"))?;
+    }
     let disk = Disk(home.root().into());
     for marker in ["updates/install/making", "updates/rehome/new"] {
         attempt_at(&disk.path(marker)?)?;

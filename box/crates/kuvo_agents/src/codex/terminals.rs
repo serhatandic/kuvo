@@ -9,6 +9,7 @@ use std::{
 };
 
 use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::projection::{OUTPUT_LIMIT, tail, unwrap_shell};
@@ -50,6 +51,22 @@ struct Terminal {
     shell: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct SavedTerminal {
+    id: String,
+    item: Option<String>,
+    since: u64,
+    order: WorkOrder,
+    job: Option<crate::background::Command>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Saved {
+    listed: Vec<SavedTerminal>,
+    outputs: HashMap<String, Printed>,
+    unknown: Option<Helper>,
+}
+
 type Outputs = Arc<Plain<HashMap<String, Printed>>>;
 
 pub(super) struct Terminals {
@@ -82,6 +99,66 @@ impl Terminals {
     /// Commands it left running (or not known yet): its app-server is kept for them.
     pub fn keeps_working(&self) -> bool {
         !self.listed.is_empty() || self.unknown.is_some()
+    }
+
+    pub fn snapshot(&self) -> Option<Value> {
+        self.keeps_working().then(|| {
+            serde_json::json!(Saved {
+                listed: self
+                    .listed
+                    .iter()
+                    .map(|terminal| SavedTerminal {
+                        id: terminal.id.clone(),
+                        item: terminal.item.clone(),
+                        since: terminal.since,
+                        order: terminal.order.clone(),
+                        job: terminal
+                            .shell
+                            .as_deref()
+                            .and_then(|id| self.background.command(id)),
+                    })
+                    .collect(),
+                outputs: lock(&self.outputs)
+                    .iter()
+                    .filter(|(id, _)| self
+                        .listed
+                        .iter()
+                        .any(|terminal| terminal.item.as_ref() == Some(*id)))
+                    .map(|(id, output)| (id.clone(), output.clone()))
+                    .collect(),
+                unknown: self.unknown.clone(),
+            })
+        })
+    }
+
+    pub fn restore(&mut self, saved: Value, stop: impl Fn(&str) -> Stop) {
+        let Ok(saved) = serde_json::from_value::<Saved>(saved) else {
+            return;
+        };
+        *lock(&self.outputs) = saved.outputs;
+        self.unknown = saved.unknown;
+        for terminal in saved.listed {
+            let shell = terminal.job.map(|job| {
+                let id = job.id.clone();
+                self.background.restore(
+                    job,
+                    Arc::new(Source {
+                        outputs: self.outputs.clone(),
+                        item: terminal.item.clone(),
+                        stop: stop(&terminal.id),
+                    }),
+                );
+                id
+            });
+            self.listed.push(Terminal {
+                id: terminal.id,
+                item: terminal.item,
+                since: terminal.since,
+                order: terminal.order,
+                shell,
+            });
+        }
+        self.tell();
     }
 
     /// What its app-server said of a command: when it began, and what it printed.

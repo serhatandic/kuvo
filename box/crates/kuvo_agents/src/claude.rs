@@ -277,6 +277,29 @@ impl Adoption for Claude {
         })
     }
 
+    fn restore_idle<'a>(
+        &'a self,
+        store: &'a crate::session_store::SessionStore,
+        record: &'a Record,
+    ) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            if record
+                .meta
+                .get("claudeTasks")
+                .is_none_or(serde_json::Value::is_null)
+                || !record.turns()?.is_empty()
+            {
+                return Ok(());
+            }
+            if let Some(session) = holder_session(record)
+                && let Some(context) = store.context(session, &self.provider).await?
+            {
+                self.open_thread(context).await?;
+            }
+            Ok(())
+        })
+    }
+
     /// A turn the resident won't take up (its end was written as the last resident went): the
     /// Claude Code left in it goes, so the conversation's next message starts one that resumes it.
     fn let_go<'a>(&'a self, turn: &'a TurnNote) -> AdapterCall<'a, ()> {

@@ -45,7 +45,7 @@ pub fn now() -> u64 {
 }
 
 /// A command an agent runs, as the bar lists it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Command {
     pub id: String,
     pub running: bool,
@@ -61,7 +61,7 @@ pub struct Command {
 }
 
 /// The end of what a command printed, and how much it printed in all (bytes).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Printed {
     pub output: String,
     pub total: u64,
@@ -194,9 +194,15 @@ impl Background {
             order,
             foreground,
         };
+        self.restore(job, source);
+        id
+    }
+
+    /// Rebind a running command to its adopted agent, preserving the public id.
+    pub(crate) fn restore(&self, job: Command, source: Arc<dyn CommandSource>) {
         self.change(|state| {
             state.commands.insert(
-                id.clone(),
+                job.id.clone(),
                 Kept {
                     job,
                     source,
@@ -204,7 +210,6 @@ impl Background {
                 },
             )
         });
-        id
     }
 
     /// It ended (or its agent did): the bar lets it go.

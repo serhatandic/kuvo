@@ -675,7 +675,14 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
 }
 
 fn refused_install_attempt(home: &Home) -> bool {
-    if let Err(error) = kuvo_move::install::check_attempts(home) {
+    let checked = || -> Result<(), Box<dyn std::error::Error>> {
+        let bin = kuvo_keeper::fleet::selected(home)?.map_or_else(
+            || home.bin(),
+            |release| home.root().join(release.to_string()),
+        );
+        Ok(kuvo_move::install::check_preflight(home, &bin)?)
+    };
+    if let Err(error) = checked() {
         println!(
             "{}",
             serde_json::json!({"result":"refused","message":error.to_string()})

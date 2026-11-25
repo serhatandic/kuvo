@@ -4731,6 +4731,53 @@ test("installer refuses future or unreadable making markers before acting", t =>
   }
 });
 
+test("installer checks the selected installed receipt before judging or staging", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  env.HOME = env.USERPROFILE = fs.realpathSync(env.HOME);
+  const home = path.join(env.HOME, ".kuvo-code");
+  if (!binary.typescript) privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.receipt-fixture") : undefined;
+  const ask = verb => {
+    if (bundle && verb !== "media-status") return macInstallerRequest(fixture, bundle, verb);
+    const args = binary.typescript ? ["--config=/dev/null", "--no-env-file", binary.file, "install", `--${verb}`, "--root", ".kuvo-code"]
+      : verb === "media-status" ? ["install", "--status", "--root", ".kuvo-code", "--media", release, ...(bundle ? ["--app", bundle] : [])]
+      : verb === "status" ? ["install", "--status", "--root", ".kuvo-code"] : ["install-linux", verb === "shell-status" ? "status" : verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, { cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000 });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const primary = path.join(home, "bin/.installed.json"), legacy = path.join(home, "updates/installed.json");
+  const verbs = process.platform === "win32" ? ["status"] : ["status", "new", "move"];
+  if (!binary.typescript) verbs.push("media-status", ...(process.platform === "linux" ? ["shell-status"] : []));
+  for (const file of [legacy, primary]) {
+    for (const bytes of ['{}', '{"formatVersion":0}', '{"formatVersion":1}']) {
+      write(file, bytes);
+      assert.equal(ask("status")[0], 0);
+    }
+    for (const [bytes, message] of [['{"formatVersion":2,"extra":{"keep":true}}', "Installed Box receipt format version 2 is unsupported (this build writes 1)."], ['{', `Kuvo cannot read ${file}; its bytes were kept.`], ['[]', `Kuvo cannot read ${file}; its bytes were kept.`]]) {
+      write(file, bytes);
+      for (const verb of verbs) {
+        assert.deepEqual(ask(verb), [1, { result: "refused", message }]);
+        assert.equal(fs.readFileSync(file, "utf8"), bytes);
+        assert.equal(fs.existsSync(path.join(home, "active-release")), false);
+      }
+    }
+    fs.unlinkSync(file);
+  }
+  write(legacy, '{"formatVersion":2}');
+  write(primary, '{"formatVersion":1}');
+  assert.equal(ask("status")[0], 0, "the selected receipt wins over legacy");
+  assert.equal(fs.readFileSync(legacy, "utf8"), '{"formatVersion":2}');
+  if (!binary.typescript) {
+    const selected = "versions/0.8.0-111111111111/bin";
+    write(path.join(home, "active-release"), selected);
+    write(path.join(home, selected, ".installed.json"), '{"formatVersion":2}');
+    assert.deepEqual(ask("status"), [1, { result: "refused", message: "Installed Box receipt format version 2 is unsupported (this build writes 1)." }]);
+  }
+});
+
 // Directory identity is read from the same native metadata as the wipe journal.
 function wipeDirectoryIdentity(folder) {
   if (process.platform !== "win32") {

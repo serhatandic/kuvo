@@ -10,6 +10,7 @@ use std::{
 };
 
 use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -23,7 +24,7 @@ pub(super) trait Calls: Send + Sync {
     fn call(&self, request: Value) -> BoxFuture<'_, io::Result<Value>>;
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct Task {
     kind: String,
     description: String,
@@ -37,7 +38,7 @@ struct Task {
     last: Option<Printed>,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct Known {
     tasks: HashMap<String, Task>,
     /// Those Claude Code says it has going now.
@@ -75,8 +76,84 @@ impl Tasks {
         !self.known().live.is_empty()
     }
 
+    pub fn snapshot(&self) -> Value {
+        let known = self.known();
+        if known.live.is_empty() {
+            return Value::Null;
+        }
+        let tasks: HashMap<_, _> = known
+            .tasks
+            .iter()
+            .filter(|(id, _)| known.live.contains(*id))
+            .map(|(id, task)| (id.clone(), task.clone()))
+            .collect();
+        let commands = tasks
+            .values()
+            .filter_map(|task| task.tool_use.as_ref())
+            .filter_map(|id| {
+                known
+                    .commands
+                    .get(id)
+                    .map(|command| (id.clone(), command.clone()))
+            })
+            .collect();
+        json!(Known {
+            tasks,
+            live: known.live.clone(),
+            commands
+        })
+    }
+
+    pub fn restore(&self, saved: Value) {
+        let Ok(known) = serde_json::from_value::<Known>(saved) else {
+            return;
+        };
+        *self.known() = known;
+        let jobs: Vec<_> = {
+            let known = self.known();
+            known
+                .tasks
+                .iter()
+                .filter_map(|(id, task)| {
+                    let shell = task.shell.clone()?;
+                    Some((
+                        id.clone(),
+                        crate::background::Command {
+                            id: shell,
+                            running: true,
+                            command: task
+                                .tool_use
+                                .as_ref()
+                                .and_then(|call| known.commands.get(call))
+                                .cloned()
+                                .unwrap_or_else(|| task.description.clone()),
+                            cwd: self.cwd.clone(),
+                            exit: None,
+                            session: self.session.clone(),
+                            started: task.since,
+                            order: task.order.clone().unwrap_or_else(WorkOrder::next),
+                            foreground: false,
+                        },
+                    ))
+                })
+                .collect()
+        };
+        for (id, job) in jobs {
+            self.background.restore(
+                job,
+                Arc::new(ClaudeCommand {
+                    task: id,
+                    known: self.known.clone(),
+                    calls: self.calls.clone(),
+                    background: self.background.clone(),
+                }),
+            );
+        }
+        self.tell_tasks();
+    }
+
     /// What it said, for what it has going.
-    pub fn frame(&self, message: &Value) {
+    pub fn frame(&self, message: &Value) -> bool {
         match (message["type"].as_str(), message["subtype"].as_str()) {
             (Some("assistant"), _) => self.calls_in(message),
             (Some("system"), Some(subtype)) => match subtype {
@@ -84,11 +161,12 @@ impl Tasks {
                 "task_updated" => self.updated(message),
                 "task_notification" => self.notified(message),
                 "background_tasks_changed" => self.changed(message),
-                _ => return,
+                _ => return false,
             },
-            _ => return,
+            _ => return false,
         }
         self.tell_tasks();
+        true
     }
 
     /// Each Bash call's command, for the bar to name it by.

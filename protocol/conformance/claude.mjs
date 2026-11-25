@@ -20,7 +20,7 @@ export function claudeEnvironment(binary, home, env, fixture) {
     agents: binary.typescript ? path.join(home, "agents") : undefined,
     ...fixture,
   });
-  const system = process.platform === "win32" ? path.join(env.SystemRoot, "System32") : "/usr/bin:/bin";
+  const system = process.platform === "win32" ? [path.join(env.SystemRoot, "System32"), path.dirname(binary.file)].join(path.delimiter) : "/usr/bin:/bin";
   return { ...env, KUVO_TEST_PATH_ONLY: "1", PATH: [bin, system].join(path.delimiter) };
 }
 
