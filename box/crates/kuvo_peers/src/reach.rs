@@ -71,6 +71,9 @@ impl Reach {
     }
 
     pub fn unreachable(&mut self, run: &Path, key: &str, now: Millis) -> io::Result<()> {
+        // A predecessor can have recorded a newer observation on disk before
+        // this resident took up its peer view. Keep that record when changing one peer.
+        *self = Self::load(run);
         let checked = self
             .checked
             .get(key)
@@ -92,6 +95,7 @@ impl Reach {
     }
 
     pub fn heard(&mut self, run: &Path, key: &str) -> io::Result<bool> {
+        *self = Self::load(run);
         if self.checked.contains_key(key) {
             let mut next = self.checked.clone();
             next.remove(key);

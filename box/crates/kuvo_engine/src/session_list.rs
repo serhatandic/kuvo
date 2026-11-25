@@ -196,6 +196,16 @@ impl LocalSessions {
                 )
                 .await
                 .ok();
+            let mut background_edits = files
+                .subscribe(
+                    engine.home.join("run/work"),
+                    Options {
+                        create: true,
+                        ..Options::default()
+                    },
+                )
+                .await
+                .ok();
             let mut agent_edits = if engine.agent_sessions.is_some() {
                 files
                     .subscribe(
@@ -268,6 +278,12 @@ impl LocalSessions {
                     changed = project_changes(&mut edits) => {
                         if !changed {
                             edits = None;
+                            continue;
+                        }
+                    },
+                    changed = background_changes(&mut background_edits) => {
+                        if !changed {
+                            background_edits = None;
                             continue;
                         }
                     },
@@ -1032,6 +1048,26 @@ async fn project_changes(edits: &mut Option<Subscription>) -> bool {
     false
 }
 
+async fn background_changes(edits: &mut Option<Subscription>) -> bool {
+    let Some(edits) = edits else {
+        return std::future::pending().await;
+    };
+    while let Some(notice) = edits.recv().await {
+        match notice {
+            Notice::Rescan => return true,
+            Notice::Changed { paths }
+                if paths
+                    .iter()
+                    .any(|path| path == Path::new("background.json")) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
     let Some(edits) = edits else {
         return std::future::pending().await;
@@ -1108,10 +1144,16 @@ fn measure(
     asks: &crate::asks::Book,
 ) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
     let filing = Filing::new(projects, worktrees, engine_facts);
+    let background = kuvo_store::background::active_sessions(&home.join("run"), crate::disk::now());
     sessions.extend(rows.iter().map(|row| {
         (
             row.session.id.clone(),
-            facts(&row.session, home, &filing, row.running),
+            facts(
+                &row.session,
+                home,
+                &filing,
+                row.running || background.contains(&row.session.id),
+            ),
         )
     }));
 
@@ -1352,7 +1394,16 @@ fn facts(session: &Session, home: &Path, filing: &Filing<'_>, running: bool) -> 
     } else if let Some(starter) = note("startedBy").as_str().filter(|id| !id.is_empty()) {
         set("line", json!([starter]));
     }
-    if let Some(bot) = note("bot").as_str().filter(|id| !id.is_empty()) {
+    let bot = note("bot")
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            if kind == Kind::Subagent {
+                return None;
+            }
+            note("by")["bot"].as_str().filter(|id| !id.is_empty())
+        });
+    if let Some(bot) = bot {
         set("bot", json!(bot));
     }
     if running {
