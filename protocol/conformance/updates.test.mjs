@@ -1546,11 +1546,12 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   write(trial, previous + "/bin");
   const sender = "ses_confirmedWork", recipient = "ses_returningWork";
   const mainChild = "ses_childOfReturning", memberChild = "ses_childOfConfirmed";
-  for (const [computer, id, child, lead] of [[main, sender, mainChild, recipient], [member, recipient, memberChild, sender]]) {
+  const mainToolChild = "ses_toolChildOfReturning", memberToolChild = "ses_toolChildOfConfirmed";
+  for (const [computer, id, child, toolChild, lead] of [[main, sender, mainChild, mainToolChild, recipient], [member, recipient, memberChild, memberToolChild, sender]]) {
     const directory = path.join(computer.home, "chats");
     fs.mkdirSync(directory, { recursive: true });
     computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
-    computer.engine.sessions.push({ ...sessionOf({ id: child, title: child, directory }), metadata: {
+    for (const id of [child, toolChild]) computer.engine.sessions.push({ ...sessionOf({ id, title: id, directory }), metadata: {
       kuvo: { startedBy: lead, line: [lead], wake: ["finished"], depth: 1 },
     } });
   }
@@ -1599,6 +1600,27 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     const inFlight = mail(from, to, peer, { call: { id, from: lead, made: at, at, ...call } });
     calls.push({ id, file, to, child, inFlight, result: path.join(to.home, "run/work/call-results", id + ".json") });
   }
+  // A real caller, not a prebuilt outbox record, also keeps its work call through the trial.
+  const requested = [];
+  for (const [from, to, record, lead, child, peer] of [
+    [main, member, observer, sender, memberToolChild, peerKey],
+    [member, main, returning, recipient, mainToolChild, mainKey],
+  ]) {
+    const homes = path.join(from.home, "run/work/homes.json");
+    const before = fs.existsSync(homes) ? readJSON(homes) : {};
+    // The lead remembers the computer on which it previously started this child.
+    write(homes, encode({ ...before, [child]: { key: peer, at: Date.now() } }));
+    const answer = await request(record, "POST", "kuvo/agent-tools", { name: "stop_session", arguments: { session: child }, session: lead });
+    assert.equal(answer.status, 200, answer.text);
+    assert.equal(answer.json.isError, false, answer.json.text);
+    assert.match(answer.json.text, /kept/);
+    const outbox = path.join(from.home, "run/outbox/sending");
+    const saved = await until(() => fs.readdirSync(outbox).filter(name => name.startsWith("cal_")).map(name => path.join(outbox, name)).find(file => {
+      try { return readJSON(file).call?.args?.session === child; } catch { return false; }
+    }), "the actual tool should save its work call");
+    assert.equal(readJSON(saved).sentTo, undefined);
+    requested.push({ from, to, lead, child, saved });
+  }
   const pending = [];
   for (const [computer, local, remote, here, there] of [
     [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
@@ -1626,6 +1648,10 @@ test("the returning bridge stays out of work placement during its Rust trial", {
 
   // Four half-second remote-work rounds: a held call cannot be used as the normal away probe.
   await new Promise(resolve => setTimeout(resolve, 2000));
+  for (const { saved, to, child } of requested) {
+    assert.equal(readJSON(saved).sentTo, undefined);
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 0);
+  }
   for (const { file, to, child, result } of calls) {
     assert.equal(readJSON(file).sentTo, undefined, "the held call must not be marked sent");
     assert.equal(fs.existsSync(result), false, "an in-flight call must not be accepted on trial");
@@ -1660,6 +1686,32 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     }), "the receiver should acknowledge a replay of the previously held call");
     assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1,
       "the real stop call must take effect once, only after confirmation");
+  }
+  for (const { from, to, lead, child, saved } of requested) {
+    await until(() => !fs.existsSync(saved), "the caller's real work call must settle", 20000);
+    const heard = () => from.engine.asked.filter(each => each.method === "POST" && each.path === `/api/session/${lead}/prompt` && each.json?.text?.includes(`Stopped "${child}".`));
+    await until(() => heard().length === 1, "the caller's lead should hear the actual result", 20000);
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1);
+    const id = path.basename(saved, ".json");
+    assert.ok(fs.existsSync(path.join(to.home, "run/work/call-results", id + ".json")));
+    const source = readJSON(path.join(from.home, "run/link.json")), destination = readJSON(path.join(to.home, "run/link.json"));
+    const sourceSecret = Buffer.from(source.key, "base64url"), destinationSecret = Buffer.from(destination.key, "base64url");
+    const sourceAddress = relayAddress(Buffer.from(source.secret, "base64url")), destinationAddress = relayAddress(Buffer.from(destination.secret, "base64url"));
+    const original = relay.delivered.find(({ from, to, payload }) => {
+      if (!from.equals(sourceAddress) || !to.equals(destinationAddress)) return false;
+      const packet = codec.readFrame(payload);
+      return packet?.kind === codec.Frame.mail && JSON.parse(codec.openOneWay(packet.body, destinationSecret, codec.publicOf(sourceSecret)).payload).call?.id === id;
+    });
+    assert.ok(original, "the real caller's packet was delivered");
+    const before = relay.delivered.length;
+    relay.replay(original);
+    await until(() => relay.delivered.slice(before).some(({ from, to, payload }) => {
+      if (!from.equals(destinationAddress) || !to.equals(sourceAddress)) return false;
+      const packet = codec.readFrame(payload);
+      return packet?.kind === codec.Frame.mail && JSON.parse(codec.openOneWay(packet.body, sourceSecret, codec.publicOf(destinationSecret)).payload).delivered?.id === id;
+    }), "a repeated actual call receives its saved receipt");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1);
+    assert.equal(heard().length, 1);
   }
   const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
   assert.equal(direct.status, 202, direct.text);
