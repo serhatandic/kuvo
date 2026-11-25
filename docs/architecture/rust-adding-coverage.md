@@ -284,6 +284,20 @@ classify. Startup runs the move opener. Applicant enrollment uses the store's
 layout gate after code validation so a bad code leaves the home untouched and an
 older layout is kept for the move.
 
+## Structural differences
+
+- **Connect keeps its tries in memory.** TypeScript leaves each Connect in
+  `run/reach-again.json` because its SSH `route` command runs in a process of
+  its own, apart from the link that sends the ask. In Rust, `route` relays to
+  the running resident's own dispatcher, so the resident holds the tries
+  (20 seconds each) and nothing else reads the file. A row shows the computer
+  as connecting, and the peer is asked for its agents, exactly as in TypeScript.
+- **A main doesn't take forwarded computer changes.** TypeScript members send
+  a rename or removal to their main as a forwarded act. No released box (0.5 to
+  0.7.2, beta.1) is in a setup to send one, and later TypeScript betas never
+  share a setup with Rust, so Rust members reach the main through the setup's
+  own messages instead.
+
 ## Home inventory verdicts
 
 The six differential runs compared the full stopped-home inventories
