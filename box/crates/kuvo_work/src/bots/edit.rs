@@ -145,17 +145,7 @@ fn note_edited(folder: &Path, fields: &[&str], at: Option<&Map<String, Value>>) 
         return;
     };
     let file = folder.join("edited.json");
-    let mut times: Map<String, Value> = kuvo_store::files::text_of(&file)
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(field, at)| {
-            let at = at.as_f64()?;
-            ((now as f64) - at < EDITED_KEPT as f64)
-                .then(|| (field, json!(at.min(now as f64) as i64)))
-        })
-        .collect();
+    let mut times = edited_times(folder);
     for field in fields {
         let was = times.get(*field).and_then(Value::as_f64).unwrap_or(0.0);
         let given = at
@@ -166,6 +156,22 @@ fn note_edited(folder: &Path, fields: &[&str], at: Option<&Map<String, Value>>) 
     }
     let text = serde_json::to_string(&Value::Object(times)).expect("JSON");
     let _ = kuvo_store::files::write_secret(&file, text.as_bytes());
+}
+
+/// When each field of a bot (in `folder`) was last changed, as `edited.json` keeps them lately.
+pub(super) fn edited_times(folder: &Path) -> Map<String, Value> {
+    let now = jiff::Timestamp::now().as_millisecond();
+    kuvo_store::files::text_of(&folder.join("edited.json"))
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(field, at)| {
+            let at = at.as_f64()?;
+            ((now as f64) - at < EDITED_KEPT as f64)
+                .then(|| (field, json!(at.min(now as f64) as i64)))
+        })
+        .collect()
 }
 
 /// A change made as of when each field was given (`times`, by this clock), where only a submitting

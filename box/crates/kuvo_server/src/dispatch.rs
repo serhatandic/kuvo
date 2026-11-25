@@ -421,6 +421,7 @@ pub struct Registry {
     engine: Option<Fallback>,
     socket: Option<SocketHandler>,
     activity: Option<Activity>,
+    client_activity: Option<tokio::sync::watch::Sender<usize>>,
     retired: Vec<Retired>,
 }
 
@@ -433,6 +434,15 @@ struct Retired {
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The number of admitted client requests/streams still being served. A short
+    /// request releases its interest with its response; a followed line holds it
+    /// until disconnected. Internal box/agent calls do not keep periodic work alive.
+    pub fn client_activity(&mut self) -> tokio::sync::watch::Receiver<usize> {
+        self.client_activity
+            .get_or_insert_with(|| tokio::sync::watch::channel(0).0)
+            .subscribe()
     }
 
     /// Observe the authenticated callers of admitted requests.
@@ -550,6 +560,39 @@ impl Registry {
     }
 }
 
+struct ClientLease(tokio::sync::watch::Sender<usize>);
+impl ClientLease {
+    fn new(sender: &tokio::sync::watch::Sender<usize>) -> Self {
+        sender.send_modify(|n| *n += 1);
+        Self(sender.clone())
+    }
+}
+impl Drop for ClientLease {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
+struct ClientBody {
+    body: Body,
+    _lease: ClientLease,
+}
+impl hyper::body::Body for ClientBody {
+    type Data = Bytes;
+    type Error = io::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<io::Result<Frame<Bytes>>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
+    }
+}
+
 #[derive(Clone)]
 pub struct Dispatcher(Arc<Registry>);
 
@@ -585,8 +628,33 @@ impl Dispatcher {
         cancel: CancellationToken,
         extensions: http::Extensions,
     ) -> Reply {
-        let reply = self.route(request, cancel, extensions).await;
-        let mut reply = reply;
+        let client = self
+            .0
+            .client_activity
+            .as_ref()
+            .filter(|_| {
+                admissible(&request).is_ok()
+                    && match request.caller.transport() {
+                        Transport::Http {
+                            internal: false,
+                            origin: LocalOrigin::App | LocalOrigin::Mac | LocalOrigin::Direct,
+                        }
+                        | Transport::Ssh { internal: false } => true,
+                        Transport::AddressedSsh | Transport::Relay => {
+                            request.caller.pairing().is_some()
+                        }
+                        _ => false,
+                    }
+            })
+            .map(ClientLease::new);
+        let mut reply = self.route(request, cancel, extensions).await;
+        if let Some(lease) = client {
+            reply.body = ClientBody {
+                body: reply.body,
+                _lease: lease,
+            }
+            .boxed_unsync();
+        }
         reply.headers.insert(
             ROUTE_VERSION_HEADER,
             HeaderValue::from_static(ROUTE_VERSION),

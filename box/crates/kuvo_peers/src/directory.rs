@@ -166,6 +166,19 @@ const SHAPES: &[&str] = &[
 const FACES: &[&str] = &["calm", "happy", "sleepy", "wink", "curious", "bright"];
 
 impl Look {
+    /// Whether `given` is a look a bot can have: each part one of the words.
+    pub fn fits(given: Option<&serde_json::Value>) -> bool {
+        given.is_some_and(|given| {
+            [("color", COLORS), ("shape", SHAPES), ("face", FACES)]
+                .iter()
+                .all(|(name, words)| {
+                    given[*name]
+                        .as_str()
+                        .is_some_and(|word| words.contains(&word))
+                })
+        })
+    }
+
     /// A look as it was told: each part one of the words, else the plain one.
     pub(crate) fn of(given: &serde_json::Value) -> Option<Self> {
         let given = given.as_object()?;

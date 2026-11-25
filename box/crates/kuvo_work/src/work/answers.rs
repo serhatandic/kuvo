@@ -43,7 +43,10 @@ impl Work {
     /// The asks as `change` leaves them, under their lock (`run/work/.asks.lock`, the TS box's
     /// too): answered ones go once their tool has had them (or their conversation, told a week at
     /// most); unanswered ones of a bot that's gone, or asked a week ago and more.
-    pub(super) fn change_asks<T>(&self, change: impl FnOnce(&mut Vec<Value>) -> T) -> Result<T, Refused> {
+    pub(super) fn change_asks<T>(
+        &self,
+        change: impl FnOnce(&mut Vec<Value>) -> T,
+    ) -> Result<T, Refused> {
         let folder = self.records.folder();
         std::fs::create_dir_all(folder).map_err(failed)?;
         let (stale, wait) = (Duration::from_secs(10), Duration::from_secs(3));
@@ -88,15 +91,23 @@ impl Work {
     }
 
     /// What the asked action does, in its maker's words, and whether it failed; done now.
-    pub(super) async fn do_work(&self, ask: &Value) -> (String, bool) {
+    pub(super) async fn do_work(&self, ask: &Value, always: bool) -> (String, bool) {
         let here = self.settings.here();
         if ask["action"] == "resetLimits" {
-            // (Your plans' resets are used through the coding agents, which aren't in this box yet.)
-            if !ask["given"]["reset"].is_object() {
+            let Some(row) = ask["given"]["reset"]["row"].as_str() else {
                 return ("There's no reset to use in that ask.".into(), true);
-            }
-            let why = format!("The coding agents aren't running on {here} now");
-            return (format!("{why}, so the reset wasn't used."), true);
+            };
+            let Some(resets) = &self.resets else {
+                return (
+                    format!(
+                        "The coding agents aren't running on {here} now, so the reset wasn't used."
+                    ),
+                    true,
+                );
+            };
+            return resets
+                .spend_for(row, ask["name"].as_str().unwrap_or("Agent"), always, false)
+                .await;
         }
         let mut making = ask["given"].as_object().cloned().unwrap_or_default();
         let clones = ask["action"] == "cloneProject";
@@ -186,7 +197,7 @@ impl Work {
                     ready = allowed.map_err(|error| error.to_string());
                 }
                 match ready {
-                    Ok(()) => self.do_work(&ask).await,
+                    Ok(()) => self.do_work(&ask, answer == "always").await,
                     Err(error) => (format!("Couldn't do it: {error}"), true),
                 }
             }

@@ -1049,3 +1049,48 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **An engine bot switched to a coding agent's model** still answers 503: carrying its conversation
   on to the agents is 4.6's (carry and handover).
 - **Its group chats** as it's deleted: noted as left for group chats (5.3), as an engine bot's are.
+
+## 5.1d-3a — edits held for another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `bots::held`: `PATCH`/`DELETE kuvo/bots/<id>` for a bot that isn't here, or whose settings another computer keeps, held (202 `{held}`) in `run/bots-held/<bot>.json`, sealed with the link's secret as TypeScript seals it (each box reads the other's); only the app, a Mac or a paired client may hold one, scoped to the setup and its submitter where the setup is managed or the client paired; `held` and `refused` in `kuvo/bots`, its `elsewhere` marked `waiting`, `refused` and `unlisted` | `bots/held.ts` `holdEdit`, `heldLists`, `checkedChange`, `keeperOf`; `areas/bots.ts` `botRoute`; `bots/elsewhere.ts` `elsewhereSaid` |
+| Sent by the relay (`Bots::follow_held`, given the ownership handle and relay in serve): as held, each round, at once as its computer tells its agents again; `botEdit`, or `scopedBotEdit` with the submitter checked; only to a computer that says `bots.held` (and `bots.effort`, `bots.job-fields`, `data.queued-device-authority` for what needs them); moved on to the computer that lists the bot now | `sendHeld`, `heldBack`, `missingFeature`; `main.ts` |
+| The keeper: `botEdit` / `scopedBotEdit` done as Edit Bot (`change_as_of`, as of when each field was given, stale fields left out) or Delete Bot… would, field by field where the whole is refused, answered `botEdited` once per id (`run/bots-held-taken.json`); the holder lets it go, or says the refusal (`refused.json`, sealed), or sends it on | `takeBotEdit`, `changeWhatItCan`, `takeBotEdited`; `peers/mail.ts` |
+| This box announces `bots.held`, `bots.effort` and `bots.job-fields` to your other computers | `peers/agents.ts` `ownFeatures` |
+
+### Proof
+
+- `bots-held.test.mjs` (new): Studio away, Lab holds a change (202), refuses work settings (409)
+  and an empty name (400), lists it held and the bot waiting under its new name; Studio back takes
+  it and Lab lets it go; one Studio refuses is said; then Studio holds a delete for Lab's bot and
+  Lab, back, deletes it. Passes with Lab and Studio each TypeScript or Rust (all four pairings).
+  Failed on the old Rust (404 for a bot not here). WSL2 (static musl, Rust Lab and TypeScript
+  Studio): `bots-held`, `bots-elsewhere`, `agents-bots`. Native Windows: in 5.1's Windows slot.
+- Regressions: `bots` 40/40, `bots-elsewhere`, `agents-bots`, kuvo_work's bot tests, kuvo_peers
+  (but for the three relay cases that are the peers row's).
+
+### Gaps and owners
+
+- **On a Mac** the box's secret is in your Keychain, not `run/link.json`: a Mac's Rust box holds
+  nothing and lists neither until its identity comes from the Mac (the Mac row).
+- **A Mac over SSH proving its key** (TypeScript's `ssh` submitter) is held as this computer's.
+- **A machine named by its id on its Mac** in `on` (TypeScript's `peer.id`): by its key only.
+
+### Lighter
+
+- A wake-up round tells whether the engine or the coding agents have anything due in one look at
+  the folders (`fire::wanted_by`), not one each.
+- What's held is looked at on a 15-second round and as the relay connects, and only read when the
+  `bots-held` folder has files; nothing is held in memory but when each went.
+
+## 5.1d-3b — offline bot setting edits
+
+Not ported, with the `kuvo/data/edits*` adapters ([what not to port](rust-box.md#5-what-not-to-port)):
+`bots/offline.ts` (`botEditView`, `editBot`) answers only `botSettings` record edits, which only
+those adapters submit, and no client calls them (nothing in `gpui/` asks `kuvo/data/edits`). What a
+TypeScript box left of them stays: a bot's `offlineEdits` history and its `offlineJob` are kept as
+its description changes (`bots/here.rs` `change_description`) and its job is read from them
+(`bots/job.rs`), covered by the `bots` fixtures.

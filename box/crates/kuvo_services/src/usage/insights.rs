@@ -61,6 +61,7 @@ pub struct Service {
     alias: Arc<std::sync::OnceLock<String>>,
     hostname: String,
     gate: Arc<Mutex<()>>,
+    caught_up: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Service {
     pub fn new(home: PathBuf, name: String, key: String, hostname: &str) -> Self {
@@ -71,6 +72,7 @@ impl Service {
             hostname: hostname.to_owned(),
             alias: Arc::default(),
             gate: Arc::default(),
+            caught_up: Arc::default(),
         }
     }
     fn alias(&self) -> &str {
@@ -112,26 +114,56 @@ impl Service {
     /// Read only the compact usage projection of the new transcript format. Legacy JSON rows
     /// are consumed one conversation at a time. No prompt or reply words enter the index.
     pub fn scan(&self, db: &mut Connection, now: i64) -> Result<()> {
+        self.scan_changed(db, now, None)
+    }
+    fn scan_changed(
+        &self,
+        db: &mut Connection,
+        now: i64,
+        changed: Option<&BTreeSet<String>>,
+    ) -> Result<()> {
         let root = self.home.join("agents/sessions");
         let pricing = Pricing::load(Some(&self.home.join("agents/usage/pricing")))?;
         let mut headers = BTreeMap::new();
-        for folder in kuvo_store::files::list_of(&root) {
-            let folder = root.join(folder);
+        let mut wanted = changed
+            .cloned()
+            .unwrap_or_else(|| {
+                kuvo_store::files::list_of(&root)
+                    .into_iter()
+                    .filter_map(|name| name.to_str().map(str::to_owned))
+                    .collect()
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut seen = BTreeSet::new();
+        while let Some(id) = wanted.pop() {
+            if !id.starts_with("ses_")
+                || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || !seen.insert(id.clone())
+            {
+                continue;
+            }
+            let folder = root.join(&id);
             let Some(text) = kuvo_store::files::text_of(&folder.join("session.json")) else {
                 continue;
             };
             let Ok(session) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            if let Some(id) = session["id"].as_str() {
-                if folder.file_name().and_then(|s| s.to_str()) == Some(id) {
-                    headers.insert(id.to_owned(), (folder, session));
-                }
+            if session["id"].as_str() != Some(&id) {
+                continue;
             }
+            if let Some(parent) = session["parentID"].as_str() {
+                wanted.push(parent.to_owned());
+            }
+            headers.insert(id, (folder, session));
         }
         let tx = db.transaction()?;
         let mut seq = get(&tx, "sequence")?.and_then(|v| v.as_u64()).unwrap_or(0);
         for (id, (folder, session)) in &headers {
+            if changed.is_some_and(|selected| !selected.contains(id)) {
+                continue;
+            }
             let stamp: Vec<_> = [
                 "session.json",
                 "messages-v1.sqlite",
@@ -315,6 +347,89 @@ impl Service {
         )?;
         tx.commit()?;
         Ok(())
+    }
+    /// Once opened, reads are served straight from SQLite. A query just before the first
+    /// catch-up completes may help finish it, but it never schedules a periodic history scan.
+    fn ensure(&self, db: &mut Connection, now: i64) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if !self.caught_up.load(Ordering::Acquire) {
+            self.scan(db, now)?;
+            self.caught_up.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+    pub fn follow(&self, hub: kuvo_os::watch::WatchHub) -> tokio::task::JoinHandle<()> {
+        use kuvo_os::watch::{Notice, Options};
+        let service = self.clone();
+        tokio::spawn(async move {
+            // Subscribe before the initial catch-up: writes concurrent with it are not lost.
+            let root = service.home.join("agents/sessions");
+            let mut watch = match hub
+                .subscribe(
+                    root,
+                    Options {
+                        recursive: true,
+                        create: true,
+                    },
+                )
+                .await
+            {
+                Ok(watch) => watch,
+                Err(error) => {
+                    eprintln!("Couldn't follow Insights transcripts: {error}");
+                    return;
+                }
+            };
+            while let Some(notice) = watch.recv().await {
+                let mut changed = BTreeSet::new();
+                let mut rescan = false;
+                let mut add = |notice| match notice {
+                    Notice::Changed { paths } => {
+                        for path in paths {
+                            if let Some(id) = path.iter().next().and_then(|part| part.to_str()) {
+                                changed.insert(id.to_owned());
+                            }
+                        }
+                    }
+                    Notice::Rescan => rescan = true,
+                    Notice::Failed(error) => {
+                        eprintln!("Insights file watch: {error}");
+                        rescan = true;
+                    }
+                };
+                add(notice);
+                // File writes arrive in bursts (SQLite WALs and metadata). Batch a burst,
+                // not a timed full-history walk. Access-only events never reach this watcher.
+                let until = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+                while let Ok(Some(next)) = tokio::time::timeout_at(until, watch.recv()).await {
+                    add(next);
+                }
+                if !rescan && changed.is_empty() {
+                    continue;
+                }
+                let service = service.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let _gate = service.gate.lock().expect("insights gate");
+                    let mut db = service.open().map_err(|e| e.to_string())?;
+                    let now = jiff::Timestamp::now().as_millisecond();
+                    if rescan {
+                        service.scan(&mut db, now).map_err(|e| e.to_string())?;
+                        service
+                            .caught_up
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    } else {
+                        service
+                            .scan_changed(&mut db, now, Some(&changed))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok::<_, String>(())
+                })
+                .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    eprintln!("Couldn't fold Insights updates: {result:?}");
+                }
+            }
+        })
     }
 }
 fn provider_name(provider: &str) -> &str {
@@ -507,7 +622,7 @@ impl Service {
             .unwrap_or_else(TimeZone::system);
         let bounds = time_bounds(now, &zone, period * 2)?;
         let mut db = self.open()?;
-        self.scan(&mut db, now)?;
+        self.ensure(&mut db, now)?;
         let keys = [self.own_key(), self.alias()];
         let records = filter_rows(&db, &keys, &params, bounds[0].1, now)?;
         let start = bounds[period as usize].1;
@@ -808,7 +923,7 @@ impl Service {
             .unwrap_or_else(TimeZone::system);
         let days = time_bounds(now, &zone, period)?;
         let mut db = self.open()?;
-        self.scan(&mut db, now)?;
+        self.ensure(&mut db, now)?;
         let keys = [self.own_key(), self.alias()];
         let filter = Filter::new(keys, &params, days[0].1, now + 1);
         let local_computers = if keys[0] == keys[1] {
