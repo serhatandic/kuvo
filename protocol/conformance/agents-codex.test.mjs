@@ -3,9 +3,15 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
-import { boxBinary, request, until, write } from "./adapter.mjs";
-import { assertMatch, askFirst, idles, steps, texts, toolCalls } from "./claude.mjs";
-import { provider, scriptedCodex } from "./codex.mjs";
+import fs from "node:fs";
+import {
+  boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, request, scratch, until, write,
+} from "./adapter.mjs";
+import {
+  assertMatch, askFirst, idles, keptListener, steps, stopFixtureHolders, stopPids, texts, toolCalls,
+  transcript, twoReleases,
+} from "./claude.mjs";
+import { provider, scriptedCodex, seedCodexSession, standInCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
 const picker = "kuvo/models/offered?refresh=1";
@@ -102,7 +108,7 @@ function resident(fixture = {}) {
     if (skip) return;
     box.codex = await scriptedCodex(fixture);
     for (const [kind, permissions] of [["plain"], ["ask", askFirst]]) {
-      for (let index = 1; index <= 8; index++) {
+      for (let index = 1; index <= 16; index++) {
         const id = `ses_codex_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.codex.home, "projects", id);
         write(path.join(folder, ".keep"), "");
@@ -213,10 +219,10 @@ describe("Codex's turns", { skip }, () => {
     const card = await until(async () => (await box.codex.permissions(id))[0], "No card for the command.");
     assertMatch(card, { action: "shell", resources: ["npm test"], message: "It runs the tests." });
     await box.codex.replyPermission(id, card.id, "once");
-    assert.deepEqual((await box.codex.answered("ask-1")).result, { decision: "accept" });
+    assert.deepEqual((await box.codex.answeredFor("c1")).result, { decision: "accept" });
     const next = await until(async () => (await box.codex.permissions(id)).find((each) => each.resources?.[0] === "rm -rf build"), "No card for the second command.");
     await box.codex.replyPermission(id, next.id, "reject");
-    assert.deepEqual((await box.codex.answered("ask-2")).result, { decision: "decline" });
+    assert.deepEqual((await box.codex.answeredFor("c2")).result, { decision: "decline" });
     await box.codex.idles(id);
   });
 
@@ -249,3 +255,233 @@ describe("Codex's turns", { skip }, () => {
     assert.equal(idles(rows).length, 1);
   });
 });
+
+describe("Codex, more of what it does", { skip }, () => {
+  const box = resident();
+  const begun = (id) => until(() => box.codex.sent("turn/start").some((message) => message.params.input[0].text.includes(`go ${id}`)), "Codex never started.");
+
+  test("summarizing when you ask: Codex is asked with its own request, no turn of words, and the row shows it with no reply", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Hello." })]);
+    await box.codex.idles(id);
+    const answer = await box.codex.compact(id);
+    assert.equal(answer.status, 200, answer.text);
+    const rows = await box.codex.idles(id, 2);
+    assert.equal(box.codex.sent("thread/compact/start").filter((message) => message.params.threadId === box.codex.agentState(id).codexThread).length, 1);
+    const summaries = rows.filter((row) => row.type === "compaction");
+    assertMatch(summaries, [{ reason: "manual", status: "completed" }]);
+    assert.deepEqual(texts(rows), ["Hello."]);
+  });
+
+  test("its usage limit ends the turn as one, for the plan, with what Codex said", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      ["error", { error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" }, willRetry: false }],
+      { end: { status: "failed", error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" } } },
+    ]);
+    const rows = await box.codex.idles(id);
+    assertMatch(idles(rows)[0], { outcome: "failed" });
+    const reason = idles(rows)[0].error ?? idles(rows)[0].reason;
+    assertMatch(reason, { type: "limit", message: "You've hit your usage limit.", limit: { scope: "provider" } });
+  });
+
+  test("a file it cites as what it made shows as a file in the conversation, one it cites in its words as its path, and no directive shows raw", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      ["item/agentMessage/delta", { itemId: "m1", delta: "Made :codex-file-citation{path=\"/tmp/chart.png\" pur" }],
+      ["item/agentMessage/delta", { itemId: "m1", delta: "pose=\"output\"} from :codex-file-citation{path=\"data.csv\"}." }],
+      item("item/completed", { type: "agentMessage", id: "m1", text: "" }),
+    ]);
+    const rows = await box.codex.idles(id);
+    assert.equal(texts(rows).join(""), "Made  from `data.csv`.");
+    assertMatch(toolCalls(rows), [{ name: "kuvo-browser_show_file", state: { status: "completed", input: { path: "/tmp/chart.png" } } }]);
+  });
+
+  test("nothing dropped: an image it looked at, a function's output, and an item kind the box doesn't know", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/completed", { type: "imageView", id: "v1", path: "/tmp/shot.png" }),
+      item("item/completed", { type: "functionCallOutput", id: "f1", namespace: "browser", name: "open", output: "Opened." }),
+      item("item/started", { type: "futureThing", id: "x1", detail: "new" }),
+      item("item/completed", { type: "futureThing", id: "x1", detail: "new", result: "It worked." }),
+    ]);
+    const rows = await box.codex.idles(id);
+    const tools = toolCalls(rows);
+    assert.deepEqual(tools.map((tool) => tool.name), ["read", "browser.open", "futureThing"]);
+    assertMatch(tools[0].state, { status: "completed", input: { path: "/tmp/shot.png" } });
+    assert.ok(tools[0].state.content.some((part) => part.type === "file" && part.mime === "image/png"), JSON.stringify(tools[0].state.content));
+    assertMatch(tools[1].state, { status: "completed", content: [{ type: "text", text: "Opened." }] });
+    assertMatch(tools[2].state, { status: "completed", input: { detail: "new" }, content: [{ type: "text", text: "It worked." }] });
+  });
+
+  test("what Codex says for you to read, and a hook of yours, as notes and a step", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      ["warning", { message: "Your config has an unknown key." }],
+      ["model/rerouted", { fromModel: "gpt-test", toModel: "gpt-safe", reason: "highRiskCyberActivity" }],
+      ["hook/started", { run: { id: "h1", eventName: "PreToolUse", sourcePath: "/hooks/check.sh" } }],
+      ["hook/completed", { run: { id: "h1", eventName: "PreToolUse", status: "completed", entries: [{ kind: "context", text: "checked" }] } }],
+      item("item/completed", { type: "agentMessage", id: "m1", text: "Done." }),
+    ]);
+    const rows = await box.codex.idles(id);
+    const notes = rows.filter((row) => row.type === "synthetic").map((row) => row.text);
+    assert.deepEqual(notes, ["Your config has an unknown key.", "gpt-safe answered instead of gpt-test (Codex moves security-sensitive work to it)."]);
+    assertMatch(toolCalls(rows), [{ name: "hook", state: { status: "completed", input: { description: "PreToolUse hook" }, content: [{ type: "text", text: "checked" }] } }]);
+  });
+
+  test("Allow Always lets the same command through for the rest of the session without asking; another command still asks", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      { ask: ["item/commandExecution/requestApproval", { itemId: "c1", command: "npm test" }] },
+      { ask: ["item/commandExecution/requestApproval", { itemId: "c2", command: "npm test" }] },
+      { ask: ["item/commandExecution/requestApproval", { itemId: "c3", command: "rm -rf dist" }] },
+    ], { ask: true });
+    const card = await until(async () => (await box.codex.permissions(id))[0], "No card.");
+    await box.codex.replyPermission(id, card.id, "always");
+    assert.deepEqual((await box.codex.answeredFor("c1")).result, { decision: "accept" });
+    // The same command again: answered for you, with no card.
+    assert.deepEqual((await box.codex.answeredFor("c2")).result, { decision: "accept" });
+    const other = await until(async () => (await box.codex.permissions(id)).find((each) => each.resources?.[0] === "rm -rf dist"), "The other command didn't ask.");
+    await box.codex.replyPermission(id, other.id, "reject");
+    await box.codex.idles(id);
+  });
+
+  test("a question it asks (request_user_input_async) is a card with its choices, and the choice goes into its turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/completed", { type: "agentMessage", id: "m1", text: "One thing first.", questions: [{ title: "Which database?", options: ["Postgres", "SQLite"] }] }),
+      { until: "question-answered" },
+      item("item/completed", { type: "agentMessage", id: "m2", text: "SQLite it is." }),
+    ]);
+    const form = await until(async () => (await box.codex.forms(id))[0], "No card for its question.");
+    assertMatch(form.fields[0], { description: "Which database?", options: [{ value: "Postgres" }, { value: "SQLite" }] });
+    assert.equal((await box.codex.replyForm(id, form.id, { q0: "SQLite" })).status, 200);
+    const steered = await until(() => box.codex.sent("turn/steer").find((message) => message.params.input[0].text === "SQLite"), "Its answer never went into its turn.");
+    assert.ok(steered.params.expectedTurnId);
+    box.codex.go("question-answered");
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows).length, 1);
+    assert.ok(texts(rows).join("\n").includes("- Which database? (Postgres / SQLite)"), JSON.stringify(texts(rows)));
+  });
+
+  test("a question still open as its turn ends: the session waits, and your answer starts its next turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/completed", { type: "agentMessage", id: "m1", text: "Waiting on you.", questions: [{ title: "Go ahead?", options: ["Yes", "No"] }] }),
+    ]);
+    const form = await until(async () => (await box.codex.forms(id))[0], "No card for its question.");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(idles(await box.codex.rows(id)).length, 0);
+    box.codex.script("Yes", [item("item/completed", { type: "agentMessage", id: "m2", text: "Going ahead." })]);
+    assert.equal((await box.codex.replyForm(id, form.id, { q0: "Yes" })).status, 200);
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows).length, 1);
+    assert.ok(texts(rows).includes("Going ahead."), JSON.stringify(texts(rows)));
+    const thread = box.codex.agentState(id).codexThread;
+    assert.deepEqual(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).map((message) => message.params.input[0].text.split("\n")[0]), [`go ${id}`, "Yes"]);
+  });
+
+  test("its form question (request_user_input) is a form whose answers reach it", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      { ask: ["item/tool/requestUserInput", { itemId: "q1", questions: [{ id: "db", header: "Database", question: "Which one?", options: [{ label: "Postgres", description: "A server" }, { label: "SQLite" }] }] }] },
+    ]);
+    const form = await until(async () => (await box.codex.forms(id))[0], "No form.");
+    assertMatch(form, { title: "Database" });
+    assertMatch(form.fields[0], { key: "db", title: "Database", description: "Which one?", options: [{ value: "Postgres", description: "A server" }, { value: "SQLite" }] });
+    assert.equal((await box.codex.replyForm(id, form.id, { db: "SQLite" })).status, 200);
+    assert.deepEqual((await box.codex.answeredFor("q1")).result, { answers: { db: { answers: ["SQLite"] } } });
+    await box.codex.idles(id);
+  });
+
+  test("the speed picked for its account goes with each turn: Fast where its model runs at it", { timeout: 60000 }, async () => {
+    write(path.join(box.codex.home, "box", "models.json"), JSON.stringify({ speeds: { [provider]: "priority" } }));
+    try {
+      const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Fast." })]);
+      await box.codex.idles(id);
+      const turn = box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
+      assert.equal(turn.params.serviceTier, "priority");
+    } finally {
+      fs.rmSync(path.join(box.codex.home, "box", "models.json"), { force: true });
+    }
+  });
+});
+
+/** The holder of the account's Codex app-server. */
+function heldCodex(home) {
+  const folder = path.join(home, "run", "agents", "hold");
+  if (!fs.existsSync(folder)) return undefined;
+  return fs.readdirSync(folder).filter((name) => /^[a-f\d]{12}\.json$/.test(name)).flatMap((name) => {
+    try { return [JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"))]; } catch { return []; }
+  }).find((record) => record.meta?.provider === provider && record.meta?.kind === "codex");
+}
+
+test("the Rust keeper keeps a Codex turn across a release switch: the same app-server finishes it, and what it asked is asked once more and answered once",
+  { timeout: 90000 }, async (t) => {
+    const binary = boxBinary();
+    if (binary.typescript) {
+      t.skip("A Rust-to-Rust release switch uses the Rust holder and resident.");
+      return;
+    }
+    const root = scratch();
+    const home = path.join(root, "box");
+    const relay = await localRelay();
+    const session = "ses_codex_kept";
+    const route = `kuvo/agents/api/session/${session}`;
+    let keeper;
+    const residents = [];
+    try {
+      privateHome(home);
+      const base = isolatedEnv(root);
+      const bin = standInCodex(base.HOME);
+      // (On Windows the box's own folder too: a cross build's libunwind.dll is beside it.)
+      const system = process.platform === "win32" ? [path.join(base.SystemRoot, "System32"), path.dirname(binary.file)] : ["/usr/bin:/bin"];
+      const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, ...system].join(path.delimiter) };
+      write(path.join(home, "folder-version.json"), '{"version":23}\n');
+      seedCodexSession(home, session, { permissions: askFirst });
+      write(path.join(base.HOME, "codex-script.json"), JSON.stringify({ "wait for update": [
+        ["item/completed", { item: { type: "agentMessage", id: "m1", text: "Before the switch." } }],
+        { ask: ["item/commandExecution/requestApproval", { itemId: "c1", command: "make" }] },
+        ["item/completed", { item: { type: "agentMessage", id: "m2", text: "After the switch." } }],
+      ] }));
+      const { old, next, control } = twoReleases(binary, home, env, relay);
+      try {
+        await control(["select", old]);
+        keeper = boxCommand(binary, home, env, relay, ["keep"]);
+        const first = await keptListener(home, keeper);
+        residents.push(first.pid);
+        const started = await request(first, "POST", route + "/prompt", { id: "msg_codex_kept", text: "wait for update" }, headers);
+        assert.equal(started.status, 200, started.text);
+        const asked = await until(async () => {
+          const answer = await request(first, "GET", route + "/permission", undefined, headers);
+          return answer.json?.data?.[0];
+        }, "Codex never asked.");
+        const initial = heldCodex(home);
+        assert.ok(initial, "Codex's holder was never recorded.");
+        assert.equal(Object.values(initial.meta.turns)[0]?.turn, "msg_codex_kept");
+        await control(["select", next]);
+        const second = await keptListener(home, keeper, first.pid);
+        residents.push(second.pid);
+        const again = await until(async () => {
+          const answer = await request(second, "GET", route + "/permission", undefined, headers);
+          return answer.json?.data?.[0];
+        }, () => "The ask didn't come again. " + keeper.log().slice(-4000));
+        assert.equal(again.id, asked.id);
+        const replied = await request(second, "POST", `${route}/permission/${again.id}/reply`, { decision: "once" }, headers);
+        assert.ok(replied.status < 300, replied.text);
+        let last;
+        const rows = await until(async () => {
+          last = await transcript(second, route);
+          return last.at(-1)?.outcome === "succeeded" && last;
+        }, () => ["The replacement resident never finished the held turn.", JSON.stringify(last?.slice(-3)), keeper.log().slice(-6000)].join("\n"), 30000);
+        assert.deepEqual(texts(rows), ["Before the switch.", "After the switch."]);
+        const heard = fs.readFileSync(path.join(base.HOME, "codex-heard.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+        // One app-server all along, initialized once, and the ask answered once.
+        assert.equal(heard.filter((line) => line.argv).length, 1);
+        assert.equal(heard.filter((line) => line.message?.method === "initialize").length, 1);
+        assert.equal(heard.filter((line) => line.message?.id === "ask-1" && line.message.method === undefined).length, 1);
+        const after = heldCodex(home);
+        assert.deepEqual([after.pid, after.child], [initial.pid, initial.child]);
+        assert.ok(after.generation > initial.generation);
+      } finally {
+        await control(["off"]);
+      }
+    } finally {
+      await keeper?.stop();
+      await stopPids(residents);
+      await stopFixtureHolders(home);
+      await relay.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
