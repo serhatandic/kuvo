@@ -6,6 +6,8 @@
 mod calls;
 mod letters;
 mod limits;
+mod own;
+mod receipts;
 mod sessions;
 mod start;
 
@@ -159,28 +161,57 @@ impl Work {
                         json!({ "message": message }),
                     ));
                 }
-                let operation = given.get("operation");
-                if operation.is_some_and(|operation| {
-                    !operation.as_str().is_some_and(|id| {
-                        (1..=80).contains(&id.len())
-                            && id
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
-                    })
-                }) {
-                    return Err(Refusal::json(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "message": "Invalid tool operation id." }),
+                // (One that only reads is done again as it's asked.)
+                let reads = matches!(
+                    name,
+                    "list_agents"
+                        | "read_conversation"
+                        | "list_sessions"
+                        | "list_models"
+                        | "list_projects"
+                        | "plan_limits"
+                        | "list_wake_ups"
+                        | "show_in_panel"
+                        | "show_file"
+                        | "show_widget"
+                        | "mark_final"
+                );
+                let operation = receipts::Operation::of(
+                    &work.home.join("run"),
+                    &call.request.headers,
+                    &given,
+                    name,
+                )?
+                .filter(|_| !reads);
+                if let Some(answer) = operation
+                    .as_ref()
+                    .map(receipts::Operation::claim)
+                    .transpose()?
+                    .flatten()
+                {
+                    return Ok(RouteReply::json::<200>(
+                        serde_json::from_value(answer).map_err(|_| {
+                            Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, "Couldn't say it.")
+                        })?,
                     ));
                 }
                 let args = given["arguments"].as_object().cloned().unwrap_or_default();
                 let session = given["session"].as_str().filter(|id| session_id(id));
-                let answer = work.agent_tool(name, &args, session).await;
+                let answer = match work
+                    .agent_tool(name, &args, session, operation.as_ref())
+                    .await
+                {
+                    Ok(answer) => json!({ "text": answer.text, "isError": answer.refused }),
+                    Err(message) => {
+                        let again = json!({ "retryToolCall": true, "message": message });
+                        return Err(Refusal::json(StatusCode::SERVICE_UNAVAILABLE, again));
+                    }
+                };
+                if let Some(operation) = &operation {
+                    operation.finish(&answer);
+                }
                 Ok(RouteReply::json::<200>(
-                    serde_json::from_value(
-                        json!({ "text": answer.text, "isError": answer.refused }),
-                    )
-                    .map_err(|_| {
+                    serde_json::from_value(answer).map_err(|_| {
                         Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, "Couldn't say it.")
                     })?,
                 ))
@@ -234,17 +265,18 @@ impl Work {
     }
 
     /// A tool's call (`name`, its `args`), from the conversation `session` (none from outside
-    /// one): what it says back.
+    /// one): what it says back, or, for one cut short (`operation`), why it's to be sent again.
     pub async fn agent_tool(
         &self,
         name: &str,
         args: &Map<String, Value>,
         session: Option<&str>,
-    ) -> Said {
+        operation: Option<&receipts::Operation>,
+    ) -> Result<Said, String> {
         if let Some((_, part)) = NOT_YET.iter().find(|(tool, _)| *tool == name) {
-            return refused(format!(
+            return Ok(refused(format!(
                 "{name} isn't in this computer's Kuvo Code yet (part {part} of its rewrite). Ask the user to do it in the app."
-            ));
+            )));
         }
         let engine = self.list.engine().running_bot_engine().await;
         let root = match &engine {
@@ -257,12 +289,12 @@ impl Work {
             .is_some_and(|caller| super::watch::truthy(&caller.data["metadata"]["kuvo"]["seat"]))
             && matches!(name, "send_message" | "start_session")
         {
-            return refused(
+            return Ok(refused(
                 "Not from a group chat: talk it through here; the work is handed out after the wrap-up.",
-            );
+            ));
         }
         let here = self.own_name_here();
-        match name {
+        Ok(match name {
             "list_models" | "list_projects" => match self.computer_of(args.get("computer")) {
                 Err(why) => refused(why),
                 Ok(Some(peer)) => match &caller {
@@ -292,9 +324,34 @@ impl Work {
                         ),
                         Some(caller) => self.start_elsewhere(peer, caller, args, item).await,
                     },
-                    Ok(None) => self.start_here(caller.as_ref(), args, item).await,
+                    Ok(None) => {
+                        self.start_here(caller.as_ref(), args, item, operation)
+                            .await?
+                    }
                 }
             }
+            "schedule_wake_up" | "watch_for_change" | "list_wake_ups" | "cancel_wake_up" => {
+                // (The caller's own conversation: a subagent's, where it isn't its root's.)
+                let own = match (&caller, session, &engine) {
+                    (Some(caller), Some(session), _) if caller.session == session => {
+                        Some(caller.data.clone())
+                    }
+                    (_, Some(session), Some(engine)) => engine
+                        .call(
+                            Method::GET,
+                            &format!("api/session/{}", encoded(session)),
+                            None,
+                            WAIT,
+                        )
+                        .await
+                        .ok()
+                        .filter(|data| data["id"] == session),
+                    _ => None,
+                };
+                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref())
+                    .await
+            }
+            "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
             "list_agents" => {
                 let (agents, _) = self.everyone(engine.as_ref()).await;
                 said(self.describe_agents(
@@ -303,8 +360,8 @@ impl Work {
                 ))
             }
             "send_message" => {
-                self.send_message_tool(engine.as_ref(), caller.as_ref(), args)
-                    .await
+                self.send_message_tool(engine.as_ref(), caller.as_ref(), args, operation)
+                    .await?
             }
             "read_conversation" => {
                 self.read_conversation_tool(engine.as_ref(), caller.as_ref(), args)
@@ -316,14 +373,14 @@ impl Work {
             },
             "list_sessions" | "stop_session" | "compact_session" | "answer_ask" => {
                 let (Some(caller), Some(engine)) = (&caller, &engine) else {
-                    return refused(
+                    return Ok(refused(
                         "Only a conversation on this computer has sessions of its own.",
-                    );
+                    ));
                 };
                 if name == "list_sessions" {
                     let rows = self.live_rows(engine, &caller.session, 40).await;
                     let there = self.rows_everywhere(caller).await;
-                    return self.describe_list(&rows.unwrap_or_default(), &there);
+                    return Ok(self.describe_list(&rows.unwrap_or_default(), &there));
                 }
                 let session = args
                     .get("session")
@@ -331,7 +388,7 @@ impl Work {
                     .map(str::trim)
                     .unwrap_or_default();
                 if session_id(session) && !self.has_session_here(engine, session).await {
-                    return self.elsewhere_tool(name, caller, args, session).await;
+                    return Ok(self.elsewhere_tool(name, caller, args, session).await);
                 }
                 match name {
                     "stop_session" => self.stop_session_tool(engine, &caller.session, args).await,
@@ -342,10 +399,8 @@ impl Work {
                     _ => self.answer_here(engine, caller, args).await,
                 }
             }
-            _ => refused(format!(
-                "{name} isn't in this computer's Kuvo Code yet (part 5.1e of its rewrite). Ask the user to do it in the app."
-            )),
-        }
+            _ => refused(format!("There's no tool {name}.")),
+        })
     }
 
     /// answer_ask for one of the caller's sessions here: an allow judged as one from another

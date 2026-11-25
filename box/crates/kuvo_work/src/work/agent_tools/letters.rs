@@ -411,23 +411,25 @@ impl Work {
         Ok(id)
     }
 
-    /// send_message: a message from `caller` to the agent `args.to` names, wherever it runs.
+    /// send_message: a message from `caller` to the agent `args.to` names, wherever it runs. One
+    /// cut short (`operation`) goes again under the id it had, so it's never there twice.
     pub(super) async fn send_message_tool(
         &self,
         engine: Option<&BotEngine>,
         caller: Option<&Caller>,
         args: &Map<String, Value>,
-    ) -> Said {
+        operation: Option<&super::receipts::Operation>,
+    ) -> Result<Said, String> {
         let text = |field: &str| {
             args.get(field)
                 .and_then(Value::as_str)
                 .filter(|text| !text.trim().is_empty())
         };
         let Some(to) = text("to") else {
-            return refused("Say who to write to (to).");
+            return Ok(refused("Say who to write to (to)."));
         };
         let Some(words) = text("text") else {
-            return refused("Say what to write (text).");
+            return Ok(refused("Say what to write (text)."));
         };
         let all = self.everyone(engine).await;
         let (target, place) = match self
@@ -441,19 +443,28 @@ impl Work {
             .await
         {
             Ok(found) => found,
-            Err(said) => return said,
+            Err(said) => return Ok(said),
         };
         // A few at a time: two agents shouldn't keep writing to each other unattended. Taken back
         // if it doesn't go, so one tried again isn't counted twice.
         let key = caller.map_or("outside", |caller| caller.session.as_str());
-        let Some(counted) = self.count_message(key) else {
-            return refused(
+        // (One cut short and sent again was counted the first time.)
+        let got = operation.map(super::receipts::Operation::progress);
+        let got = got.unwrap_or_default();
+        let again = got["to"] == target.session.as_str();
+        let counted = if again {
+            Some(0)
+        } else {
+            self.count_message(key)
+        };
+        let Some(counted) = counted else {
+            return Ok(refused(
                 "You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on.",
-            );
+            ));
         };
         let failed = |why: String| {
             self.message_back(key, counted);
-            refused(why)
+            Ok(refused(why))
         };
         let from = caller.map_or("unknown", |caller| caller.session.as_str());
         let sender = self.sender_name(caller);
@@ -466,15 +477,19 @@ impl Work {
                 };
                 let letter = format!("[Message from {sender} · {from}] ({hint})\n\n{words}");
                 let parts = kuvo_engine::parts_metadata(&letter);
-                let (Some(id), Ok(mover)) = (
-                    self.new_message_id().await,
-                    self.list.engine().session_move().await,
-                ) else {
+                let id = match got["message"].as_str().filter(|_| again) {
+                    Some(id) => Some(id.to_owned()),
+                    None => self.new_message_id().await,
+                };
+                let (Some(id), Ok(mover)) = (id, self.list.engine().session_move().await) else {
                     return failed(format!(
                         "Delivery to {} couldn't be confirmed: the engine isn't running.",
                         target.name
                     ));
                 };
+                if let Some(operation) = operation {
+                    operation.keep(&json!({ "to": target.session, "message": id }));
+                }
                 let prompt = LetterPrompt {
                     id,
                     immediate: LetterText {
@@ -488,6 +503,13 @@ impl Work {
                 };
                 let went = match mover.deliver_letter(&target.session, prompt).await {
                     Ok(went) => went,
+                    // (Its operation's to be sent again, and goes under the same id.)
+                    Err(_) if operation.is_some() => {
+                        let name = &target.name;
+                        return Err(format!(
+                            "Waiting for {name}'s conversation to confirm delivery."
+                        ));
+                    }
                     Err(refusal) => {
                         return failed(format!(
                             "Delivery to {} couldn't be confirmed: {}",
@@ -511,8 +533,11 @@ impl Work {
             }
             Place::Away(peer) => {
                 let letter = json!({ "from": caller.map(|caller| caller.session.clone()), "to": target.session, "text": cut(words, LETTER_TEXT), "peer": kuvo_wire::keys::encode(&peer.key), "wait": false });
-                if self.leave_letter(letter).is_err() {
+                if !(again && got["left"] == true) && self.leave_letter(letter).is_err() {
                     return failed(format!("It didn't reach {}.", target.name));
+                }
+                if let Some(operation) = operation {
+                    operation.keep(&json!({ "to": target.session, "left": true }));
                 }
                 if !self.peers.view().relay_connected {
                     format!(
@@ -535,7 +560,7 @@ impl Work {
         if let Some(caller) = caller {
             self.note_sent(&caller.session, &target.session, words);
         }
-        said(answer)
+        Ok(said(answer))
     }
 
     /// read_conversation: the conversation of the agent `args.of` names, as you'd read it (a long

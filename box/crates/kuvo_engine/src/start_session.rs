@@ -556,6 +556,9 @@ async fn create_as(
             notes["line"] = json!(&line[line.len().saturating_sub(20)..]);
         }
     }
+    if let Some(call) = local.and_then(|lead| lead.call.as_ref()) {
+        notes["call"] = json!(call);
+    }
     // A lead on another computer: who it is and where, its line, and the Don't Allows it brings.
     let brought: Vec<Value> = remote.map_or_else(Vec::new, |lead| {
         let holds =
@@ -922,6 +925,8 @@ pub trait StartSteps: Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub struct ParentLead {
     pub name: String,
+    /// The tool call's operation, marked on the session (`kuvo.call`) so a call sent again finds it.
+    pub call: Option<String>,
     pub works: Option<Value>,
     pub own: bool,
     pub depth: u64,

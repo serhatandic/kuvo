@@ -324,6 +324,11 @@ impl Bots {
             .collect()
     }
 
+    /// This computer's wake-ups.
+    pub(crate) fn wakes(&self) -> &Wakes {
+        &self.inner.wakes
+    }
+
     pub fn bots_folder(&self) -> &Path {
         &self.inner.bots
     }

@@ -726,9 +726,7 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **A start's operation, kept and finished when its call comes again** (`startToolSession`'s
-  journal, `resumeOfferedStart`): the route checks an operation id, but keeps no receipt; a tool
-  call tried again after a cut starts again. 5.1e-2, with send_message's own receipts.
+- **A start's operation, kept and finished when its call comes again**: done in 5.1e-2.
 - **A start from no conversation here** (`OUTSIDE`): refused; the tool servers always name the
   conversation calling.
 - **A start on another computer waited for 45 seconds**: the peers' call waits 20 (`remote_work`).
@@ -738,13 +736,12 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   engine's are found. 4.6.
 - **Commands run free of the sandbox** (`Lead::free`): true on every Rust box, which has no sandbox
   yet. 6.1.
-- **The wake tools and set_job**: answered "not in this computer's Kuvo Code yet" until 5.1e-2;
-  notify_user 5.1c, plan_limits and use_limit_reset 5.4, the show tools 6.4. Each refusal names
-  its part.
+- **The wake tools and set_job**: done in 5.1e-2. notify_user 5.1c, plan_limits and
+  use_limit_reset 5.4, the show tools 6.4: each answers "not in this computer's Kuvo Code yet",
+  naming its part.
 - **A message to a conversation that moved to another computer since** (`tellMovedAway`), and the
   answer to a kept call for a lead that moved: the letters, 2.4.
-- **A message's delivery confirmed after a cut** (the operation's journal, `messageReached`): sent
-  again when tried again. 5.1e-2, with the receipts.
+- **A message's delivery confirmed after a cut**: done in 5.1e-2.
 - **Waiting for an answer** (`awaitedBy`): nothing in the Rust box waits on one (send_message
   ignores `wait`, as the TypeScript box does; a client's start with `wait` doesn't wait here yet,
   3.2), so no wait holds a finish.
@@ -752,3 +749,62 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   `offRelay` is the peers' `relay_connected`.
 - **A kept call sent again once its computer is back**: the TypeScript lead's took over a minute
   once on Linux under load; the case waits two.
+
+## 5.1e-2 — calls done once, the agents' own tools, and Stop for the coding agents' conversations
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `agent_tools::receipts`: an operation (`operation`, or `x-kuvo-operation`) keyed by the conversation calling and its id; its answer kept in `run/tool-calls/<key>.receipt.json` and given again; what it got to in `run/tool-calls/<key>.json`; one cut short gone on with for send_message, start_session and the wake tools, else refused (409); a call answered 503 `retryToolCall` while it waits to be confirmed | `server/tool-call.ts` `answerToolCall`, `ToolCallPending`; the operations' journal |
+| `agent_tools::start` `resume_start`: a start cut short finds the session its call made (marked `kuvo.call`), links its Work Queue item and gives it the task it journaled, once | `letters/start-call.ts` `startToolSession`'s journal, `resumeOfferedStart`, `messageReached` |
+| `send_message_tool` with its operation: the letter's id and recipient kept before it goes, the same id when sent again (the engine's `deliver_letter` takes it once), not counted twice; a letter for another computer left once | `letters/tools.ts` `sendMessage`'s journal |
+| `agent_tools::own`: schedule_wake_up, watch_for_change, list_wake_ups and cancel_wake_up through this computer's `kuvo-wake`, for the conversation (a subagent's, the one that started it; a bot's, its folder), never a group chat's seat; a watch in Ask First refused unless the user was asked (`watch_went_unasked`); set_job through Edit Bot's change | `letters/own-tools.ts`; `bots/jobs.ts` |
+| `BotEngine::session_data`, `agent_sessions`, `work_engine` (the engine's, or the coding agents' alone while it isn't running); `Engine::agent_turn_ended`: Stop on someone's work, stop_session and Stop All find the coding agents' conversations, end their turns and, through their agent, what they left running, once more after the turn ended (Codex lists a thread's terminals only then) | `areas/queue.ts` `placeOfSession` over the bridge; `work/stop.ts` over `targetsOf`; the bridge's background stop |
+
+### Proof
+
+- `agent-tools.test.mjs`: a start cut short and sent again makes one session, given its task once;
+  a message cut short and sent again reaches its conversation once, as one message; each answered
+  the same when sent again; an id used for another call is refused. Both pass against both boxes
+  (each fails on the old Rust: a second session; 200 "couldn't be confirmed" with nothing to send
+  again).
+- `tools` area, a new scenario: the wake tools through a stand-in `kuvo-wake` (its arguments,
+  folder and environment), their refusals, and set_job kept, cleared and refused for a conversation
+  that isn't a bot's. 10/10 against both boxes.
+- `agents-codex.test.mjs`, two new cases on the scripted Codex: Stop on a session someone started,
+  mid-turn with a terminal it left running, ends both through Codex; Stop All on a bot whose work is
+  a Codex conversation does the same. Both pass against both boxes (the Rust box with no engine
+  running); on the old Rust, the terminal stays and Stop All stops none. The file: 53/53 Rust;
+  52/52 TypeScript, with one case failing once in one run and passing on the next (noted).
+- Regressions: `work` 15/15, `bots` 40/40 and `work-elsewhere` 4/4 with either lead, both boxes.
+- Platforms: native Windows: `tools` 9/9 (the wake tools' scenario, marked `unix`, skipped: no
+  `kuvo-wake` there yet), `work` 15/15, `agent-tools` 2/2, `agents-codex` 53/53 and `work-elsewhere`
+  4/4 with the Rust lead. Linux (WSL, static musl): `tools` 10/10, `work` 15/15, `agent-tools` 2/2,
+  `agents-codex` 53/53, `work-elsewhere` 4/4 with either lead. Seen once each, and passing when run
+  again: on Windows, 4.2's "a Codex that turns down being started isn't left running" (2 of 4 runs);
+  on macOS, one TypeScript case in `agents-codex`.
+- Size: the receipts and the own tools are about 11,300 characters of Rust for about 17,700 of
+  TypeScript; with the start's resume and Stop's changes the part stays under 1.2×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [own-tools](../../box/bridge-tests/own-tools.test.js) | 119, 140, 148, 179, 194 the wake tools for a subagent and a bot, their refusals, Ask First watches, set_job | `tools` scenario; `watch_went_unasked`'s unit test |
+| | 166 an archived conversation's wake-up held | `kuvo-wake`'s own, as there |
+| | 173 a coding agent's conversation's wake-ups through the bridge | 4.6 (its conversations as callers) |
+| [set-job](../../box/bridge-tests/set-job.test.js) | 86 set_job kept and told; 128 a coding agent's wake-ups | `tools` scenario; 128 with 4.6 |
+| [start-elsewhere-rules](../../box/bridge-tests/start-elsewhere-rules.test.js) | 496 a start sent again reads its kept answer | `agent-tools.test.mjs` |
+
+### Gaps and owners
+
+- **The wake tools on native Windows**: there's no `kuvo-wake` there, so they answer that it can't
+  be run. 5.1a's wake-ups on native Windows (`docs/architecture/windows.md`).
+- **stop_session from a coding agent's conversation**: refused as there, which finds only the
+  engine's conversations as callers. 4.6.
+- **A wake tool's command cut short by the box stopping mid-run** (`runToolCommand`'s receipt): run
+  again when its call comes again. Its answer once given is kept, as any call's. Owner: 5.1a (the
+  wake-ups' commands).
+- Those following wake-ups are told as a tool changes them (`Wakes::changed`), as there.
+

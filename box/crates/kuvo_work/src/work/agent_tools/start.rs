@@ -11,6 +11,7 @@ use super::{
     Caller, Said,
     calls::{AWAY_WORDS, Keep, Went, asleep, name_of, older_words},
     limits::Counted,
+    receipts::Operation,
     refused, session_id,
 };
 use crate::{
@@ -19,10 +20,7 @@ use crate::{
     work::{
         Work,
         starts::started_words,
-        watch::{
-            address_in,
-            tools::{line_of, refusal_words},
-        },
+        watch::{address_in, tools::line_of},
     },
 };
 
@@ -39,14 +37,30 @@ const MOST_HELD: usize = 300;
 struct Steps<'a> {
     work: &'a Work,
     counted: &'a Counted,
+    /// The call's operation, which keeps what the start got to.
+    operation: Option<&'a Operation>,
     item: Option<Value>,
     task: String,
     starter: Value,
 }
 
 impl StartSteps for Steps<'_> {
+    fn making(&self, making: &Value) {
+        if let Some(operation) = self.operation {
+            operation.keep(&json!({ "making": making }));
+        }
+    }
+
     fn made(&self, session: &str) {
         self.counted.went(session, false);
+    }
+
+    fn prompted(&self) {
+        if let Some(operation) = self.operation {
+            let mut progress = operation.progress();
+            progress["prompted"] = json!(true);
+            operation.keep(&progress);
+        }
     }
 
     fn prompting<'a>(
@@ -84,15 +98,26 @@ impl Work {
         caller: Option<&Caller>,
         args: &Map<String, Value>,
         item: Option<Value>,
-    ) -> Said {
+        operation: Option<&Operation>,
+    ) -> Result<Said, String> {
         let Some(caller) = caller else {
             // (The tool servers here always say which conversation calls.)
-            return refused("Only a conversation on this computer can start sessions here.");
+            return Ok(refused(
+                "Only a conversation on this computer can start sessions here.",
+            ));
         };
+        // Sent again after it was cut short: the session it made, gone on with.
+        if let Some(operation) = operation
+            && let Some(said) = self
+                .resume_start(caller, operation, item.as_ref(), args)
+                .await?
+        {
+            return Ok(said);
+        }
         let depth = caller.depth();
         let counted = match self.count_start(caller, depth).await {
             Ok(counted) => counted,
-            Err(why) => return refused(why),
+            Err(why) => return Ok(refused(why)),
         };
         let mut given = args.clone();
         for field in ["computer", "wait", "item"] {
@@ -103,6 +128,7 @@ impl Work {
         let works = bot.as_ref().map(|bot| json!(bot));
         let lead = ParentLead {
             name: caller.name.clone(),
+            call: operation.map(|operation| operation.key.clone()),
             works,
             own: caller.bot.is_some(),
             depth,
@@ -116,6 +142,7 @@ impl Work {
         let steps = Steps {
             work: self,
             counted: &counted,
+            operation,
             item,
             task,
             starter,
@@ -136,16 +163,123 @@ impl Work {
                         self.records.note_oversight(&bot.bot, session, "started");
                     }
                 }
-                Said {
+                Ok(Said {
                     text: started_words(&started),
                     refused: false,
-                }
+                })
             }
             Err(refusal) => {
+                let reply = refusal.reply();
+                let status = reply.status;
+                use http_body_util::BodyExt;
+                let body = reply.body.collect().await.map(|body| body.to_bytes()).ok();
+                let body: Value = body
+                    .and_then(|body| serde_json::from_slice(&body).ok())
+                    .unwrap_or_default();
+                // Made, its task not given, or not known to be made: sent again, it's gone on with.
+                if operation.is_some() && status == http::StatusCode::BAD_GATEWAY {
+                    return Err(match body["session"].as_str() {
+                        Some(session) => {
+                            counted.went(session, false);
+                            "Waiting for the new session to confirm its task.".into()
+                        }
+                        None => {
+                            counted.back();
+                            "Waiting for the engine to confirm the session was created.".into()
+                        }
+                    });
+                }
                 counted.back();
-                refused(refusal_words(refusal).await)
+                Ok(refused(
+                    body["message"]
+                        .as_str()
+                        .unwrap_or("it couldn't be done now"),
+                ))
             }
         }
+    }
+
+    /// A start cut short, sent again: the session its call made (as its mark says), given its task
+    /// if it wasn't yet, and what was said of it; none where none was made, so it's started.
+    async fn resume_start(
+        &self,
+        caller: &Caller,
+        operation: &Operation,
+        item: Option<&Value>,
+        args: &Map<String, Value>,
+    ) -> Result<Option<Said>, String> {
+        let progress = operation.progress();
+        let Some(engine) = self.list.engine().running_bot_engine().await else {
+            return Err("Waiting for the new session's engine.".into());
+        };
+        let page = engine
+            .call(
+                http::Method::GET,
+                "api/session?limit=50&order=desc&parentID=null",
+                None,
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .map_err(|_| {
+                "Waiting for the engine to confirm the new session and its task.".to_owned()
+            })?;
+        let list = page["data"]
+            .as_array()
+            .or(page.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let Some(session) = list
+            .iter()
+            .find(|each| each["metadata"]["kuvo"]["call"] == operation.key.as_str())
+            .and_then(|each| each["id"].as_str())
+        else {
+            return Ok(None);
+        };
+        let making = &progress["making"];
+        if progress["prompted"] != true
+            && let Some(text) = making["prompt"]["text"].as_str()
+        {
+            let task = args.get("task").and_then(Value::as_str).unwrap_or_default();
+            if let (Some(link), Some(item)) = (self.links.get(), item) {
+                let starter = json!({ "session": caller.session, "name": caller.name });
+                link.link(Some(item), task, starter, session).await;
+            }
+            let mover = self
+                .list
+                .engine()
+                .session_move()
+                .await
+                .map_err(|error| error.to_string())?;
+            let letter = kuvo_engine::LetterPrompt {
+                id: making["prompt"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                immediate: kuvo_engine::LetterText {
+                    text: text.to_owned(),
+                    metadata: Some(kuvo_engine::parts_metadata(text)),
+                },
+                when_queued: None,
+                from: caller.name.clone(),
+                words: text.to_owned(),
+                steer: false,
+            };
+            if mover.deliver_letter(session, letter).await.is_err() {
+                return Err("Waiting for the new session to confirm its task.".into());
+            }
+            let mut progress = progress.clone();
+            progress["prompted"] = json!(true);
+            operation.keep(&progress);
+        }
+        let mut started = making["started"].clone();
+        if !started.is_object() {
+            started = json!({});
+        }
+        started["session"] = json!(session);
+        Ok(Some(Said {
+            text: started_words(&started),
+            refused: false,
+        }))
     }
 
     /// start_session on another of your computers (`peer`), from `caller` here.
