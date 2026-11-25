@@ -124,13 +124,8 @@ fn retry_at(folder: &Path) -> Option<i64> {
         .ok()
 }
 
-/// Whether a round now has anything for the engine: a wake-up due, or a watch, in a folder that's
-/// neither held nor waiting to try again, of a conversation the engine runs.
-pub fn wanted(roots: &Roots, now: i64) -> bool {
-    wanted_by(roots, now).0
-}
-
-/// As `wanted`, for the engine's conversations and for the coding agents', in one look.
+/// Whether a round now has anything for the engine, and for the coding agents: a wake-up due, or a
+/// watch, in a folder that's neither held nor waiting to try again, of a conversation each runs.
 pub fn wanted_by(roots: &Roots, now: i64) -> (bool, bool) {
     let (mut engine, mut agents) = (false, false);
     for (_, folder) in roots.folders() {
