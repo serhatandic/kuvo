@@ -129,8 +129,14 @@ fn read_words(file: &Path) -> Option<Map<String, Value>> {
             .iter()
             .all(|key| words.get(*key).is_some_and(Value::is_array))
         && words.get("looks").is_some_and(Value::is_object)
-        && words["here"].get("mac").is_some_and(Value::is_object)
-        && words["here"].get("machine").is_some_and(Value::is_object)
+        && words
+            .get("here")
+            .and_then(|here| here.get("mac"))
+            .is_some_and(Value::is_object)
+        && words
+            .get("here")
+            .and_then(|here| here.get("machine"))
+            .is_some_and(Value::is_object)
         && words.get("job").is_some_and(Value::is_object)
         && [
             "personalityWords",
@@ -419,6 +425,35 @@ mod tests {
             },
         )
         .expect("the words")
+    }
+
+    #[test]
+    fn incomplete_bot_words_without_here_are_not_loaded() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join("bin");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut words: Value =
+            serde_json::from_str(include_str!("../../../../src/shared/bot-words.json")).unwrap();
+        words.as_object_mut().unwrap().remove("here");
+        std::fs::write(
+            folder.join("bot-words.json"),
+            serde_json::to_vec(&words).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            Kit::read(
+                home.path(),
+                &Place {
+                    is_mac: false,
+                    zone_yours: false,
+                    machine: "lab",
+                    time_zone: "Asia/Tokyo",
+                    system: "linux",
+                }
+            )
+            .is_none(),
+            "incomplete words must be refused, not panic"
+        );
     }
 
     #[test]
