@@ -134,7 +134,7 @@ async fn run(mut command: Command, limit: u64) -> Result<Output, String> {
 }
 
 /// Git in `folder` by the box itself (`gitLater`): its trimmed output, or none where it failed.
-async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
+pub(crate) async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
     let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let at = folder.to_owned();
     let own = spawn_blocking(move || safe::own_args(&args, Some(&at), None));

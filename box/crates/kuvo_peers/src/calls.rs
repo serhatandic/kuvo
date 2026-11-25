@@ -138,7 +138,7 @@ impl Lead {
     }
 }
 
-pub(crate) fn plain(value: &str, limit: usize) -> String {
+pub fn plain(value: &str, limit: usize) -> String {
     let stripped = value.replace(
         |c: char| {
             matches!(c,

@@ -78,7 +78,7 @@ pub use lifetime::{Engine, EngineEvent, State, Timing};
 pub use queue::{WorkStopped, WorkStops};
 pub use queue::limit::{limit_reached, reset_time, resets_in};
 pub use model_preferences::{ModelStar, ModelStarSource, StarSave};
-pub use models::ModelSpeed;
+pub use models::{ModelSpeed, OfferedModels};
 pub use notes::{NoteEdits, NoteWriter};
 pub use ownership::{
     ComputerKey, DeviceAccess, OwnedReply, OwnedRequest, OwnerAction, OwnerScope, PeerReply,
