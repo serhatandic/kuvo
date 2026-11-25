@@ -72,6 +72,9 @@ pub struct Work {
     calls: std::sync::Arc<std::sync::OnceLock<kuvo_peers::remote_work::WorkHandle>>,
     /// The Work Queue's link for the sessions its tools start, once the queue runs.
     links: std::sync::Arc<std::sync::OnceLock<crate::queue::StartLink>>,
+    /// What this box told you lately (`run/notices/told.json`).
+    pub notices: crate::notices::Notices,
+    names: kuvo_services::git::ProjectNames,
 }
 
 impl Work {
@@ -89,6 +92,8 @@ impl Work {
             added: std::sync::Arc::new(std::sync::Mutex::new(Some(added))),
             calls: std::sync::Arc::default(),
             links: std::sync::Arc::default(),
+            notices: crate::notices::Notices::new(home),
+            names: kuvo_services::git::ProjectNames::default(),
             settings,
             records: Records::new(&home.join("run")),
             unanswering: Unanswerings::new(&home.join("run")),
@@ -113,8 +118,22 @@ impl Work {
         let added = self.added.lock().expect("added").take();
         let watcher = added.map(|added| watch::Watcher::new(self.clone()).start(added));
         let (work, mut events) = (self.clone(), self.list.engine().events());
+        // The coding agents' conversations' turns that ended: news as the engine's are.
+        let agents = self.list.engine().agent_events().map(|mut agents| {
+            let work = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    match agents.recv().await {
+                        Ok(event) => work.news(event.kind, event.data, Value::Null),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(_) => return,
+                    }
+                }
+            })
+        });
         tokio::spawn(async move {
             let _watcher = Stops(watcher);
+            let _agents = Stops(agents);
             loop {
                 let event = match events.recv().await {
                     Ok(event) => event,
@@ -123,8 +142,28 @@ impl Work {
                 };
                 let engine = work.list.engine().running_bot_engine().await;
                 work.unanswering.follow(&event, engine.as_ref()).await;
+                work.news(&event.kind, event.data.clone(), event.location.clone());
             }
         })
+    }
+
+    /// An event's news told, where it's news (`notices::news`), as it's looked up.
+    fn news(&self, kind: &str, data: Value, location: Value) {
+        if !crate::notices::news::NEWS.contains(&kind) {
+            return;
+        }
+        let (work, kind) = (self.clone(), kind.to_owned());
+        tokio::spawn(async move {
+            let engine = work.list.engine().work_engine().await;
+            let news = crate::notices::news::News {
+                engine: &engine,
+                home: &work.home,
+                names: &work.names,
+            };
+            if let Some(notice) = news.notice_for(&kind, &data, &location).await {
+                work.notices.tell(notice);
+            }
+        });
     }
 
     /// What each bot's work looks like now, to tell when it changed: what's at work under it,

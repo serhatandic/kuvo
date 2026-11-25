@@ -227,6 +227,39 @@ fn filed_projects(
     filed
 }
 
+/// Projects' names as every client shows them (`projectNameOf`), worktrees as last found.
+#[derive(Clone, Default)]
+pub struct ProjectNames(LinkedTrees);
+
+impl ProjectNames {
+    /// The name of the project `folder` is in: its own, or its folder's; a worktree's or another
+    /// folder's is its project's, and so is that of a session filed under it from there (`filed`,
+    /// the session's `kuvo.filed`, while it's in that folder).
+    pub fn name_of(&self, box_home: &Path, folder: &str, filed: &Value) -> Option<String> {
+        if folder.is_empty() {
+            return None;
+        }
+        let projects = read_projects(box_home).unwrap_or_default();
+        let trees = worktree_projects(box_home, &self.0).unwrap_or_default();
+        let under = filed_projects(&projects, trees).remove(folder);
+        let project = match (under, filed["project"].as_str()) {
+            (None, Some(project)) if filed["folder"] == folder => project.to_owned(),
+            (under, _) => under.unwrap_or_else(|| folder.to_owned()),
+        };
+        let named = projects.iter().find(|each| directory(each) == project);
+        let name = named
+            .and_then(|each| each.get("name"))
+            .and_then(Value::as_str);
+        name.filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                Path::new(&project)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+    }
+}
+
 /// `GET kuvo/projects`: `{projects, worktrees}`.
 pub(crate) fn listed(box_home: &Path, linked: &LinkedTrees) -> Result<Value, Unsupported> {
     let projects = read_projects(box_home)?;
