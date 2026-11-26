@@ -156,11 +156,11 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                 if let Some(count) = e["count"].as_f64().filter(|n| n.is_finite() && *n >= 0.0) {
                     e["count"] = json!(count.floor() as u32);
                 }
-                if let Some(a) = e["expiries"].as_array_mut() {
+                if let Some(a) = e.get_mut("expiries").and_then(Value::as_array_mut) {
                     a.retain(|n| time(n).is_some());
                     a.truncate(50);
                 }
-                if let Some(a) = e["refills"].as_array_mut() {
+                if let Some(a) = e.get_mut("refills").and_then(Value::as_array_mut) {
                     *a = a
                         .iter()
                         .filter_map(|v| words(v, 40).map(Value::String))
@@ -683,6 +683,29 @@ mod parity_corpus {
     const NOW: u64 = 1_800_000_000_000;
     fn raw(at: u64) -> Value {
         json!({"at":at,"noticeSetup":"set_fixture","accounts":[{"provider":"claude-code","service":"claude","identity":"abcdefabcdefabcd","checked":at,"next":at+600000,"windows":[{"id":"five_hour","used":0.35,"minutes":300,"resetsAt":NOW+3600000,"read":at,"source":"usage"}]}]})
+    }
+    #[test]
+    fn reset_inventory_without_optional_arrays_survives_the_peer_wire() {
+        let mut given = raw(NOW);
+        let account = &mut given["accounts"][0];
+        account["provider"] = json!("openai");
+        account["service"] = json!("codex");
+        account["extras"] = json!([{"kind":"resets","id":"resets","name":"Rate Limit Resets","count":1,"usable":true,"expiries":[NOW+60000]}]);
+        let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        let extras = &read.accounts[0].facts.extras;
+        assert!(
+            matches!(extras.as_slice(),[Extra::Resets{count:1,usable:true,refills,..}] if refills.is_empty())
+        );
+        let sent = read.wire();
+        assert!(sent["accounts"][0]["extras"][0].get("refills").is_none());
+        assert_eq!(
+            &Reading::from(&sent, NOW, Some("set_fixture"))
+                .unwrap()
+                .accounts[0]
+                .facts
+                .extras,
+            extras
+        );
     }
     #[test]
     fn peer_clock_skew_normalizes_checks_windows_and_hold_deadlines() {

@@ -1062,10 +1062,47 @@ resolution and historical-reader change are platform-independent; the
 four-platform gate above remains the platform proof. Usage modules and
 row-specific additions now total 633,072 non-test characters (0.921× TS).
 
+### Slice 23: reset journal recovery and account permission
+
+The engine ChatGPT reset inventory was incomplete on a second computer even
+though its sign-in holder had a usable credit. The wire decoder accessed an
+absent optional array mutably, creating a JSON null and losing the typed reset
+fact. The decoder now leaves absent expiry/refill arrays absent; an actual
+holder-to-visitor route regressed on the old binary, and the scoped typed
+round trip proves inventory survives the wire.
+
+The native fixture now stops the owned resident abruptly after the sending
+journal and chosen target are saved, before the maker receives its consume
+request. After restart it reuses the same request and credit and a repeated
+confirmation makes no further spend. The initial graceful-stop fixture could
+complete a not-now result during shutdown; the actual crash boundary passes
+three focused repeats and the full gate. Additional scenarios cover a maker
+answer lost after spending, a fresh confirmation retrying the original maker
+ID, a chosen credit that expired before consume, a new credit on the next
+request, and disabling the old account's permission when a slot signs into
+another account and later signs back. A real two-holder engine fixture loses
+the successful relay reply, restarts the visitor, joins a fresh confirmation
+to the saved request, and verifies that permission changes and sign-in changes
+converge without another spend. A scoped actual Resets service verifies that
+an unasked request is denied while the directory is unknown or the holder's
+permission is off, with no journal entry or maker call.
+
+Mac Rust usage 113/113 applicable (one Windows-only skip), TypeScript 40/40,
+scoped reset cases 2/2, holder 12/12, Claude turns 59 passing with prior TODO,
+Codex 100/100, workspace test-target and Bun checks clean. The seeded
+differential matches 12/13 exact answers (actual scan clock only), native
+corpus 2/2; storage-format differences remain documented. Engine sessions
+81/81 on the unchanged full retry. Seen once on the first run: the unrelated
+project-file refiling case reported 2 engine inventory reads rather than its
+baseline 1; its assertion now dumps both counts, fixture requests, and the
+last inventory. Windows/Linux proof to follow. Non-test size: 633,118 characters without
+leading indentation (0.921× the 687,546 TS baseline). 13 A1 entries closed;
+71 remain.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
-- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
+- Reset spending: complete for A1. The real restart and retry paths, lost relay reply, permission convergence, account switching and pending-directory admission are proven in slice 23. The specifically deferred unusual concurrent changes are listed at their original inventory lines.
 - Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
 - Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity busy-store retention and cutoff cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
 - Shared-settings migration from old kept files and preservation of newer parts/fields are now covered; unconverted peer authority is excluded by design.
@@ -1234,20 +1271,20 @@ does not block completion of the row.
 
 ### `box/test/usage/limits-resets.test.ts`
 
-- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — partial — local Codex reset replay conformance; additional exact TS cases open.
-- L265: the box stops after the spend is written down and before its request goes: started again, the same confirmation goes as the same request, and one reset is spent — open.
-- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — partial — Codex fixture reports unknown, resident restarts, then maker replies already redeemed under the same request.
-- L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — open.
-- L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
+- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — covered by local Codex, Claude and engine ChatGPT actual offer/confirmation scenarios (no maker spend before confirmation, exact inventory, repeated confirmation reuses the journal).
+- L265: the box stops after the spend is written down and before its request goes: started again, the same confirmation goes as the same request, and one reset is spent — covered by the actual Codex maker account-check hold: the sending journal exists before any consume call; the resident stops and the same confirmation spends the same target/request once after restart.
+- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — covered by actual native Codex and Claude maker-unknown/restart fixtures: fresh confirmation replays the original request and target; the maker reports already redeemed, original confirmation becomes an idempotent replay.
+- L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — covered by the same native Codex maker-unknown/fresh-confirmation route; reply says it may have been used and exact parameters are reused after restart.
+- L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — covered by actual Codex maker noCredit response on the chosen earliest credit, then new inventory and a distinct confirmation spend the next credit under a new request.
 - L358: an account with no resets left, or none at all, is refused before anything is offered — covered by the actual zero-credit inventory route and empty/unknown account refusal case, no offer or consume call.
 - L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — covered by the two-account native Claude fixture on Mac: exact extra usage, unavailable reset message, and refusal with the same message.
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
-- L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — open.
+- L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — covered by actual Claude file-owned reset grant maker-unknown, restart and fresh confirmation, exact prior grant request and no second spend.
 - L604: two confirmations at once (two apps): one request goes, and both hear it went — covered by concurrent engine ChatGPT credit fixture.
-- L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
-- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — partial — remote caller enables, holder disables, and both observe the decision; both holders signed in variant open.
-- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — partial — remote unknown and caller restart replay same confirmation; new confirmation and lost relay answer variants open.
+- L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — covered by the actual native Codex slot A→B→A fixture: distinct sign-in forces permission off and the old account does not recover its former allowance.
+- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — covered by actual remote engine account route: two signed-in holders see the same on decision, either can turn it off, and both reflect the off.
+- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — covered by actual engine holder success with discarded outgoing peer mail, caller restart, fresh confirmation aliases the original durable request, and the holder replays its recorded success without another provider spend.
 - L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — later (rare) — the sign-in changes precisely between an Always Allow offer and its spend; the normal old-offer refusal and account-switch allowance withdrawal remain required. Existing evidence: stale Codex offer refused and separate local Always Allow on/off case.
 - L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — later (rare) — the holder is away while on/off decisions are both made and the relay delivers the older one last; ordinary cross-computer decision sync remains required.
 - L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — later (rare) — a computer does not yet know the account, receives an off decision, then receives an older on after learning it.
@@ -1256,20 +1293,20 @@ does not block completion of the row.
 - L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — later (rare) — a remote spend loses its answer and the holder signs out before the retry.
 - L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — later (rare) — a second, distinct remote request follows an unresolved spend older than ten minutes; local aged-settlement fixture already passes.
 - L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — later (rare) — two opposite decisions from computers with different clocks within one clock-skew minute.
-- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — partial — local off decision rejects an unasked confirmation; peer behavior open.
+- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — covered by actual Resets peer take_ask against a holder whose local allowance is off (maker choose and consume counters stay zero), and dual-holder route after the shared off decision.
 - L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — later (rare) — two concurrent confirmations arrive after a different older unsettled spend.
-- L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — open.
+- L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — covered by the actual remote Claude unknown spend followed by a disconnected holder: earlier spend remains sending in the caller journal, reply says earlier try may have gone, and after reconnect/restart the fresh confirmation settles same request.
 - L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — covered by Claude grant profile mismatch fixture.
 - L976: an agent's reset under Always Allow got no answer, then Always Allow is turned off: the user confirming it is theirs, and it goes through as the same request — later (rare) — an agent spend loses its answer, its allowance is turned off, then the user confirms the same unsettled spend.
 - L998: Claude on Linux whose record of the sign-in leaves out its organization: its token's account matches by the account itself, and a reset goes — later (rare) — Claude’s credential record omits the organization while the maker still identifies it.
-- L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — open.
+- L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — covered by the actual two-signed-in-computer engine route turning permission on, switching the account in one slot, observing the old account permission off on its other holder, and switching back without restoring it.
 - L1044: Claude's token is a newly signed-in account while its record still says the one before: nothing is spent, and the new account's Always Allow stays — later (rare) — a token belongs to a newly signed-in account but the local account record still names the old one, with a separate allowance for the new account.
 - L1070: an agent's reset that never heard back, Always Allow turned off since, and the user's Use a quarter of an hour on: it goes the first time, the agent's settled first — later (rare) — an agent’s unsettled spend, an intervening disabled allowance, and a distinct later explicitly confirmed reset.
 - L1108: signed in to another account while Anthropic is asked who the sign-in is: the reset is spent with the sign-in that was checked, never the new one — later (rare) — the credential changes while the provider profile identity request for a reset is already in flight; ordinary mismatching identity refusal remains required.
 - L1132: Claude's record and its token's account: one account only where the accounts match, and the organizations where both say one — later (rare) — record and token include inconsistent or partly missing organization identities.
 - L1144: a decision a peer told stays while the link only leaves that peer out for a moment — later (rare) — membership listing temporarily omits a decision’s already known peer without that peer actually leaving.
 - L1165: a spend a box began for a Mac that left the setup is answered as it went, never 'nothing was used' for one that went — later (rare) — a member leaves the setup while the holder is deciding its already-sent reset.
-- L1196: before its link has said who your computers are (just started), a box uses no one's resets without asking: its agents are told to ask, and nothing is spent — open.
+- L1196: before its link has said who your computers are (just started), a box uses no one's resets without asking: its agents are told to ask, and nothing is spent — covered by actual Resets admission with a retained allowance and pending directory: unasked use returns Ask the user, no journal spend and no maker call; after known directory and permission it can consume one.
 - L1218: the answer to a reset a Mac passed to its machine still comes through after the machine leaves the peer list: it says how it went, never 'may have been used' — later (rare) — a machine leaves the peer list at the exact time its outstanding reset answer arrives.
 
 ### `box/test/usage/limits-sign-ins.test.ts`

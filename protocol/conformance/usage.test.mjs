@@ -563,13 +563,14 @@ test('a Codex reset is offered without spending, journaled before the maker, and
   const confirm=offer.json.data.confirm;
   const unknown=await post({row,confirm});
   assert.equal(unknown.status,200,unknown.text);
-  assert.equal(unknown.json.data.outcome,'unknown');
+  assert.equal(unknown.json.data.outcome,'unknown');assert.match(unknown.json.data.message,/may have been used/);
   const first=codex.sent('account/rateLimitResetCredit/consume');
   assert.equal(first.length,1);
   assert.equal(first[0].params.creditId,'soon');
   await codex.stop();
   listener=await codex.start();
-  const again=await post({row,confirm});
+  const retry=await post({row});assert.equal(retry.status,200,retry.text);assert.notEqual(retry.json.data.confirm,confirm);
+  const again=await post({row,confirm:retry.json.data.confirm});
   assert.equal(again.status,200,again.text);
   assert.equal(again.json.data.outcome,'reset');
   const twice=codex.sent('account/rateLimitResetCredit/consume');
@@ -1595,12 +1596,13 @@ test('Claude file-owned reset grants spend the maker’s named next grant once, 
   assert.deepEqual(offered.json.data.refills,['seven_day']);assert.equal(spent.length,0);
   const confirm=offered.json.data.confirm;
   const first=await post({row:row.id,confirm});
-  assert.equal(first.json.data.outcome,'unknown');assert.equal(spent.length,1);
+  assert.equal(first.json.data.outcome,'unknown');assert.match(first.json.data.message,/may have been used/);assert.equal(spent.length,1);
   assert.equal(spent[0].grant_id,'grant-b');
   assert.equal(reads,1,'Grant inventory is not fetched again for confirmation');
   await claude.stop();listener=await claude.start();
   outcome='already_used';
-  const replay=await post({row:row.id,confirm});
+  const retry=await post({row:row.id});assert.equal(retry.status,200,retry.text);assert.notEqual(retry.json.data.confirm,confirm);
+  const replay=await post({row:row.id,confirm:retry.json.data.confirm});
   assert.equal(replay.json.data.outcome,'reset');assert.equal(spent.length,2);
   assert.deepEqual(spent[0],spent[1]);
   await post({row:row.id,confirm});assert.equal(spent.length,2);
@@ -1683,7 +1685,8 @@ test('a computer without the plan sign-in spends once on the holder, and shares 
   });
   await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
-  const {computer,leases}=await bench(t);
+  const {computer,leases,relay}=await bench(t,{presenceEvents:true});
+  const {relayAddress}=await import('./adapter.mjs');const fs=await import('node:fs');
   const holder=await computer('ResetHolder',undefined,folder=>({...claudeEnvironment(boxBinary(),path.join(folder,'box'),isolatedEnv(folder),{turns:true}),...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
   const asker=await computer('ResetAsker',undefined,isolated);
   write(path.join(holder.env.CLAUDE_CONFIG_DIR,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'remote-grant-fixture',organizationUuid:org}}));
@@ -1711,9 +1714,18 @@ test('a computer without the plan sign-in spends once on the holder, and shares 
   const confirm=offered.json.data.confirm;
   const pending=await post({row:row.id,confirm});
   assert.equal(pending.json.data.outcome,'unknown');assert.equal(spends.length,1);
+  const link=JSON.parse(fs.readFileSync(path.join(holder.home,'run','link.json'),'utf8'));
+  const address=relayAddress(Buffer.from(link.secret,'base64url'));const reconnect=relay.disconnect(address);t.after(reconnect);
+  await until(()=>!relay.has(address),'Holder link did not disconnect');
+  const unavailable=await call('POST',base+'/reset',{row:row.id,confirm},undefined,65000);assert.equal(unavailable.status,200,unavailable.text);
+  assert.notEqual(unavailable.json.data.outcome,'reset');assert.match(unavailable.json.data.message,/earlier try may have gone|may have been used/i);assert.equal(spends.length,1);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(asker.home,'agents','limits-resets.json'),'utf8')).spends.some(s=>s.id===confirm&&s.state==='sending'));
+  reconnect();await until(()=>relay.has(address),'Holder link did not return',30000,100);
   await resident.stop();resident=asker.start();call=asker.connect(await resident.ready());
   outcome='already_used';
-  const replay=await post({row:row.id,confirm});
+  const retry=await until(async()=>{const r=await post({row:row.id});return r.status===200&&r;},'Retry confirmation was not available',30000,200);
+  assert.notEqual(retry.json.data.confirm,confirm);
+  const replay=await post({row:row.id,confirm:retry.json.data.confirm});
   assert.equal(replay.json.data.outcome,'reset');assert.equal(spends.length,2);assert.deepEqual(spends[0],spends[1]);
   const done=await post({row:row.id,confirm});assert.equal(done.json.data.outcome,'reset');assert.equal(spends.length,2);
   const always=await call('PUT',base+'/reset/always',{row:row.id,always:true});assert.equal(always.status,200,always.text);
@@ -3972,4 +3984,136 @@ test('a Claude account heard only through turns inherits the peer’s earlier wa
   assert.equal(repeated.accounts.find(a=>a.provider==='claude-code').checked,undefined);
   await Promise.all([ar.stop(),br.stop()]);
   await Promise.all([stopFixtureHolders(a.home),stopFixtureHolders(b.home)]);
+});
+
+// Hold the maker's account confirmation, not its spend, so the resident can
+// be stopped at the real durable-before-send boundary.
+test('a stopped reset between its saved sending journal and the maker request resumes once',{timeout:90000},async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native reset journal.');
+  const fs=await import('node:fs');const codex=await scriptedCodex();t.after(()=>codex.close());
+  const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture-send',chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');
+  write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:'fixture-send'}}));
+  const reset=Math.floor(Date.now()/1000)+7200;write(path.join(codex.root,'codex-limits.json'),JSON.stringify({accountId:'fixture-send',rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:1,credits:[{id:'fixture-credit',status:'available',expiresAt:reset+3600}]}}));
+  let listener=await codex.start();const base='kuvo/agents/api/kuvo/limits';
+  assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);
+  const row=await until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'Credit inventory did not arrive');
+  const post=body=>request(listener,'POST',base+'/reset',body);
+  const offer=await post({row:row.id});assert.equal(offer.status,200,offer.text);const confirm=offer.json.data.confirm;
+  const held=path.join(codex.root,'codex-hold-reset-check');write(held,'');
+  const pending=post({row:row.id,confirm}).catch(error=>error);
+  const file=path.join(codex.home,'agents','limits-resets.json');const saved=await until(()=>{
+    if(!fs.existsSync(file)||!codex.sent('account/rateLimits/read').some(m=>m.params?.excludeResetCreditDetails))return;
+    return JSON.parse(fs.readFileSync(file,'utf8')).spends?.find(s=>s.state==='sending'&&s.target);
+  },'The journal was not saved before the maker account check');
+  assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+  // A clean shutdown can finish a request that never reached its maker. Crash
+  // only our fixture resident to exercise the durable unfinished request.
+  await codex.crash();await pending;assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).spends.find(s=>s.id===confirm).state,'sending');
+  fs.unlinkSync(held);listener=await codex.start();
+  await until(async()=> (await request(listener,'GET',base)).json.data.rows.some(r=>r.id===row.id),'The admitted account did not return after restart');
+  const done=await post({row:row.id,confirm});assert.equal(done.status,200,done.text);assert.equal(done.json.data.outcome,'reset',done.text);
+  const asks=codex.sent('account/rateLimitResetCredit/consume');assert.equal(asks.length,1);assert.equal(asks[0].params.idempotencyKey,saved.request);assert.equal(asks[0].params.creditId,saved.target);
+  assert.equal((await post({row:row.id,confirm})).json.data.outcome,'reset');assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,1);
+});
+
+test('a maker turns an expired credit away and a new offer can pick the next credit instead',async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native reset journal.');
+  const codex=await scriptedCodex();t.after(()=>codex.close());
+  const id='fixture-credit-expiry',token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:id,chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:id}}));
+  const reset=Math.floor(Date.now()/1000)+7200,file=path.join(codex.root,'codex-limits.json'),outcome=path.join(codex.root,'codex-reset-answer.json');
+  const credits=names=>write(file,JSON.stringify({accountId:id,rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:names.length,credits:names.map((id,i)=>({id,status:'available',expiresAt:reset+(i+1)*3600}))}}));
+  credits(['soon','late']);const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'Credits did not arrive');};
+  const row=(await refresh()).id,post=body=>request(listener,'POST',base+'/reset',body);
+  const offer=await post({row});assert.equal(offer.status,200,offer.text);
+  write(outcome,JSON.stringify({outcome:'noCredit'}));
+  const rejected=await post({row,confirm:offer.json.data.confirm});assert.equal(rejected.status,200,rejected.text);assert.notEqual(rejected.json.data.outcome,'reset');assert.match(rejected.json.data.message,/nothing was used|no reset/i);
+  assert.equal(codex.sent('account/rateLimitResetCredit/consume')[0].params.creditId,'soon');
+  credits(['late']);await refresh();write(outcome,JSON.stringify({outcome:'reset'}));
+  const next=await post({row});assert.equal(next.status,200,next.text);const done=await post({row,confirm:next.json.data.confirm});assert.equal(done.json.data.outcome,'reset');
+  const asks=codex.sent('account/rateLimitResetCredit/consume');assert.equal(asks.length,2);assert.equal(asks[1].params.creditId,'late');assert.notEqual(asks[1].params.idempotencyKey,asks[0].params.idempotencyKey);
+});
+
+test('Always Allow is revoked when the account in a native slot changes and does not return with the old sign-in',async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native account decisions.');
+  const codex=await scriptedCodex();t.after(()=>codex.close());const reset=Math.floor(Date.now()/1000)+7200;
+  const sign=id=>{const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:id,chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:id}}));write(path.join(codex.root,'codex-limits.json'),JSON.stringify({accountId:id,rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:1,credits:[{id:'fixture-credit',status:'available',expiresAt:reset+3600}]}}));};
+  sign('fixture-first');const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'The account did not get credit inventory');};
+  const first=await refresh(),always=await request(listener,'PUT',base+'/reset/always',{row:first.id,always:true});assert.equal(always.status,200,always.text);
+  const offer=async row=>{const r=await request(listener,'POST',base+'/reset',{row});assert.equal(r.status,200,r.text);return r.json.data;};assert.equal((await offer(first.id)).always,true);
+  sign('fixture-second');const second=await refresh();assert.notEqual(first.id,second.id);assert.equal((await offer(second.id)).always,false);
+  sign('fixture-first');const back=await refresh();assert.equal(back.id,first.id);assert.equal((await offer(back.id)).always,false);assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+});
+
+test('a lost remote reset answer is recovered and two signed-in computers share and revoke the same allowance',{timeout:150000},async t=>{
+  if(boxBinary().typescript)return t.skip('Uses isolated engine account credentials and the resident reset mail.');
+  const http=await import('node:http'),fs=await import('node:fs');const {relayAddress}=await import('./adapter.mjs');
+  const {computer,leases,relay}=await bench(t,{presenceEvents:true});
+  const at=Date.now(),reset=Math.floor(at/1000)+7200,received=[],consumed=new Set();
+  const creditList=[{id:'first',status:'available',expires_at:reset+3600},{id:'next',status:'available',expires_at:reset+7200}];
+  let holder,caller;
+  const maker=http.createServer((req,res)=>{
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/chatgpt'){send(200,{plan_type:'plus',rate_limit:{primary_window:{used_percent:100,limit_window_seconds:18000,reset_at:reset}},rate_limit_reset_credits:{available_count:creditList.length}});return;}
+    if(req.url==='/chatgpt/resets'){send(200,{available_count:creditList.length,credits:creditList});return;}
+    if(req.url==='/chatgpt/resets/consume'){
+      let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+        const used=JSON.parse(body),requestId=used.redeem_request_id;
+        received.push(used);
+        if(consumed.has(requestId)){send(200,{code:'already_redeemed'});return;}
+        consumed.add(requestId);send(200,{code:'reset'});
+      });return;
+    }
+    send(404,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  holder=await computer('ResetSource',undefined,env);caller=await computer('ResetVisitor',undefined,env);
+  const sign=(credential,accountID='fixture-shared-reset')=>[{integrationID:'openai',active:true,value:{type:'oauth',access:credential,expires:at+3600000,metadata:{accountID}}}];
+  holder.engine.credentials=sign('fixture-holder');
+  const base='kuvo/agents/api/kuvo/limits',sourceResident=holder.start(),source=holder.connect(await sourceResident.ready());
+  const read=async call=>(await call('GET',base)).json.data;
+  const refresh=async call=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=await read(call);return !d.refreshPending&&d.rows.find(r=>r.provider==='openai'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'Reset inventory not available');};
+  const row=await refresh(source);
+  const setup=await source('GET','kuvo/setup'),invite=await source('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);await until(()=>leases.leaseFor(setup.json.setup),'Holder lease missing');
+  const joined=await caller.join(invite.json.code);assert.equal(joined.code,0,joined.log);let resident=caller.start(),call=caller.connect(await resident.ready());
+  const ownRow=async connection=>(await read(connection)).rows.find(r=>r.id===row.id);
+  let remoteView;await until(async()=>{remoteView=await read(call);const r=remoteView.rows.find(r=>r.id===row.id);return r?.extras?.some(e=>e.kind==='resets'&&e.usable);},()=> 'Remote inventory did not arrive '+JSON.stringify(remoteView)+'\n'+resident.log()+'\n'+sourceResident.log(),30000,200);
+  const offer=async connection=>{const r=await connection('POST',base+'/reset',{row:row.id});assert.equal(r.status,200,r.text);return r.json.data;};
+  const ticket=await offer(call),address=box=>relayAddress(Buffer.from(JSON.parse(fs.readFileSync(path.join(box.home,'run','link.json'),'utf8')).secret,'base64url'));
+  // The holder's input and maker answer are real; only the outgoing peer mail
+  // is lost. Stop the visitor after the holder has durably recorded success.
+  const drop=relay.intercept(address(holder),address(caller),()=>true);t.after(drop);
+  const pending=call('POST',base+'/reset',{row:row.id,confirm:ticket.confirm},undefined,65000).catch(error=>error);
+  await until(()=>{
+    const file=path.join(holder.home,'agents','limits-resets.json');
+    if(!fs.existsSync(file))return;
+    return JSON.parse(fs.readFileSync(file,'utf8')).spends?.find(s=>s.state==='done'&&s.outcome==='reset');
+  },'The holder did not complete the spend with its maker',30000,100);
+  assert.equal(consumed.size,1);assert.equal(received.length,1);
+  const journal=()=>JSON.parse(fs.readFileSync(path.join(caller.home,'agents','limits-resets.json'),'utf8')).spends;
+  assert.ok(journal().some(s=>s.id===ticket.confirm&&s.state==='sending'));
+  await resident.stop();await pending;drop();resident=caller.start();call=caller.connect(await resident.ready());
+  await until(async()=>{const r=await ownRow(call);return r?.extras?.some(e=>e.kind==='resets'&&e.usable);},'Remote inventory did not return');
+  const retry=await offer(call);assert.notEqual(retry.confirm,ticket.confirm);
+  const done=await call('POST',base+'/reset',{row:row.id,confirm:retry.confirm});assert.equal(done.json.data.outcome,'reset');assert.equal(consumed.size,1);assert.equal(received.length,1);
+  const settled=journal().filter(s=>s.row===row.id);assert.equal(settled.length,1);assert.equal(settled[0].id,ticket.confirm);assert.equal(settled[0].state,'done');assert.ok(settled[0].also.includes(retry.confirm));
+  assert.equal((await call('POST',base+'/reset',{row:row.id,confirm:ticket.confirm})).json.data.outcome,'reset');
+
+  // A second computer signs into the same maker account. Its local choice is
+  // the same row, and a later off or a sign-in change is shared.
+  caller.engine.credentials=sign('fixture-caller');await refresh(call);
+  await until(async()=>{const [a,b]=await Promise.all([ownRow(source),ownRow(call)]);return a?.boxes.length===2&&b?.boxes.length===2;},'Both holders not present',30000,100);
+  const enabled=async connection=>(await ownRow(connection))?.extras?.find(e=>e.kind==='resets')?.agents===true;
+  const toggle=(connection,on)=>connection('PUT',base+'/reset/always',{row:row.id,always:on});
+  assert.equal((await toggle(call,true)).status,200);await until(async()=>await enabled(source)&&await enabled(call),'Allowance did not reach both holders');
+  assert.equal((await toggle(source,false)).status,200);await until(async()=>!await enabled(call)&&!await enabled(source),'Off did not reach both holders');
+  const unasked=await offer(call);assert.equal(unasked.always,false);const refused=await call('POST',base+'/reset',{row:row.id,confirm:unasked.confirm,unasked:true});assert.notEqual(refused.json.data.outcome,'reset');assert.equal(consumed.size,1);
+  assert.equal((await toggle(call,true)).status,200);await until(async()=>await enabled(source),'Second allowance did not arrive');
+  caller.engine.credentials=sign('fixture-new','fixture-other-account');await refresh(call);
+  await until(async()=>!await enabled(source),'Previous account allowance survived the sign-in change',30000,100);
+  caller.engine.credentials=sign('fixture-caller');await refresh(call);
+  assert.equal(await enabled(call),false);assert.equal(await enabled(source),false);
 });
