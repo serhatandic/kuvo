@@ -40,7 +40,7 @@ pub(super) struct Context<'a> {
 /// A subagent's session the agent keeps on the same connection: its task, then its row.
 enum Child {
     Task(String),
-    Row(String),
+    Row { row: String, input: Value, session: Option<String> },
 }
 
 #[derive(Default)]
@@ -489,7 +489,7 @@ impl Projection {
     pub fn child(&mut self, session: &str, update: &Update) -> Vec<TurnEvent> {
         let mut events = Vec::new();
         match (self.children.get_mut(session), update) {
-            (Some(Child::Row(_)), _) => {}
+            (Some(Child::Row { .. }), _) => {}
             (task, Update::UserChunk(content)) => {
                 let text = tools::content_text(content);
                 match task {
@@ -509,18 +509,25 @@ impl Projection {
                     .filter(|line| !line.is_empty())
                     .unwrap_or_else(|| "A subagent's task".into());
                 self.tools_since_text = true;
+                let input = json!({"description": title, "prompt": prompt});
                 events.push(tool_event(
                     &row,
                     "subagent",
                     ToolState::Running {
-                        input: json!({"description": title, "prompt": prompt}),
+                        input: input.clone(),
                     },
                     Map::new(),
                 ));
-                self.children.insert(session.to_owned(), Child::Row(row));
+                self.children.insert(session.to_owned(), Child::Row { row, input, session: None });
             }
         }
         events
+    }
+
+    pub fn associate_child(&mut self, native: &str, id: String) {
+        if let Some(Child::Row { session, .. }) = self.children.get_mut(native) {
+            *session = Some(id);
+        }
     }
 
     /// The turn ends: its to-do list done, declined calls failed, reads settled, subagents done,
@@ -539,15 +546,15 @@ impl Projection {
             ));
         }
         for (_, child) in self.children.drain() {
-            if let Child::Row(row) = child {
+            if let Child::Row { row, input, session } = child {
                 events.push(tool_event(
                     &row,
                     "subagent",
                     ToolState::Completed {
-                        input: json!({}),
+                        input,
                         content: vec![],
                     },
-                    Map::new(),
+                    session.map(|id| Map::from_iter([("sessionID".into(), Value::String(id))])).unwrap_or_default(),
                 ));
             }
         }

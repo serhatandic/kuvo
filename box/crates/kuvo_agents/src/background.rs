@@ -1,8 +1,7 @@
 //! What still runs for a conversation besides its own turn, as the coding agents say it: the
 //! commands an agent left running (and those its turn waits on, `foreground`, which end with their
 //! tool call), each with what it has printed so far and a way to stop it; and the other tasks an
-//! agent keeps going. The agent that started each says when it ends. Subagents at work under a
-//! conversation are 4.6's to add. The resident publishes what's here as its place in
+//! agent keeps going, including its subagents. The agent that started each says when it ends. The resident publishes what's here as its place in
 //! `run/work/background.json`, which the work routes read.
 
 use std::{
@@ -130,6 +129,35 @@ struct State {
     commands: HashMap<String, Kept>,
     /// Each session's tasks, by the agent thread that keeps them.
     tasks: HashMap<String, Vec<Helper>>,
+    children: HashMap<String, ChildWork>,
+}
+
+struct ChildWork {
+    parent: String,
+    helper: Helper,
+    background: bool,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+pub(crate) struct ChildActivity {
+    owner: Background,
+    id: String,
+    order: WorkOrder,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl ChildActivity {
+    pub fn cancelled(&self) -> tokio_util::sync::CancellationToken { self.cancel.clone() }
+}
+
+impl Drop for ChildActivity {
+    fn drop(&mut self) {
+        self.owner.change(|state| {
+            if state.children.get(&self.id).is_some_and(|child| child.helper.order.as_ref() == Some(&self.order)) {
+                state.children.remove(&self.id);
+            }
+        });
+    }
 }
 
 /// The commands and tasks the agents here have going: one for the resident, shared with each
@@ -298,6 +326,34 @@ impl Background {
         true
     }
 
+    pub(crate) fn begin_child(&self, parent: &str, id: &str, background: bool) -> ChildActivity {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let order = WorkOrder::next();
+        self.change(|state| {
+            if let Some(old) = state.children.insert(id.into(), ChildWork {
+                parent: parent.into(), helper: Helper { id: id.into(), since: now(), order: Some(order.clone()) },
+                background, cancel: cancel.clone(),
+            }) { old.cancel.cancel(); }
+        });
+        ChildActivity { owner: self.clone(), id: id.into(), order, cancel }
+    }
+
+    pub(crate) fn child_ids(&self) -> std::collections::BTreeSet<String> {
+        self.read(|state| state.children.keys().cloned().collect())
+    }
+
+    pub(crate) fn stop_children(&self, parent: &str) {
+        self.read(|state| {
+            for child in state.children.values().filter(|child| child.parent == parent) {
+                child.cancel.cancel();
+            }
+        });
+    }
+
+    pub(crate) fn stop_child(&self, id: &str) -> bool {
+        self.read(|state| state.children.get(id).map(|child| child.cancel.cancel()).is_some())
+    }
+
     /// The tasks an agent keeps going for `session` now (neither commands nor subagents).
     pub fn set_tasks(&self, session: &str, tasks: Vec<Helper>) {
         if self.read(|state| {
@@ -334,6 +390,9 @@ impl Background {
             }
         }
         self.read(|state| {
+            for child in state.children.values().filter(|child| child.background) {
+                all.entry(child.parent.clone()).or_default().subagents.push(child.helper.clone());
+            }
             for (session, tasks) in &state.tasks {
                 all.entry(session.clone())
                     .or_default()

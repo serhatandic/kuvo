@@ -211,6 +211,8 @@ struct Active {
     start_cancel: CancellationToken,
     sink: Arc<dyn TurnSink>,
     projection: Projection,
+    children: std::collections::HashMap<String, ChildLane>,
+    provider: String,
     process: Arc<Process>,
     model: String,
     variant: Option<String>,
@@ -239,6 +241,11 @@ struct Active {
     record: Option<Record>,
 }
 
+struct ChildLane {
+    handle: crate::subagent::ChildTurn,
+    projection: Projection,
+}
+
 impl Active {
     /// `input`'s turn on `process`, nothing yet sent, told or answered.
     fn new(
@@ -252,6 +259,8 @@ impl Active {
             start_cancel: input.start_cancel.clone(),
             sink,
             projection,
+            children: Default::default(),
+            provider: input.model.provider.clone(),
             process,
             model: input.model.id.clone(),
             variant: input.model.variant.clone(),
@@ -1110,18 +1119,17 @@ impl Actor {
         if update.replay {
             return Ok(());
         }
-        // (What it offers changed: the next turn chooses from that.)
-        match &update.update {
-            crate::acp::wire::Update::ConfigOptions(options) => {
-                self.setup.set("configOptions", options.clone())
-            }
-            crate::acp::wire::Update::Mode(mode) => self.setup.set("kuvoMode", mode.clone()),
-            _ => {}
-        }
         let ours = match (&update.session, &self.native) {
             (Some(session), Some(native)) => session == native,
             _ => true,
         };
+        if ours {
+            match &update.update {
+                crate::acp::wire::Update::ConfigOptions(options) => self.setup.set("configOptions", options.clone()),
+                crate::acp::wire::Update::Mode(mode) => self.setup.set("kuvoMode", mode.clone()),
+                _ => {}
+            }
+        }
         let Some(active) = self.active.as_mut() else {
             if ours && self.native.is_some() {
                 self.own_update(update).await;
@@ -1143,9 +1151,37 @@ impl Actor {
             };
             active.projection.update(&update.update, &cx)
         } else {
-            active
-                .projection
-                .child(update.session.as_deref().unwrap_or(""), &update.update)
+            let native = update.session.as_deref().unwrap_or("");
+            let mut events = active.projection.child(native, &update.update);
+            for event in &mut events {
+                if let TurnEvent::Tool { id, state: crate::session::ToolState::Running { input }, metadata, .. } = event {
+                    let handle = active.sink.subagent(crate::subagent::Task {
+                        call: id.clone(),
+                        title: input["description"].as_str().unwrap_or("A subagent's task").into(),
+                        prompt: input["prompt"].as_str().map(str::to_owned),
+                        agent: None,
+                        model: crate::session::ModelRef { provider: active.provider.clone(), id: active.model.clone(), variant: active.variant.clone() },
+                        background: false,
+                        messages: crate::subagent::Messages::unavailable(&active.provider),
+                    }).await?;
+                    metadata.insert("sessionID".into(), json!(handle.id()));
+                    active.projection.associate_child(native, handle.id().into());
+                    active.children.insert(native.into(), ChildLane { handle, projection: Projection::new(now(), false) });
+                }
+            }
+            if let Some(child) = active.children.get_mut(native) {
+                let cx = Context {
+                    flavour: self.shared.flavour.as_ref(),
+                    directory: &self.directory,
+                    model: &active.model,
+                    native,
+                    known: &self.known,
+                };
+                for event in child.projection.update(&update.update, &cx) {
+                    child.handle.event(event).await?;
+                }
+            }
+            events
         };
         self.emit(events).await
     }
@@ -1964,6 +2000,7 @@ impl Actor {
         };
         let native = self.native.clone().unwrap_or_default();
         if !active.process.closed() {
+            active.process.close_children(&self.session);
             active.process.note_turn(&native, None).await;
             active.process.touch();
         }
@@ -1986,6 +2023,15 @@ impl Actor {
             native: &native,
             known: &self.known,
         };
+        for (native, mut child) in active.children.drain() {
+            let cx = Context { native: &native, ..cx };
+            for event in child.projection.end(&cx) {
+                child.handle.event(event).await?;
+            }
+            child.handle.finish(if !active.stopping && matches!(outcome, Outcome::Succeeded) {
+                Outcome::Succeeded
+            } else { Outcome::Interrupted }).await?;
+        }
         let mut events = active.projection.end(&cx);
         if let Some(title) = self.own_title(&active.process).await {
             events.push(TurnEvent::Titled(title));

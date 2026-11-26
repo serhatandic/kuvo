@@ -52,6 +52,8 @@ pub(crate) struct Projection {
 }
 
 impl Projection {
+    pub(crate) fn for_child(mut self) -> Self { self.own = true; self }
+
     /// The plan limits its turn hears go to `limits` (the limits ring, 5.4).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_limits(mut self, limits: Arc<dyn PlanLimits>) -> Self {

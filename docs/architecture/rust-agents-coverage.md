@@ -1784,7 +1784,8 @@ prefix in `agents/handover.ts` is a different feature and remains.
 | `transcript-storage.test.ts`: opening legacy chat retains its pictures; save only new or changed messages; usage and artifact projection survives migration | A, partial | `saved_sessions` covers legacy/SQLite pagination and incremental message updates; `library` proves backfill reads the current artifacts projection even with an old rollback JSON copy beside it. Picture retention and the complete end-to-end map remain. |
 | `transcript-memory.test.ts`: listing doesn't parse pictures; Insights doesn't decode huge tool bodies | A, partial | Header-only inventory and SQLite projections are already present; bounded legacy pagination now deserializes one row at a time and skips rows beyond an oldest-first page. `saved_sessions` exercises the narrow legacy Insights reader on a 48 MiB tool output, including a stopped streaming input and a completed skill with escaped Unicode. The full inventory memory measurement remains. |
 | `subagents.test.ts` (all 5); adapter tests' "Your subagents" sections (Claude, Codex, Cursor, ACP) | A, remaining | Custom definitions, model selection, account-specific rules and adapter-native configuration still to port. |
-| `sessions.test.ts` subagents; Claude's background and message forwarding cases; Codex spawned-agent cases; ACP/Antigravity and Cursor child cases | A, remaining | Parent linkage, durable child transcripts, background work, permission and message routing, Stop and restart need porting. Parent tool rows exist, but do not prove child sessions. |
+| `sessions.test.ts` subagents: a child's task, own steps and finish, parent linkage and deletion; Stop | A, partial | `agents-subagents` exercises an ACP Grok child with its own text, tool call, active row, disabled messages, parent linkage, eventual finish and deletion; a second case stops the child without ending the parent, and discards late frames. A Claude foreground Task has its own transcript, and completion keeps the link. All three failed with the earlier Rust binary and pass with the reference and Rust. |
+| Claude's background and message forwarding cases; Codex spawned-agent cases; concurrent ACP/Antigravity and Cursor child cases | A, remaining | Background and resumed child lanes, permissions and native message routing, nested children, native Stop where supported, and holder recovery still need porting. An unknown ACP child is associated only with a single unambiguous active parent, never guessed among concurrent parents. |
 | `keywords.test.ts` side questions, follow-ups, threads/events, attachments, restart, conversation deletion | A, remaining | One-off generation, side-question routes and durable side threads are absent. |
 | `sessions.test.ts` Undo, undo carefully, and Undo/Stop/file-keeping races | A, remaining | Repository snapshots, staged Undo/Redo, and finalization are not implemented. |
 | `carry-agents.test.ts` (both tests); `moves-lanes.test.js` and `moves-lanes-races.test.js`; Claude native conversation and memory move cases | A, remaining | Native lane manifest, packing, placement, verification, rollback and retained copies still to port. |
@@ -1813,3 +1814,11 @@ column and its WAL stamp rather than the obsolete database name or stale rollbac
 Legacy Insights reads just its own fields with serde, skipping unrelated tool bodies before
 allocating them. The same narrow projection that writes new transcript rows filters its
 selected data.
+
+
+Child transcripts use a resident-owned writer per spawned call, with a stable
+child ID from the parent, turn and native call. The adapter projects a child's
+frames separately rather than mixing its text into the parent's answer.
+The activity handle owns cancellation and removal from the active list; a
+completed child discards late writes. The parent tool retains its task and
+child ID as it completes. This adds no native process for a spawned child.

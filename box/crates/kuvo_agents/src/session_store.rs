@@ -126,6 +126,7 @@ impl SessionStore {
         if self.read(id).await?.is_none() {
             return Ok(false);
         }
+        self.background.stop_children(id);
         for job in self.background.running(id, false) {
             self.background.stop(&job.id).await;
         }
