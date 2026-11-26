@@ -73,7 +73,7 @@ test("large notice history cannot evict the current limits account from peer mai
   const account = f.limits.list(false)[0]
   account.notices = Array.from({length:100}, (_,i) => ({ ...f.limits.notices()[0], id:`usage_${i}`, row:"a".repeat(300),window:"w".repeat(200) }))
   const sent: LimitsMail[] = []
-  const limits = { list: () => [account] } as unknown as Limits
+  const limits = { list: () => [account], peersChanged: () => {} } as unknown as Limits
   new LimitsPeers(limits, {followed:true,send:(_,mail)=>{sent.push(mail)}}, {told:true,setup:"set_test",own:()=>({key:"own",name:"own"}),peerBoxes:()=>[{key:"peer",name:"peer"}],listen:()=>{},isPeer:()=>true}).tell(true)
   expect(sent[0].accounts).toHaveLength(1)
   expect(sent[0].accounts[0].windows).toEqual(account.windows)
