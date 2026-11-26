@@ -865,13 +865,38 @@ and WSL process lists and Lokum container list were clear of this run.
 Non-test size: 618,048 characters without leading indentation (0.899×
 the 687,546-character TS usage-directory baseline at 47f51ff5b).
 
+## Eighteenth slice: kept settings and warning switches
+
+Old kept display preferences now decode one versioned part at a time. An
+invalid known value or stamp cannot turn a settings read into a server error;
+valid unknown parts and fields survive an older client edit and reach another
+member in the accepted signed state. Usage reads the setup owner's accepted
+view, rather than reopening its link record for every answer. An unreadable
+record during a running resident cannot erase the accepted settings. The two
+regression scenarios failed on the preceding Rust binary and passed on TS.
+Both boxes also pass the old fallback preference and setup-scope fixtures,
+including preservation of manual choices during import. The all-off and
+per-trigger notice matrix and accepted-turn route prove that disabling a
+warning does not consume a crossing; both limits/settings routes assert the
+unsupported-provider availability and wording.
+
+Mac Rust usage 91/91 applicable, TS 39/39, scoped accepted readings 13/13,
+engine sessions 81/81, workspace test-target and Bun checks clean. The seeded
+history differential matches 12/13 answers exactly (only the actual coverage
+scan timestamp differs); the two-answer native corpus matches exactly.
+Stored inventory/projection-format differences remain as documented above.
+The Windows and static-musl cross-builds succeeded. Remote execution is
+pending the shared test computers' current runs. Non-test size: 620,278
+characters without leading indentation (0.902× the TS baseline).
+Eleven A1 entries are covered in this slice; 169 remain.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
 - Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
 - Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
 - Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity busy-store retention and cutoff cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
-- Shared-settings migration from old kept files and preservation of newer parts/fields beyond the existing signed shared save path. Unconverted peer authority is excluded by design.
+- Shared-settings migration from old kept files and preservation of newer parts/fields are now covered; unconverted peer authority is excluded by design.
 
 ### Triage after slice 17
 
@@ -1290,14 +1315,14 @@ does not block completion of the row.
 - L31: no data never fires — covered by fixed-clock invalid-window rejection preserving baseline.
 - L32: level fires almost out only — covered by fixed-clock reset-less/unknown-period threshold scenario.
 - L33: no data preserves previous signals — covered by invalid read between accepted samples and subsequent crossing.
-- L34: disabled toggles never fire — open.
-- L35: per trigger off suppresses only it — open.
+- L34: disabled toggles never fire — covered by all-off and per-warning fixed-clock Trail matrix and the real accepted-turn route with every toggle off.
+- L35: per trigger off suppresses only it — covered by the same per-warning matrix; the real route reenables its threshold without consuming the crossing.
 - L36: off toggle does not consume edge — covered by scoped accepted-reading off-toggle test.
 - L49: evaluator healthy to close once, facts and route — open.
 - L50: evaluator close to red — open.
 - L51: evaluator jitter and restart do not duplicate — duplicate — the real repeated crossing route compares the stable warning IDs through reset jitter, and the retained warning catch-up route checks exactly one identical ID after two restarts. The scoped reading test also exercises persisted occurrence counts.
-- L52: evaluator all toggles off — open.
-- L53: evaluator per trigger off — open.
+- L52: evaluator all toggles off — covered by the all-off real-turn notice route and fixed-clock projection matrix.
+- L53: evaluator per trigger off — covered by the real-turn toggle route and the per-trigger projection matrix.
 - L54: evaluator disabled provider prunes baseline — covered by provider hide/re-enable route regression and dormant baseline state.
 - L55: evaluator remaining threshold uses remaining regardless display mode — duplicate — the Helper menu and warning facts route directly compares the percentage remaining from the accepted ring with the reported Almost Out fact, independent of card drawing.
 - L56: client delivery failure leaves fact available for retry — covered by retained-fact missing receipt / restart and later observation retry scenario.
@@ -1326,24 +1351,24 @@ does not block completion of the row.
 - L285: unmappable Codex card identities fall back to enabled matching meters on any family card — later (rare) — a legacy or unmappable Codex card identity needs the fallback to another family card’s enablement.
 - L294: conflicting pins for the same occurrence converge to the smallest forwarder and persist — open.
 - L314: unrelated directory heartbeats do not bypass the heard-mail throttle — open.
-- L329: unsupported notification providers and their wording come from box answers — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L329: unsupported notification providers and their wording come from box answers — covered by the exact unsupported-provider availability and wording asserted on both settings and limits routes.
 
 ### `box/test/usage/usage-settings.test.ts`
 
 - L152: a client reads them, changes a part at a time, and is told; one that isn't what it should be is refused; they stay through a restart — duplicate — both-box settings routes check independent parts, stale rejection, invalid shape, import, invalid fallback and restart; the three-computer route confirms accepted changes reach the other members. The old internal kuvo.usage.settings bus has no desktop caller. Individual future-format and migration cases remain separately tracked.
-- L193: the Codex fallback model a box chose before it kept these counts as chosen, and gives way to a change — open.
-- L207: come in once: the parts no box has set, never again, never over a part changed since; a fallback model the box can't price with is left out — partial — settings route scenarios above.
+- L193: the Codex fallback model a box chose before it kept these counts as chosen, and gives way to a change — covered by the both-box old fallback preference migration route, including chosen-null and later edit/restart.
+- L207: come in once: the parts no box has set, never again, never over a part changed since; a fallback model the box can't price with is left out — covered by the both-box import once/invalid fallback route, manual choices before import, and the old fallback migration route.
 - L227: two Macs' imports: the one made first stays on both, a later Mac's first-run defaults never go over it; a change made since goes over both — superseded — independent member imports are replaced by one signed main-computer authority; the three-computer route verifies accepted import and refuses member imports. See [design §5](rust-box.md#5-what-not-to-port).
 - L246: three boxes: a change on any reaches the others, the newest change wins on all, part by part; one with a clock behind still counts on from what it has seen — superseded — member writes and decentralized version ties are replaced by signed main-computer saves; the three-computer route verifies part-by-part convergence and refused member writes. See [design §5](rust-box.md#5-what-not-to-port).
 - L287: a box that was off catches up once it says what it holds; settings came from another computer stay through its restart — superseded — legacy digest retells are replaced by signed shared saves; the three-computer route verifies return and restart. See [design §5](rust-box.md#5-what-not-to-port).
 - L310: settings ignore obsolete directory entries and wait for peer membership — superseded — the legacy direct-mail directory and obsolete directory entries are replaced by signed setup membership and shared saves. See [design §5](rust-box.md#5-what-not-to-port).
 - L353: usage settings mail requires a known matching setup — superseded — the decentralized settings mail kind is not a valid operation in checkpointed authority; signed setup membership and saves own the value. See [design §5](rust-box.md#5-what-not-to-port).
-- L385: a box that leaves your setup for another starts over: none of your settings go there, and its own Mac's come in again — open.
+- L385: a box that leaves your setup for another starts over: none of your settings go there, and its own Mac's come in again — covered by the both-box new setup scope fixture with another setup marker, then a fresh import.
 - L427: a client of an older app sends the cards and meters it knows: the box keeps a newer app's — covered by both-box layout/known-meter matrix, including explicit whole replacement.
-- L449: two boxes of different versions hold the same: a part or field one doesn't know is kept as it came, so they agree and stop telling each other — open.
+- L449: two boxes of different versions hold the same: a part or field one doesn't know is kept as it came, so they agree and stop telling each other — covered by the both-box future preference part and field fixture, including stale edit and exact retained signed value on a new member.
 - L474: a change made from a version of a part that has changed since (another computer's came meanwhile) is turned away, and the client shows the box's; a field a newer box added stays whatever the client sends — duplicate — the actual three-computer settings scenario verifies the stale version from a returning member is refused and the current layout retained; both-box import/edit preserves an unknown field. Legacy direct merge is superseded by signed main-computer authority.
-- L496: a box that followed no setup and joins one starts over: its old settings stay local — open.
-- L509: a box whose link doesn't say its setup (its keys not read yet, or a link from before setups, met for a moment as the box updates) keeps its settings: nothing's recorded as no setup, nothing goes, and the setup it names next is taken as theirs — open.
+- L496: a box that followed no setup and joins one starts over: its old settings stay local — covered by the both-box new setup scope fixture with explicit null marker, then a fresh import.
+- L509: a box whose link doesn't say its setup (its keys not read yet, or a link from before setups, met for a moment as the box updates) keeps its settings: nothing's recorded as no setup, nothing goes, and the setup it names next is taken as theirs — covered by the both-box transient link record replacement route; accepted settings and version remain visible.
 - L529: usage settings reject a future disk format without saving over it — covered by Rust route refusal and byte-identical retained future fixture (TS original unit test throws in constructor).
 
 ### `box/test/usage/usage.test.ts`

@@ -112,6 +112,11 @@ impl SetupHandle {
         self.rosters.clone()
     }
 
+    /// The usage service observes exactly the current setup actor's accepted state.
+    pub fn usage_setup(&self) -> Option<UsageSetup> {
+        self.views.borrow().usage.clone()
+    }
+
     /// Historical computer keys come only from verified setup membership.
     pub fn insight_origins(&self) -> std::collections::BTreeMap<String, String> {
         if self.config_receipt_scope().is_none() {
@@ -292,6 +297,33 @@ pub async fn transient_ssh_pairings(home: &Path) -> Option<Arc<dyn Pairings>> {
     }))
 }
 
+/// The accepted usage preferences and the authority position they belong to.
+/// Read from the setup actor's view, not by reparsing its on-disk link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageSetup {
+    pub id: String,
+    pub epoch: u64,
+    pub primary: bool,
+    pub sequence: u64,
+    pub value: Arc<Value>,
+}
+
+impl UsageSetup {
+    fn accepted(link: &Link) -> Option<Self> {
+        let setup = link.setup().ok()?;
+        let entry = link
+            .value(SharedKind::SetupUsageDisplay)
+            .zip(link.shared.get(&SharedKind::SetupUsageDisplay));
+        Some(Self {
+            id: setup.position.id.clone(),
+            epoch: setup.position.epoch,
+            primary: setup.role == Role::Primary,
+            sequence: entry.map_or(0, |(_, entry)| entry.sequence),
+            value: Arc::new(entry.map_or(Value::Null, |(value, _)| value.clone())),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct View {
     pub setup: Value,
@@ -301,6 +333,7 @@ pub(crate) struct View {
     link_id: Option<String>,
     work_queue: Option<QueueSetup>,
     marketplace: Option<MarketplaceSetup>,
+    usage: Option<UsageSetup>,
     model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
@@ -1125,6 +1158,7 @@ fn make_view(
             .map(str::to_owned),
         work_queue: work_queue::accepted(link),
         marketplace: marketplace::accepted(link),
+        usage: UsageSetup::accepted(link),
     })
 }
 
@@ -1312,6 +1346,7 @@ impl Owner {
                     && old.clock == view.clock
                     && old.work_queue == view.work_queue
                     && old.marketplace == view.marketplace
+                    && old.usage == view.usage
                     && old.access == view.access
                     && old.pending_wipes == view.pending_wipes
                     && old.manage == view.manage

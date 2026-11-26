@@ -149,6 +149,37 @@ fn projected_crossings_only_follow_accepted_samples_in_the_same_window() {
 }
 
 #[test]
+fn disabling_one_projection_warning_does_not_disable_the_other_warnings() {
+    use Milestone::{CloseToRunningOut, HealthyToClose, UnderTenPercent};
+    for enabled in [
+        BTreeSet::new(),
+        BTreeSet::from([HealthyToClose]),
+        BTreeSet::from([CloseToRunningOut, UnderTenPercent]),
+        toggles(),
+    ] {
+        let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+        for (minute, used, expected) in [
+            (130, 0.12, None),
+            (140, 0.14, None),
+            (160, 0.285, Some(HealthyToClose)),
+            (170, 0.4, Some(CloseToRunningOut)),
+            (180, 0.92, Some(UnderTenPercent)),
+            (181, 0.93, None),
+        ] {
+            let expected = expected
+                .filter(|m| enabled.contains(m))
+                .into_iter()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                trail.observe(reading(START + minute * MIN, used, RESET), &enabled),
+                Some(expected),
+                "enabled {enabled:?}, observation {minute}"
+            );
+        }
+    }
+}
+
+#[test]
 fn hidden_metrics_reprime_after_restart_but_keep_occurrence_ids() {
     let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
     let all = toggles();
