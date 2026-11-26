@@ -1,6 +1,6 @@
 # Rust usage coverage (row 5.4)
 
-This is an in-progress map, not a parity claim. A case marked **open** has not been reproduced against the Rust implementation. **Partial** identifies a corresponding new scenario which covers only part of the TypeScript case. **Superseded** or **excluded** means the exact old path is outside the design; **duplicate** names an existing tested user outcome that needs no second port. The known-correction cases are intentionally skipped on the TypeScript oracle rather than weakening the Rust assertions.
+This is an in-progress map, not a parity claim. A case marked **open** has not been reproduced against the Rust implementation. **Partial** identifies a corresponding new scenario which covers only part of the TypeScript case. **Superseded** or **excluded** means the exact old path is outside the design; **duplicate** names an existing tested user outcome that needs no second port. **Later (rare)** is a supported but deferred edge case, not a claim of coverage; it does not hold the 0.8 row open. The known-correction cases are intentionally skipped on the TypeScript oracle rather than weakening the Rust assertions.
 
 Inventory: 392 named or parameterized test declarations. Parameterized declarations are represented by their source line; their variants are still open unless individually demonstrated.
 
@@ -875,36 +875,46 @@ the 687,546-character TS usage-directory baseline at 47f51ff5b).
 
 ### Triage after slice 17
 
-The 273 previously open/partial entries were checked against the current desktop, Helper, agent tools, supported stored data and Rust peer paths. Each remaining open/partial entry is category A (reachable or needed to establish its result); B and C are closed only with the reason beside the original inventory line. A partial entry may require only an additional assertion rather than implementation. The reference retains current beta data on disk but does not require interoperation with later TypeScript beta peers ([design §§3–5](rust-box.md#3-the-contract-the-rust-box-meets)).
+The 273 previously open/partial entries were checked against the current desktop, Helper, agent tools, supported stored data and Rust peer paths. Category A (reachable or needed to establish its result) is now split by likelihood: A1 (open/partial) is ordinary use or common failure, needed for 0.8; A2 (later (rare)) is deferred until after 0.8. B and C are closed only with the reason beside the original inventory line. A partial entry may require only an additional assertion rather than implementation. The reference retains current beta data on disk but does not require interoperation with later TypeScript beta peers ([design §§3–5](rust-box.md#3-the-contract-the-rust-box-meets)).
 
-| Original TS test area | A: reachable | B: superseded/excluded | C: duplicate |
-|---|---:|---:|---:|
-| engine-limits | 4 | 1 | 1 |
-| insights-checkpoints | 1 | 0 | 1 |
-| insights-kept | 1 | 0 | 0 |
-| insights-refresh | 1 | 0 | 0 |
-| insights-summary | 1 | 0 | 0 |
-| insights | 10 | 0 | 0 |
-| limit-card | 9 | 0 | 0 |
-| limit-display | 1 | 0 | 0 |
-| limits-peers | 14 | 1 | 0 |
-| limits-resets | 32 | 0 | 0 |
-| limits-sign-ins | 5 | 0 | 2 |
-| limits | 34 | 1 | 1 |
-| native-usage | 2 | 0 | 1 |
-| service | 5 | 1 | 1 |
-| usage-antigravity-history | 8 | 0 | 2 |
-| usage-antigravity-plan | 25 | 1 | 1 |
-| usage-codex | 9 | 0 | 0 |
-| usage-cursor | 25 | 1 | 0 |
-| usage-grok-hosted | 10 | 1 | 0 |
-| usage-notices | 24 | 1 | 3 |
-| usage-settings | 6 | 5 | 2 |
-| usage | 6 | 1 | 0 |
-| notices-usage | 0 | 11 | 0 |
-| **Total** | **233** | **25** | **15** |
+| Original TS test area | A1: required for 0.8 | A2: later (rare) | B: superseded/excluded | C: duplicate |
+|---|---:|---:|---:|---:|
+| engine-limits | 3 | 1 | 1 | 1 |
+| insights-checkpoints | 1 | 0 | 0 | 1 |
+| insights-kept | 1 | 0 | 0 | 0 |
+| insights-refresh | 1 | 0 | 0 | 0 |
+| insights-summary | 1 | 0 | 0 | 0 |
+| insights | 6 | 4 | 0 | 0 |
+| limit-card | 7 | 2 | 0 | 0 |
+| limit-display | 1 | 0 | 0 | 0 |
+| limits-peers | 13 | 1 | 1 | 0 |
+| limits-resets | 15 | 17 | 0 | 0 |
+| limits-sign-ins | 5 | 0 | 0 | 2 |
+| limits | 33 | 1 | 1 | 1 |
+| native-usage | 2 | 0 | 0 | 1 |
+| service | 4 | 1 | 1 | 1 |
+| usage-antigravity-history | 5 | 3 | 0 | 2 |
+| usage-antigravity-plan | 15 | 10 | 1 | 1 |
+| usage-codex | 8 | 1 | 0 | 0 |
+| usage-cursor | 19 | 6 | 1 | 0 |
+| usage-grok-hosted | 9 | 1 | 1 | 0 |
+| usage-notices | 21 | 3 | 1 | 3 |
+| usage-settings | 6 | 0 | 5 | 2 |
+| usage | 4 | 2 | 1 | 0 |
+| notices-usage | 0 | 0 | 11 | 0 |
+| **Total** | **180** | **53** | **25** | **15** |
 
-The reachable cases are grouped by user outcome, not by original test count: settings migration; account admission and local provider readers; display/pace and notifications; peer scheduling/identity/freshness; reset journal/decision convergence; Antigravity and Cursor provider/history edges; native/engine history and pricing; peer history and Insights reconciliation, checkpoints and replay. Each still needs the same boundary, differential and platform proof.
+The A1 cases are grouped by user outcome, not by original test count. Plan nine
+to eleven verification batches: settings migration and ordinary notice toggles;
+native Claude admission/read spacing; Codex/engine admission and account reads;
+card, ring, expiry and pace projection; peer reading/freshness, identity and
+notice sharing; local and remote reset settlement/decisions (one or two batches);
+Antigravity plan and history; Cursor plan, paging and account-wide history;
+native/engine history, pricing and peer history; and Insights reconciliation,
+checkpoints and refresh. Overlapping TS declarations share the same boundary
+scenario where it proves their user outcomes. Each batch needs the same
+differential and platform proof. A2 is explicitly recorded for after 0.8 and
+does not block completion of the row.
 
 ## TypeScript case inventory
 
@@ -925,7 +935,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — covered by exact domain-separated identity assertions in extended engine plan route (cross-computer grouping tested separately).
 - L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — covered by extended engine plan route (same login with changed case and credential, then different login).
 - L320: an account's mark in Accounts is the service its limits are read as — open.
-- L326: OpenCode Go's 30-day window shows a forecast after frequent refreshes — open.
+- L326: OpenCode Go's 30-day window shows a forecast after frequent refreshes — later (rare) — the exact eight-hour, every-minute explicit refresh of a thirty-day window, beyond the ordinary weekly/new-window forecast matrix.
 
 ### `box/test/usage/insights-checkpoints.test.ts`
 
@@ -959,17 +969,17 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L49: an Insights worker exit rejects requests and the bridge reopens the persisted index — deliberate in-process design replacement; the restart/catch-up and kept summary cases exercise reopening the retained index without a separate worker process.
 - L85: closing the Insights index is idempotent and later requests reject — deliberate in-process design replacement; connection ownership is scoped to each blocking operation, resident shutdown closes handles and restart reopens the index. The actual WAL/backfill restart cases test retained data.
 - L93: copies merge before filters, resumed sessions count once, and moved bot calls retain their origin — open.
-- L114: a peer account observation enriches the matching local copy and keeps its counts — open.
+- L114: a peer account observation enriches the matching local copy and keeps its counts — later (rare) — matching local and peer copies whose account observations disagree in succession while counts differ.
 - L132: a newly available provider call replaces its saved placeholder across filters — open.
 - L142: day bounds use the viewer's time zone, including DST transitions — covered by fixed-clock production bounds for spring/fall DST and Kathmandu, plus both-box exact daily totals crossing UTC midnight.
 - L154: a cold yearly query and repricing both leave the bridge event loop responsive — open.
 - L186: a session page computes shares of the whole filtered snapshot after a scan — covered by both-box 51-session two-page scenario, plus detail and exact invalid-page refusals.
 - L207: resume peer pages, reject vouched computers, and price incoming records locally — partial — peer live cursor/delta, mixed version and unadmitted-origin filter; per-peer pricing fixture and multiple-page malformed-record matrix open.
-- L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — open.
-- L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — open.
+- L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — later (rare) — an in-range cursor is first rewound, then a serving peer learns a retired origin and resets again.
+- L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — later (rare) — historical replay with conflicting unrelated origin after a sequence reset.
 - L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — partial — managed native Claude and AG supply portable counts, read-only engine SQLite live cursor; native Codex/Grok integration exact fixture open.
 - L423: legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned — open.
-- L458: opening an unversioned Insights database stamps it without losing records — open.
+- L458: opening an unversioned Insights database stamps it without losing records — later (rare) — an intentionally unstamped old Insights database and a deliberately future version; the normal current-format upgrade/reopen and retained checkpoints remain required.
 
 ### `box/test/usage/limit-card.test.ts`
 
@@ -985,9 +995,9 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L208: a weekly window read every minute still shows a forecast after eight hours — open.
 - L213: a busy weekly window keeps its forecast through a box restart — open.
 - L219: Codex keeps a weekly forecast when its reported reset time moves by a few minutes — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L233: a downward correction within the same week keeps the forecast — open.
+- L233: a downward correction within the same week keeps the forecast — later (rare) — a maker lowers a same-week quota count after a multi-hour forecast was built.
 - L244: a new quota period starts its own forecast after the last reset — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L262: Antigravity's unused pools can forecast while Google keeps moving their reset times — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L262: Antigravity's unused pools can forecast while Google keeps moving their reset times — later (rare) — repeated moving reset times on unused Antigravity pools throughout a forecast sample history. Existing evidence: related accepted-window and notice tests above; this exact case not yet ported.
 
 ### `box/test/usage/limit-display.test.ts`
 
@@ -1018,7 +1028,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L535: an account of a service a newer box knows and this one doesn't is listed by its name — covered by both-box retained newer-service route fixture and scoped peer-mail decoder, including invalid service refusal.
 - L547: what a peer's account has beyond its windows (′extras′) is kept as told, and only what one is — covered by both-box retained newer-service route and scoped peer decoder/round-trip, including non-meter fields, nested values and oversized extras.
 - L579: a computer you removed goes from the list, with its accounts — covered by the both-box retained newer-service route, including restart and real membership removal.
-- L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — partial — fixed-time peer decoder checks window/check/hold normalization; next maker read scheduling open.
+- L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — later (rare) — a separately mis-set peer clock jumps an hour ahead; ordinary next-read takeover remains required. Existing evidence: fixed-time peer decoder checks window/check/hold normalization; next maker read scheduling open.
 - L604: what goes between them is the readings, never a sign-in or who the account is at its maker — partial — scoped mail decoder/encoder strips fixture sign-in and non-meter data; outgoing maker identity and periodic retell fixture open.
 - L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — covered by scoped real Book store/read/roster and retained older-wire route fixture (future service and extras, still visible across restart only for admitted member).
 - L653: a weekly forecast combines both computers' readings and survives a fallback to an older reading — open.
@@ -1041,29 +1051,29 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
 - L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — partial — remote caller enables, holder disables, and both observe the decision; both holders signed in variant open.
 - L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — partial — remote unknown and caller restart replay same confirmation; new confirmation and lost relay answer variants open.
-- L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — partial — stale Codex offer refused and separate local Always Allow on/off case.
-- L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — open.
-- L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — open.
-- L776: a reset still open, asked again while its maker holds requests off: refused for now, and still open, never 'nothing was used' — open.
+- L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — later (rare) — the sign-in changes precisely between an Always Allow offer and its spend; the normal old-offer refusal and account-switch allowance withdrawal remain required. Existing evidence: stale Codex offer refused and separate local Always Allow on/off case.
+- L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — later (rare) — the holder is away while on/off decisions are both made and the relay delivers the older one last; ordinary cross-computer decision sync remains required.
+- L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — later (rare) — a computer does not yet know the account, receives an off decision, then receives an older on after learning it.
+- L776: a reset still open, asked again while its maker holds requests off: refused for now, and still open, never 'nothing was used' — later (rare) — an unresolved spend is retried precisely during a further provider hold.
 - L794: a new reset asked well after one that never heard back: that one is settled first from what its maker says, and this one is its own — covered by aged Codex journal and distinct late-credit fixture.
-- L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — open.
-- L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — open.
-- L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — open.
+- L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — later (rare) — a remote spend loses its answer and the holder signs out before the retry.
+- L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — later (rare) — a second, distinct remote request follows an unresolved spend older than ten minutes; local aged-settlement fixture already passes.
+- L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — later (rare) — two opposite decisions from computers with different clocks within one clock-skew minute.
 - L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — partial — local off decision rejects an unasked confirmation; peer behavior open.
-- L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — open.
+- L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — later (rare) — two concurrent confirmations arrive after a different older unsettled spend.
 - L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — open.
 - L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — covered by Claude grant profile mismatch fixture.
-- L976: an agent's reset under Always Allow got no answer, then Always Allow is turned off: the user confirming it is theirs, and it goes through as the same request — open.
-- L998: Claude on Linux whose record of the sign-in leaves out its organization: its token's account matches by the account itself, and a reset goes — open.
+- L976: an agent's reset under Always Allow got no answer, then Always Allow is turned off: the user confirming it is theirs, and it goes through as the same request — later (rare) — an agent spend loses its answer, its allowance is turned off, then the user confirms the same unsettled spend.
+- L998: Claude on Linux whose record of the sign-in leaves out its organization: its token's account matches by the account itself, and a reset goes — later (rare) — Claude’s credential record omits the organization while the maker still identifies it.
 - L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — open.
-- L1044: Claude's token is a newly signed-in account while its record still says the one before: nothing is spent, and the new account's Always Allow stays — open.
-- L1070: an agent's reset that never heard back, Always Allow turned off since, and the user's Use a quarter of an hour on: it goes the first time, the agent's settled first — open.
-- L1108: signed in to another account while Anthropic is asked who the sign-in is: the reset is spent with the sign-in that was checked, never the new one — open.
-- L1132: Claude's record and its token's account: one account only where the accounts match, and the organizations where both say one — open.
-- L1144: a decision a peer told stays while the link only leaves that peer out for a moment — open.
-- L1165: a spend a box began for a Mac that left the setup is answered as it went, never 'nothing was used' for one that went — open.
+- L1044: Claude's token is a newly signed-in account while its record still says the one before: nothing is spent, and the new account's Always Allow stays — later (rare) — a token belongs to a newly signed-in account but the local account record still names the old one, with a separate allowance for the new account.
+- L1070: an agent's reset that never heard back, Always Allow turned off since, and the user's Use a quarter of an hour on: it goes the first time, the agent's settled first — later (rare) — an agent’s unsettled spend, an intervening disabled allowance, and a distinct later explicitly confirmed reset.
+- L1108: signed in to another account while Anthropic is asked who the sign-in is: the reset is spent with the sign-in that was checked, never the new one — later (rare) — the credential changes while the provider profile identity request for a reset is already in flight; ordinary mismatching identity refusal remains required.
+- L1132: Claude's record and its token's account: one account only where the accounts match, and the organizations where both say one — later (rare) — record and token include inconsistent or partly missing organization identities.
+- L1144: a decision a peer told stays while the link only leaves that peer out for a moment — later (rare) — membership listing temporarily omits a decision’s already known peer without that peer actually leaving.
+- L1165: a spend a box began for a Mac that left the setup is answered as it went, never 'nothing was used' for one that went — later (rare) — a member leaves the setup while the holder is deciding its already-sent reset.
 - L1196: before its link has said who your computers are (just started), a box uses no one's resets without asking: its agents are told to ask, and nothing is spent — open.
-- L1218: the answer to a reset a Mac passed to its machine still comes through after the machine leaves the peer list: it says how it went, never 'may have been used' — open.
+- L1218: the answer to a reset a Mac passed to its machine still comes through after the machine leaves the peer list: it says how it went, never 'may have been used' — later (rare) — a machine leaves the peer list at the exact time its outstanding reset answer arrives.
 
 ### `box/test/usage/limits-sign-ins.test.ts`
 
@@ -1087,7 +1097,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L318: an added account's usage is asked of Claude Code with that account's folder, and never with a token — open.
 - L339: a read under way is kept before it's answered: a restart meanwhile doesn't ask again — open.
 - L356: a refresh right after a read doesn't read another Claude account within the minute — open.
-- L370: a restart while one Claude account is being read doesn't read another in the same minute — open.
+- L370: a restart while one Claude account is being read doesn't read another in the same minute — later (rare) — a restart during a minute-spaced read of one Claude account, followed by another account precisely within that same minute; restart admission and read spacing are still required.
 - L387: Claude Code not signed in: its row says to sign in again, it isn't started again while that's so, and signed in again, it's asked again — open.
 - L409: what a turn hears keeps a window current between reads, even while a read is under way — open.
 - L432: the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses — open.
@@ -1129,7 +1139,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L46: the limits route reads and renders all six plans from their fixture credentials and APIs — duplicate — actual native Claude, Codex, Grok, Cursor, Antigravity and engine credential conformance routes assert the separate maker answers, and mixed-provider refresh proves independent progress. The original test’s additional bridge observation/PID HTTP checks belong to the removed split service; the current switched-account maker reading remains tracked at limits.test.ts L611.
 - L148: an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind — open.
 - L230: the bridge retries its latest window after the services process restarts — superseded — the separate bridge-to-services HTTP replay and bridge PID/revision are gone; [design §5](rust-box.md#5-what-not-to-port). The resident accepts turn observations directly and retains accepted windows; see the turn/cache and restart scenarios.
-- L267: a provider removed from the admitted accounts during a round is not read — open.
+- L267: a provider removed from the admitted accounts during a round is not read — later (rare) — a provider is withdrawn exactly between admission and its request in a multi-account read round; ordinary credential withdrawal remains required.
 - L285: a Codex login stored only in Keychain is read with the exact account for its home — open.
 - L302: Codex auto storage joins pending keyring lookups and prefers the keyring credential — open.
 - L326: a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself — partial — Codex reset replay scenario refuses changed sign-in; full maker/file divergence scenario open.
@@ -1142,16 +1152,16 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L72: legacy databases without steps, then gaining metadata, are re-read — covered by multi-store history scenario on both boxes.
 - L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — duplicate — the both-box multi-store route checks malformed new and oversized stores, other stores’ exact totals, repair and retention of an unreadable known store. The leftover TS diagnostic log-count assertion is not a displayed, retained or wire result.
 - L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — covered by both-box multi-store history scenario (unrelated empty table).
-- L143: a conversations folder that can't be listed is logged once and left out while the others count — open.
+- L143: a conversations folder that can't be listed is logged once and left out while the others count — later (rare) — a deliberately unlistable conversations path alongside usable stores and exact log-once counting.
 - L158: missing stores are empty and symlinked stores count only once — covered by both-box multi-store history scenario, symlink variant on Unix.
 - L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — open.
 - L202: deleted databases leave the total after restart and do not block the remaining stores — covered by both-box multi-store history scenario.
 - L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — both-box multi-store fixture proves live WAL changes and retaining last good rows when temporarily unreadable; idle aging and decoded-store counts open.
 - L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — covered by shared bounded-row corpus, exact count and processed tokens.
 - L284: shared missing/empty profile fixtures contain no history, as Swift — duplicate — the both-box empty-history route asserts the empty Antigravity row, and the multi-store route includes an empty/unrelated schema that cannot contribute tokens. This covers missing and empty stores without a parallel empty-fixture-only decoder test.
-- L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — open.
+- L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — later (rare) — an unreadable Antigravity database coincides with removal of another provider’s native history.
 - L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — open.
-- L367: a busy database read before still moves every round though it's written to during every read, and isn't logged — open.
+- L367: a busy database read before still moves every round though it's written to during every read, and isn't logged — later (rare) — the same busy database changes during every repeated scan, with exact diagnostic suppression.
 
 ### `box/test/usage/usage-antigravity-plan.test.ts`
 
@@ -1171,29 +1181,29 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — covered by extended owned loopback route fixture.
 - L211: the overview shows heavy use of the tightest available pool without mixing pools — open.
 - L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
-- L278: legacy project-plan 403 still permits quota retrieval — open.
+- L278: legacy project-plan 403 still permits quota retrieval — later (rare) — an old project-plan endpoint responds with a specific legacy 403 while quota remains available.
 - L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
-- L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — open.
+- L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — later (rare) — deliberately redirected profile/refusal state paths and refusal-state cleanup in the same fixture; normal sign-out still required.
 - L334: agy with no CSRF is retried after an authless endpoint 403 — covered by extended owned loopback route fixture.
 - L347: missing windows without resets survive only one partial round across restart — covered by Antigravity partial-pool restart route.
 - L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
 - L380: malformed and unreadable sign-in retain known identity and windows — open.
 - L404: access refusal persists through failed refresh and restart without resending old bearer — covered by refusal/restart fixture.
-- L423: unwritable or unreadable refusal journal stops further sends — open.
+- L423: unwritable or unreadable refusal journal stops further sends — later (rare) — a refusal state journal is unreadable or unwritable just as a maker refuses the existing credential.
 - L443: restart never sends a refused token returned unchanged by refresh — duplicate — the actual refused-bearer/restart route returns the same refused credential from renewal and asserts the new process sends only renewal, never that bearer to a quota host.
-- L459: refused refresh is not retried after access disappears or changes — partial — refusal survives restart; changed access cases open.
+- L459: refused refresh is not retried after access disappears or changes — later (rare) — a refused refresh credential is retained through removal or replacement of its access credential; disappearance/restart already has a fixture. Existing evidence: refusal survives restart; changed access cases open.
 - L477: local CSRF refusal survives restart — covered by extended owned loopback route fixture; the rejected token is not resent.
-- L491: persisted refusal survives restart and metadata-only credential rewrites — open.
+- L491: persisted refusal survives restart and metadata-only credential rewrites — later (rare) — same refused credential is rewritten only in its metadata after a restart.
 - L510: holds stop further endpoints; a refusal never resends unchanged credential — open.
 - L531: complete read, partial and unreadable reads keep prior known windows — open.
-- L560: only the main host's own refusal of the token's call can refuse the sign-in — open.
-- L583: a token a summary just answered is never refused by a later call, which still tries the daily host — open.
+- L560: only the main host's own refusal of the token's call can refuse the sign-in — later (rare) — the main and optional quota hosts give different token-acceptance results; ordinary independent-host hold and renewal are still required.
+- L583: a token a summary just answered is never refused by a later call, which still tries the daily host — later (rare) — a token is accepted by one quota summary but then refused by a later optional request in the same round before querying another host.
 - L603: a daily host's wait keeps the main host's windows, and only that host waits — covered by independent held-host fixture (other quota remains usable).
 - L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — open.
 - L656: the language server's plan status waiting keeps its windows, and only that call waits — open.
-- L676: with every host waiting, the read waits for the soonest, and says whether a request left — open.
-- L721: A contradicted Gemini reading keeps the other pool readable until Google counts Gemini — open.
-- L765: use before Google's window started, or in another pool, leaves Google's unused windows standing — open.
+- L676: with every host waiting, the read waits for the soonest, and says whether a request left — later (rare) — all quota hosts simultaneously have distinct outstanding waits, so the next deadline must be their minimum.
+- L721: A contradicted Gemini reading keeps the other pool readable until Google counts Gemini — later (rare) — local turn evidence conflicts with one Gemini pool while another remains readable until Google catches up.
+- L765: use before Google's window started, or in another pool, leaves Google's unused windows standing — later (rare) — a contradictory quota observation relates to a use before the provider’s window started or a different pool.
 
 ### `box/test/usage/usage-antigravity-tls.test.ts`
 
@@ -1208,7 +1218,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — covered by live priority versus archived copy and exact native corpus differential.
 - L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
 - L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — covered by linked native root fixture on Mac/Unix.
-- L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — open.
+- L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — later (rare) — two separately configured accounts point by links to a third sessions directory outside the selected CODEX_HOME; ordinary same-folder dedup and configured roots already have scenarios.
 - L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — covered by the multiple-home live/archive fixture (including flat-home file).
 - L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — partial — shared corpus validates local choice, restart, refusal and clearing; peer convergence open.
 - L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — partial — v1/v2, zero-price and sign-in cutoff verified; compaction fixture open.
@@ -1221,7 +1231,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 
 - L51: ${each.fn}: ${each.name} — partial — 15 original plan corpus cases through actual Rust routes (mapUsage, grokBot, mapSummary, request-based usage); independent fallback, append-missing and plan-name variants remain open (see slice 14).
 - L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
-- L109: a page that isn't one, or an event that isn't, as UsageKit takes them — open.
+- L109: a page that isn't one, or an event that isn't, as UsageKit takes them — later (rare) — deliberately malformed page envelopes and nonnumeric or missing event fields.
 - L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
 - L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — covered by Cursor route renewal and exact request-count fixture.
 - L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — covered by Cursor refusal, persisted 429 hold, sign-out and replacement credential route scenario.
@@ -1232,7 +1242,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — covered by Cursor 32-day initial and two-day restart fixture.
 - L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — partial — incomplete second page preserves the previous complete day; changed total and never-known day tests open.
 - L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — open.
-- L351: out of time in the middle of a day of many pages: no page after it is asked — open.
+- L351: out of time in the middle of a day of many pages: no page after it is asked — later (rare) — a long day with many pages hits the deadline precisely in the middle of the page walk; ordinary bounded backfill remains required.
 - L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — partial — Cursor history route UTC, prior complete data retained, repricing without page reads; non-UTC and idle round scenarios open.
 - L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — open.
 - L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — open.
@@ -1241,13 +1251,13 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L471: a row takes its newest box's reading, never a sum — open.
 - L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — open.
 - L515: one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over — open.
-- L571: a box whose reads keep failing (today's events, while older days are known) doesn't say it read the account, so another of your computers takes over — open.
+- L571: a box whose reads keep failing (today's events, while older days are known) doesn't say it read the account, so another of your computers takes over — later (rare) — today’s pages keep failing despite already complete older days at the moment a different computer is eligible for takeover.
 - L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — open.
-- L597: an unknown computer does not affect which peer reads Cursor — open.
+- L597: an unknown computer does not affect which peer reads Cursor — later (rare) — an unknown computer is inserted into the account-reader directory; normal admitted-reader takeover and unknown history refusal remain required.
 - L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — partial — actual plan rejection/429 shared with account-wide history across restart, including explicit refresh; history-only exchange/events hold variants remain open.
-- L647: a token turned away midway whose exchange is then held off (429): no page more is sent with it; nor any once the plan's read is held off meanwhile — open.
+- L647: a token turned away midway whose exchange is then held off (429): no page more is sent with it; nor any once the plan's read is held off meanwhile — later (rare) — a mid-page token refusal followed by an exchange 429 or an independently held plan request.
 - L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — open.
-- L694: a token turned away midway whose key Cursor then turns away too: no page more is sent, and its plan isn't asked again with it — open.
+- L694: a token turned away midway whose key Cursor then turns away too: no page more is sent, and its plan isn't asked again with it — later (rare) — a mid-page token refusal followed by the replacement key also being refused.
 - L709: a token Cursor turns away midway through the history is exchanged again once, and its page asked again; two reads as the box starts share one exchange — open.
 
 ### `box/test/usage/usage-grok-hosted.test.ts`
@@ -1263,7 +1273,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L277: a database that can't be read now, after it was, gives what it last did: never less, logged once, and read again whole next round — open.
 - L308: just after a restart, a database that can't be read is not known now: the spend kept from before stays, never less — open.
 - L329: both providers' rows come from one read a round, though the engine writes while it's read — open.
-- L344: an engine folder that's there but can't be listed: not known now, what the box had stays — open.
+- L344: an engine folder that's there but can't be listed: not known now, what the box had stays — later (rare) — an inaccessible engine directory rather than ordinary absent, closed or individually unreadable databases.
 - L362: no engine folder known: no source, and a box that says so leaves OpenCode out of what it states — superseded — the manually omitted engine-folder/services configuration was a split bridge constructor option; the resident always knows its engine data path. No source database is the current empty case; the billed-channel fixture removes every database and verifies no retained row, and empty history retains service order.
 
 ### `box/test/usage/usage-notices.test.ts`
@@ -1300,7 +1310,7 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L96: visibility mappings cover model-specific Codex and Antigravity windows — partial — corrected Spark alias and existing Antigravity mappings; exact multi-window layout fixture open.
 - L102: exact ten percent remaining does not trigger Almost Out — covered by exact 0.90 accepted level sample, then 0.92 crossing.
 - L108: parallel readers use the same occurrence IDs and recovery receives a new one — partial — scoped test checks the distinct rearmed occurrence; simultaneous parallel readers open.
-- L116: peer handoff timestamps are normalized to the receiver clock — open.
+- L116: peer handoff timestamps are normalized to the receiver clock — later (rare) — the sender’s notice timestamp has significant clock skew during a forwarder handoff.
 - L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
 - L142: provider hide and re-enable resets baseline but preserves occurrence counters — covered by dormant accepted trail restart and unique second occurrence test, plus route hide/show scenario.
 - L152: notice facts stay in their setup — open.
@@ -1311,9 +1321,9 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — covered by actual turn/cache/notice scenario, old Rust failed and patched Rust focused check passed.
 - L239: unsupported Devin notice facts from older peers cannot trigger native alerts — covered by scoped real peer decoder: valid future service row survives, unsupported notices do not.
 - L244: notice wording carries the same named account and window as the panel — open.
-- L256: learning the setup immediately shares pending facts despite a recent unscoped limits mail — open.
+- L256: learning the setup immediately shares pending facts despite a recent unscoped limits mail — later (rare) — a notice arises before a setup is known, immediately after an unscoped limits mail that has already set the throttle.
 - L272: an exact secondary Claude card's meter visibility and enablement override the family card — open.
-- L285: unmappable Codex card identities fall back to enabled matching meters on any family card — open.
+- L285: unmappable Codex card identities fall back to enabled matching meters on any family card — later (rare) — a legacy or unmappable Codex card identity needs the fallback to another family card’s enablement.
 - L294: conflicting pins for the same occurrence converge to the smallest forwarder and persist — open.
 - L314: unrelated directory heartbeats do not bypass the heard-mail throttle — open.
 - L329: unsupported notification providers and their wording come from box answers — open — related accepted-window and notice tests above; this exact case not yet ported.
@@ -1349,12 +1359,12 @@ The reachable cases are grouped by user outcome, not by original test count: set
 - L246: new prices price the next round: a model that was unknown gets its dollars — covered by changed price feed reprice scenario.
 - L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — partial — native Codex three-computer same-identity and separate-account scenario; exact Claude identity, idle/away timing and removal variants open.
 - L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — partial — fallback flags excluded from digest and full retell on change implemented; exact older reader scenario open.
-- L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — partial — bounded full/recent slots traffic implemented, live delta case; size-cut test open.
+- L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — later (rare) — an unusually oversized account history and long name force the full-mail size cutoff; ordinary two-day delta transfer is already exercised. Existing evidence: bounded full/recent slots traffic implemented, live delta case; size-cut test open.
 - L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — covered by local engine billed and peer merged cost scenarios.
 - L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — covered by native Codex shared-folder peer scenario and Claude duplicate corpus.
 - L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — open.
 - L670: refresh asks peers to read now and a restart restores their cached usage — covered by peer merge refresh, live delta and away restart scenario.
-- L715: old directory and usage records do not add an unknown computer to the totals — partial — unadmitted Insight origin fixture and authenticated current usage roster; exact kept usage-cache refusal open.
+- L715: old directory and usage records do not add an unknown computer to the totals — later (rare) — an intentionally injected unknown retained usage record is vouched in an old directory cache; normal current roster removal and peer history admission remain required. Existing evidence: unadmitted Insight origin fixture and authenticated current usage roster; exact kept usage-cache refusal open.
 
 ### `box/test/notices-usage.test.ts`
 
