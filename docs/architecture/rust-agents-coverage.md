@@ -894,7 +894,7 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
-## The engine areas on agent conversations (4.7g, in progress)
+## The engine areas on agent conversations (4.7g)
 
 The `engine-*` conformance areas tested conversations on a stand-in engine. They now test a
 coding agent's conversations (the scripted Grok of `acp.mjs`; `bench.mjs` with `agents: true`
@@ -907,9 +907,10 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-delivery | 4/4 | 5/5 | none |
 | engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
 | engine-typed | 7/7 | 6/7 | see below |
-| engine-asks | 5/5 (1 skipped) | 2/6 | see below |
+| engine-asks | 5/5 (1 skipped) | 4/6 | see below |
 | engine-worktree | 7/7 | 5/7 | see below |
 | engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
+| engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
 
@@ -939,8 +940,17 @@ Notes on each area:
   - the child-question and child-archive parts: ACP agents have no child conversations.
 
   "A live permission read can expire an ask or discover a new local Block" is folded into the
-  Block case. Archiving doesn't stop an agent's run on either box; that is a bug, fixed in both in
-  4.7d step 5 (the case skips on the reference until then).
+  Block case. Archiving doesn't stop an agent's run on either box; that is a bug, fixed on the
+  Rust box in 4.7d step 5 (the reference is frozen, so its case stays skipped there). An agent's
+  asks count among what waits on you (`kuvo/waiting`, the asks line) through the agents' own
+  list of waiting asks (`AgentSessionSource::waiting`).
+- **engine-live.** A real model's question holds a queue through edits, delivery, a restart and
+  Stop, now on the OpenCode agent with OpenCode Go, as the app starts it. It runs only on the Rust
+  box: the reference starts an OpenCode model's conversation on its engine. On an agent's
+  conversation OpenCode runs under its computer, so a restart ends its turn: the question no
+  longer outlives one, and the restart part checks the saved draft and its delivery sent again.
+  Left out: the engine's own inbox (`api/session/…/inbox`) beside the queue. Passed once on the
+  Mac with a real OpenCode Go turn.
 - **engine-worktree.** Left out: "an interrupted start removes an unused worktree…" and "a
   cancelled client leaves a worktree only if OpenCode created its conversation" (both cut
   OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
