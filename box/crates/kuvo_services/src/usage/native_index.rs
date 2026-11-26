@@ -276,37 +276,65 @@ fn maker_age(path: &Path, kind: Kind) -> Option<i64> {
 /// The first catch-up and an event-loss recovery walk names/mtime only. Every
 /// regular file is opened at most when its stored cursor says it changed.
 pub fn files(root: &Path, kind: Kind, since: i64) -> Vec<PathBuf> {
+    walk_files(root, kind, since, false).files
+}
+pub struct FileScan {
+    pub files: Vec<PathBuf>,
+    present: Vec<PathBuf>,
+    complete: bool,
+}
+pub fn scan_files(root: &Path, kind: Kind, since: i64) -> FileScan {
+    walk_files(root, kind, since, true)
+}
+fn walk_files(root: &Path, kind: Kind, since: i64, inventory: bool) -> FileScan {
     let mut pending = vec![root.to_owned()];
     let mut result = vec![];
+    let mut present = vec![];
+    let mut complete = true;
     let mut walked = 0;
-    while let Some(folder) = pending.pop() {
-        if !std::fs::symlink_metadata(&folder)
-            .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-        {
-            continue;
+    'walk: while let Some(folder) = pending.pop() {
+        match std::fs::symlink_metadata(&folder) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                complete = false;
+                continue;
+            }
         }
-        let Ok(entries) = std::fs::read_dir(folder) else {
-            continue;
+        let entries = match std::fs::read_dir(folder) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                complete = false;
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             walked += 1;
             if walked > MAX_FILES * 4 {
-                break;
+                complete = false;
+                break 'walk;
             }
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
             let Ok(file_type) = entry.file_type() else {
+                complete = false;
                 continue;
             };
             if file_type.is_dir() {
                 pending.push(entry.path());
-            } else if file_type.is_file()
-                && maker_file(&entry.path(), kind)
-                && maker_age(&entry.path(), kind).is_some_and(|at| at >= since)
-            {
-                result.push(entry.path());
+            } else if file_type.is_file() && maker_file(&entry.path(), kind) {
+                let path = entry.path();
+                if maker_age(&path, kind).is_some_and(|at| at >= since) {
+                    result.push(path.clone());
+                }
+                if inventory {
+                    present.push(path);
+                }
             }
-        }
-        if walked > MAX_FILES * 4 {
-            break;
         }
     }
     if result.len() > MAX_FILES {
@@ -314,7 +342,51 @@ pub fn files(root: &Path, kind: Kind, since: i64) -> Vec<PathBuf> {
         result.truncate(MAX_FILES);
     }
     result.sort();
-    result
+    FileScan {
+        files: result,
+        present,
+        complete,
+    }
+}
+/// A complete directory inventory can recover a lost deletion notification.
+/// Unreadable/truncated directory walks cannot establish that a file vanished.
+/// A database that exists but cannot be opened retains its previous records.
+pub fn forget_missing(
+    db: &mut Connection,
+    root: &Root,
+    scan: &FileScan,
+) -> Result<BTreeSet<String>> {
+    if !scan.complete {
+        return Ok(BTreeSet::new());
+    }
+    let present = scan
+        .present
+        .iter()
+        .map(|p| hash(&json!([key(p), root.provider])))
+        .collect::<BTreeSet<_>>();
+    let stale = {
+        let mut query = db.prepare("SELECT source FROM native_file WHERE root=? AND provider=?")?;
+        let rows = query.query_map(params![key(&root.folder), root.provider], |r| {
+            r.get::<_, String>(0)
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|source| !present.contains(source))
+            .collect::<Vec<_>>()
+    };
+    if stale.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut sessions = BTreeSet::new();
+    let tx = db.transaction()?;
+    for source in stale {
+        sessions.extend(affected(&tx, &source)?);
+        for table in ["native_call", "native_price", "native_limit", "native_file"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE source=?"), [&source])?;
+        }
+    }
+    tx.commit()?;
+    Ok(sessions)
 }
 pub fn changed_files(root: &Path, kind: Kind, changed: &[PathBuf], since: i64) -> Vec<PathBuf> {
     let mut result = BTreeSet::new();
@@ -751,7 +823,7 @@ async fn watch_root(root: Root, hub: WatchHub, tx: tokio::sync::mpsc::Sender<Cha
                         let _ = live.track(Path::new(&wal));
                     }
                 }
-                if scan {
+                if scan || files.contains(Path::new("")) {
                     if !send(&tx, Change::Scan(root.clone())).await {
                         return;
                     }

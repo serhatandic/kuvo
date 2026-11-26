@@ -768,7 +768,7 @@ impl Service {
         limits: &super::limits::Service,
     ) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
-        let affected;
+        let mut affected;
         match change {
             native_index::Change::Roster(roots) => {
                 let _gate = self.gate.lock().expect("insights gate");
@@ -782,8 +782,16 @@ impl Service {
                 affected = native_index::remove_root(&mut db, &root)?;
             }
             native_index::Change::Scan(root) => {
-                let files = native_index::files(&root.folder, root.kind, now - native_index::KEEP);
-                affected = self.fold_native_files(&root, files, limits, now)?;
+                let files;
+                {
+                    let _gate = self.gate.lock().expect("insights gate");
+                    let scan =
+                        native_index::scan_files(&root.folder, root.kind, now - native_index::KEEP);
+                    let mut db = self.open()?;
+                    affected = native_index::forget_missing(&mut db, &root, &scan)?;
+                    files = scan.files;
+                }
+                affected.extend(self.fold_native_files(&root, files, limits, now)?);
             }
             native_index::Change::Files(root, changed) => {
                 let files = native_index::changed_files(

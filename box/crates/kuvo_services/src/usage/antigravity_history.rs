@@ -205,3 +205,99 @@ pub fn read(
 pub fn database_session(path: &Path) -> Option<&str> {
     path.file_stem()?.to_str().filter(|s| !s.is_empty())
 }
+#[cfg(test)]
+mod parity_corpus {
+    use super::*;
+    use serde_json::Value;
+    #[test]
+    fn bounded_generation_fixture() {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/usage/antigravity-blobs.json"
+        ))
+        .unwrap();
+        for (index, case) in raw["cases"].as_array().unwrap().iter().enumerate() {
+            let blob = hex::decode(case["hex"].as_str().unwrap()).unwrap();
+            let step = case["stepHex"]
+                .as_str()
+                .map(|raw| hex::decode(raw).unwrap());
+            let got = generation(&blob, step.as_deref(), "fixture", index as u64);
+            if case["expected"].is_null() {
+                assert!(got.is_none(), "{}", case["name"]);
+                continue;
+            }
+            let expected = &case["expected"];
+            let got = got.unwrap_or_else(|| panic!("{}", case["name"]));
+            assert_eq!(
+                got.counts.input,
+                expected["inputTokens"].as_u64().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                got.counts.output,
+                expected["outputTokens"].as_u64().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                got.counts.cache_read,
+                expected["cacheReadTokens"].as_u64().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                got.at,
+                expected["timestampSeconds"].as_i64().unwrap() * 1000,
+                "{}",
+                case["name"]
+            );
+            let id = expected["modelID"].as_str();
+            let label = expected["label"].as_str();
+            let name = if id.is_some_and(|id| id.ends_with("-default")) {
+                label.or(id)
+            } else {
+                id.or(label)
+            }
+            .map(|n| n.strip_suffix("-tiered").unwrap_or(n));
+            assert_eq!(got.model.as_deref(), name, "{}", case["name"]);
+        }
+    }
+
+    #[test]
+    fn shared_blob_size_limits_keep_embedded_time_and_inclusive_cap() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/usage/antigravity-blobs.json"
+        ))
+        .unwrap();
+        let mut events = vec![];
+        for (index, row) in fixture["bounded"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let case = &fixture["cases"][row["case"].as_u64().unwrap() as usize];
+            let mut data = hex::decode(case["hex"].as_str().unwrap()).unwrap();
+            let mut step = case["stepHex"]
+                .as_str()
+                .map(|hex| hex::decode(hex).unwrap());
+            if let Some(size) = row["dataBytes"].as_u64() {
+                data.resize(size as usize, 0);
+            }
+            if let Some(size) = row["stepBytes"].as_u64() {
+                step.get_or_insert_with(Vec::new).resize(size as usize, 0);
+            }
+            if let Some(event) = generation(&data, step.as_deref(), "fixture", index as u64) {
+                events.push(event);
+            }
+        }
+        assert_eq!(
+            events.len(),
+            fixture["bounded"]["events"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            events.iter().map(|e| e.counts.processed()).sum::<u64>(),
+            fixture["bounded"]["tokens"].as_u64().unwrap()
+        );
+    }
+}
