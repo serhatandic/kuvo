@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - When a site asks for a passkey on a Rust computer, the browser refuses the unsupported request promptly, tells the agent to sign in another way, and marks sign-in requests for that site.
+- Updating a coding agent no longer waits for your running conversations.
 
 - Antigravity no longer asks you to sign in again when a command it runs opens a link, or when its sign-in message shows up in a file or a command's output.
 

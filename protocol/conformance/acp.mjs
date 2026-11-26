@@ -34,8 +34,19 @@ const grokHome = process.env.GROK_HOME || path.join(process.env.HOME || process.
 const models = [{ modelId: "acp-test", name: "ACP Test", _meta: { reasoningEfforts: [{ value: "low" }, { value: "high", default: true }] } }, { modelId: "acp-fast", name: "ACP Fast" }];
 const thinking = [{ value: "low", name: "Low" }, { value: "high", name: "High" }, { value: "xhigh", name: "Extra" }];
 const agyModels = [...thinking.map((level) => ({ modelId: "acp-test-" + level.value, name: "ACP Test (" + level.name + ")" })), { modelId: "acp-fast", name: "ACP Fast" }];
-if (args[0] === "--version") { process.stdout.write(name + " 1.0.0\n"); process.exit(0); }
-if (args[0] === "update") { heard({ update: true }); process.exit(0); }
+const versionFile = own(name + "-version");
+const currentVersion = () => fs.existsSync(versionFile) ? fs.readFileSync(versionFile, "utf8").trim() : "1.0.0";
+if (args[0] === "--version") { process.stdout.write(name + " " + currentVersion() + "\n"); process.exit(0); }
+if (args[0] === "update") {
+  heard({ update: true });
+  const toFile = own(name + "-update-to");
+  if (fs.existsSync(toFile)) {
+    fs.writeFileSync(versionFile, fs.readFileSync(toFile, "utf8").trim());
+    const exe = path.join(path.dirname(process.argv[1]), process.platform === "win32" ? name + ".cmd" : name);
+    fs.appendFileSync(exe, process.platform === "win32" ? "\r\n" : "\n");
+  }
+  process.exit(0);
+}
 if (name === "grok" && args[0] === "logout") { fs.rmSync(path.join(grokHome, "auth.json"), { force: true }); heard({ logout: true }); process.exit(0); }
 if (name === "grok" && args[0] === "models") {
   heard({ argv: args });
@@ -56,7 +67,7 @@ if (name === "agy" && args.includes("--login")) {
   });
   return;
 }
-heard({ argv: args, env: { GROK_HOME: process.env.GROK_HOME ?? null, GEMINI_HOME: process.env.GEMINI_HOME ?? null, threshold: process.env.GROK_AUTO_COMPACT_THRESHOLD_PERCENT ?? null } });
+heard({ argv: args, script: process.argv[1], startedVersion: currentVersion(), env: { GROK_HOME: process.env.GROK_HOME ?? null, GEMINI_HOME: process.env.GEMINI_HOME ?? null, threshold: process.env.GROK_AUTO_COMPACT_THRESHOLD_PERCENT ?? null } });
 // agy is signed in by its own sign-in, or takes an earlier agent's that says it may (a stand-in
 // token; whether the real agy takes a real one is checked in the update rehearsal).
 const legacy = () => { try { return fs.readFileSync(path.join(process.env.GEMINI_HOME, "antigravity-acp", "acp_token.json"), "utf8").includes("accepted-legacy"); } catch { return false; } };
@@ -154,19 +165,18 @@ process.stdin.on("data", (chunk) => {
 });
 `;
 
-/** Puts the stand-in `grok` and `agy` in `root`'s `.local/bin`. */
-export function standInAcp(root, names = ["grok", "agy"]) {
-  const bin = path.join(root, ".local", "bin");
-  fs.mkdirSync(bin, { recursive: true });
+/** Puts the stand-in `grok` and `agy` in `root`'s `.local/bin` (or `binDir`). */
+export function standInAcp(root, names = ["grok", "agy"], binDir = path.join(root, ".local", "bin")) {
+  fs.mkdirSync(binDir, { recursive: true });
   for (const name of names) {
     if (process.platform === "win32") {
-      fs.writeFileSync(path.join(bin, `${name}.cjs`), `(async () => {${PROGRAM}})()`);
-      fs.writeFileSync(path.join(bin, `${name}.cmd`), `@"${process.execPath}" "%~dp0${name}.cjs" %*\r\n`);
+      fs.writeFileSync(path.join(binDir, `${name}.cjs`), `(async () => {${PROGRAM}})()`);
+      fs.writeFileSync(path.join(binDir, `${name}.cmd`), `@"${process.execPath}" "%~dp0${name}.cjs" %*\r\n`);
     } else {
-      fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n(async () => {${PROGRAM}})()`, { mode: 0o755 });
+      fs.writeFileSync(path.join(binDir, name), `#!${process.execPath}\n(async () => {${PROGRAM}})()`, { mode: 0o755 });
     }
   }
-  return bin;
+  return binDir;
 }
 
 /** Grok signed in, as `grok login` keeps it. */
@@ -197,14 +207,19 @@ export function seedAcpSession(home, id, provider, { directory = home, model = "
 }
 
 /** One resident (and, for the reference, its bridge) on the scripted ACP agents. */
-export async function scriptedAcp({ names = ["grok", "agy"], grok = true, agy = true } = {}) {
+export async function scriptedAcp({ names = ["grok", "agy"], grok = true, agy = true, grokNative = false } = {}) {
   const binary = boxBinary();
   const root = scratch();
   const home = path.join(root, "box");
   const relay = await localRelay();
   privateHome(home);
   const base = isolatedEnv(root);
-  const bin = standInAcp(base.HOME, names);
+  const bin = grokNative
+    ? [
+        ...(names.includes("grok") ? [standInAcp(base.HOME, ["grok"], path.join(base.HOME, ".grok", "bin"))] : []),
+        ...(names.filter((each) => each !== "grok").length ? [standInAcp(base.HOME, names.filter((each) => each !== "grok"))] : []),
+      ].join(path.delimiter)
+    : standInAcp(base.HOME, names);
   const grokHome = path.join(base.HOME, ".grok");
   if (grok) seedGrokAuth(grokHome);
   if (agy) seedAgyAuth(home);

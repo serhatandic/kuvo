@@ -19,9 +19,10 @@ use crate::{
     accounts::{AgentKind, Provider},
     feed::Feed,
     program_updates::{
-        Accounts, Changed, Hold, InstallResult, Maintenance, Program, ProgramUpdates, UpdateResult,
+        Accounts, Changed, InstallResult, Maintenance, Program, ProgramUpdates, UpdateResult,
         install,
         notices::{ProgramNow, Served, UpdateNotices, agents_update_themselves},
+        store,
     },
     resident::ResidentAgents,
     roster::Entry,
@@ -245,9 +246,8 @@ fn tell(feed: &Feed, agents: &ResidentAgents, program: &str) {
 }
 
 impl AccountRows {
-    /// The rows of `agents`' accounts, for a box at `home`; `hold`: what holds a program's turns
-    /// while it updates. The updates an earlier resident left under way are taken up now.
-    pub fn new(home: PathBuf, agents: ResidentAgents, hold: Option<Arc<dyn Hold>>) -> Self {
+    /// The rows of `agents`' accounts, for a box at `home`.
+    pub fn new(home: PathBuf, agents: ResidentAgents) -> Self {
         let listed = agents.clone();
         let accounts: Accounts = Arc::new(move || accounts_of(&listed));
         // (Ended, what the program is now is noted before anyone's told; then that its models
@@ -262,11 +262,7 @@ impl AccountRows {
             }
             tell(&feed, &told, program);
         });
-        let mut updates = ProgramUpdates::at(&home, accounts, changed);
-        if let Some(hold) = hold {
-            updates = updates.with_hold(hold);
-        }
-        updates.resume();
+        let updates = ProgramUpdates::at(&home, accounts, changed);
         let rows = Self(Arc::new(Inner {
             notices: UpdateNotices::new(&home.join("agents")),
             temporary: home.join("tmp"),
@@ -357,9 +353,31 @@ impl AccountRows {
         if let Some(before) = &before
             && before.installed != value.installed
         {
-            for each in roster.all().iter().filter(|each| each.account.kind == kind) {
-                Program::updated(each);
-            }
+            let definition = own.agent.program();
+            let home = self.0.home.clone();
+            let name = program.to_owned();
+            let matching: Vec<_> = roster
+                .all()
+                .iter()
+                .filter(|each| each.account.kind == kind)
+                .cloned()
+                .collect();
+            tokio::spawn(async move {
+                if let Some(definition) = definition {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        store::stage_current(
+                            &home,
+                            &name,
+                            &definition.executable,
+                            definition.npm_package.as_deref(),
+                        )
+                    })
+                    .await;
+                }
+                for each in matching {
+                    Program::updated(&each).await;
+                }
+            });
             self.feed()
                 .emit("model.updated", json!({ "program": program }));
         }
@@ -455,8 +473,8 @@ impl AccountRows {
             label
         };
         let program = kind.name();
-        let updates = facts.program;
-        let outdated = maintained.as_ref().is_some_and(Maintenance::is_outdated);
+        let updates = own && facts.program;
+        let outdated = own && maintained.as_ref().is_some_and(Maintenance::is_outdated);
         let command = maintained
             .as_ref()
             .and_then(|value| value.command.as_ref())
@@ -495,12 +513,12 @@ impl AccountRows {
                 "signOutShared": facts.signs_out && facts.sign_out_shared,
                 "signOutStops": facts.signs_out && facts.sign_out_stops,
                 "version": maintained.as_ref().and_then(|value| value.installed.clone()),
-                "latestVersion": maintained.as_ref().and_then(|value| value.latest.clone()),
+                "latestVersion": own.then(|| maintained.as_ref().and_then(|value| value.latest.clone())).flatten(),
                 "outdated": outdated,
-                "updateCommand": maintained.as_ref().and_then(|value| value.shown.clone()),
+                "updateCommand": own.then(|| maintained.as_ref().and_then(|value| value.shown.clone())).flatten(),
                 "updates": updates && command,
-                "programUpdate": self.0.updates.update_of(program, maintained.as_ref().and_then(|value| value.installed.as_deref())),
-                "updateAll": own && updates && command && outdated && !self.0.updates.is_updating(program),
+                "programUpdate": own.then(|| self.0.updates.update_of(program, maintained.as_ref().and_then(|value| value.installed.as_deref()))).flatten(),
+                "updateAll": updates && command && outdated && !self.0.updates.is_updating(program),
                 "remoteSignIn": facts.remote_sign_in,
                 "modelsComplete": lists_every_model,
             },
@@ -533,7 +551,7 @@ impl AccountRows {
                 ),
             });
         }
-        drop(self.0.updates.update(Arc::new(entry.clone()), None));
+        drop(self.0.updates.update(Arc::new(entry.clone())));
         Ok(vec![entry.account.kind.name().into()])
     }
 
@@ -596,7 +614,7 @@ impl AccountRows {
                 .iter()
                 .filter(|each| each.account.kind == kind)
             {
-                Program::updated(each);
+                Program::updated(each).await;
             }
             self.feed().emit(
                 "integration.updated",

@@ -62,7 +62,8 @@ if (args[0] === "update") {
   process.exit(0);
 }
 if (args[0] !== "app-server") process.exit(2);
-heard({ argv: args, env: { CODEX_HOME: process.env.CODEX_HOME ?? null, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? null } });
+const startedVersion = fs.existsSync(own("codex-version")) ? fs.readFileSync(own("codex-version"), "utf8").trim() : "0.1.0";
+heard({ argv: args, script: process.argv[1], startedVersion, env: { CODEX_HOME: process.env.CODEX_HOME ?? null, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? null } });
 const read = (file, fallback) => { try { return JSON.parse(fs.readFileSync(path.join(root, file), "utf8")); } catch { return fallback; } };
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const waiting = new Map();

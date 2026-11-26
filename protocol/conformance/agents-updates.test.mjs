@@ -1,14 +1,18 @@
 // Updating the coding agents' programs, as every client sees it: Settings › Accounts' rows
 // (`kuvo/agents/api/integration`, `metadata.programUpdate` and `metadata.updateAll`), the updates
 // (`kuvo/agents/api/kuvo/updates`), the update notices, and the agents' events on the line
-// (`kuvo/agents/api/event`). Real: each box, its sessions and its records. Stand-ins: Codex (its
-// version and its own updater, finished when the case says) and npm's registry (the newest).
+// (`kuvo/agents/api/event`). Real: each box, its sessions and its records. Stand-ins: Codex,
+// Claude Code, Grok and Antigravity (`agy`) (their versions and own updaters, finished when the
+// case says) and npm's registry (the newest). Cursor (Bun SDK, no installed CLI yet) and OpenCode
+// (pinned with each box release under `engine/<version>/`) do not update through this path.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
+import { providers as acpProviders, scriptedAcp } from "./acp.mjs";
+import { provider as claudeProvider, scriptedClaude } from "./claude.mjs";
 import { provider, scriptedCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
@@ -120,7 +124,7 @@ test("a version read is lazy, and reopening Settings or restarting doesn't run t
     assert.equal(versions(),2);
   }));
 
-test("Update All: the box picks a program behind once, answers as it starts, a second client sees it under way on every account with it, then how it went", { skip, timeout: 90000 }, () =>
+test("Update All: the box picks a program behind once, answers as it starts, a second client sees it under way, then how it went", { skip, timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "2.0.0", work: true, prepare: (codex) => {
     codex.go("codex-update-waits");
     write(path.join(codex.root, "codex-update-to"), "2.0.0");
@@ -131,13 +135,26 @@ test("Update All: the box picks a program behind once, answers as it starts, a s
     assert.deepEqual([before[provider].version, before[provider].latestVersion, before[provider].outdated, before[provider].updates], ["1.0.0", "2.0.0", true, true]);
     assert.equal(before[provider].updateCommand, "codex update");
     assert.equal(before[provider].programUpdate, undefined);
+    if (!boxBinary().typescript) {
+      // One program shows one update across all its accounts; added accounts still show the version.
+      assert.equal(before[box.codex.work].version, "1.0.0");
+      assert.equal(before[box.codex.work].latestVersion, undefined);
+      assert.equal(before[box.codex.work].outdated, false);
+      assert.equal(before[box.codex.work].updates, false);
+      assert.equal(before[box.codex.work].updateCommand, undefined);
+      assert.equal(before[box.codex.work].programUpdate, undefined);
+    }
 
     // The Mac's Update All: answered while the update still runs.
     assert.deepEqual((await box.ask(updates)).value.data, { updating: ["codex"] });
-    // The phone, meanwhile: under way on every account with it, and not offered again.
+    // A second client sees it under way and not offered again.
     const during = await box.rows();
     assert.equal(during[provider].programUpdate.state, "updating");
-    assert.equal(during[box.codex.work].programUpdate.state, "updating");
+    if (boxBinary().typescript) {
+      assert.equal(during[box.codex.work].programUpdate.state, "updating");
+    } else {
+      assert.equal(during[box.codex.work].programUpdate, undefined);
+    }
     assert.equal(during[provider].updateAll, false);
     assert.deepEqual((await box.ask(updates)).value.data, { updating: [] });
 
@@ -146,11 +163,15 @@ test("Update All: the box picks a program behind once, answers as it starts, a s
     assert.equal(after.programUpdate.state, "updated", JSON.stringify(after));
     assert.equal(after.programUpdate.version, "2.0.0");
     assert.deepEqual([after.version, after.outdated, after.updateAll], ["2.0.0", false, false]);
-    assert.equal((await box.rows())[box.codex.work].programUpdate.state, "updated");
+    if (boxBinary().typescript) {
+      assert.equal((await box.rows())[box.codex.work].programUpdate.state, "updated");
+    } else {
+      assert.equal((await box.rows())[box.codex.work].programUpdate, undefined);
+    }
     assert.equal(box.updatesRun(), 1);
   }));
 
-test("an update waits for the turns of its program under way, and a second ask doesn't start it early", { skip, timeout: 90000 }, () =>
+test("an update waits for the turns of its program under way, and a second ask doesn't start it early", { skip: skip || (!boxBinary().typescript && "The Rust box installs updates side by side without waiting for running turns."), timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "2.0.0", prepare: (codex) => {
     write(path.join(codex.root, "codex-update-to"), "2.0.0");
     codex.script("keep working", [{ until: "turn-go" }, ["item/completed", { item: { type: "agentMessage", id: "a1", text: "Done working." } }]]);
@@ -172,13 +193,17 @@ test("an update waits for the turns of its program under way, and a second ask d
   }));
 
 test("one that fails says why to every client, and is offered again until the version moves on", { skip, timeout: 90000 }, () =>
-  withPrograms({ installed: "1.0.0", latest: "1.1.0", prepare: (codex) => codex.go("codex-update-fails") }, async (box) => {
+  withPrograms({ installed: "1.0.0", latest: "1.1.0", work: !boxBinary().typescript, prepare: (codex) => codex.go("codex-update-fails") }, async (box) => {
     await box.known();
     assert.deepEqual((await box.ask(updates + "/" + provider)).value.data, { updating: ["codex"] });
     const failed = await box.settled();
     assert.equal(failed.programUpdate.state, "failed");
     assert.equal(failed.programUpdate.message, "Codex is still 1.0.0 after “codex update”.\n\nno network");
     assert.equal(failed.updateAll, true);
+    if (!boxBinary().typescript) {
+      // A failed update is shown once for the program, never repeated on added accounts.
+      assert.equal((await box.rows())[box.codex.work].programUpdate, undefined);
+    }
     // Updated in a terminal since: no longer news.
     terminalUpdate(box.codex, "1.1.0");
     assert.equal((await box.rows(true))[provider].programUpdate, undefined);
@@ -309,3 +334,193 @@ test("the agents' events reach a client following them on the line: an update sa
       line.close();
     }
   }));
+
+function stagedDirs(home, program) {
+  const dir = path.join(home, "run", "agents", "programs", program);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((name) => name.startsWith("v_") && fs.statSync(path.join(dir, name)).isDirectory()).sort();
+}
+
+function stagedDirOf(home, program, scriptPath) {
+  const dir = fs.realpathSync(path.join(home, "run", "agents", "programs", program));
+  const actual = fs.existsSync(scriptPath) ? fs.realpathSync(scriptPath) : scriptPath;
+  const rel = path.relative(dir, actual);
+  const top = rel.split(path.sep)[0];
+  assert.ok(top && top.startsWith("v_"), `Expected ${actual} inside ${dir}/v_*`);
+  return top;
+}
+
+async function rowsOf(listener) {
+  const answer = await request(listener, "GET", "kuvo/agents/api/integration", undefined, headers, 30000);
+  assert.equal(answer.status, 200, answer.text);
+  return Object.fromEntries(answer.json.data.map((row) => [row.id, row.metadata]));
+}
+
+async function waitUpdated(listener, providerId, log) {
+  let row;
+  return until(async () => {
+    row = (await rowsOf(listener))[providerId];
+    return row?.programUpdate && row.programUpdate.state !== "updating" && row;
+  }, () => `The update for ${providerId} never ended: ${JSON.stringify(row)}\n${log()}`, 30000);
+}
+
+test("Codex updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, () =>
+  withPrograms({ installed: "1.0.0", latest: "2.0.0", prepare: (codex) => {
+    write(path.join(codex.root, "codex-update-to"), "2.0.0");
+    codex.script("hold codex", [{ until: "codex-turn-go" }, ["item/completed", { item: { type: "agentMessage", id: "a1", text: "Finished on v1." } }]]);
+    codex.script("fresh codex", [["item/completed", { item: { type: "agentMessage", id: "a2", text: "Ran on v2." } }]]);
+    codex.seed("ses_sbs_codex_1");
+    codex.seed("ses_sbs_codex_2");
+  } }, async (box) => {
+    await box.codex.prompt("ses_sbs_codex_1", "hold codex");
+    await until(() => box.codex.sent("turn/start").length === 1, "Codex's first turn never started.");
+    const firstStart = box.codex.heard().find((line) => line.argv);
+    const v1 = stagedDirOf(box.codex.home, "codex", firstStart.script);
+    assert.equal(firstStart.startedVersion, "1.0.0");
+
+    // Request the update while Turn 1 is still running: it installs immediately without waiting.
+    assert.deepEqual((await box.ask(updates + "/" + provider)).value.data, { updating: ["codex"] });
+    const after = await box.settled();
+    assert.equal(after.programUpdate.state, "updated", JSON.stringify(after));
+    assert.equal(after.version, "2.0.0");
+
+    // Both v1 (leased by Turn 1) and v2 (active for new turns) exist side by side.
+    const both = stagedDirs(box.codex.home, "codex");
+    assert.equal(both.length, 2, `Expected both versions side by side, saw ${JSON.stringify(both)}`);
+    const v2 = both.find((each) => each !== v1);
+
+    // While Turn 1 is still held on v1, a new turn starts on v2 immediately.
+    await box.codex.prompt("ses_sbs_codex_2", "fresh codex");
+    await box.codex.idles("ses_sbs_codex_2");
+    const starts = box.codex.heard().filter((line) => line.argv);
+    const secondStart = starts.find((line) => line.pid !== firstStart.pid);
+    assert.ok(secondStart, "New turn should have started a new Codex process on v2");
+    assert.equal(secondStart.startedVersion, "2.0.0");
+    assert.equal(stagedDirOf(box.codex.home, "codex", secondStart.script), v2);
+
+    // Release Turn 1: it finishes cleanly on v1, then v1 is automatically removed.
+    box.codex.go("codex-turn-go");
+    await box.codex.idles("ses_sbs_codex_1");
+    await until(() => !fs.existsSync(path.join(box.codex.home, "run", "agents", "programs", "codex", v1)),
+      () => `Old Codex version ${v1} was not removed after Turn 1 finished: ${JSON.stringify(stagedDirs(box.codex.home, "codex"))}`, 15000);
+    assert.deepEqual(stagedDirs(box.codex.home, "codex"), [v2]);
+  }));
+
+test("Claude Code updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, async () => {
+  const claude = await scriptedClaude({ nativeInstall: true });
+  try {
+    write(path.join(claude.env.HOME, "claude-version"), "1.0.0");
+    write(path.join(claude.env.HOME, "claude-update-to"), "2.0.0");
+    claude.script("hold claude", [
+      { until: "claude-turn-go" },
+      { type: "assistant", parent_tool_use_id: null, session_id: "$SESSION", message: { id: "a1", role: "assistant", content: [{ type: "text", text: "Finished on v1." }] } },
+      { type: "result", subtype: "success", is_error: false, result: "", session_id: "$SESSION", user_message_uuids: ["$UUID"] },
+    ]);
+    claude.script("fresh claude", [
+      { type: "assistant", parent_tool_use_id: null, session_id: "$SESSION", message: { id: "a2", role: "assistant", content: [{ type: "text", text: "Ran on v2." }] } },
+      { type: "result", subtype: "success", is_error: false, result: "", session_id: "$SESSION", user_message_uuids: ["$UUID"] },
+    ]);
+    claude.seed("ses_sbs_claude_1");
+    claude.seed("ses_sbs_claude_2");
+    const listener = await claude.start();
+
+    await claude.prompt("ses_sbs_claude_1", "hold claude");
+    await until(() => claude.heard().some((line) => line.type === "user"), "Claude's first turn never started.");
+    const firstUser = claude.heard().find((line) => line.type === "user");
+    const firstStart = claude.heard().find((line) => line.argv && line.pid === firstUser.pid);
+    const v1 = stagedDirOf(claude.home, "claude", firstStart.script);
+    assert.equal(firstStart.startedVersion, "1.0.0");
+
+    // Request update while Turn 1 is still running: it installs immediately without waiting.
+    const ask = await request(listener, "POST", `${updates}/${claudeProvider}`, {}, headers, 30000);
+    assert.equal(ask.status, 200, ask.text);
+    assert.deepEqual(ask.json.data, { updating: ["claude"] });
+    const after = await waitUpdated(listener, claudeProvider, claude.log);
+    assert.equal(after.programUpdate.state, "updated", JSON.stringify(after));
+    assert.equal(after.version, "2.0.0");
+
+    const both = stagedDirs(claude.home, "claude");
+    assert.equal(both.length, 2, `Expected both Claude versions side by side, saw ${JSON.stringify(both)}`);
+    const v2 = both.find((each) => each !== v1);
+
+    // Start a new turn on another conversation while Turn 1 is still running on v1.
+    await claude.prompt("ses_sbs_claude_2", "fresh claude");
+    await claude.idles("ses_sbs_claude_2");
+    const secondUser = claude.heard().find((line) => line.type === "user" && line.pid !== firstUser.pid);
+    assert.ok(secondUser, "New Claude turn should have run on a new process");
+    const secondStart = claude.heard().find((line) => line.argv && line.pid === secondUser.pid);
+    assert.equal(secondStart.startedVersion, "2.0.0");
+    assert.equal(stagedDirOf(claude.home, "claude", secondStart.script), v2);
+
+    // Release Turn 1: it finishes on v1, its outdated holder stops, and v1 is removed.
+    claude.go("claude-turn-go");
+    await claude.idles("ses_sbs_claude_1");
+    await until(() => !fs.existsSync(path.join(claude.home, "run", "agents", "programs", "claude", v1)),
+      () => `Old Claude version ${v1} was not removed after Turn 1 finished: ${JSON.stringify(stagedDirs(claude.home, "claude"))}`, 15000);
+    assert.deepEqual(stagedDirs(claude.home, "claude"), [v2]);
+  } catch (error) {
+    throw new Error([error.message, claude.log()].join("\n"), { cause: error });
+  } finally {
+    await claude.close();
+  }
+});
+
+for (const { label, name, providerId, program, grokNative } of [
+  { label: "Grok", name: "grok", providerId: acpProviders.grok, program: "grok", grokNative: true },
+  { label: "Antigravity", name: "agy", providerId: acpProviders.agy, program: "antigravity", grokNative: false },
+]) {
+  test(`${label} updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed`, { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, async () => {
+    const acp = await scriptedAcp({ names: [name], grok: name === "grok", agy: name === "agy", grokNative });
+    try {
+      write(path.join(acp.root, `${name}-version`), "1.0.0");
+      write(path.join(acp.root, `${name}-update-to`), "2.0.0");
+      acp.script("hold acp", [
+        { until: "acp-turn-go" },
+        { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Finished on v1." } } },
+      ]);
+      acp.script("fresh acp", [
+        { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Ran on v2." } } },
+      ]);
+      acp.seed(`ses_sbs_${name}_1`, providerId);
+      acp.seed(`ses_sbs_${name}_2`, providerId);
+      const listener = await acp.start();
+
+      await acp.prompt(`ses_sbs_${name}_1`, "hold acp");
+      await until(() => acp.sent("session/prompt").length === 1, `${label}'s first turn never started.`);
+      const firstStart = acp.started(name)[0];
+      const v1 = stagedDirOf(acp.home, program, firstStart.script);
+      assert.equal(firstStart.startedVersion, "1.0.0");
+
+      // Request update while Turn 1 is still running: it installs immediately without waiting.
+      const ask = await request(listener, "POST", `${updates}/${providerId}`, {}, headers, 30000);
+      assert.equal(ask.status, 200, ask.text);
+      assert.deepEqual(ask.json.data, { updating: [program] });
+      const after = await waitUpdated(listener, providerId, acp.log);
+      assert.equal(after.programUpdate.state, "updated", JSON.stringify(after));
+      assert.equal(after.version, "2.0.0");
+
+      const both = stagedDirs(acp.home, program);
+      assert.equal(both.length, 2, `Expected both ${label} versions side by side, saw ${JSON.stringify(both)}`);
+      const v2 = both.find((each) => each !== v1);
+
+      // Start a new turn on another conversation while Turn 1 is still running on v1.
+      await acp.prompt(`ses_sbs_${name}_2`, "fresh acp");
+      await acp.idles(`ses_sbs_${name}_2`);
+      const secondStart = acp.started(name).find((line) => line.pid !== firstStart.pid);
+      assert.ok(secondStart, `New ${label} turn should have started a new process on v2`);
+      assert.equal(secondStart.startedVersion, "2.0.0");
+      assert.equal(stagedDirOf(acp.home, program, secondStart.script), v2);
+
+      // Release Turn 1: it finishes on v1, its retired process stops, and v1 is removed.
+      acp.go("acp-turn-go");
+      await acp.idles(`ses_sbs_${name}_1`);
+      await until(() => !fs.existsSync(path.join(acp.home, "run", "agents", "programs", program, v1)),
+        () => `Old ${label} version ${v1} was not removed after Turn 1 finished: ${JSON.stringify(stagedDirs(acp.home, program))}`, 15000);
+      assert.deepEqual(stagedDirs(acp.home, program), [v2]);
+    } catch (error) {
+      throw new Error([error.message, acp.log()].join("\n"), { cause: error });
+    } finally {
+      await acp.close();
+    }
+  });
+}

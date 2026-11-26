@@ -131,8 +131,11 @@ impl Program {
     }
 
     /// Its app-server, as the holder starts it (`codex app-server`), for all of this account's
-    /// conversations.
-    pub fn launch(&self, compaction: &str) -> io::Result<Start> {
+    /// conversations. Stages the binary side by side so updating never waits for running turns.
+    pub fn launch(
+        &self,
+        compaction: &str,
+    ) -> io::Result<(Start, crate::program_updates::store::Staged)> {
         if let (Some(home), Some(yours)) = (&self.managed, self.your_codex()) {
             shadow_home(home, &yours);
         }
@@ -143,7 +146,13 @@ impl Program {
                 "Install Codex first: curl -fsSL https://chatgpt.com/codex/install.sh | sh",
             )
         })?;
-        let mut command = vec![executable.path().to_owned(), "app-server".into()];
+        let staged = crate::program_updates::store::prepare(
+            self.home.root(),
+            "codex",
+            executable.path(),
+            Some("@openai/codex"),
+        )?;
+        let mut command = vec![staged.executable.clone(), "app-server".into()];
         for plugin in NO_COMPUTER_USE {
             command.extend([
                 "-c".into(),
@@ -164,15 +173,18 @@ impl Program {
             // (Until it's initialized: one whose resident went before then is of no use to the next.)
             "initialized": false,
         });
-        Ok(Start {
-            command,
-            cwd: Some(scratch),
-            env,
-            kind: HoldKind::JsonRpc,
-            meta: meta.as_object().cloned().unwrap_or_else(Metadata::new),
-            limits: Limits::default(),
-            portable_requests: None,
-        })
+        Ok((
+            Start {
+                command,
+                cwd: Some(scratch),
+                env,
+                kind: HoldKind::JsonRpc,
+                meta: meta.as_object().cloned().unwrap_or_else(Metadata::new),
+                limits: Limits::default(),
+                portable_requests: None,
+            },
+            staged,
+        ))
     }
 
     /// Native sign-in metadata, without starting Codex or renewing its credentials. The claims

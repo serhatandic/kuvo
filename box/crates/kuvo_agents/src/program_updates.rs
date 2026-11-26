@@ -5,10 +5,13 @@
 //! an update counts only if the version changed.
 //!
 //! Its update is the box's to keep for every client: under way, updated to a version, already the
-//! newest, or why it couldn't be, by program (one program serves every account with it). While it
-//! runs, its program's turns are held (`Hold`), and a record of it (`agents/program-draining`)
-//! lets the next resident take it up.
+//! newest, or why it couldn't be, by program (one program serves every account with it). Running
+//! agent processes execute from side-by-side versioned directories (`store`), so updating never
+//! waits for running turns, never locks anyone out, and cleans up old versions once nothing uses
+//! them.
 
+pub mod notices;
+pub mod store;
 mod versions;
 
 use std::{
@@ -26,8 +29,6 @@ use kuvo_store::files;
 use serde::{Deserialize, Serialize};
 pub use versions::{compare_versions, homebrew_keg, npm_global_prefix, version_in};
 
-pub mod notices;
-
 /// How often what you have is read again, unless asked anew.
 const CHECKED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long npm's newest is kept.
@@ -36,8 +37,6 @@ const NEWEST_FOR: Duration = CHECKED_FOR;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long what an update brought is news. Why one failed stays until it's seen.
 const NEWS_KEPT: u64 = 60 * 60_000;
-/// The longest a program's update holds its turns: as long as an installer may run, and a little.
-pub const HOLD_MOST: u64 = 15 * 60_000;
 
 /// An agent's program, as its maintenance sees it.
 #[derive(Clone, Debug)]
@@ -443,17 +442,6 @@ async fn run(
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> Option<Ran> {
-    run_recorded(program, args, env, cwd, timeout, |_| {}).await
-}
-
-async fn run_recorded(
-    program: &Path,
-    args: &[OsString],
-    env: &[(String, String)],
-    cwd: Option<&Path>,
-    timeout: Duration,
-    started: impl FnOnce(u32) + Send + 'static,
-) -> Option<Ran> {
     let mut environment: kuvo_os::platform::Environment = std::env::vars_os().collect();
     for (name, value) in env {
         environment.insert(name.into(), value.into());
@@ -470,7 +458,6 @@ async fn run_recorded(
     kuvo_os::process::wait_for_background_memory().await;
     tokio::task::spawn_blocking(move || {
         let mut child = spawn.spawn().ok()?;
-        started(child.identity().pid);
         let read = |pipe: Option<io::PipeReader>| {
             std::thread::spawn(move || {
                 let mut text = String::new();
@@ -509,33 +496,6 @@ fn last_lines(ran: &Ran) -> String {
         .to_owned()
 }
 
-/// Where an installer under way says which group runs it, for whom.
-fn install_marker(agents: &Path, program: &str) -> PathBuf {
-    agents.join("program-installing").join(program)
-}
-
-fn drain_file(agents: &Path, program: &str) -> PathBuf {
-    agents
-        .join("program-draining")
-        .join(format!("{program}.json"))
-}
-
-/// Whether the installer for `attempt` had started (its group is recorded).
-fn installer_started(agents: &Path, program: &str, attempt: &str) -> bool {
-    std::fs::read_to_string(install_marker(agents, program)).is_ok_and(|text| {
-        let parts: Vec<&str> = text.split(' ').collect();
-        parts.get(2) == Some(&attempt) && parts[0].parse::<u32>().is_ok_and(|pid| pid > 0)
-    })
-}
-
-/// Retires only the marker of `attempt`.
-fn finish_installation(agents: &Path, program: &str, attempt: &str) {
-    let marker = install_marker(agents, program);
-    if std::fs::read_to_string(&marker).is_ok_and(|text| text.split(' ').nth(2) == Some(attempt)) {
-        let _ = std::fs::remove_file(marker);
-    }
-}
-
 /// One update at a time for each program, by its name.
 fn one_at_a_time(name: &str) -> Arc<tokio::sync::Mutex<()>> {
     static RUNNING: OnceLock<Plain<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
@@ -545,54 +505,17 @@ fn one_at_a_time(name: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-/// How an installer an earlier resident started stands, by its record.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Installation {
-    Running,
-    Ended,
-}
-
-/// A detached installer can outlive the resident that started it: its record holds turns until
-/// it exits (or, one stopped before its group was recorded, for the installer's longest run).
-pub fn installation(agents: &Path, program: &str) -> Option<Installation> {
-    let named = program.starts_with(|c: char| c.is_ascii_lowercase())
-        && program
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if !named {
-        return None;
-    }
-    let text = std::fs::read_to_string(install_marker(agents, program)).ok()?;
-    let mut parts = text.split(' ').map(|part| part.parse::<u64>().ok());
-    let (pid, until) = (parts.next().flatten()?, parts.next().flatten()?);
-    if pid == 0 {
-        return Some(if now_ms() < until {
-            Installation::Running
-        } else {
-            Installation::Ended
-        });
-    }
-    let pid = u32::try_from(pid).ok().filter(|pid| *pid >= 2)?;
-    // (Its leader, as the record names it.)
-    Some(match kuvo_os::process::ProcessIdentity::read(pid) {
-        Ok(None) => Installation::Ended,
-        _ => Installation::Running,
-    })
-}
-
-/// Runs the update and says whether the version changed. `install`: where it says its group runs
-/// (the agents' folder, its program and attempt).
+/// Runs the update without waiting for running turns, stages the new version side by side, and
+/// says whether the version changed.
 pub async fn update(
     definition: &Definition,
+    home_root: &Path,
+    program: &str,
     temporary: &Path,
-    install: Option<(&Path, &str, &str)>,
 ) -> UpdateResult {
     let one = one_at_a_time(&definition.name);
     let _one = one.lock().await;
-    let folder = install
-        .and_then(|(agents, _, _)| agents.parent())
-        .unwrap_or(temporary)
-        .join("run/agents/program-cache");
+    let folder = home_root.join("run/agents/program-cache");
     let before = maintenance(definition, true, &folder).await;
     let Some(command) = before.command.clone().filter(|command| !command.is_empty()) else {
         return UpdateResult {
@@ -603,39 +526,29 @@ pub async fn update(
             ))
         };
     };
-    let marker = install.map(|(agents, program, _)| install_marker(agents, program));
-    if let Some(marker) = &marker {
-        let until = now_ms() + INSTALL_TIMEOUT.as_millis() as u64 + 3_000;
-        let attempt = install.map_or("", |(_, _, attempt)| attempt);
-        let _ = files::write_secret(marker, format!("0 {until} {attempt}").as_bytes());
-    }
-    let (recorded, attempt) = (
-        marker.clone(),
-        install.map_or(String::new(), |(_, _, attempt)| attempt.to_owned()),
-    );
     let args: Vec<OsString> = command[1..].iter().map(OsString::from).collect();
     // (Run where Kuvo keeps its scratch, as you'd run it: none of your projects.)
     let _ = files::private_folder(temporary);
-    let ran = run_recorded(
+    let ran = run(
         Path::new(&command[0]),
         &args,
         &before.env,
         Some(temporary),
         INSTALL_TIMEOUT,
-        move |pid| {
-            if let Some(marker) = recorded {
-                let _ = files::write_secret(&marker, format!("{pid} 0 {attempt}").as_bytes());
-            }
-        },
     )
     .await;
-    if let Some(marker) = &marker
-        && install.is_some_and(|(_, _, attempt)| attempt.is_empty())
-    {
-        let _ = std::fs::remove_file(marker);
-    }
     let after = maintenance(definition, true, &folder).await;
     let changed = after.installed.is_some() && after.installed != before.installed;
+    if changed {
+        let root = home_root.to_owned();
+        let name = program.to_owned();
+        let executable = definition.executable.clone();
+        let npm_package = definition.npm_package.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            store::stage_current(&root, &name, &executable, npm_package.as_deref())
+        })
+        .await;
+    }
     // Unchanged, it's up to date only if the newest is known to be what it has.
     if changed || (after.installed.is_some() && after.latest.is_some() && !after.is_outdated()) {
         return UpdateResult {
@@ -704,7 +617,11 @@ pub async fn install(
         };
     }
     let output = ran.as_ref().map(last_lines).unwrap_or_default();
-    let mut message = format!("{name} isn't installed after “{command}”.");
+    let mut message = if ran.is_none() {
+        format!("{name} couldn't be installed automatically here. Run “{command}” in a terminal.")
+    } else {
+        format!("{name} isn't installed after “{command}”.")
+    };
     if !output.is_empty() {
         message.push_str(&format!("\n\n{output}"));
     }
@@ -784,16 +701,8 @@ impl ProgramUpdate {
     }
 }
 
-/// A program's update as its record keeps it, for a next resident.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Drain {
-    pub attempt: String,
-    pub provider: String,
-    pub deadline: u64,
-}
-
 /// A program an update was asked for: what it's called, how to update it, and what's done around
-/// it (the box's half, its agents' and its sessions').
+/// it (the box's half and its agents').
 pub trait Program: Send + Sync {
     /// One program serves every account with it: `codex`.
     fn program(&self) -> &str;
@@ -806,17 +715,10 @@ pub trait Program: Send + Sync {
         false
     }
     fn definition(&self) -> Option<Definition>;
-    /// Each account with it runs the new program.
-    fn updated(&self) {}
-}
-
-/// Holds a program's turns while it updates; the release lets them go.
-pub trait Hold: Send + Sync {
-    fn hold<'a>(
-        &'a self,
-        program: &'a str,
-        deadline: u64,
-    ) -> BoxFuture<'a, Result<Box<dyn FnOnce() + Send>, String>>;
+    /// Each account with it runs the new program for new turns while existing turns finish.
+    fn updated(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 type Running = Shared<BoxFuture<'static, UpdateResult>>;
@@ -828,42 +730,37 @@ pub type Accounts = Arc<dyn Fn() -> Vec<Arc<dyn Program>> + Send + Sync>;
 /// The updates of the agents' programs here.
 #[derive(Clone)]
 pub struct ProgramUpdates {
-    agents: PathBuf,
+    root: PathBuf,
     temporary: PathBuf,
     kept: Arc<Plain<HashMap<String, ProgramUpdate>>>,
     running: Arc<Plain<HashMap<String, Running>>>,
-    hold: Option<Arc<dyn Hold>>,
     accounts: Accounts,
     /// Told that a program's update changed (started, or ended so): its accounts' rows say so.
     changed: Changed,
 }
 
 impl ProgramUpdates {
-    /// The updates for a box at `root`.
+    /// The updates for a box at `root`. Cleans up any unused old versions left by prior runs.
     pub fn at(root: &Path, accounts: Accounts, changed: Changed) -> Self {
+        let sweep_root = root.to_owned();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || store::sweep_all(&sweep_root));
+        } else {
+            store::sweep_all(&sweep_root);
+        }
         Self {
-            agents: root.join("agents"),
+            root: root.to_owned(),
             temporary: root.join("tmp"),
             kept: Arc::default(),
             running: Arc::default(),
-            hold: None,
             accounts,
             changed,
         }
     }
 
     pub async fn maintenance(&self, definition: &Definition, fresh: bool) -> Maintenance {
-        let folder = self
-            .agents
-            .parent()
-            .unwrap_or(&self.agents)
-            .join("run/agents/program-cache");
+        let folder = self.root.join("run/agents/program-cache");
         maintenance(definition, fresh, &folder).await
-    }
-
-    pub fn with_hold(mut self, hold: Arc<dyn Hold>) -> Self {
-        self.hold = Some(hold);
-        self
     }
 
     /// Whether its program is updating now.
@@ -910,57 +807,26 @@ impl ProgramUpdates {
         true
     }
 
-    /// Updates `agent`'s program, or joins the update of it under way: its accounts say it's
-    /// updating until it's done, then how it went. Never fails: what went wrong is its outcome.
-    pub fn update(&self, agent: Arc<dyn Program>, saved: Option<Drain>) -> Running {
+    /// Updates `agent`'s program, or joins the update of it under way: never waits for running
+    /// turns. Never fails: what went wrong is its outcome.
+    pub fn update(&self, agent: Arc<dyn Program>) -> Running {
         let program = agent.program().to_owned();
         if let Some(running) = lock(&self.running).get(&program) {
             return running.clone();
         }
-        let drain = saved.clone().unwrap_or_else(|| Drain {
-            attempt: uuid::Uuid::new_v4().to_string(),
-            provider: agent.provider(),
-            deadline: now_ms() + HOLD_MOST,
-        });
-        let file = drain_file(&self.agents, &program);
-        if saved.is_none()
-            && let Ok(bytes) = serde_json::to_vec(&drain)
-        {
-            let _ = files::write_secret(&file, &bytes);
-        }
-        lock(&self.kept).insert(
-            program.clone(),
-            ProgramUpdate::Updating {
-                at: drain.deadline - HOLD_MOST,
-            },
-        );
+        lock(&self.kept).insert(program.clone(), ProgramUpdate::Updating { at: now_ms() });
         let this = self.clone();
-        let (name, attempt) = (program.clone(), drain.attempt.clone());
+        let name = program.clone();
         let done = async move {
-            let release = match &this.hold {
-                Some(hold) => match hold.hold(&name, drain.deadline).await {
-                    Ok(release) => Some(release),
-                    Err(message) => {
-                        let result = UpdateResult::failed(message);
-                        this.finish(&name, &attempt, &result, None);
-                        return result;
-                    }
-                },
-                None => None,
-            };
             let result = match agent.definition() {
                 Some(definition) => {
-                    let result = update(
-                        &definition,
-                        &this.temporary,
-                        Some((&this.agents, &name, &attempt)),
-                    )
-                    .await;
-                    // Every account with it runs that program.
+                    let result = update(&definition, &this.root, &name, &this.temporary).await;
+                    // Every account with it runs the new program for new turns; running turns
+                    // finish on their old version.
                     if result.updated {
                         for each in (this.accounts)() {
                             if each.program() == name {
-                                each.updated();
+                                each.updated().await;
                             }
                         }
                     }
@@ -968,7 +834,7 @@ impl ProgramUpdates {
                 }
                 None => UpdateResult::failed(format!("{} isn't installed.", agent.name())),
             };
-            this.finish(&name, &attempt, &result, release);
+            this.finish(&name, &result);
             result
         }
         .boxed()
@@ -979,80 +845,10 @@ impl ProgramUpdates {
         done
     }
 
-    fn finish(
-        &self,
-        program: &str,
-        attempt: &str,
-        result: &UpdateResult,
-        release: Option<Box<dyn FnOnce() + Send>>,
-    ) {
+    fn finish(&self, program: &str, result: &UpdateResult) {
         lock(&self.kept).insert(program.to_owned(), ProgramUpdate::of(result));
         lock(&self.running).remove(program);
-        let _ = std::fs::remove_file(drain_file(&self.agents, program));
-        finish_installation(&self.agents, program, attempt);
-        if let Some(release) = release {
-            release();
-        }
         (self.changed)(program, Some(result));
-    }
-
-    /// The updates an earlier resident left under way: taken up, before turns are let in; one
-    /// whose installer had started is its own (its group holds turns until it exits).
-    pub fn resume(&self) {
-        let programs = (self.accounts)();
-        let folder = self.agents.join("program-draining");
-        let Ok(names) = std::fs::read_dir(&folder) else {
-            return;
-        };
-        for entry in names.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(program) = name.strip_suffix(".json").filter(|program| {
-                program
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    && !program.is_empty()
-            }) else {
-                continue;
-            };
-            let Ok(drain) = std::fs::read(entry.path())
-                .map_err(drop)
-                .and_then(|bytes| serde_json::from_slice::<Drain>(&bytes).map_err(drop))
-            else {
-                continue;
-            };
-            let attempt = &drain.attempt;
-            if attempt.len() != 36
-                || !attempt
-                    .bytes()
-                    .all(|b| b == b'-' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
-                continue;
-            }
-            if installer_started(&self.agents, program, &drain.attempt) {
-                let _ = std::fs::remove_file(entry.path());
-                continue;
-            }
-            let candidates: Vec<_> = programs
-                .iter()
-                .filter(|each| each.program() == program && each.definition().is_some())
-                .collect();
-            let agent = candidates
-                .iter()
-                .find(|each| each.provider() == drain.provider)
-                .or(candidates.first());
-            match agent {
-                Some(agent) => {
-                    // (It runs on its own: nothing here waits for it.)
-                    drop(self.update((*agent).clone(), Some(drain)));
-                }
-                None => {
-                    let failed =
-                        UpdateResult::failed("This program can no longer be updated here.");
-                    lock(&self.kept).insert(program.to_owned(), ProgramUpdate::of(&failed));
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
     }
 
     /// Update All: each program a newer version is out for that its installer can update, once,
@@ -1086,7 +882,7 @@ impl ProgramUpdates {
                 };
                 let found = self.maintenance(&definition, false).await;
                 if found.command.is_some() && found.is_outdated() && !self.is_updating(&program) {
-                    drop(self.update(agent, None));
+                    drop(self.update(agent));
                     started.push(program.clone());
                     break;
                 }
@@ -1118,13 +914,12 @@ impl Program for crate::roster::Entry {
         self.agent.program()
     }
 
-    fn updated(&self) {
-        let agent = self.agent.clone();
-        tokio::spawn(async move {
-            if let Err(error) = agent.program_updated().await {
-                eprintln!("Kuvo could not restart an updated agent: {error}");
+    fn updated(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            if let Err(error) = self.agent.program_updated().await {
+                eprintln!("Kuvo could not switch an updated agent: {error}");
             }
-        });
+        })
     }
 }
 
