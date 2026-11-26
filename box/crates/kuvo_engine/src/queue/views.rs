@@ -36,6 +36,8 @@ pub(super) struct Sample {
 }
 
 impl Sample {
+    pub(super) fn requested(&self) -> bool { self.pending.is_some() }
+
     pub async fn complete(self) -> Reply {
         self.pending?.await
     }

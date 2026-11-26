@@ -8,6 +8,7 @@
 //! Auto needs the sandbox, which this box doesn't run yet: it's kept, and asks first (on Windows it
 //! isn't offered at all).
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{path::PathBuf, time::Duration};
 
 use http::{Method, StatusCode};
@@ -430,7 +431,7 @@ impl ApprovalService {
                 // The client's initial session note writes go first, as they did in the old round.
                 let running = matches!(&*states.borrow(), kuvo_engine::State::Running { .. });
                 if running {
-                    tokio::time::sleep(RETRY).await;
+                    timer_fires::sleep(Timer::ApprovalGrace, RETRY).await;
                 }
                 let started = match &*states.borrow_and_update() {
                     kuvo_engine::State::Running { started, .. } => Some(format!("{started:?}")),
@@ -459,7 +460,7 @@ impl ApprovalService {
                     changed = states.changed() => if changed.is_err() { return },
                     changed = sessions.changed() => if !changed { return },
                     _ = files.changed() => {},
-                    _ = tokio::time::sleep(RETRY), if retry => {},
+                    _ = timer_fires::sleep(Timer::ApprovalRetry, RETRY), if retry => {},
                 }
             }
         })

@@ -326,6 +326,29 @@ impl View {
             .collect()
     }
 
+    /// Where a kept live activity copy can become last-seen without new mail.
+    pub fn next_activity_change(&self, now: Millis) -> Option<Millis> {
+        self.roster.members.iter().filter_map(|peer| {
+            let copy = self.activities.get(&peer.key)?;
+            if copy.rows.is_empty() { return None; }
+            let key = encode(&peer.key);
+            let release = self.announced.get(&key).and_then(Announcement::release);
+            self.reach.activity_away_at(&key, copy.heard, release, now)
+        }).min()
+    }
+
+    pub fn next_peer_waiting_change(&self, now: Millis) -> Option<Millis> {
+        let asking = self.activities.values().flat_map(|copy| &copy.rows)
+            .filter(|fact| fact.state == State::Asking).map(|fact| fact.session.as_str()).collect::<BTreeSet<_>>();
+        self.roster.members.iter().filter_map(|peer| {
+            let copy = self.activities.get(&peer.key)?;
+            if !copy.rows.iter().any(|fact| asking.contains(fact.session.as_str())) { return None; }
+            let key = encode(&peer.key);
+            let release = self.announced.get(&key).and_then(Announcement::release);
+            self.reach.activity_away_at(&key, copy.heard, release, now)
+        }).min()
+    }
+
     pub fn activity(
         &self,
         root: Option<&str>,

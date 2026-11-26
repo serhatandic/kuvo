@@ -126,6 +126,7 @@ impl Foreground {
         let total = printed.total + added.len() as u64;
         printed.total = total.max(output.len() as u64);
         printed.output = output.to_owned();
+        self.background.note_output();
     }
 
     fn end(&mut self, id: &str, content: &[ToolOutput], exit: Option<i32>) {
@@ -152,6 +153,7 @@ struct Waited {
 }
 
 impl CommandSource for Waited {
+    fn pushes_output(&self) -> bool { true }
     fn output(&self) -> BoxFuture<'_, Printed> {
         let printed = lock(&self.printed).clone();
         Box::pin(async move { printed })

@@ -1,6 +1,7 @@
 //! Wire Library and Artifacts into the resident (`serve.rs`), including peer snapshots,
 //! memory-read answering, bot folder watches, and passive engine event recording.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -21,10 +22,9 @@ use kuvo_server::Registry;
 use kuvo_services::{
     artifacts::{
         ArtifactHandle, ArtifactStore, OutputPeerCopy, OutputsFuture, OutputsPeers,
-        OutputsSnapshot, PeerOutputRow, PendingComputer, StoreError, StoreOptions,
+        OutputsSnapshot, PeerOutputRow, PendingComputer, StoreOptions,
         folders::{BotFolders, wire_record},
         local_output_copy,
-        prepare::{citation_update, load_citation_checkpoints, save_citation_checkpoints},
         recorder::{Event, Recorder, RecorderOptions, SessionDetails, SessionFuture, SessionSource},
     },
     library::{
@@ -76,66 +76,44 @@ impl ResidentLibraryArtifacts {
             home.join("agents/sessions"),
             home.join("run"),
         );
-        let prev = load_citation_checkpoints(&artifacts_root);
-        let (shown, checkpoints) = citation_update(&sessions_dir, &prev);
-        let store_res = ArtifactStore::open(
+        let store = ArtifactStore::deferred(
             &artifacts_root,
-            StoreOptions { bots: Some(bots_dir.clone()), shown, ..Default::default() },
+            StoreOptions { bots: Some(bots_dir.clone()), ..Default::default() },
+            Some(sessions_dir.clone()),
         );
         let mut tasks = Vec::new();
-        let (artifact_handle, library_handle, folders) = match store_res {
-            Ok(store) => {
-                // An unchanged checkpoint stays as it is: a departed computer's
-                // released work must not change by starting again.
-                if checkpoints != prev {
-                    save_citation_checkpoints(&artifacts_root, &checkpoints);
-                }
-                let lib_res = LibraryService::open(
-                    &library_root,
-                    LibraryOptions {
-                        bots: bots_dir.clone(),
-                        sessions: sessions_dir,
-                        artifacts: Some(store.clone()),
-                        computer: Arc::new(move || computer_name.clone()),
-                        platform: ThumbnailPlatform::current(),
-                        clock: None,
-                    },
-                );
-                let (library_handle, handed) = match lib_res {
-                    Ok(service) => {
-                        service.backfill();
-                        let svc = service.clone();
-                        (LibraryHandle::Ready(service), Some(Arc::new(move |h| svc.handed(h)) as _))
-                    }
-                    Err(kuvo_services::library::LibraryStoreError::UnsupportedFormat(msg)) => {
-                        (LibraryHandle::UnsupportedFormat(msg), None)
-                    }
-                    Err(err) => {
-                        eprintln!("library: could not start: {err}");
-                        (LibraryHandle::Unavailable, None)
-                    }
-                };
-                let (recorder, folders) = wire_record(
-                    store.clone(),
-                    Some(bots_dir),
-                    Duration::from_secs(1),
-                    RecorderOptions { handed, ..Default::default() },
-                );
-                if let Some(folders) = &folders {
-                    let hub = WatchHub::default();
-                    folders.start(Some(&hub)).await;
-                }
-                tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), engine.events(), recorder)));
-                (ArtifactHandle::Ready(store), library_handle, folders)
+        let lib_res = LibraryService::open(
+            &library_root,
+            LibraryOptions {
+                bots: bots_dir.clone(), sessions: sessions_dir,
+                artifacts: Some(store.clone()), computer: Arc::new(move || computer_name.clone()),
+                platform: ThumbnailPlatform::current(), clock: None,
+            },
+        );
+        let (library_handle, handed) = match lib_res {
+            Ok(service) => {
+                service.backfill();
+                let svc = service.clone();
+                (LibraryHandle::Ready(service), Some(Arc::new(move |h| svc.handed(h)) as _))
             }
-            Err(StoreError::UnsupportedFormat(msg)) => {
-                (ArtifactHandle::UnsupportedFormat(msg), LibraryHandle::Unavailable, None)
+            Err(kuvo_services::library::LibraryStoreError::UnsupportedFormat(msg)) => {
+                (LibraryHandle::UnsupportedFormat(msg), None)
             }
             Err(err) => {
-                eprintln!("artifacts: could not start: {err}");
-                (ArtifactHandle::Unavailable, LibraryHandle::Unavailable, None)
+                eprintln!("library: could not start: {err}");
+                (LibraryHandle::Unavailable, None)
             }
         };
+        let (recorder, folders) = wire_record(
+            store.clone(), Some(bots_dir), Duration::from_secs(1),
+            RecorderOptions { handed, ..Default::default() },
+        );
+        if let Some(folders) = &folders {
+            let hub = WatchHub::default();
+            folders.start(Some(&hub)).await;
+        }
+        tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), engine.events(), recorder)));
+        let artifact_handle = ArtifactHandle::Ready(store);
 
         let (peer_tx, peer_rx) = watch::channel(0u64);
         if let Some(relay) = relay {
@@ -156,6 +134,7 @@ impl ResidentLibraryArtifacts {
                 value: json!({ "message": "This computer’s Library can’t be read right now. Try again in a moment." }),
             };
         };
+        if !service.artifacts_ready() { return Answer { status: 503, value: json!({ "message": "This computer’s Library can’t be read right now. Try again in a moment." }) }; }
         let (status, value) = library_for_peer(service, "GET", &read.item, read.body.as_ref()).await;
         Answer { status, value }
     }
@@ -184,6 +163,31 @@ impl PeerAdapter {
         Some((val.get("seen")?.as_i64()?, val))
     }
 
+    fn next_copy_change(&self, query: Option<&str>) -> Option<Duration> {
+        let view = self.peers.view();
+        let now = self.peers.now();
+        let mut next = view.next_standing_change(now);
+        if let Some(query) = query {
+            for member in view.roster.members.iter().filter(|peer| !view.advertises(&peer.key, CHANGES_FEATURE)) {
+                let key = encode(&member.key);
+                let seen = self.read_peer_snapshot(&key, LIBRARY_FILE).map(|(seen, _)| seen)
+                    .or_else(|| kept_part(&self.run.join("library/peers"), &key, query).map(|kept| kept.seen));
+                if let Some(due) = seen.map(|at| at.saturating_add(180_001)).filter(|at| *at > now) {
+                    next = Some(next.map_or(due, |old| old.min(due)));
+                }
+            }
+        }
+        next.map(|at| Duration::from_millis(at.saturating_sub(now).max(1) as u64))
+    }
+
+    fn legacy_recipients(&self) -> std::collections::BTreeSet<String> {
+        let view = self.peers.view();
+        if !view.relay_connected { return Default::default(); }
+        view.roster.members.iter().filter(|peer| view.advertises(&peer.key, LIBRARY_FEATURE)
+            && !view.advertises(&peer.key, MERGED_LIBRARY_FEATURE)
+            && !view.standing(peer.key, self.peers.now()).away()).map(|peer| encode(&peer.key)).collect()
+    }
+
     fn peer_sessions_children(&self) -> HashMap<String, Vec<String>> {
         let mut parents: HashMap<String, HashSet<String>> = HashMap::new();
         let mut link = |id: &str, parent: Option<&str>, line: Option<&[String]>| {
@@ -208,6 +212,49 @@ impl PeerAdapter {
         }
         parents.into_iter().map(|(k, s)| (k, s.into_iter().collect())).collect()
     }
+    async fn ask_selected(&self, query: &str, selected: Option<&std::collections::BTreeSet<String>>) -> Vec<Asked> {
+            let (view, now, dir) = (self.peers.view(), self.peers.now(), self.peers_dir());
+            let mut out = Vec::new();
+            for member in &view.roster.members {
+                if selected.is_some_and(|keys| !keys.contains(&encode(&member.key))) { continue; }
+                let key_str = encode(&member.key);
+                let computer = PeerComputer { key: key_str.clone(), name: member.name.clone(), here: false };
+                if !view.advertises(&member.key, LIBRARY_FEATURE) {
+                    out.push(Asked { state: PartState::Older(older_message(&member.name)), computer, part: None, seen: None });
+                    continue;
+                }
+                if !view.relay_connected || view.standing(member.key, now).away() {
+                    out.push(asked_with_kept(computer, kept_part(&dir, &key_str, query), true, away_hidden_message(&member.name)));
+                    continue;
+                }
+                let read = Read {
+                    area: Some("library".into()),
+                    item: "list".into(),
+                    kind: ReadKind::Record,
+                    body: Some([("query".into(), Value::String(query.into()))].into_iter().collect()),
+                };
+                match self.reads.request(member.key, read).await {
+                    Ok(ans) if ans.status == 200 && is_part(&ans.value) => {
+                        keep_part(&dir, &key_str, query, ans.value.clone(), now);
+                        out.push(Asked { computer, state: PartState::There, part: Some(ans.value), seen: None });
+                    }
+                    Ok(ans) if ans.status == 409 => {
+                        let msg = ans.value.get("message").and_then(Value::as_str)
+                            .map_or_else(|| older_message(&member.name), str::to_owned);
+                        out.push(Asked { computer, state: PartState::Older(msg), part: None, seen: None });
+                    }
+                    Ok(_) => out.push(asked_with_kept(
+                        computer,
+                        kept_part(&dir, &key_str, query),
+                        false,
+                        format!("{}’s Library couldn’t be read. Try again in a moment.", member.name),
+                    )),
+                    Err(err) => out.push(asked_with_kept(computer, kept_part(&dir, &key_str, query), true, err.to_string())),
+                }
+            }
+            out
+    }
+
 }
 
 fn asked_with_kept(computer: PeerComputer, kept: Option<kuvo_services::library::peers::KeptEntry>, away: bool, fallback: String) -> Asked {
@@ -254,6 +301,7 @@ impl OutputsPeers for PeerAdapter {
         })
     }
 
+    fn next_change(&self) -> Option<Duration> { self.next_copy_change(None) }
     fn changes(&self) -> watch::Receiver<u64> { self.changes.clone() }
 }
 
@@ -283,47 +331,12 @@ impl LibraryPeers for PeerAdapter {
     }
 
     fn ask_peers<'a>(&'a self, query: &'a str) -> kuvo_services::library::peers::PeerFuture<'a, Vec<Asked>> {
-        Box::pin(async move {
-            let (view, now, dir) = (self.peers.view(), self.peers.now(), self.peers_dir());
-            let mut out = Vec::new();
-            for member in &view.roster.members {
-                let key_str = encode(&member.key);
-                let computer = PeerComputer { key: key_str.clone(), name: member.name.clone(), here: false };
-                if !view.advertises(&member.key, LIBRARY_FEATURE) {
-                    out.push(Asked { state: PartState::Older(older_message(&member.name)), computer, part: None, seen: None });
-                    continue;
-                }
-                if !view.relay_connected || view.standing(member.key, now).away() {
-                    out.push(asked_with_kept(computer, kept_part(&dir, &key_str, query), true, away_hidden_message(&member.name)));
-                    continue;
-                }
-                let read = Read {
-                    area: Some("library".into()),
-                    item: "list".into(),
-                    kind: ReadKind::Record,
-                    body: Some([("query".into(), Value::String(query.into()))].into_iter().collect()),
-                };
-                match self.reads.request(member.key, read).await {
-                    Ok(ans) if ans.status == 200 && is_part(&ans.value) => {
-                        keep_part(&dir, &key_str, query, ans.value.clone(), now);
-                        out.push(Asked { computer, state: PartState::There, part: Some(ans.value), seen: None });
-                    }
-                    Ok(ans) if ans.status == 409 => {
-                        let msg = ans.value.get("message").and_then(Value::as_str)
-                            .map_or_else(|| older_message(&member.name), str::to_owned);
-                        out.push(Asked { computer, state: PartState::Older(msg), part: None, seen: None });
-                    }
-                    Ok(_) => out.push(asked_with_kept(
-                        computer,
-                        kept_part(&dir, &key_str, query),
-                        false,
-                        format!("{}’s Library couldn’t be read. Try again in a moment.", member.name),
-                    )),
-                    Err(err) => out.push(asked_with_kept(computer, kept_part(&dir, &key_str, query), true, err.to_string())),
-                }
-            }
-            out
-        })
+        Box::pin(self.ask_selected(query, None))
+    }
+    fn next_change(&self, query: &str) -> Option<Duration> { self.next_copy_change(Some(query)) }
+    fn legacy_keys(&self) -> std::collections::BTreeSet<String> { self.legacy_recipients() }
+    fn ask_legacy<'a>(&'a self, query: &'a str) -> kuvo_services::library::peers::PeerFuture<'a, Vec<Asked>> {
+        Box::pin(async move { self.ask_selected(query, Some(&self.legacy_recipients())).await })
     }
 
     fn ask_item<'a>(
@@ -404,15 +417,9 @@ async fn sync_peer_snapshots(
     let mut seq = 0u64;
     let mut art_rx = match &artifacts { ArtifactHandle::Ready(s) => Some(s.subscribe()), _ => None };
     let mut lib_rx = match &library { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
-    let mut sent = HashMap::<([u8; 32], &'static str), SentCopy>::new();
-    // A peer can announce agents before its Library receiver is installed. Modern
-    // recipients explicitly say they are ready, so an initial copy cannot be lost.
-    let mut requested = HashSet::new();
-    let mut ready = HashSet::new();
-    let mut cached = None;
-    let mut source_watches = FileSet::new(WatchHub::default());
+    let mut copies = Copies::new();
     loop {
-        let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut cached, &mut sent, &mut requested, &mut ready, &mut source_watches).await;
+        let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut copies).await;
 
         tokio::select! {
             res = events.recv() => match res {
@@ -420,8 +427,8 @@ async fn sync_peer_snapshots(
                     RelayEvent::Mail { key, envelope, .. } => {
                         let key_str = encode(key);
                         if envelope.0.get("ask").and_then(Value::as_str) == Some("library-copy") {
-                            ready.insert(*key);
-                            sent.retain(|(recipient, _), _| recipient != key);
+                            copies.ready.insert(*key);
+                            copies.sent.retain(|(recipient, _), _| recipient != key);
                         }
                         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
                         let mut updated = false;
@@ -437,36 +444,36 @@ async fn sync_peer_snapshots(
                             }
                         }
                         if updated {
-                            ready.insert(*key);
+                            copies.ready.insert(*key);
                             seq = seq.wrapping_add(1); let _ = notify.send(seq);
                         }
                     }
                     RelayEvent::Connected(_) | RelayEvent::Disconnected(_) => {
-                        sent.clear(); requested.clear(); ready.clear();
+                        copies.sent.clear(); copies.requested.clear(); copies.ready.clear();
                     },
                     RelayEvent::Gone { address, replaced: true } => {
                         if let Some(member) = peers.view().roster.at_address(*address) {
-                            sent.retain(|(key, _), _| *key != member.key);
-                            requested.remove(&member.key); ready.remove(&member.key);
+                            copies.sent.retain(|(key, _), _| *key != member.key);
+                            copies.requested.remove(&member.key); copies.ready.remove(&member.key);
                         }
                     }
                     RelayEvent::Unreachable(address) | RelayEvent::Gone { address, replaced: false } => {
                         if let Some(member) = peers.view().roster.at_address(*address) {
-                            sent.retain(|(key, _), _| *key != member.key);
-                            ready.remove(&member.key);
+                            copies.sent.retain(|(key, _), _| *key != member.key);
+                            copies.ready.remove(&member.key);
                             // The peer view will clear the request when it learns the peer is away.
                         }
                     }
                     _ => {}
                 },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sent.clear(); requested.clear(); ready.clear(); cached = None; }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { copies.sent.clear(); copies.requested.clear(); copies.ready.clear(); copies.cached = None; }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
-            _ = recv_broadcast(&mut art_rx) => cached = None,
-            _ = recv_broadcast(&mut lib_rx) => cached = None,
-            _ = source_watches.changed() => {
+            _ = recv_broadcast(&mut art_rx) => copies.cached = None,
+            _ = recv_broadcast(&mut lib_rx) => copies.cached = None,
+            _ = copies.source_watches.changed() => {
                 if let LibraryHandle::Ready(service) = &library { service.clear_bot_descriptions(); }
-                cached = None;
+                copies.cached = None;
                 seq = seq.wrapping_add(1); let _ = notify.send(seq);
             },
             result = peers.changed() => {
@@ -492,9 +499,28 @@ struct SentCopy {
 
 type Content = Vec<(&'static str, Value, [u8; 32])>;
 
+struct Copies {
+    sent: HashMap<([u8; 32], &'static str), SentCopy>,
+    // A peer can announce agents before its Library receiver is installed. Modern
+    // recipients explicitly say they are ready, so an initial copy cannot be lost.
+    requested: HashSet<[u8; 32]>,
+    ready: HashSet<[u8; 32]>,
+    cached: Option<Content>,
+    source_watches: FileSet,
+}
+
+impl Copies {
+    fn new() -> Self {
+        Self {
+            sent: HashMap::new(), requested: HashSet::new(), ready: HashSet::new(),
+            cached: None, source_watches: FileSet::new(WatchHub::default()),
+        }
+    }
+}
+
 async fn legacy_due(at: Option<tokio::time::Instant>) {
     match at {
-        Some(at) => tokio::time::sleep_until(at).await,
+        Some(at) => timer_fires::sleep_until(Timer::LibraryLegacyCopy, at).await,
         None => std::future::pending().await,
     }
 }
@@ -505,10 +531,9 @@ async fn legacy_due(at: Option<tokio::time::Instant>) {
 /// there a timer at all.
 async fn push_snapshot(
     peers: &Reader, relay: &RelayHandle, artifacts: &ArtifactHandle, library: &LibraryHandle,
-    cached: &mut Option<Content>, sent: &mut HashMap<([u8; 32], &'static str), SentCopy>,
-    requested: &mut HashSet<[u8; 32]>, ready: &mut HashSet<[u8; 32]>,
-    sources: &mut FileSet,
+    copies: &mut Copies,
 ) -> Option<tokio::time::Instant> {
+    let Copies { cached, sent, requested, ready, source_watches: sources } = copies;
     let view = peers.view();
     let recipients = view.roster.members.iter().filter(|member| member.address.is_some() && !view.away(&member.key)).collect::<Vec<_>>();
     sent.retain(|(key, _), _| recipients.iter().any(|member| member.key == *key));
@@ -546,17 +571,18 @@ async fn push_snapshot(
                 content.push((field, value, Sha256::digest(bytes).into()));
             }
         };
-        if let LibraryHandle::Ready(service) = library {
+        if let LibraryHandle::Ready(service) = library && service.artifacts_ready() {
             let copy = service.peer_copy_json();
             let paths = copy["items"].as_array().into_iter().flatten().flat_map(|item| {
                 let file = item["path"].as_str().map(PathBuf::from);
                 let bot = item["bot"].as_str().map(|bot| service.bots_folder().join(bot).join("bot.json"));
                 file.into_iter().chain(bot)
             }).collect();
-            sources.set_files(paths);
+            let roots = if cfg!(windows) { vec![service.bots_folder().to_owned()] } else { Vec::new() };
+            sources.set_files_at_roots(paths, roots);
             add("libraryCopy", copy);
         }
-        if let ArtifactHandle::Ready(store) = artifacts {
+        if let ArtifactHandle::Ready(store) = artifacts && store.ensure_history().is_ok() {
             add("outputCopy", json!({ "artifacts": local_output_copy(store, None) }));
         }
         content

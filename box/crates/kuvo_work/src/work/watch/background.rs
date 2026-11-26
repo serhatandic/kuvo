@@ -6,6 +6,7 @@
 //! about: those its events name, a session's that just ran, and those of the last hour as the box
 //! starts. Its events say when to look again; what's found is what the engine says then.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
@@ -481,7 +482,7 @@ impl EngineBackground {
         };
         let this = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(next - now + 1000)).await;
+            timer_fires::sleep(Timer::WorkBackgroundExpiry, Duration::from_millis(next - now + 1000)).await;
             this.state().timed = false;
             Box::pin(this.look(Vec::new())).await;
             if !this.state().ended {

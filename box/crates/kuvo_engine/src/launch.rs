@@ -177,6 +177,14 @@ impl Worker {
         })
     }
 
+    pub fn identity(&self) -> &ProcessIdentity {
+        match &self.process {
+            Process::Spawned(child) => child.identity(),
+            Process::Adopted(child) => child.identity(),
+            Process::Borrowed(identity) => identity,
+        }
+    }
+
     pub fn alive(&self) -> io::Result<bool> {
         match &self.process {
             Process::Spawned(child) => child.has_exited().map(|exited| !exited),

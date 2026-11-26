@@ -630,7 +630,7 @@ impl Readers {
             }
             let service = service.clone();
             let kept = tokio::task::spawn_blocking(move || {
-                service.observe_confirmed_facts(source.account, windows, facts, at)
+                service.observe_confirmed_facts(source.account, windows, facts, at, at)
             })
             .await;
             if !matches!(kept, Ok(Ok(()))) {

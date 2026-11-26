@@ -11,6 +11,11 @@ import { boxBinary, isolatedEnv, openLine, readJSON, request, scratch, until, wr
 import { bench as conformanceBench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
+import { parkedTimers } from "./idle-counter.mjs";
+
+test("the move driver parks when there are no transfer journals", { timeout: 30000 }, async t => {
+  await parkedTimers(t, ["moves.round"], 3500);
+});
 
 const bench = t => conformanceBench(t, { orderedMessages: true });
 
@@ -486,7 +491,9 @@ test("receipt pages keep the same cursor while the setup assigns a replacement i
   const assigned = await request(resident, "POST", "kuvo/box/backups/match", {
     source: `b_${Buffer.alloc(16, 2).toString("base64url")}`, previous: retired, replacement: spare.key,
   }, headers);
-  assert.equal(assigned.status, 200, assigned.text);
+  const leaseFile = path.join(reader.home, "run/setup-relay-lease.json");
+  const lease = fs.existsSync(leaseFile) ? readJSON(leaseFile) : null;
+  assert.equal(assigned.status, 200, `${assigned.text}\n${JSON.stringify({ holder: lease?.holder, term: lease?.term, expires: lease?.expires, now: Date.now() })}\n${process.log()}`);
   const interrupted = await finish();
   assert.equal(interrupted.complete, false);
   assert.equal(interrupted.next, undefined);
@@ -2284,7 +2291,8 @@ test("a cold move receipt index resumes its bounded scan after a restart", {
   await readyToMove(original, session, member);
   const retry = await start();
   assert.equal(retry.status, 202, retry.text);
-  assert.equal((await settled(retry.json.move.id)).state, "done");
+  const retried = await settled(retry.json.move.id);
+  assert.equal(retried.state, "done", JSON.stringify(retried));
   assert.deepEqual(readJSON(path.join(there.home, "run/owned-data/mutations", shadow + ".json")), fence);
 });
 

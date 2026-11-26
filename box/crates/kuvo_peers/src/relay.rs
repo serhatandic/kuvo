@@ -1,7 +1,12 @@
 //! The Tokio owner of one reconnecting relay socket. An accepted send has been written to the
 //! socket. Peer mail still needs an authenticated application receipt before it can be retired.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use kuvo_os::timer_fires::{self, Timer};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use kuvo_wire::{
@@ -179,8 +184,10 @@ pub enum Error {
     HeartbeatTimeout,
     #[error("relay write timed out")]
     WriteTimeout,
-    #[error("relay event receiver stopped consuming events")]
+    #[error("relay event receiver has closed")]
     EventQueue,
+    #[error("relay is catching up with pending events")]
+    EventBackpressure,
     #[error("session has ended or is still opening")]
     NoSession,
     #[error("invalid session message size or head")]
@@ -368,6 +375,7 @@ impl Relay {
                 rx,
                 events,
                 observations,
+                pending_events: VecDeque::new(),
                 sessions: Sessions::default(),
                 work_queue_parts: WorkQueueParts::default(),
                 quiet: Fences::default(),
@@ -393,6 +401,11 @@ struct Owner {
     rx: mpsc::Receiver<Command>,
     events: mpsc::Sender<Event>,
     observations: broadcast::Sender<Arc<RelayEvent>>,
+    // The socket stops reading as soon as the durable event consumer is full.
+    // Commands that don't open new sessions still complete, so a consumer
+    // awaiting its own relay command can drain the queue. At most the current
+    // input plus closures of already open sessions can accumulate here.
+    pending_events: VecDeque<Event>,
     sessions: Sessions,
     work_queue_parts: WorkQueueParts,
     quiet: Fences,
@@ -424,10 +437,16 @@ impl Owner {
                 Some(Ok(Err(error))) => error,
                 Some(Err(_)) => Error::WelcomeTimeout,
             };
-            if matches!(reason, Error::EventQueue) {
-                // A consumer that fell behind cannot safely keep its sessions. Dropping the event
-                // stream also wakes every waiter even if its queue has no room for a close.
+            if self.events.is_closed() {
                 return;
+            }
+            // Preserve the order of events already accepted before a socket
+            // failure. While offline we still answer commands, so a full
+            // consumer waiting for its own command cannot deadlock shutdown.
+            while let Some(event) = self.pending_events.pop_front() {
+                if self.forward_offline(event, false).await.is_err() {
+                    return;
+                }
             }
             let ended: Vec<_> = self.sessions.reset().collect();
             for event in ended {
@@ -440,7 +459,11 @@ impl Owner {
             }
             let healthy = since.is_some_and(|since| since.elapsed() >= Duration::from_secs(60));
             let wait = next_try(&mut attempts, healthy);
-            if self.while_offline(time::sleep(wait)).await.is_none() {
+            if self
+                .while_offline(timer_fires::sleep(Timer::RelayReconnect, wait))
+                .await
+                .is_none()
+            {
                 return;
             }
         }
@@ -461,12 +484,23 @@ impl Owner {
         let address = address_of(&self.config.secret);
         self.quiet = Fences::default();
         let mut last_heard = Instant::now();
-        let mut heartbeat = time::interval_at(last_heard + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
+        let mut heartbeat = timer_fires::interval_at(
+            Timer::RelayHeartbeat,
+            last_heard + HEARTBEAT_EVERY,
+            HEARTBEAT_EVERY,
+        );
         heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
+            let paused = !self.pending_events.is_empty();
+            let capacity = self.events.clone();
             tokio::select! {
                 _ = self.events.closed() => return Ok(()),
-                next = socket.next() => {
+                permit = capacity.reserve_owned(), if paused => {
+                    let permit = permit.map_err(|_| Error::EventQueue)?;
+                    let event = self.pending_events.pop_front().expect("pending relay event");
+                    permit.send(event);
+                }
+                next = socket.next(), if !paused => {
                     let message = websocket_message(next)?;
                     match message {
                         Ws::Binary(bytes) => {
@@ -480,7 +514,11 @@ impl Owner {
                     }
                 }
                 _ = heartbeat.tick() => {
-                    if last_heard.elapsed() > ALIVE_FOR {
+                    if paused {
+                        // We intentionally aren't reading while the local consumer
+                        // catches up. That is not a missing relay heartbeat.
+                        last_heard = Instant::now();
+                    } else if last_heard.elapsed() > ALIVE_FOR {
                         return Err(Error::HeartbeatTimeout);
                     }
                     write(socket, relay_send(&address, &[])).await?;
@@ -690,6 +728,13 @@ impl Owner {
                 let _ = reply.send(Ok(()));
             }
             Command::Start(host, hello, reply) => {
+                if !self.pending_events.is_empty() {
+                    // Starting/replacing sessions can allocate more events. A
+                    // transient refusal bounds pressure without blocking a
+                    // consumer that's awaiting this command.
+                    let _ = reply.send(Err(Error::EventBackpressure));
+                    return Ok(());
+                }
                 match self.sessions.initiate(self.config.key, host, hello) {
                     Ok((id, output)) => {
                         self.output(socket, id.address, output).await?;
@@ -745,7 +790,7 @@ impl Owner {
     }
 
     async fn send_output(
-        &self,
+        &mut self,
         socket: &mut Socket,
         id: Id,
         output: Option<Output>,
@@ -758,7 +803,12 @@ impl Owner {
         }
     }
 
-    async fn output(&self, socket: &mut Socket, to: Address, output: Output) -> Result<(), Error> {
+    async fn output(
+        &mut self,
+        socket: &mut Socket,
+        to: Address,
+        output: Output,
+    ) -> Result<(), Error> {
         if let Some(frame) = output.frame {
             write(socket, relay_send(&to, &frame)).await?;
         }
@@ -768,16 +818,37 @@ impl Owner {
         Ok(())
     }
 
-    fn emit(&self, event: Event) -> Result<(), Error> {
-        let permit = self.events.try_reserve().map_err(|_| Error::EventQueue)?;
+    fn emit(&mut self, event: Event) -> Result<(), Error> {
+        if self.events.is_closed() {
+            return Err(Error::EventQueue);
+        }
         self.observe(&event);
-        permit.send(event);
+        if self.pending_events.is_empty() {
+            match self.events.try_send(event) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(event)) => self.pending_events.push_back(event),
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(Error::EventQueue),
+            }
+        } else {
+            self.pending_events.push_back(event);
+        }
         Ok(())
     }
 
-    async fn emit_wait(&self, event: Event) -> Result<(), Error> {
-        let permit = self.events.reserve().await.map_err(|_| Error::EventQueue)?;
-        self.observe(&event);
+    async fn emit_wait(&mut self, event: Event) -> Result<(), Error> {
+        self.forward_offline(event, true).await
+    }
+
+    async fn forward_offline(&mut self, event: Event, observe: bool) -> Result<(), Error> {
+        let sender = self.events.clone();
+        let permit = self
+            .while_offline(sender.reserve_owned())
+            .await
+            .ok_or(Error::EventQueue)?
+            .map_err(|_| Error::EventQueue)?;
+        if observe {
+            self.observe(&event);
+        }
         permit.send(event);
         Ok(())
     }

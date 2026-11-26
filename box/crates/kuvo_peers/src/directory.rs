@@ -755,7 +755,7 @@ pub enum RecordScope {
 
 /// Evidence only this resident can authorize. Moves supply journal destinations, while engine,
 /// agents and work supply their held records. Peer announcements can only locate a record.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ownership {
     pub held: BTreeSet<(RecordScope, String)>,
     pub frozen: BTreeSet<String>,
@@ -763,7 +763,7 @@ pub struct Ownership {
     pub replacements: BTreeMap<ComputerKey, ComputerKey>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MoveLocation {
     pub key: ComputerKey,
     /// A committed departure has a time. A switch still in the journal

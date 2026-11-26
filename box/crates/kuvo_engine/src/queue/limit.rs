@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{io, path::Path, time::Duration};
 
 use futures_util::StreamExt;
@@ -97,10 +98,7 @@ pub(super) fn line(home: &Path, stop: &LimitStop) -> String {
     }
 }
 
-/// When a limit resets (ms), in your time zone: "4:30 PM", or "Oct 21, 9:00 AM" when it isn't
-/// today.
-pub fn reset_time(home: &Path, at: u64) -> Option<String> {
-    let at = Timestamp::from_millisecond(i64::try_from(at).ok()?).ok()?;
+fn display_zone(home: &Path) -> TimeZone {
     // Setup writes its accepted zone here, for both standalone and member computers.
     let accepted = std::fs::read_to_string(home.join("wakes/timezone")).ok();
     let local = std::fs::read(home.join("box/time-zone.json"))
@@ -108,11 +106,28 @@ pub fn reset_time(home: &Path, at: u64) -> Option<String> {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|value| value["zone"].as_str().map(str::to_owned));
     let given = std::env::var("KUVO_TZ").ok();
-    let zone = [accepted, local, given]
+    [accepted, local, given]
         .into_iter()
         .flatten()
         .find_map(|name| TimeZone::get(name.trim()).ok())
-        .unwrap_or_else(TimeZone::system);
+        .unwrap_or_else(TimeZone::system)
+ }
+
+/// Only the two date boundaries surrounding the actual reset date can change its words.
+pub(super) fn next_display_change(home: &Path, stop: &LimitStop) -> Option<u64> {
+    let zone = display_zone(home);
+    let now = Timestamp::now().to_zoned(zone.clone());
+    let reset = Timestamp::from_millisecond(i64::try_from(stop.resets_at?).ok()?).ok()?.to_zoned(zone.clone());
+    let date = if now.date() < reset.date() { reset.date() } else if now.date() == reset.date() {
+        reset.date().checked_add(jiff::Span::new().days(1)).ok()?
+    } else { return None; };
+    u64::try_from(date.at(0, 0, 0, 0).to_zoned(zone).ok()?.timestamp().as_millisecond()).ok()
+}
+
+/// When a limit resets (ms), in your time zone: "4:30 PM", or "Oct 21, 9:00 AM" when it isn't today.
+pub fn reset_time(home: &Path, at: u64) -> Option<String> {
+    let at = Timestamp::from_millisecond(i64::try_from(at).ok()?).ok()?;
+    let zone = display_zone(home);
     let now = Timestamp::now().to_zoned(zone.clone());
     let at = at.to_zoned(zone);
     let format = if now.date() == at.date() {
@@ -141,43 +156,43 @@ pub(super) fn watch(engine: Engine, stop: CancellationToken) -> tokio::task::Joi
     tokio::spawn(async move {
         stop.run_until_cancelled(async {
             let mut changes = engine.queues.changes.subscribe();
+            let mut states = engine.states();
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let run = engine.home.join("run");
+            files.set_targets(vec![run.join("queues.json"), run.join("fleet-engine-hold.json")], vec![(run.join("moves"), false), (run.join("waiting"), false)]);
             loop {
                 changes.borrow_and_update();
-                let mut next = Duration::from_secs(60);
+                let mut next = None;
                 let mut due = Vec::new();
                 let now = disk::now();
                 if let Ok(index) = engine.queues.index().await {
                     for (session, queue) in index {
-                        let Some(reset) = queue.limit_stop.and_then(|stop| stop.resets_at) else {
-                            continue;
-                        };
-                        if reset <= now {
-                            due.push((session, reset));
-                        } else {
-                            next = next.min(Duration::from_millis(reset - now));
-                        }
+                        let Some(reset) = queue.limit_stop.and_then(|stop| stop.resets_at) else { continue; };
+                        if reset <= now { due.push((session, reset)); }
+                        else { next = Some(next.map_or(reset, |at: u64| at.min(reset))); }
                     }
                 }
-                if due.is_empty() {
-                    tokio::select! {
-                        _ = changes.changed() => {}
-                        _ = tokio::time::sleep(next) => {}
-                    }
-                } else {
+                if !due.is_empty() && matches!(*states.borrow(), crate::State::Running { .. }) {
                     futures_util::stream::iter(due)
                         .for_each_concurrent(8, |(session, reset)| {
                             let engine = &engine;
-                            async move {
-                                let _ = release(engine, &session, reset).await;
-                            }
-                        })
-                        .await;
-                    // A refused prompt or unfinished removal stays persisted for the next try.
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                            async move { let _ = release(engine, &session, reset).await; }
+                        }).await;
+                    // A refused prompt or unfinished removal remains actual work to retry.
+                    let retry = disk::now().saturating_add(1000);
+                    next = Some(next.map_or(retry, |at| at.min(retry)));
+                }
+                tokio::select! {
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    changed = states.changed() => if changed.is_err() { return; },
+                    _ = files.changed() => {},
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep(Timer::EngineQueueLimit, Duration::from_millis(at.saturating_sub(disk::now()).max(1))).await,
+                        None => std::future::pending().await,
+                    } } => {},
                 }
             }
-        })
-        .await;
+        }).await;
     })
 }
 

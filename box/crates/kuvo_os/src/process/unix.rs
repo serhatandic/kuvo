@@ -52,6 +52,8 @@ pub(super) fn exit_wait(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: the successful kqueue call returned a new descriptor, not yet owned
+    // by any Rust object. OwnedFd takes sole ownership and closes it on drop.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let event = libc::kevent {
         ident: identity.pid as usize,
@@ -83,8 +85,10 @@ pub(super) fn exit_wait(
     }
     Ok(Box::new(move || {
         loop {
-            // SAFETY: the live descriptor and initialized writable event wait for NOTE_EXIT.
+            // SAFETY: kevent contains integer fields and a raw pointer, all valid when zeroed.
             let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: fd is held live by OwnedFd; there is no input list, and event is a
+            // writable, correctly aligned single output entry for this blocking call.
             if unsafe {
                 libc::kevent(
                     fd.as_raw_fd(),

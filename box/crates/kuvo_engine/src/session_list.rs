@@ -246,6 +246,10 @@ impl LocalSessions {
             {
                 let _ = subscription.recv().await;
             }
+            // The agents' saved rows have their own source. Keep their baseline even
+            // while the first engine inventory is in flight: a watcher rescan of an
+            // unchanged agent directory must not invalidate that engine page.
+            let mut agents = agent_rows(&engine).await.map(Arc::new);
             let mut inventory: Option<(u64, Inventory, EngineFacts)> = None;
             let mut reads = JoinSet::new();
             let mut read_again = true;
@@ -257,13 +261,14 @@ impl LocalSessions {
                     let previous = inventory
                         .as_ref()
                         .map(|(_, _, facts)| Arc::clone(&facts.databases));
+                    let bridge_rows = agents.clone();
                     reads.spawn(async move {
                         let (rows, mut facts) = tokio::join!(
-                            Inventory::read(&reader),
+                            Inventory::read(&reader, bridge_rows),
                             engine_facts::read(&reader.home, previous)
                         );
                         let rows = rows?;
-                        facts.add_linked(&rows.rows).await;
+                        facts.add_linked(rows.rows()).await;
                         Some((at, rows, facts))
                     });
                 }
@@ -271,6 +276,7 @@ impl LocalSessions {
                     biased;
                     next = requests.recv() => {
                         if next.is_none() { break; }
+                        refresh_agents(&engine, &mut agents, &agent_revision).await;
                         read_again = true;
                         continue;
                     },
@@ -295,25 +301,28 @@ impl LocalSessions {
                     },
                     changed = state.changed() => {
                         if changed.is_err() { break; }
+                        refresh_agents(&engine, &mut agents, &agent_revision).await;
                         read_again = true;
                         continue;
                     },
                     changed = project_changes(&mut edits) => match changed {
                         None => { edits = None; continue; },
-                        Some(true) => { read_again = true; continue; },
-                        Some(false) => {},
+                        Some(()) => {},
                     },
                     changed = background_changes(&mut background_edits) => match changed {
                         None => { background_edits = None; continue; },
-                        Some(true) => { read_again = true; continue; },
-                        Some(false) => {},
+                        Some(()) => {},
                     },
                     changed = agent_changes(&mut agent_edits) => {
-                        if changed {
-                            agent_revision.send_modify(|revision| *revision += 1);
-                            read_again = true;
-                        } else {
-                            agent_edits = None;
+                        match changed {
+                            Some(()) => {
+                                // A watch can report a stream reconfiguration, a
+                                // rewritten identical record or another event in
+                                // the agent folder. Recheck the agent rows, but
+                                // don't invalidate OpenCode's unchanged inventory.
+                                read_again |= refresh_agents(&engine, &mut agents, &agent_revision).await;
+                            }
+                            None => agent_edits = None,
                         }
                         continue;
                     },
@@ -324,8 +333,7 @@ impl LocalSessions {
                         }
                     } => {
                         if changed.is_ok() {
-                            agent_revision.send_modify(|revision| *revision += 1);
-                            read_again = true;
+                            read_again |= refresh_agents(&engine, &mut agents, &agent_revision).await;
                         } else {
                             agent_runs = None;
                         }
@@ -354,7 +362,7 @@ impl LocalSessions {
                     continue;
                 };
                 let (mut sessions, projects, archived, needs_you) = measure(
-                    &inventory.rows,
+                    inventory.rows(),
                     inventory.retained(&last),
                     &engine.home,
                     &projects,
@@ -928,32 +936,33 @@ async fn read_projects(home: &Path) -> Vec<Project> {
         .map_or_else(Vec::new, |file| file.projects)
 }
 
+#[derive(PartialEq)]
 pub(crate) struct Observed {
     pub(crate) session: Session,
     pub(crate) running: bool,
 }
 
 struct Inventory {
-    rows: Vec<Observed>,
+    engine_rows: Vec<Observed>,
+    bridge_rows: Option<Arc<Vec<Observed>>>,
     agent_ids: BTreeSet<String>,
     engine_known: bool,
     bridge_known: Option<bool>,
 }
 
 impl Inventory {
-    async fn read(engine: &Engine) -> Option<Self> {
+    async fn read(engine: &Engine, bridge_rows: Option<Arc<Vec<Observed>>>) -> Option<Self> {
         let engine_rows = async {
             let lease = engine.acquire(Demand::Passive).await?;
             read_inventory(engine, &lease).await.ok()
-        };
-        let bridge_rows = agent_rows(engine);
-        let (engine_rows, bridge_rows) = tokio::join!(engine_rows, bridge_rows);
+        }
+        .await;
         if engine_rows.is_none() && bridge_rows.is_none() {
             return None;
         }
         let agent_ids = bridge_rows
             .iter()
-            .flatten()
+            .flat_map(|rows| rows.iter())
             .map(|row| row.session.id.clone())
             .collect();
         let engine_known = engine_rows.is_some();
@@ -961,17 +970,19 @@ impl Inventory {
             .agent_sessions
             .as_ref()
             .map(|_| bridge_rows.is_some());
-        let rows = engine_rows
-            .into_iter()
-            .flatten()
-            .chain(bridge_rows.into_iter().flatten())
-            .collect();
         Some(Self {
-            rows,
+            engine_rows: engine_rows.unwrap_or_default(),
+            bridge_rows,
             agent_ids,
             engine_known,
             bridge_known,
         })
+    }
+
+    fn rows(&self) -> impl Iterator<Item = &Observed> {
+        self.engine_rows
+            .iter()
+            .chain(self.bridge_rows.iter().flat_map(|rows| rows.iter()))
     }
 
     fn pending(&self) -> Vec<String> {
@@ -1009,21 +1020,38 @@ impl Inventory {
     }
 }
 
+/// Invalidate an in-flight page only for a different agent projection, independently of
+/// whether the engine has finished its first inventory.
+async fn refresh_agents(
+    engine: &Engine,
+    kept: &mut Option<Arc<Vec<Observed>>>,
+    revision: &watch::Sender<u64>,
+) -> bool {
+    let current = agent_rows(engine).await;
+    if kept.as_deref() == current.as_ref() {
+        return false;
+    }
+    *kept = current.map(Arc::new);
+    revision.send_modify(|revision| *revision += 1);
+    true
+}
+
 /// The coding agents' conversations, or `None` when they can't be read.
 pub(crate) async fn agent_rows(engine: &Engine) -> Option<Vec<Observed>> {
     let source = engine.agent_sessions.as_ref()?;
     let rows = source.inventory().await.ok()?;
-    Some(
-        rows.into_iter()
-            .filter_map(|row| {
-                let session = serde_json::from_value(Value::Object(row.header)).ok()?;
-                Some(Observed {
-                    session,
-                    running: row.running,
-                })
+    let mut rows: Vec<_> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let session = serde_json::from_value(Value::Object(row.header)).ok()?;
+            Some(Observed {
+                session,
+                running: row.running,
             })
-            .collect(),
-    )
+        })
+        .collect();
+    rows.sort_unstable_by(|left, right| left.session.id.cmp(&right.session.id));
+    Some(rows)
 }
 
 pub(crate) async fn read_inventory(
@@ -1052,20 +1080,20 @@ pub(crate) async fn read_inventory(
         .collect())
 }
 
-async fn project_changes(edits: &mut Option<Subscription>) -> Option<bool> {
+async fn project_changes(edits: &mut Option<Subscription>) -> Option<()> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan | Notice::Failed(_) => return Some(true),
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path == Path::new("projects.json")
                         || path == Path::new(crate::worktree_notes::FILE)
                 }) =>
             {
-                return Some(false);
+                return Some(());
             }
             _ => {}
         }
@@ -1073,19 +1101,19 @@ async fn project_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     None
 }
 
-async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
+async fn background_changes(edits: &mut Option<Subscription>) -> Option<()> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan | Notice::Failed(_) => return Some(true),
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
             Notice::Changed { paths }
                 if paths
                     .iter()
                     .any(|path| path == Path::new("background.json")) =>
             {
-                return Some(false);
+                return Some(());
             }
             _ => {}
         }
@@ -1093,25 +1121,25 @@ async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     None
 }
 
-async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
+async fn agent_changes(edits: &mut Option<Subscription>) -> Option<()> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan | Notice::Failed(_) => return true,
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path.file_name().is_some_and(|name| name == "session.json")
                         || path.components().count() == 1
                 }) =>
             {
-                return true;
+                return Some(());
             }
             _ => {}
         }
     }
-    false
+    None
 }
 
 struct Filing<'a> {
@@ -1159,8 +1187,8 @@ impl<'a> Filing<'a> {
     }
 }
 
-fn measure(
-    rows: &[Observed],
+fn measure<'a>(
+    rows: impl Iterator<Item = &'a Observed>,
     mut sessions: Sessions,
     home: &Path,
     projects: &[Project],
@@ -1170,7 +1198,7 @@ fn measure(
 ) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
     let filing = Filing::new(projects, worktrees, engine_facts);
     let background = kuvo_store::background::active_sessions(&home.join("run"), crate::disk::now());
-    sessions.extend(rows.iter().map(|row| {
+    sessions.extend(rows.map(|row| {
         (
             row.session.id.clone(),
             facts(

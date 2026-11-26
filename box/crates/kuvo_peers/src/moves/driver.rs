@@ -1,6 +1,7 @@
 //! The resident transfer owner. An accepted command outlives its caller.
 //! The durable journal separates a complete copy from an ownership decision.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io,
@@ -124,7 +125,7 @@ pub(crate) fn start(
         looking_since: Instant::now(),
         waiting,
         work_queue,
-        asked_trash: None,
+        asked_trash: HashMap::new(),
     };
     Ok((Handle(tx), tokio::spawn(driver.run(events, commands))))
 }
@@ -167,7 +168,7 @@ struct Driver {
     heard: HashMap<String, Instant>,
     looking_since: Instant,
     waiting: watch::Sender<Arc<BTreeSet<String>>>,
-    asked_trash: Option<Instant>,
+    asked_trash: HashMap<String, Instant>,
     work_queue: Option<Arc<dyn WorkQueueTransfer>>,
 }
 
@@ -180,14 +181,21 @@ impl Driver {
         if let Err(error) = wake_folder::release_orphans(self.run_dir()) {
             eprintln!("Keeping orphaned wake-up holds: {error}");
         }
-        let mut tick = time::interval(Duration::from_secs(1));
-        tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let hub = kuvo_os::watch::WatchHub::default();
+        let root = self.run_dir().join("moves");
+        let mut journals = hub.subscribe(root.clone(), kuvo_os::watch::Options { recursive: false, create: false }).await.ok();
+        let mut facts = kuvo_os::watch::FileSet::new(hub);
+        facts.set_targets(vec![self.run_dir().join("test-setup-clock.json")],
+            vec![(root.join("decisions"), false)]);
+        let mut engine = self.engine.states();
+        let mut view = self.reader.view();
+        let mut next = self.recover().await;
         loop {
-            let result = tokio::select! {
+            let relevant = tokio::select! {
                 command = commands.recv() => {
                     let Some(Begin { request, result }) = command else { return };
                     let _ = result.send(self.begin(request).await);
-                    Ok(())
+                    true
                 }
                 event = events.recv() => match event {
                     Ok(event) => {
@@ -197,32 +205,62 @@ impl Driver {
                                 if view.roster.member(key).is_some() =>
                             {
                                 if let Some(movement) = envelope.0.get("move") {
-                                    self.receive(&view, *key, movement).await
+                                    if let Err(error) = self.receive(&view, *key, movement).await {
+                                        eprintln!("Keeping the move: {error}");
+                                        true
+                                    } else if matches!(movement["op"].as_str(), Some("part" | "got")) {
+                                        // The existing receive path advances the window immediately.
+                                        // A part is not a request to scan every transfer journal.
+                                        if let Some(id) = movement["id"].as_str()
+                                            && let Some(sending) = self.sending.get(id)
+                                            && let Some(at) = sending.flight.next_due(Instant::now()) {
+                                            earlier(&mut next, at);
+                                        }
+                                        false
+                                    } else { true }
                                 } else {
-                                    Ok(())
+                                    false
                                 }
                             }
                             RelayEvent::Connected(_) => {
                                 self.relay_connected = Some(true);
-                                self.round().await
+                                true
                             }
                             RelayEvent::Disconnected(_) => {
                                 self.relay_connected = Some(false);
-                                Ok(())
+                                true
                             }
-                            _ => Ok(()),
+                            _ => false,
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         self.relay_connected = None;
-                        Ok(())
+                        true
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
-                _ = tick.tick() => self.round().await,
+                changed = self.reader.changed() => {
+                    if changed.is_err() { return; }
+                    let current = self.reader.view();
+                    let relevant = crate::remote_work::routing_changed(&view, &current);
+                    view = current;
+                    relevant
+                }
+                changed = engine.changed() => if changed.is_err() { return } else { true },
+                _ = move_files_changed(&root, &mut journals) => true,
+                _ = facts.changed() => true,
+                _ = wait_round(next) => true,
             };
-            if let Err(error) = result {
+            if relevant { next = self.recover().await; }
+        }
+    }
+
+    async fn recover(&mut self) -> Option<Instant> {
+        match self.round().await {
+            Ok(next) => next,
+            Err(error) => {
                 eprintln!("Keeping the move: {error}");
+                Some(Instant::now() + Duration::from_secs(1))
             }
         }
     }
@@ -347,9 +385,11 @@ impl Driver {
         row.save(self.run_dir())
     }
 
-    async fn round(&mut self) -> io::Result<()> {
+    async fn round(&mut self) -> io::Result<Option<Instant>> {
         let view = self.reader.view();
         let now = self.reader.now();
+        let ticks = Instant::now();
+        let mut next = None;
         let rows = journals(self.run_dir()).map_err(io::Error::other)?;
         if let Some(started) = self.starting.take() {
             self.interrupted.extend(
@@ -366,11 +406,18 @@ impl Driver {
             remove_orphaned_bundles(&self.reader.run, &mut self.orphans, Instant::now())
         {
             eprintln!("Removing an orphaned move bundle: {error}");
+            earlier(&mut next, ticks + Duration::from_secs(1));
+        }
+        for since in self.orphans.values() {
+            earlier(&mut next, *since + ORPHAN_AFTER + Duration::from_millis(1));
         }
         self.refresh_waiting(&rows);
-        self.check_trash(&view, &rows).await?;
+        if let Some(at) = self.check_trash(&view, &rows).await? { earlier(&mut next, at); }
         if let Err(error) = self.forward_evidence.warm(&self.reader.run) {
             eprintln!("Indexing move receipt evidence: {error}");
+            earlier(&mut next, Instant::now() + Duration::from_secs(1));
+        } else if self.forward_evidence.is_warming() {
+            earlier(&mut next, Instant::now() + Duration::from_secs(1));
         }
         for mut row in rows {
             let result = if row.role == Role::From {
@@ -397,9 +444,97 @@ impl Driver {
             };
             if let Err(error) = result {
                 eprintln!("Recovering move {}: {error}", row.id);
+                if !self.retry.contains_key(&row.id) {
+                    earlier(&mut next, Instant::now() + Duration::from_secs(1));
+                }
+            }
+            if super::journal_file(self.run_dir(), &row.id).exists()
+                && let Some(at) = self.row_deadline(&view, &row)
+            {
+                earlier(&mut next, at);
             }
         }
-        Ok(())
+        Ok(next)
+    }
+
+    /// A live journal has protocol deadlines, not a periodic round. An unchanged held copy
+    /// whose expiry has already been considered waits for the owner's decision or peer event.
+    fn row_deadline(&self, view: &View, row: &Journal) -> Option<Instant> {
+        let now = self.reader.now();
+        let ticks = Instant::now();
+        let stamp = |key| row.extra.get(key).and_then(Value::as_i64);
+        let mut next = None;
+        let mut at = |when: Instant| earlier(&mut next, when);
+        let wall = |when: Millis| ticks + Duration::from_millis(when.saturating_sub(now).max(1) as u64);
+        let connected = self.is_relay_connected(view) && decode_exact(&row.peer)
+            .and_then(|key| view.roster.member(&key).and_then(|peer| peer.host())).is_some();
+        let retry = |every: Millis| match self.retry.get(&row.id) {
+            Some(RetryState::Sent(clock)) => clock.since + Duration::from_millis(every as u64),
+            // An unsent real step may need another attempt, rather than a periodic scan
+            // of all moves while there is no address to send to.
+            _ => ticks + Duration::from_secs(1),
+        };
+        let sending = self.sending.get(&row.id);
+        let heard = self.heard.get(&row.id).copied().unwrap_or(self.looking_since);
+        if let Some(delay) = waiting_delay(row, now, sending.map(|s| ticks.saturating_duration_since(s.since)), ticks.saturating_duration_since(heard)) {
+            at(ticks + delay);
+        }
+        if row.role == Role::From {
+            if !row.live() {
+                if row.step.as_deref() == Some("drop") {
+                    if row.extra.get("dropUntilAck") != Some(&Value::Bool(true)) {
+                        at(wall(stamp("dropSince").unwrap_or(row.started).saturating_add(DROP_AT_MOST + 1)));
+                    }
+                    if connected { at(retry(STEP_AGAIN)); }
+                }
+                return next;
+            }
+            if row.stage == Stage::Finishing { at(retry(STEP_AGAIN)); return next; }
+            if row.stage == Stage::Switching {
+                if connected { at(retry(STEP_AGAIN)); }
+                return next;
+            }
+            if !self.owned.contains(&row.id) && row.stage == Stage::Holding {
+                at(wall(stamp("holdSince").unwrap_or(row.started).saturating_add(PREPARE_AT_MOST.as_millis() as Millis + 1)));
+            }
+            if row.step.as_deref() == Some("check") {
+                if self.owned.contains(&row.id) { at(wall(row.started.saturating_add(CHECK_WAIT))); }
+                if connected { at(retry(STEP_AGAIN)); }
+                return next;
+            }
+            if let Some(sending) = sending {
+                let step = row.step.as_deref();
+                let tries = stamp("tries").unwrap_or_default();
+                if step == Some("offer") && tries == 0 && sending.flight.acknowledged() == 0 {
+                    at(sending.since + NO_OFFER_ANSWER + Duration::from_millis(1));
+                } else if matches!(step, Some("parts" | "arrive")) || step == Some("offer") && tries > 0 {
+                    let last = self.heard.get(&row.id).copied().unwrap_or(sending.since);
+                    at(sending.since.max(last) + QUIET_BEFORE_SWITCH + Duration::from_millis(1));
+                }
+                if connected && step == Some("parts")
+                    && let Some(due) = sending.flight.next_due(ticks)
+                {
+                    at(due);
+                }
+            }
+            if connected && matches!(row.step.as_deref(), Some("offer" | "arrive")) {
+                at(retry(STEP_AGAIN));
+            }
+        } else if row.dropping && row.activation.is_none() {
+            let since = stamp("dropSince").unwrap_or(row.started);
+            let late = now.saturating_sub(since) > HELD_AT_MOST;
+            at(retry(if late { DROP_AGAIN_LATE } else { STEP_AGAIN }));
+            if !late { at(wall(since.saturating_add(HELD_AT_MOST + 1))); }
+        } else if row.activation.is_some() {
+            // A real interrupted activation must survive a failed local cleanup.
+            at(ticks + Duration::from_secs(1));
+        } else if row.set_up_since.is_some() {
+            if connected { at(ticks + Duration::from_secs(1)); }
+        } else {
+            let expiry = row.started.saturating_add(HELD_AT_MOST + 1);
+            if expiry > now { at(wall(expiry)); }
+        }
+        next
     }
 
     async fn retry_drop(&mut self, view: &View, row: &mut Journal, now: Millis) {
@@ -1303,32 +1438,35 @@ impl Driver {
         left::keep(self.run_dir(), row, &backup, self.reader.now())
     }
 
-    async fn check_trash(&mut self, view: &View, active: &[Journal]) -> io::Result<()> {
+    async fn check_trash(&mut self, view: &View, active: &[Journal]) -> io::Result<Option<Instant>> {
         let rows = left::read(self.run_dir())?;
         let ticks = Instant::now();
-        let ask = view.relay_connected
-            && self
-                .asked_trash
-                .is_none_or(|at| ticks - at >= Duration::from_millis(left::ASK_EVERY as u64));
-        if ask && !rows.is_empty() {
-            self.asked_trash = Some(ticks);
-        }
+        let mut next = None;
+        self.asked_trash.retain(|id, _| rows.iter().any(|row| row.id == *id && row.ran_at.is_none()));
         let now = self.reader.now();
         for row in rows {
-            if row
-                .ran_at
-                .is_some_and(|at| now.saturating_sub(at) >= left::KEEP_FOR)
-                && !active
-                    .iter()
-                    .any(|active| active.live() && active.thing == row.thing)
-            {
-                if let Err(error) = left::expire(self.run_dir(), &row) {
+            if let Some(ran) = row.ran_at {
+                let due = ran.saturating_add(left::KEEP_FOR);
+                if due > now {
+                    earlier(&mut next, ticks + Duration::from_millis(due.saturating_sub(now) as u64));
+                } else if !active.iter().any(|active| active.live() && active.thing == row.thing)
+                    && let Err(error) = left::expire(self.run_dir(), &row)
+                {
                     eprintln!("Removing an expired move backup {}: {error}", row.id);
+                    earlier(&mut next, ticks + Duration::from_secs(1));
                 }
-            } else if ask
-                && row.ran_at.is_none()
+            } else if view.relay_connected
                 && let (Some(peer), Some(session)) = (decode_exact(&row.to), row.sessions.first())
+                && view.roster.member(&peer).is_some_and(|member| member.host().is_some())
+                && !view.away(&peer)
             {
+                let every = Duration::from_millis(left::ASK_EVERY as u64);
+                if let Some(due) = self.asked_trash.get(&row.id).map(|at| *at + every).filter(|at| *at > ticks) {
+                    earlier(&mut next, due);
+                    continue;
+                }
+                self.asked_trash.insert(row.id.clone(), ticks);
+                earlier(&mut next, ticks + every);
                 self.wire(
                     view,
                     peer,
@@ -1340,7 +1478,7 @@ impl Driver {
                 .await;
             }
         }
-        Ok(())
+        Ok(next)
     }
 
     async fn report_run(
@@ -1817,7 +1955,7 @@ impl Driver {
         let id = row.id.clone();
         let identity = row.bundle.clone();
         let every = Duration::from_millis(STEP_AGAIN as u64);
-        let mut beat = time::interval_at(Instant::now() + every, every);
+        let mut beat = timer_fires::interval_at(Timer::MoveTransferHeartbeat, Instant::now() + every, every);
         beat.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let placement = time::timeout(SET_UP_AT_MOST, self.place(row));
         tokio::pin!(placement);
@@ -2555,13 +2693,13 @@ fn old_copy(name: &str, place: &str) -> String {
     )
 }
 
-fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> bool {
+fn waiting_basis(row: &Journal) -> Option<(Millis, Duration)> {
     if !row.live() {
-        return false;
+        return None;
     }
     let stamp = |key| row.extra.get(key).and_then(Value::as_i64);
     let (asked, delay) = match row.role {
-        Role::To if row.dropping || row.set_up_since.is_some() => return false,
+        Role::To if row.dropping || row.set_up_since.is_some() => return None,
         Role::To if row.complete => (
             Some(row.set_up_at.unwrap_or(row.started)),
             WAITING_FOR_SWITCH,
@@ -2578,13 +2716,64 @@ fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Du
             (asked, WAITING_AFTER)
         }
     };
+    asked.map(|asked| (asked, delay))
+}
+
+fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> bool {
+    let Some((asked, delay)) = waiting_basis(row) else { return false };
     heard > delay
-        && asked.is_some_and(|asked| {
-            sent.map_or_else(
-                || asked > now || now.saturating_sub(asked) > delay.as_millis() as Millis,
-                |sent| sent > delay,
-            )
-        })
+        && sent.map_or_else(
+            || asked > now || now.saturating_sub(asked) > delay.as_millis() as Millis,
+            |sent| sent > delay,
+        )
+}
+
+/// Both the last heard and the sent/asked age must cross their boundary. Once
+/// the waiting row is shown, no further timer is needed until new mail arrives.
+fn waiting_delay(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> Option<Duration> {
+    let (asked, delay) = waiting_basis(row)?;
+    if waiting_on_peer(row, now, sent, heard) { return None; }
+    let due = delay + Duration::from_millis(1);
+    let since_ask = sent.unwrap_or_else(|| if asked > now { due } else {
+        Duration::from_millis(now.saturating_sub(asked) as u64)
+    });
+    Some(due.saturating_sub(heard).max(due.saturating_sub(since_ask)))
+}
+
+fn earlier(next: &mut Option<Instant>, at: Instant) {
+    *next = Some(next.map_or(at, |before| before.min(at)));
+}
+
+async fn wait_round(at: Option<Instant>) {
+    match at {
+        Some(at) => timer_fires::sleep_until(Timer::MoveRound, at).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn move_files_changed(root: &Path, watcher: &mut Option<kuvo_os::watch::Subscription>) {
+    use kuvo_os::watch::Notice;
+    if let Some(watcher) = watcher {
+        while let Some(notice) = watcher.recv().await {
+            match notice {
+                Notice::Changed { paths } => {
+                    if paths.iter().any(|path| {
+                        if path.as_os_str().is_empty() { return true; }
+                        if path == Path::new("left.json") { return true; }
+                        if path.extension().is_some_and(|extension| extension == "json") {
+                            return path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|id| move_id(id).is_some());
+                        }
+                        // An otherwise unowned bundle gets an orphan deadline. Ignore the
+                        // ordinary file writes inside a bundle which still has its journal.
+                        path.components().count() == 1 && path.to_str().is_some_and(|id| move_id(id).is_some()
+                            && !root.join(format!("{id}.json")).exists())
+                    }) { return; }
+                }
+                Notice::Rescan | Notice::Failed(_) => return,
+            }
+        }
+    }
+    std::future::pending::<()>().await;
 }
 
 fn new_chat_journal(
@@ -2741,6 +2930,16 @@ fn retry_state_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_waiting_badge_has_one_deadline_until_new_mail() {
+        let row = new_chat_journal("mov_waiting01".into(), "ses_waiting01".into(),
+            "Chat".into(), "from".into(), "to".into(), Role::To, 1_000);
+        assert_eq!(waiting_delay(&row, 21_000, None, Duration::from_secs(10)),
+            Some(Duration::from_millis(80_001)));
+        assert!(waiting_on_peer(&row, 101_001, None, Duration::from_secs(91)));
+        assert_eq!(waiting_delay(&row, 101_001, None, Duration::from_secs(91)), None);
+    }
 
     #[test]
     fn unsent_steps_retry_immediately_on_reconnect_while_sent_steps_suppress_duplicates() {

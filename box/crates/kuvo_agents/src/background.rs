@@ -79,6 +79,7 @@ pub struct Read {
 pub trait CommandSource: Send + Sync {
     fn output(&self) -> BoxFuture<'_, Printed>;
     fn stop(&self) -> BoxFuture<'_, ()>;
+    fn pushes_output(&self) -> bool { false }
 }
 
 /// A subagent or task at work, since when (ms).
@@ -137,6 +138,7 @@ struct State {
 pub struct Background {
     state: Arc<Mutex<State>>,
     changed: Arc<watch::Sender<u64>>,
+    output_changed: Arc<watch::Sender<u64>>,
 }
 
 impl Default for Background {
@@ -144,6 +146,7 @@ impl Default for Background {
         Self {
             state: Arc::default(),
             changed: Arc::new(watch::channel(0).0),
+            output_changed: Arc::new(watch::channel(0).0),
         }
     }
 }
@@ -168,6 +171,12 @@ impl Background {
     /// Told each time something here changes.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
+    }
+
+    pub fn output_changes(&self) -> watch::Receiver<u64> { self.output_changed.subscribe() }
+    pub(crate) fn note_output(&self) { self.output_changed.send_modify(|count| *count = count.wrapping_add(1)); }
+    pub fn output_is_pushed(&self, id: &str) -> bool {
+        self.read(|state| state.commands.get(id).is_some_and(|kept| kept.source.pushes_output()))
     }
 
     /// A command an agent left running (or, `foreground`, one its turn waits on): its id here.
@@ -377,6 +386,10 @@ fn write_place(
     place: serde_json::Value,
 ) -> std::io::Result<()> {
     // (Under the file's lock, as the engine's place is written beside it.)
+    // Do not create the work directory or a lock for an empty pristine place.
+    let empty = place["sessions"].as_object().is_some_and(|rows| rows.is_empty())
+        && place["folders"].as_array().is_some_and(|rows| rows.is_empty());
+    if empty && !file.exists() { return Ok(()); }
     let lock = file.with_file_name(".background.lock");
     let (stale, wait) = (
         std::time::Duration::from_secs(10),
@@ -394,6 +407,7 @@ fn write_place(
             serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes).ok()
         })
         .unwrap_or_default();
+    if all.get(from) == Some(&place) || empty && !all.contains_key(from) { return Ok(()); }
     all.insert(from.to_owned(), place);
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder)?;

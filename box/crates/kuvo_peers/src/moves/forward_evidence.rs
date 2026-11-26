@@ -10,7 +10,7 @@ use std::{
 
 use kuvo_store::{
     declarations::{self, Owner},
-    files::{self, FileStamp},
+    files,
     format::ObjectFormat,
     locks::OwnedLock,
 };
@@ -106,20 +106,16 @@ struct Revision {
 
 impl Revision {
     fn read(folder: &Path) -> io::Result<Option<Self>> {
-        Ok(files::file_stamp(folder)?.map(
-            |FileStamp {
-                 device,
-                 file,
-                 modified_ns,
-                 changed_ns,
-                 ..
-             }| Self {
-                device,
-                file,
-                modified: modified_ns,
-                changed: changed_ns,
-            },
-        ))
+        Ok(files::file_stamp(folder)?.map(|stamp| Self {
+            device: stamp.device,
+            file: stamp.file,
+            modified: stamp.modified_ns,
+            // Windows reapplies private folder ACLs at resident startup,
+            // advancing ChangeTime without changing any directory entries.
+            // The directory's write time and identity still fence additions,
+            // removals and atomic replacement of receipt records.
+            changed: stamp.retained_change_ns(),
+        }))
     }
 }
 
@@ -218,6 +214,8 @@ impl Index {
         let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
         self.advance(&root)
     }
+
+    pub(super) fn is_warming(&self) -> bool { self.warming }
 
     fn advance(&mut self, root: &Path) -> io::Result<()> {
         self.warming = false;

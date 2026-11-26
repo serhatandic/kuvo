@@ -1,4 +1,5 @@
 //! The holder owns one agent socket per registered conversation or folder.
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
@@ -9,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -20,9 +21,9 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    sync::{Semaphore, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::JoinHandle,
-    time,
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -55,19 +56,26 @@ impl Agents {
         let watches = WatchHub::default();
         let changes = watches.subscribe(&notes, Options::default()).await?;
         Ok(Some(Self(tokio::spawn(async move {
-            let mut agents = HashMap::new();
+            let mut agents: HashMap<String, Job> = HashMap::new();
             let mut changes = Some(changes);
-            let mut tick = time::interval(Duration::from_secs(1));
-            tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            let activity = Arc::new(Notify::new());
+            let mut retry = reconcile(&notes, &sockets, &mut agents, &resident, &activity);
             loop {
-                tokio::select! {
-                    _ = tick.tick() => (),
+                let now = millis();
+                let due = agents.values().map(|job| Instant::now() + Duration::from_millis(job.used.load(Ordering::Relaxed).saturating_add(IDLE).saturating_sub(now)))
+                    .chain(retry).min();
+                let refresh = tokio::select! {
+                    _ = async { match due {
+                        Some(at) => timer_fires::sleep_until(Timer::VaultSshAgents, at).await,
+                        None => std::future::pending().await,
+                    } } => true,
                     found = async { changes.as_mut().expect("watch is present").recv().await }, if changes.is_some() => {
                         if found.is_none() { changes = None; }
+                        true
                     }
-                }
-                reconcile(&notes, &sockets, &mut agents, &resident);
-                // The registry owns its subscriptions while this task runs.
+                    _ = activity.notified() => agents.values().any(|job| job.ended.load(Ordering::Relaxed)),
+                };
+                if refresh { retry = reconcile(&notes, &sockets, &mut agents, &resident, &activity); }
                 let _ = &watches;
             }
         }))))
@@ -83,6 +91,7 @@ impl Drop for Agents {
 struct Job {
     folder: PathBuf,
     used: Arc<AtomicU64>,
+    ended: Arc<AtomicBool>,
     handle: JoinHandle<()>,
 }
 
@@ -97,10 +106,12 @@ fn reconcile(
     sockets: &Folder,
     agents: &mut HashMap<String, Job>,
     resident: &Arc<Resident>,
-) {
+    activity: &Arc<Notify>,
+) -> Option<Instant> {
     let Ok(entries) = fs::read_dir(notes) else {
-        return;
+        return None;
     };
+    let mut retry = None;
     let mut live = HashSet::new();
     for entry in entries.filter_map(std::result::Result::ok) {
         let Ok(note) = entry.file_name().into_string() else {
@@ -129,12 +140,13 @@ fn reconcile(
         live.insert(note.clone());
         if agents
             .get(&note)
-            .is_some_and(|job| job.folder == folder && !job.handle.is_finished())
+            .is_some_and(|job| job.folder == folder && !job.ended.load(Ordering::Relaxed))
         {
             continue;
         }
         agents.remove(&note);
         let Ok(listener) = sockets.listen(&note) else {
+            retry = Some(Instant::now() + Duration::from_secs(1));
             continue;
         };
         let source = Arc::new(Source {
@@ -147,17 +159,27 @@ fn reconcile(
             decisions: Arc::new(Mutex::default()),
         });
         let used = Arc::new(AtomicU64::new(millis()));
-        let handle = tokio::spawn(accept(listener, source, used.clone()));
+        let notices = activity.clone();
+        let used_by = used.clone();
+        let ended = Arc::new(AtomicBool::new(false));
+        let finished = ended.clone();
+        let handle = tokio::spawn(async move {
+            accept(listener, source, used_by, notices.clone()).await;
+            finished.store(true, Ordering::Relaxed);
+            notices.notify_one();
+        });
         agents.insert(
             note,
             Job {
                 folder,
                 used,
+                ended,
                 handle,
             },
         );
     }
     agents.retain(|note, _| live.contains(note));
+    retry
 }
 
 fn valid_note(note: &str) -> bool {
@@ -297,7 +319,7 @@ impl Drop for Socket {
     }
 }
 
-async fn accept(socket: Socket, source: Arc<Source>, used: Arc<AtomicU64>) {
+async fn accept(socket: Socket, source: Arc<Source>, used: Arc<AtomicU64>, activity: Arc<Notify>) {
     let mut connections = tokio::task::JoinSet::new();
     let limit = Arc::new(Semaphore::new(16));
     loop {
@@ -306,6 +328,7 @@ async fn accept(socket: Socket, source: Arc<Source>, used: Arc<AtomicU64>) {
                 let Ok((stream, _)) = result else { break };
                 if let Ok(permit) = limit.clone().try_acquire_owned() {
                     used.store(millis(), Ordering::Relaxed);
+                    activity.notify_one();
                     let source = source.clone();
                     connections.spawn(async move { let _permit = permit; let _ = connection(stream, source).await; });
                 }

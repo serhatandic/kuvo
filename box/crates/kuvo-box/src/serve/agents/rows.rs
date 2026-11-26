@@ -1,6 +1,7 @@
 //! Settings › Accounts' rows, the agents' program updates and update notices, and the agents'
 //! events (`kuvo/agents/api/event`).
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -187,7 +188,7 @@ pub(crate) fn register(
                 "text/event-stream",
                 async_stream::stream! {
                     yield Ok(said("server.connected", json!({}), None));
-                    let mut beat = tokio::time::interval_at(
+                    let mut beat = timer_fires::interval_at(Timer::WireSse,
                         tokio::time::Instant::now() + HEARTBEAT,
                         HEARTBEAT,
                     );

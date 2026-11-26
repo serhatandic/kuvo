@@ -52,7 +52,16 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(worker::run(&folder, id, kind, boot))
+        .block_on(async {
+            #[cfg(all(unix, debug_assertions))]
+            let _timer_report = match std::env::var_os("KUVO_HOME") {
+                Some(home) if std::path::Path::new(&home).is_absolute() => {
+                    kuvo_store::debug_timer_report::start(std::path::Path::new(&home))?
+                }
+                _ => None,
+            };
+            worker::run(&folder, id, kind, boot).await
+        })
 }
 
 fn valid_id(id: &str) -> bool {

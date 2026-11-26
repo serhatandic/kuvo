@@ -45,7 +45,7 @@ const WAIT: Duration = Duration::from_secs(10);
 const ARCHIVED_FOR: u64 = 7 * 86_400_000;
 // How long what a conversation no one here runs now would hear is kept.
 const NOTE_MEMORY: u64 = 30 * 86_400_000;
-const EVENTS: &[&str] = &[
+pub(super) const EVENTS: &[&str] = &[
     "session.inbox.delivered",
     "session.execution.started",
     "session.execution.succeeded",
@@ -119,6 +119,7 @@ struct Over(Arc<Inner>);
 impl Drop for Over {
     fn drop(&mut self) {
         self.0.over.store(true, Ordering::Relaxed);
+        self.0.stopped.cancel();
     }
 }
 
@@ -145,6 +146,7 @@ struct Inner {
     // doesn't move when it last heard of everything.
     caught: AtomicBool,
     over: AtomicBool,
+    stopped: tokio_util::sync::CancellationToken,
 }
 
 impl Inner {
@@ -199,6 +201,7 @@ impl Watcher {
                 mark_later: Mutex::default(),
                 caught: AtomicBool::new(false),
                 over: AtomicBool::new(false),
+                stopped: tokio_util::sync::CancellationToken::new(),
             }
         });
         Self { inner }

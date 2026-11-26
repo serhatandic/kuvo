@@ -103,6 +103,7 @@ impl Account {
                     .as_str()
                     .and_then(|id| lock(&self.logins).remove(id));
                 if let Some(login) = login {
+                    shared.note_activity();
                     let status = if params["success"] == true {
                         Status::Complete
                     } else {
@@ -306,6 +307,7 @@ impl Account {
             account: Arc::downgrade(shared),
         });
         lock(&self.logins).insert(id, login.clone());
+        shared.note_activity();
         Ok(login)
     }
 
@@ -694,6 +696,7 @@ impl Attempt for Login {
     fn cancel(&self) {
         if let Some(shared) = self.account.upgrade() {
             lock(&shared.account.logins).remove(&self.id);
+            shared.note_activity();
         }
         let rpc = self.server.rpc.clone();
         let id = self.id.clone();

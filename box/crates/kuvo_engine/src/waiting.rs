@@ -1,6 +1,6 @@
 //! Counts derived from the same local snapshot as the session list.
 
-use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use kuvo_protocol::routes::{get_kuvo_waiting as read, get_kuvo_waiting_events as events};
 use kuvo_server::{Access, JsonLine, Registry, RouteReply};
@@ -274,8 +274,11 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             let _ = engine.waiting_list(&mut list, &call.cancel).await;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
-                let mut next = tokio::time::interval(Duration::from_secs(1));
-                next.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let hub = kuvo_os::watch::WatchHub::default();
+                let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+                files.set_targets(Vec::new(), vec![(home.join("run/work-queue/queues"), false)]);
+                let mut bots = kuvo_os::watch::FileSet::new(hub);
+                bots.set_child_files(home.join("bots"), ["bot.json", "session"]);
                 loop {
                     let snapshot = list.snapshot_now();
                     let peers = activity.as_ref().map(|activity| activity.borrow().clone()).unwrap_or_default();
@@ -293,7 +296,8 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                             }
                         } => if changed.is_err() { activity = None; },
                         () = call.cancel.cancelled() => break,
-                        _ = next.tick() => {},
+                        _ = files.changed() => {},
+                        _ = bots.changed() => {},
                     }
                 }
             }))

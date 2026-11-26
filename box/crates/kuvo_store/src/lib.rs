@@ -2,6 +2,8 @@
 
 pub mod background;
 pub mod declarations;
+#[cfg(all(unix, debug_assertions))]
+pub mod debug_timer_report;
 pub mod diff;
 pub mod files;
 pub mod format;

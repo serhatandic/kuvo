@@ -1,5 +1,6 @@
 //! Live questions and permissions from a conversation and its local descendants.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeSet, io, time::Duration};
 
 use http::{Method, StatusCode};
@@ -1007,17 +1008,22 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
     routes.register::<events::Spec, _, _>(Access::Any, move |call| {
         let here = here.clone();
         let mut changes = updates.ask_changes();
+        let mut sessions = updates.clone();
+        let mut states = here.states();
         let mut external = here.external_asks.as_ref().map(|source| source.waiting());
         async move {
             let session = id(&call)?;
             let mut current = reading(&here, &session, &call.request, call.dispatcher()).await?;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
+                let mut retry = false;
                 loop {
                     let answer: events::Status200 = serde_json::from_value(current.clone()).map_err(io::Error::other)?;
                     yield JsonLine::new(answer)?;
                     loop {
                         tokio::select! {
                             changed = changes.changed() => if changed.is_err() { return; },
+                            changed = sessions.changed() => if !changed { return; },
+                            changed = states.changed() => if changed.is_err() { return; },
                             changed = async {
                                 match &mut external {
                                     Some(external) => external.changed().await,
@@ -1025,12 +1031,15 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                                 }
                             } => if changed.is_err() { external = None; },
                             () = call.cancel.cancelled() => return,
-                            () = tokio::time::sleep(Duration::from_secs(2)) => {},
+                            () = timer_fires::sleep(Timer::EngineAsksFollow, Duration::from_secs(2)), if retry => {},
                         }
                         let next = match reading(&here, &session, &call.request, call.dispatcher()).await {
-                            Ok(next) => next,
+                            Ok(next) => { retry = false; next },
                             Err(error) => {
-                                if error.reply().status == StatusCode::NOT_FOUND { json!({"asks":[]}) } else { continue; }
+                                if error.reply().status == StatusCode::NOT_FOUND { retry = false; json!({"asks":[]}) } else {
+                                    retry = matches!(*states.borrow(), crate::State::Running { .. });
+                                    continue;
+                                }
                             },
                         };
                         if next != current {
