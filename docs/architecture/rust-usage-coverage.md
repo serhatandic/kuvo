@@ -921,7 +921,9 @@ one pre-existing handover-cursor TODO, workspace test-target and Bun checks
 clean. The seeded history differential matches 12/13 answers exactly (only
 actual coverage scan time differs); the two-answer native corpus matches
 exactly. Stored inventory/projection-format differences remain documented.
-Remote runs pending the cross-build and shared test computers. Non-test size:
+Native Windows, WSL static musl and capped Lokum static musl each passed
+95/95 applicable cases. Remote scratch and cross targets removed; Windows
+and WSL process lists clear. Non-test size:
 621,674 characters without leading indentation (0.904× the TS baseline).
 19 A1 entries closed; 150 remain.
 
