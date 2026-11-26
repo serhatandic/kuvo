@@ -1258,14 +1258,23 @@ relaxed. Mac TS 45/46 applicable twice, only the already recorded frozen Grok
 cost discrepancy (0.00445 vs 0.0044502, same 1,000,000,003,372 tokens; all five
 new applicable TS cases pass). Engine sessions 81/81, workspace test targets
 and Bun clean. Seed history exact differential 12/13 (actual scan clock only),
-native corpus 2/2. Cross-platform proof pending before the final tip.
+native corpus 2/2. The final tested base incorporates the Antigravity sign-in
+correction from main; its Mac rebuild repeats Rust 129/129, engine 81/81,
+workspace test targets and Bun clean, and the same exact differential results.
+TS 45/46 again only the already accepted frozen Grok cost discrepancy.
+Native Windows 129/129, WSL 129/129 and capped static Linux (Lokum) 129/129
+applicable tests pass on the frozen build. Each skips only the discovery
+fixture for the other platform. PC process lists for resident/node/bun were
+empty and both scratch homes removed; the capped Linux test container and
+scratch were also removed.
 Non-test size 636,575 characters without indentation (0.926× the 687,546 TS
-baseline). The final 31 A1 entries have Mac proof; no unimplemented A1 cases.
+baseline). The final 31 A1 entries are closed with four-platform proof; no A1
+open or partial entries remain.
 
 ## Remaining implementation gaps
 
-No unimplemented A1 cases in the inventory. The final batch has Mac proof;
-the four-platform verification is pending before marking the phase Done.
+No open or partial A1 cases in the inventory. The final batch is verified on
+macOS, capped Linux, WSL and native Windows.
 The individually listed later (rare) scenarios are deferred until after 0.8.
 Cursor Accounts disconnect is completed by row 4.5; retired phone paths and
 later beta or decentralized setup mail are excluded by design.
