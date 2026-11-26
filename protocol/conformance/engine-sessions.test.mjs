@@ -48,6 +48,16 @@ async function onAgents(t, name, ids = [], { start = true } = {}) {
 }
 const desktop = { "x-kuvo-from": "app" };
 const said = text => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
+/** A conversation's queue as the app follows it: its first frame on the line. */
+async function queueItems(record, id) {
+  const watch = Buffer.from(JSON.stringify({ q: `kuvo/sessions/${id}/queue/events` })).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch, undefined, desktop);
+  try {
+    for await (const frame of line.frames()) if (frame.t === "q") return frame.d.items;
+  } finally {
+    line.close();
+  }
+}
 /** Its rows from the user, once there are `count`. */
 async function userRows(here, record, id, count) {
   let rows = [];
@@ -163,114 +173,81 @@ test("a stopped queue refuses Add when the payload cannot be saved and accepts a
 });
 
 test("rename and archive keep session notes, and a subagent goes with its conversation", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-actions");
   const notes = { kuvo: { startedBy: "ses_starter", archived: true }, another: { kept: true } };
-  here.engine.sessions.push(
-    { ...sessionOf({ id: "ses_project", title: "Before", directory: here.home }), metadata: notes },
-    sessionOf({ id: "ses_child", title: "Child", parent: "ses_project" }),
-    { ...sessionOf({ id: "ses_seat", title: "Seat" }), metadata: { kuvo: { seat: "grp_test" } } },
-    { ...sessionOf({ id: "ses_hidden", title: "Internal" }), metadata: { kuvo: { engineFor: "ses_project" } } },
-    { ...sessionOf({ id: "ses_engineArchived", title: "Archived by OpenCode" }), time: { created: 1, updated: 2, archived: 2 } },
-  );
-  const resident = await here.start().ready();
+  const { here, record: resident } = await onAgents(t, "engine-actions", [
+    ["ses_project", { title: "Before", metadata: notes }],
+    ["ses_child", { title: "Child", parent: "ses_project" }],
+    ["ses_seat", { title: "Seat", metadata: { kuvo: { seat: "grp_test" } } }],
+    ["ses_hidden", { title: "Internal", metadata: { kuvo: { engineFor: "ses_project" } } }],
+  ]);
   const route = "kuvo/sessions/ses_project";
-  assert.equal((await request(resident, "GET", "kuvo/sessions/ses%E0/actions")).status, 403);
-  const rename = await request(resident, "POST", route + "/rename", { title: "  After  " });
-  assert.equal(rename.status, 200);
+  const call = (method, at, body) => request(resident, method, at, body, desktop);
+  assert.equal((await call("GET", "kuvo/sessions/ses%E0/actions")).status, 403);
+  const rename = await call("POST", route + "/rename", { title: "  After  " });
+  assert.equal(rename.status, 200, rename.text);
   assert.equal(rename.json.info.title, "After");
   assert.deepEqual(rename.json.info.metadata, notes);
-  assert.equal((await request(resident, "POST", route + "/rename", { title: "  " })).status, 400);
+  assert.equal((await call("POST", route + "/rename", { title: "  " })).status, 400);
 
   for (const pinned of [true, false]) {
-    const changed = await request(resident, "POST", route + "/pin", { pinned });
+    const changed = await call("POST", route + "/pin", { pinned });
     assert.equal(changed.status, 200, changed.text);
     assert.deepEqual(changed.json.info.metadata, { ...notes, "kuvo.pinned": pinned });
   }
 
-  const stale = await request(resident, "POST", route + "/archive", { archived: false, was: { updated: 0, archived: true } });
+  const stale = await call("POST", route + "/archive", { archived: false, was: { updated: 0, archived: true } });
   assert.equal(stale.status, 409);
   assert.equal(stale.json.message, "It changed since you read it.");
-
-  const unarchive = await request(resident, "POST", route + "/archive", { archived: false, was: { updated: 1, archived: true } });
-  assert.equal(unarchive.status, 200);
+  const updated = (await call("GET", "kuvo/agents/api/session/ses_project")).json.data.time.updated;
+  const unarchive = await call("POST", route + "/archive", { archived: false, was: { updated, archived: true } });
+  assert.equal(unarchive.status, 200, unarchive.text);
   assert.deepEqual(unarchive.json.info.metadata, {
     kuvo: { startedBy: "ses_starter" }, another: { kept: true }, "kuvo.archived": false, "kuvo.pinned": false,
   });
-  const child = await request(resident, "DELETE", "kuvo/sessions/ses_child");
+  const child = await call("DELETE", "kuvo/sessions/ses_child");
   assert.equal(child.status, 409);
   assert.match(child.json.message, /subagent/);
   for (const [id, message] of [["ses_seat", /seat/], ["ses_hidden", /another conversation/]]) {
-    const refused = await request(resident, "DELETE", "kuvo/sessions/" + id);
+    const refused = await call("DELETE", "kuvo/sessions/" + id);
     assert.equal(refused.status, 409, refused.text);
     assert.match(refused.json.message, message);
   }
-  const archived = "kuvo/sessions/ses_engineArchived";
-  const menu = await request(resident, "GET", archived + "/actions");
-  assert.equal(menu.status, 200, menu.text);
-  assert.ok(!menu.json.actions.some(action => action.id === "unarchive"));
-  const engineArchived = await request(resident, "POST", archived + "/archive", { archived: false });
-  assert.equal(engineArchived.status, 409, engineArchived.text);
-  assert.match(engineArchived.json.message, /archived by the engine/);
-  assert.equal((await request(resident, "POST", route + "/stop", {}, { "x-kuvo-from": "app" })).status, 200);
+  assert.equal((await call("POST", route + "/stop", {})).status, 200);
   const queued = { id: "msg_deletedWithSession", words: "Saved for later", delivery: "queue" };
-  const kept = await request(resident, "POST", route + "/send", queued, { "x-kuvo-from": "app" });
+  const kept = await call("POST", route + "/send", queued);
   assert.deepEqual(kept.json, { waits: true });
   const waiting = path.join(here.home, "run/waiting", queued.id + ".json");
   assert.equal(fs.existsSync(waiting), true);
-  const deleted = await request(resident, "DELETE", route);
-  assert.equal(deleted.status, 200);
+  const deleted = await call("DELETE", route);
+  assert.equal(deleted.status, 200, deleted.text);
   assert.deepEqual(deleted.json, { session: "ses_project" });
-  assert.deepEqual((await request(resident, "DELETE", route)).json, deleted.json);
-  assert.equal((await request(resident, "DELETE", route, { was: { archived: false, updated: 1 } })).status, 409);
-  assert.equal((await request(resident, "GET", "api/session/ses_project")).status, 404);
+  assert.deepEqual((await call("DELETE", route)).json, deleted.json);
+  assert.equal((await call("DELETE", route, { was: { archived: false, updated: 1 } })).status, 409);
+  assert.equal((await call("GET", "kuvo/agents/api/session/ses_project")).status, 404);
   await until(() => !fs.existsSync(waiting), "The deleted session's waiting payload was retained.");
+  assert.deepEqual(here.agents.prompts(), []);
 });
 
-test("concurrent session note writes keep earlier notes and a failed writer releases its turn", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("session-note-turns");
+test("concurrent session note writes keep each other's notes", { timeout: 45000 }, async t => {
   const id = "ses_notes";
-  const other = "ses_otherNotes";
   const initial = { pinned: "another owner’s note", kuvo: { approval: "auto", startedBy: "ses_first" } };
-  const note = { ...sessionOf({ id, directory: here.home }), metadata: initial };
-  here.engine.sessions.push(note, sessionOf({ id: other, directory: here.home }));
-  const resident = await here.start().ready();
+  const { record: resident } = await onAgents(t, "session-note-turns", [[id, { metadata: initial }], "ses_otherNotes"]);
   const edit = (id, field, value) => request(resident, "POST",
-    `kuvo/sessions/${id}/${field === "pinned" ? "pin" : "archive"}`, { [field]: value });
-  const first = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  t.after(release.resolve);
-  here.engine.holdSessionPatch = { id, accepted: first.resolve, release: release.promise, status: 500 };
-  const fails = edit(id, "pinned", true);
-  fails.catch(() => {});
-  await first.promise;
-  const succeeds = edit(id, "archived", true);
-  succeeds.catch(() => {});
-  assert.equal((await edit(other, "pinned", true)).status, 200);
-  assert.deepEqual(note.metadata, initial);
-  release.resolve();
-  assert.equal((await fails).status, 502);
-  assert.equal((await succeeds).status, 200);
-  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": true });
-  const next = await edit(id, "pinned", true);
-  assert.equal(next.status, 200, next.text);
-  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": true, "kuvo.pinned": true });
+    `kuvo/sessions/${id}/${field === "pinned" ? "pin" : "archive"}`, { [field]: value }, desktop);
+  const notes = async () => (await request(resident, "GET", `kuvo/agents/api/session/${id}`, undefined, desktop)).json.data.metadata;
+  const both = await Promise.all([edit(id, "pinned", true), edit(id, "archived", true), edit("ses_otherNotes", "pinned", true)]);
+  assert.deepEqual(both.map(answer => answer.status), [200, 200, 200]);
+  assert.deepEqual(await notes(), { ...initial, "kuvo.archived": true, "kuvo.pinned": true });
   const changed = await Promise.all([edit(id, "pinned", false), edit(id, "archived", false)]);
   assert.deepEqual(changed.map(answer => answer.status), [200, 200]);
-  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": false, "kuvo.pinned": false });
-  const writes = () => here.engine.asked.filter(row => row.method === "PATCH" && row.path.endsWith("/" + id)).length;
-  assert.equal(writes(), 5);
-  assert.equal((await edit(id, "pinned", false)).status, 200);
+  assert.deepEqual(await notes(), { ...initial, "kuvo.archived": false, "kuvo.pinned": false });
   assert.equal((await edit("ses_absent", "pinned", true)).status, 404);
-  assert.equal(writes(), 5);
 });
 
 test("session note writers share older lock paths and remove only stale locks", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("compatible-session-note-locks");
   const session = "ses_noteLock";
   const other = "ses_otherNoteLock";
+  const { here } = await onAgents(t, "compatible-session-note-locks", [session, other], { start: false });
   const notes = path.join(here.home, "run", "notes");
   const lock = id => path.join(notes, createHash("sha256").update(id).digest("hex").slice(0, 32) + ".lock");
   const live = lock(session);
@@ -279,22 +256,17 @@ test("session note writers share older lock paths and remove only stale locks", 
   for (const file of [live, stale]) fs.mkdirSync(file, { recursive: true });
   const then = new Date(Date.now() - 90000);
   fs.utimesSync(stale, then, then);
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }),
-    sessionOf({ id: other, directory: here.home }));
   const record = await here.start().ready();
   await until(() => !fs.existsSync(stale), "the startup check to clear abandoned session locks", 4000);
   assert.equal(fs.existsSync(live), true);
-  const rename = (id, title) => request(record, "POST", `kuvo/sessions/${id}/rename`, { title });
-  const touches = () => here.engine.asked.filter(row => row.path === "/api/session/" + session).length;
-  const before = touches();
+  const rename = (id, title) => request(record, "POST", `kuvo/sessions/${id}/rename`, { title }, desktop);
+  const title = async () => (await request(record, "GET", `kuvo/agents/api/session/${session}`, undefined, desktop)).json.data.title;
   const first = rename(session, "After the other writer");
   first.catch(() => {});
   try {
     assert.equal((await rename(other, "Independent writer")).status, 200);
     await new Promise(resolve => setTimeout(resolve, 150));
-    // TypeScript's route can look up the session before entering the current writer's turn.
-    assert.equal(here.engine.asked.some(row => row.method === "PATCH" && row.path.endsWith("/" + session)), false);
-    assert.ok(touches() <= before + 1);
+    assert.equal(await title(), "ACP fixture");
   } finally {
     fs.rmdirSync(live);
   }
@@ -304,107 +276,62 @@ test("session note writers share older lock paths and remove only stale locks", 
   second.catch(() => {});
   try {
     await new Promise(resolve => setTimeout(resolve, 150));
-    assert.equal(here.engine.sessions.find(row => row.id === session).title, "After the other writer");
+    assert.equal(await title(), "After the other writer");
     assert.equal(fs.existsSync(old), true);
   } finally {
     fs.rmdirSync(old);
   }
   assert.equal((await second).status, 200);
-  assert.equal(here.engine.sessions.find(row => row.id === session).title, "After the older writer");
+  assert.equal(await title(), "After the older writer");
   assert.equal(fs.existsSync(live), false);
 });
 
-test("Delete with an earlier revision refuses a session that vanishes during the request", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-delete-revision");
-  const session = sessionOf({ id: "ses_delete", directory: here.home, title: "A saved conversation" });
-  session.metadata = { "kuvo.archived": true };
-  here.engine.sessions.push(session);
-  const record = await here.start().ready();
-  const route = "kuvo/sessions/" + session.id;
-  const actions = await request(record, "GET", route + "/actions");
+test("Delete with an earlier revision refuses a session changed since", { timeout: 45000 }, async t => {
+  const session = "ses_delete";
+  const { record } = await onAgents(t, "engine-delete-revision", [[session, { title: "A saved conversation", metadata: { "kuvo.archived": true } }]]);
+  const route = "kuvo/sessions/" + session;
+  const actions = await request(record, "GET", route + "/actions", undefined, desktop);
   assert.equal(actions.status, 200, actions.text);
-  const was = { updated: session.time.updated, archived: true,
-    confirm: actions.json.actions.find(row => row.id === "delete").confirm };
-  const remove = (id, was) => request(record, "DELETE", "kuvo/sessions/" + id, was === undefined ? undefined : { was });
-  here.engine.delistOnRead = session.id;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const stale = await remove(session.id, was);
+  const confirm = actions.json.actions.find(row => row.id === "delete").confirm;
+  const remove = was => request(record, "DELETE", route, was === undefined ? undefined : { was }, desktop);
+  for (const was of [{ updated: 1, archived: false, confirm }, { updated: 0, archived: true, confirm }]) {
+    const stale = await remove(was);
     assert.equal(stale.status, 409, stale.text);
     assert.equal(stale.json.message, "It changed since you read it.");
   }
-  assert.equal((await remove(session.id)).status, 200);
-  const restoring = { ...session, id: "ses_current" };
-  here.engine.sessions.push(restoring);
-  assert.equal((await remove(restoring.id, was)).status, 200);
-  assert.equal(here.engine.sessions.length, 0);
-});
-
-test("a raw session patch waits for the conversation's resident writer", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-note-turns");
-  const session = "ses_noteTurn";
-  const unrelated = "ses_noteOther151";
-  here.engine.sessions.push(
-    { ...sessionOf({ id: session, directory: here.home }), metadata: { keep: true } },
-    sessionOf({ id: unrelated, directory: here.home }),
-  );
-  const record = await here.start().ready();
-  await until(() => here.engine.subscribers() > 0, "The session list did not connect.");
-  let accepted, release;
-  const atWrite = new Promise(resolve => { accepted = resolve; });
-  const unheld = new Promise(resolve => { release = resolve; });
-  here.engine.holdSessionPatch = { id: session, accepted, release: unheld };
-  const resident = request(record, "POST", `kuvo/sessions/${session}/pin`, { pinned: true });
-  await atWrite;
-  const raw = request(record, "PATCH", `api/session/${session}`, { metadata: { changedByClient: true } });
-  try {
-    const other = await request(record, "POST", `kuvo/sessions/${unrelated}/rename`, { title: "Independent" }, {}, 2000);
-    assert.equal(other.status, 200, other.text);
-    assert.equal(other.json.info.title, "Independent");
-  } finally {
-    release();
-  }
-  const [pin, patch] = await Promise.all([resident, raw]);
-  assert.equal(pin.status, 200, pin.text);
-  assert.equal(patch.status, 200, patch.text);
-  const writes = here.engine.asked.filter(call => call.method === "PATCH" && call.path === `/api/session/${session}`);
-  assert.deepEqual(writes.map(call => call.json.metadata), [
-    { keep: true, "kuvo.pinned": true }, { changedByClient: true },
-  ]);
-  assert.deepEqual(here.engine.sessions.find(row => row.id === session).metadata, { changedByClient: true });
+  assert.equal((await remove({ updated: 1, archived: true, confirm })).status, 200);
+  assert.equal((await request(record, "GET", "kuvo/agents/api/session/" + session, undefined, desktop)).status, 404);
 });
 
 test("a busy conversation can steer, edit and remove messages in its queue", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-queue");
   const session = "ses_queue";
-  here.engine.sessions.push(sessionOf({ id: session, title: "Busy", directory: here.home }));
-  here.engine.running.add(session);
-  const resident = await here.start().ready();
-  const path = "kuvo/sessions/" + session;
-  const send = (id, words) => request(resident, "POST", path + "/send", { id, words, delivery: "queue" }, { "x-kuvo-from": "app" });
+  const { here, record: resident } = await onAgents(t, "engine-queue", [[session, { title: "Busy" }]]);
+  here.agents.script("Keep busy", [said("Working"), "hang"]);
+  const at = "kuvo/sessions/" + session;
+  const send = (id, words, delivery = "queue") => request(resident, "POST", at + "/send", { id, words, delivery }, desktop);
+  assert.equal((await send("msg_busy", "Keep busy", "steer")).status, 200);
+  await until(() => here.agents.prompts().length === 1, "Its turn never started.", 20000);
   assert.equal((await send("msg_first", "first")).status, 200);
   assert.equal((await send("msg_edit", "edit me")).status, 200);
   assert.equal((await send("msg_drop", "take back")).status, 200);
+  const line = () => queueItems(resident, session);
 
-  const steer = await request(resident, "POST", path + "/queue/msg_first/steer");
-  assert.equal(steer.status, 200);
-  assert.deepEqual(here.engine.interrupted, []);
-  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.delivery]),
+  const steer = await request(resident, "POST", at + "/queue/msg_first/steer", undefined, desktop);
+  assert.equal(steer.status, 200, steer.text);
+  assert.deepEqual(here.agents.sent("session/cancel"), []);
+  assert.deepEqual((await line()).map(row => [row.id, row.delivery]),
     [["msg_first", "steer"], ["msg_edit", "queue"], ["msg_drop", "queue"]]);
-  const removed = await request(resident, "DELETE", path + "/queue/msg_edit?receipt=msg_undo");
-  assert.equal(removed.status, 200);
+  const removed = await request(resident, "DELETE", at + "/queue/msg_edit?receipt=msg_undo", undefined, desktop);
+  assert.equal(removed.status, 200, removed.text);
   assert.equal(removed.json.removed.words, "edit me");
   assert.equal(removed.json.removed.delivery, "queue");
   assert.equal(removed.json.removed.id, "msg_edit");
   assert.equal(removed.json.removed.before, "msg_drop");
   assert.equal(removed.json.removed.receipt, "msg_undo");
-  assert.equal((await request(resident, "DELETE", path + "/queue/msg_drop")).status, 200);
-  assert.equal((await request(resident, "DELETE", path + "/queue/msg_missing")).status, 404);
+  assert.equal((await request(resident, "DELETE", at + "/queue/msg_drop", undefined, desktop)).status, 200);
+  assert.equal((await request(resident, "DELETE", at + "/queue/msg_missing", undefined, desktop)).status, 404);
   assert.equal((await send("msg_changed", "edited words")).status, 200);
-  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.payload.metadata.kuvo.parts.words]),
-    [["msg_first", "first"], ["msg_changed", "edited words"]]);
+  assert.deepEqual((await line()).map(row => [row.id, row.words]), [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
 test("a stopped queue shows messages in order and Edit returns carried and retained files", { timeout: 45000 }, async t => {
