@@ -167,3 +167,102 @@ test("the tool server lists browser and show tools and answers an attributed sho
   client.child.stdin.end();
   await client.exited;
 });
+
+// The same pinned source fixture as the TypeScript browser-install scenarios.
+async function installation(t, answer = null) {
+  const {makeZip,makeRpm,served,startSource}=await import("../../box/bridge-tests/browser-source-stand-in.js");
+  const fs=await import("node:fs");
+  const {boxBinary,write,until}=await import("./adapter.mjs");
+  const arch=process.arch==="arm64"?"aarch64":"x86_64";
+  const zip=makeZip([{name:"chrome-linux64/chrome",data:"#!/bin/sh\nexit 99\n",mode:0o755,deflate:true},{name:"chrome-linux64/LICENSE",data:"chrome"}]);
+  const rpm=makeRpm([{name:"./usr/lib64/libexample.so.1.0",data:"library"},{name:"./usr/lib64/libexample.so.1",link:"libexample.so.1.0"},{name:"./usr/share/fonts/example/Example.ttf",data:"font"},{name:"./usr/share/licenses/example/COPYING",data:"license"},{name:"./usr/bin/example",data:"not needed"}]);
+  const {pins,files}=served({linux:{version:"155.0.0.1",aarch64:zip,x86_64:zip,packages:{[arch]:[{name:"example",rpm}]}}});
+  const source=answer?await answer(files):await startSource(files);
+  t.after(()=>source.close());
+  const {computer}=await bench(t);
+  const box=await computer("Installer",undefined,folder=>{
+    const pin=path.join(folder,"pins.json");write(pin,JSON.stringify(pins));
+    return {KUVO_BROWSER_SOURCE:source.url,KUVO_BROWSER_PINS:pin,KUVO_BROWSER_SYSTEM:"linux"};
+  });
+  const ask=box.connect(await box.start().ready());
+  // The reference starts this from the shell keeper before the resident; its
+  // direct resident fixture requests it over the route instead.
+  if(boxBinary().typescript) assert.equal((await ask("POST","kuvo/browser",{})).status,202);
+  const state=async()=>{const answer=await ask("GET","kuvo/browser");assert.equal(answer.status,200,answer.text);return answer.json;};
+  const ready=()=>until(async()=>{const status=await state();return status.state==="ready"&&status;},"The browser wasn't installed",30000);
+  return {box,ask,state,ready,source,fs,zip,until};
+}
+
+test("the pinned browser is checked and prepared without running Chrome, only once",{timeout:60000, skip:process.platform==="win32"},async t=>{
+  const {box,ask,ready,source,fs}=await installation(t);
+  const status=await ready();
+  assert.deepEqual(status,{state:"ready",chromium:"155.0.0.1",installed:"155.0.0.1",progress:null,message:null,retryAt:null});
+  const browser=path.join(box.home,"browser"),build=fs.realpathSync(path.join(browser,"current"));
+  assert.equal(fs.readFileSync(path.join(build,"lib","libexample.so.1.0"),"utf8"),"library");
+  assert.equal(fs.readlinkSync(path.join(build,"lib","libexample.so.1")),"libexample.so.1.0");
+  assert.equal(fs.readFileSync(path.join(build,"fonts","Example.ttf"),"utf8"),"font");
+  assert.equal(fs.readFileSync(path.join(build,"licenses","example","COPYING"),"utf8"),"license");
+  assert.ok(!fs.existsSync(path.join(build,"usr")));
+  assert.ok(!fs.existsSync(path.join(browser,"profile")),"Chrome ran during installation");
+  assert.ok(!fs.existsSync(path.join(box.home,"run","browser.pid")));
+  await Promise.all([ask("POST","kuvo/browser",{}),ask("POST","kuvo/browser",{})]);
+  assert.equal(source.asked.length,2,"Only the pinned zip and package");
+  assert.equal(fs.realpathSync(path.join(browser,"current")),build);
+});
+
+test("a different checksum is refused before the browser is unpacked",{timeout:60000, skip:process.platform==="win32"},async t=>{
+  const {startSource}=await import("../../box/bridge-tests/browser-source-stand-in.js");
+  const {box,state,fs,until}=await installation(t,files=>startSource(files,address=>{
+    if(!address.endsWith(".zip"))return null;
+    const corrupted=Buffer.from(files.get(address));corrupted[0]^=1;
+    return {status:200,body:corrupted};
+  }));
+  const failed=await until(async()=>{const status=await state();return status.state==="failed"&&status;},"The changed archive wasn't refused",30000);
+  assert.match(failed.message,/checksum/);
+  assert.ok(failed.retryAt>Date.now());
+  assert.ok(!fs.existsSync(path.join(box.home,"browser","current")));
+  assert.ok(!fs.existsSync(path.join(box.home,"browser","profile")));
+});
+
+test("an interrupted download can be asked for again and is published once",{timeout:60000, skip:process.platform==="win32"},async t=>{
+  const http=await import("node:http");
+  const {once}=await import("node:events");
+  const {boxBinary}=await import("./adapter.mjs");
+  let ranges=[],zipRequests=0, interrupt;
+  const {box,ask,state,ready,fs,until}=await installation(t,async files=>{
+    const server=http.createServer((request,response)=>{
+      const address=`https://${request.url.slice(1)}`;
+      const body=files.get(address);
+      if(!body){response.writeHead(404);response.end();return;}
+      if(address.endsWith(".zip")){
+        zipRequests++;
+        if(zipRequests===1){
+          response.writeHead(200,{"content-length":body.length});
+          response.flushHeaders();
+          response.write(body.subarray(0,Math.floor(body.length/2)));
+          interrupt=()=>response.destroy();
+          return;
+        }
+        if(request.headers.range){
+          ranges.push(request.headers.range);
+          const from=Number(/^bytes=(\d+)-$/.exec(request.headers.range)?.[1]);
+          response.writeHead(206,{"content-length":body.length-from,"content-range":`bytes ${from}-${body.length-1}/${body.length}`});
+          response.end(body.subarray(from));return;
+        }
+      }
+      response.writeHead(200,{"content-length":body.length});response.end(body);
+    });
+    server.listen(0,"127.0.0.1");await once(server,"listening");
+    return {url:`http://127.0.0.1:${server.address().port}`,close:()=>new Promise(resolve=>server.close(resolve))};
+  });
+  await until(async()=>{const status=await state();return interrupt && status.state==="downloading" && status.progress>0;},"The first part wasn't downloaded",30000);
+  await Promise.all([ask("POST","kuvo/browser",{}),ask("POST","kuvo/browser",{})]);
+  assert.equal(zipRequests,1,"One setup while a transfer is in progress");
+  interrupt();
+  await until(async()=>{const status=await state();return status.state==="failed"&&status;},"The partial download wasn't reported",30000);
+  assert.equal((await ask("POST","kuvo/browser",{now:true})).status,202);
+  assert.equal((await ready()).installed,"155.0.0.1");
+  assert.equal(zipRequests,2);
+  if(!boxBinary().typescript) assert.equal(ranges.length,1,"The second transfer resumed instead of starting over");
+  assert.ok(fs.existsSync(path.join(box.home,"browser","current","chrome")));
+});

@@ -432,6 +432,8 @@ pub async fn run(
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::programs::register(&mut routes, account.clone());
     kuvo_services::browser::register(&mut routes, home);
+    let browser_install = kuvo_services::browser::install::InstallTask::start(home.to_owned(), kind == ComputerKind::Mac)?;
+    browser_install.register(&mut routes);
     let integration_keys = kuvo_services::integrations::register(
         &mut routes,
         home,
@@ -872,6 +874,7 @@ pub async fn run(
         }
     }
     tools.shutdown().await;
+    browser_install.stop().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1033,6 +1036,7 @@ fn info(
         found::FEATURE,
     ];
     if !is_mac {
+        features.push("browser");
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
