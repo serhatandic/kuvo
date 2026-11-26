@@ -329,6 +329,15 @@ pub struct DirectPlanReading {
     pub only_resets: bool,
 }
 impl DirectPlanReading {
+    pub fn failed(sign_in: String) -> Self {
+        let mut reading = Self::windows(PlanLimitReading {
+            windows: vec![],
+            sign_in: Some(sign_in),
+        });
+        reading.status = DirectPlanStatus::Failed;
+        reading
+    }
+
     pub fn windows(reading: PlanLimitReading) -> Self {
         Self {
             reading,

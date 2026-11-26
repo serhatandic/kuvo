@@ -31,6 +31,27 @@ struct Cached {
     tried: u64,
     status: Option<Grants>,
 }
+impl Cached {
+    fn begin(&mut self, mark: &str, at: u64, force: bool) -> bool {
+        if self.mark != mark {
+            *self = Self {
+                mark: mark.to_owned(),
+                ..Default::default()
+            };
+        }
+        if force || self.tried == 0 || at.saturating_sub(self.tried) >= HOUR {
+            self.tried = at;
+            true
+        } else {
+            false
+        }
+    }
+    fn accept(&mut self, response: Option<Option<Grants>>) {
+        if let Some(status) = response {
+            self.status = status;
+        }
+    }
+}
 #[derive(Default)]
 pub struct Reader {
     cache: Mutex<Cached>,
@@ -225,14 +246,7 @@ impl Reader {
         let sign = sign_in(program).await?;
         let at = now();
         let mut cache = self.cache.lock().await;
-        if cache.mark != sign.mark {
-            *cache = Cached {
-                mark: sign.mark.clone(),
-                ..Default::default()
-            };
-        }
-        if force || cache.tried == 0 || at.saturating_sub(cache.tried) >= HOUR {
-            cache.tried = at;
+        if cache.begin(&sign.mark, at, force) {
             let response = async {
                 let client = client().ok()?;
                 let reply = headers(client.get(endpoint("oauth/usage")), &sign)
@@ -246,9 +260,7 @@ impl Reader {
                 Some(parse(&reply.json::<Value>().await.ok()?["cedar_ember"]))
             }
             .await;
-            if let Some(status) = response {
-                cache.status = status;
-            }
+            cache.accept(response);
         }
         cache.status.clone().map(|g| (sign, g))
     }
@@ -363,5 +375,34 @@ impl Reader {
             self.cache.lock().await.tried = 0;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn grants_are_read_hourly_and_a_failed_check_keeps_the_last_inventory() {
+        const START: u64 = 1_800_000_000_000;
+        let result = |left| {
+            parse(&json!({"eligible":true,"next_grant_id":"fixture","grants":[{"id":"fixture","resets_left":left,"ends_at":START+10*HOUR,"clears":["seven_day"]}]})).unwrap()
+        };
+        let mut cache = Cached::default();
+        assert!(cache.begin("own", START, false));
+        cache.accept(Some(Some(result(2))));
+        assert!(!cache.begin("own", START + HOUR / 4, false));
+        assert_eq!(cache.status.as_ref().unwrap().view(START).count, 2);
+        assert!(cache.begin("own", START + HOUR, false));
+        cache.accept(Some(Some(result(1))));
+        assert_eq!(cache.status.as_ref().unwrap().view(START + HOUR).count, 1);
+        assert!(cache.begin("own", START + 2 * HOUR, false));
+        cache.accept(None);
+        assert_eq!(
+            cache.status.as_ref().unwrap().view(START + 2 * HOUR).count,
+            1
+        );
+        assert!(!cache.begin("own", START + 2 * HOUR + HOUR / 4, false));
+        assert!(cache.begin("other", START + 2 * HOUR + HOUR / 4, false));
+        assert!(cache.status.is_none());
     }
 }

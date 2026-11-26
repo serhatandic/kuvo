@@ -378,6 +378,7 @@ impl Readers {
                 label: record.label,
                 identity: who,
                 sign_in,
+                notice_card: None,
             },
             credential,
         }))
