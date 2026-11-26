@@ -43,7 +43,7 @@ impl AccountMail {
     pub fn account(&self) -> Account {
         Account {
             provider: self.provider.clone(),
-            service: self.service,
+            service: self.service.clone(),
             account: self.account.clone(),
             label: self.label.clone(),
             identity: self.identity.clone(),
@@ -67,8 +67,19 @@ pub struct Reading {
     pub notice_setup: Option<String>,
 }
 fn words(value: &Value, most: usize) -> Option<String> {
-    let text = value.as_str()?.trim();
-    (!text.is_empty()).then(|| text.chars().take(most).collect())
+    let text = value.as_str()?;
+    if text.is_empty() {
+        return None;
+    }
+    let mut units = 0;
+    Some(
+        text.chars()
+            .take_while(|ch| {
+                units += ch.len_utf16();
+                units <= most
+            })
+            .collect(),
+    )
 }
 fn clock(at: u64, offset: i128, now: u64) -> u64 {
     (i128::from(at) + offset).clamp(0, i128::from(now)) as u64
@@ -77,7 +88,7 @@ fn time(value: &Value) -> Option<u64> {
     value.as_u64().filter(|n| *n > 0)
 }
 fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<AccountMail> {
-    let provider = words(&value["provider"], 140)?;
+    let provider = words(&value["provider"], 200)?;
     let service = serde_json::from_value::<Provider>(value["service"].clone()).ok()?;
     let agent = serde_json::from_value::<Provider>(value["agent"].clone())
         .ok()
@@ -91,9 +102,12 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                     | Provider::Antigravity
             )
         });
-    let account = agent.and_then(|_| words(&value["account"], 100));
-    let identity = words(&value["identity"], 17)
-        .filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+    let account = agent.as_ref().and_then(|_| words(&value["account"], 200));
+    let identity = words(&value["identity"], 17).filter(|s| {
+        s.len() == 16
+            && s.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
     let windows = value["windows"]
         .as_array()
         .into_iter()
@@ -108,12 +122,12 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                 .ok()
                 .filter(|a| a.limit.is_finite() && a.limit > 0.0 && a.used.is_finite());
             Some(Window {
-                id: words(&w["id"], 100)?,
+                id: words(&w["id"], 200)?,
                 used,
                 minutes: time(&w["minutes"]).and_then(|n| n.try_into().ok()),
                 resets_at: time(&w["resetsAt"]),
-                model: words(&w["model"], 140),
-                name: words(&w["name"], 140),
+                model: words(&w["model"], 200),
+                name: words(&w["name"], 200),
                 amount,
                 read: clock(time(&w["read"])?, offset, now),
                 source: if w["source"] == "turn" {
@@ -134,7 +148,7 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                 return None;
             }
             let mut e = e.clone();
-            e["id"] = json!(words(&e["id"], 100)?);
+            e["id"] = json!(words(&e["id"], 200)?);
             e["name"] = json!(words(&e["name"], 100)?);
             if e["kind"] == "resets" {
                 e["usable"] = json!(e["usable"] == true);
@@ -146,23 +160,72 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                     a.truncate(50);
                 }
                 if let Some(a) = e["refills"].as_array_mut() {
-                    a.truncate(10);
+                    *a = a
+                        .iter()
+                        .filter_map(|v| words(v, 40).map(Value::String))
+                        .take(10)
+                        .collect();
                 }
             }
             if e["kind"] == "unreadable" {
                 e["message"] = json!(words(&e["message"], 500)?);
             }
-            serde_json::from_value::<Extra>(e).ok()
+            let kind = words(&e["kind"], 40)?;
+            if matches!(
+                kind.as_str(),
+                "spent" | "left" | "capped" | "resets" | "unreadable"
+            ) {
+                serde_json::from_value::<Extra>(e)
+                    .ok()
+                    .filter(|extra| match extra {
+                        Extra::Future(_) => false,
+                        Extra::Capped { limit, .. } => *limit > 0.,
+                        _ => true,
+                    })
+            } else {
+                let id = words(&e["id"], 200)?;
+                let name = words(&e["name"], 100)?;
+                let fields = e
+                    .as_object()?
+                    .iter()
+                    .take(20)
+                    .filter(|(key, _)| !matches!(key.as_str(), "id" | "name" | "kind"))
+                    .filter_map(|(key, v)| {
+                        if let Some(x) = v.as_str().filter(|s| s.encode_utf16().count() <= 200) {
+                            Some((key.clone(), super::plan_facts::Plain::Text(x.into())))
+                        } else if let Some(x) = v.as_number() {
+                            Some((key.clone(), super::plan_facts::Plain::Number(x.clone())))
+                        } else {
+                            v.as_bool()
+                                .map(|b| (key.clone(), super::plan_facts::Plain::Bool(b)))
+                        }
+                    })
+                    .collect();
+                let extra = Extra::Future(super::plan_facts::FutureExtra {
+                    id,
+                    name,
+                    kind,
+                    fields,
+                });
+                (serde_json::to_vec(&extra).ok()?.len() <= 1000).then_some(extra)
+            }
         })
         .collect();
     let balance = serde_json::from_value::<Balance>(value["balance"].clone())
         .ok()
-        .filter(|b| b.left.is_finite() && b.limit.is_none_or(f64::is_finite));
+        .filter(|b| {
+            b.left.is_finite()
+                && b.limit.is_none_or(f64::is_finite)
+                && matches!(
+                    b.unit,
+                    super::plan_facts::Unit::Usd | super::plan_facts::Unit::Credits
+                )
+        });
     let problem = serde_json::from_value::<Problem>(value["problem"].clone())
         .ok()
-        .filter(|p| p.kind != ProblemKind::None)
+        .filter(|p| p.kind != ProblemKind::None && !p.message.is_empty())
         .map(|mut p| {
-            p.message = p.message.chars().take(500).collect();
+            p.message = words(&json!(p.message), 500).unwrap_or_default();
             p.until = p
                 .until
                 .map(|t| (i128::from(t) + offset).clamp(0, i128::from(u64::MAX)) as u64);
@@ -185,7 +248,7 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
             .flatten()
             .take(MOST_WINDOWS)
             .filter_map(|(id, value)| {
-                if id.is_empty() || id.len() > 100 {
+                if id.is_empty() || id.encode_utf16().count() > 200 {
                     return None;
                 }
                 let mut state: NoticeState = serde_json::from_value(value.clone()).ok()?;
@@ -213,9 +276,18 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
                     json!(words(&n["windowName"], 100).unwrap_or_else(|| "Limit".into()));
                 let mut fact = serde_json::from_value::<Fact>(n).ok()?;
                 if !(0.0..=1.0).contains(&fact.remaining)
-                    || fact.id.len() > 150
-                    || fact.row.len() > 200
-                    || fact.window.len() > 100
+                    || fact.id.strip_prefix("usage_").is_none_or(|id| {
+                        id.is_empty()
+                            || id.len() > 80
+                            || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                    })
+                    || fact.row.encode_utf16().count() > 300
+                    || fact.window.encode_utf16().count() > 200
+                    || fact
+                        .forwarder
+                        .as_ref()
+                        .is_some_and(|id| id.encode_utf16().count() > 200)
+                    || fact.service.name() == "devin"
                     || fact.service != service
                 {
                     return None;
@@ -592,5 +664,146 @@ impl Book {
             })
             .filter_map(|a| a.facts.checked)
             .max()
+    }
+}
+
+#[cfg(test)]
+mod parity_corpus {
+    use super::*;
+    const NOW: u64 = 1_800_000_000_000;
+    fn raw(at: u64) -> Value {
+        json!({"at":at,"noticeSetup":"set_fixture","accounts":[{"provider":"claude-code","service":"claude","identity":"abcdefabcdefabcd","checked":at,"next":at+600000,"windows":[{"id":"five_hour","used":0.35,"minutes":300,"resetsAt":NOW+3600000,"read":at,"source":"usage"}]}]})
+    }
+    #[test]
+    fn peer_clock_skew_normalizes_checks_windows_and_hold_deadlines() {
+        let ahead = NOW + 3_600_000;
+        let mut given = raw(ahead);
+        given["accounts"][0]["problem"] =
+            json!({"kind":"rate-limited","message":"Fixture hold","until":ahead+600000});
+        let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        assert_eq!(read.accounts[0].windows[0].read, NOW);
+        assert_eq!(read.accounts[0].facts.checked, Some(NOW));
+        assert_eq!(read.accounts[0].facts.next, Some(NOW + 600000));
+        assert_eq!(
+            read.accounts[0].facts.problem.as_ref().unwrap().until,
+            Some(NOW + 600000)
+        );
+    }
+    #[test]
+    fn peer_books_keep_confirmed_accounts_across_restart_and_forget_removed_members() {
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("limits.json");
+        let name = "Fixture".to_string();
+        let key = "fixture-peer".to_string();
+        let names = BTreeMap::from([(key.clone(), name.clone())]);
+        let mut book = Book::default();
+        book.roster(&names, Some("set_fixture"));
+        let read = Reading::from(&raw(NOW), NOW, Some("set_fixture")).unwrap();
+        let account = read.accounts[0].account();
+        book.take(&key, &name, read, NOW);
+        assert!(book.freshest(&account).is_some());
+        book.store(&file).unwrap();
+        let mut book = Book::read(&file).unwrap();
+        assert!(book.freshest(&account).is_none());
+        book.roster(&names, Some("set_fixture"));
+        assert_eq!(book.freshest(&account).unwrap().windows[0].used, 0.35);
+        assert_eq!(
+            book.fresh(Provider::Claude, "abcdefabcdefabcd", NOW + AWAY + 1),
+            None
+        );
+        book.roster(&BTreeMap::new(), Some("set_fixture"));
+        assert!(book.peers.is_empty());
+    }
+    #[test]
+    fn peer_mail_keeps_known_readings_and_only_bounded_plain_extra_fields() {
+        let mut given = raw(NOW);
+        let account = &mut given["accounts"][0];
+        account["signIn"] = json!("fixture-secret-never-shared");
+        account["identity"] = json!("abcdefabcdefabcd");
+        account["extras"] = json!([{"kind":"spent","id":"on_demand","name":"On-demand","amount":43.21,"unit":"usd","secret":"not-a-meter"},{"kind":"grants","id":"x","name":"X","amount":1,"unit":"usd"},"nope",{"kind":"grants","id":"i".repeat(300),"name":"Big","a":"p".repeat(190),"b":"p".repeat(190),"c":"p".repeat(190),"d":"p".repeat(190)}]);
+        let wire = Reading::from(&given, NOW, Some("set_fixture"))
+            .unwrap()
+            .wire();
+        let encoded = serde_json::to_string(&wire).unwrap();
+        assert!(!encoded.contains("fixture-secret-never-shared"));
+        assert!(!encoded.contains("not-a-meter"));
+        assert_eq!(
+            wire["accounts"][0]["extras"],
+            json!([{"kind":"spent","id":"on_demand","name":"On-demand","amount":43.21,"unit":"usd"},{"kind":"grants","id":"x","name":"X","amount":1,"unit":"usd"}])
+        );
+    }
+    #[test]
+    fn peer_service_names_allow_valid_future_services_but_not_arbitrary_text() {
+        let given = json!({"at":NOW,"accounts":[{"provider":"kimi","service":"kimi-code","identity":"abcdefabcdefabcd","checked":NOW,"windows":[{"id":"week","used":0.25,"minutes":10080,"read":NOW,"source":"usage"}]},{"provider":"invalid","service":"Not A Name!","windows":[]}]});
+        let wire = Reading::from(&given, NOW, None).unwrap().wire();
+        assert_eq!(wire["accounts"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["accounts"][0]["service"], "kimi-code");
+        assert_eq!(wire["accounts"][0]["windows"][0]["used"], 0.25);
+    }
+    #[test]
+    fn future_extra_and_provider_survive_the_kept_peer_round_trip() {
+        let mut given = raw(NOW);
+        let account = &mut given["accounts"][0];
+        account["service"] = json!("kimi-code");
+        account["extras"] = json!([
+            {"kind":"grants","id":"future","name":"Credit grants","count":2,"next":true,"nested":{"never":"sent"}},
+            {"kind":"left","id":"credits","name":"Credits","amount":5,"unit":"credits","resetsAt":NOW+60_000},
+            {"kind":"capped","id":"invalid","name":"Invalid","amount":1,"limit":0,"unit":"usd"}
+        ]);
+        let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        let wire = read.wire();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("kept.json");
+        let mut book = Book::default();
+        book.roster(
+            &BTreeMap::from([("peer".into(), "Peer".into())]),
+            Some("set_fixture"),
+        );
+        book.take("peer", "Peer", read, NOW);
+        book.store(&file).unwrap();
+        let saved = Book::read(&file).unwrap();
+        assert_eq!(saved.scope.as_deref(), Some("set_fixture"));
+        assert_eq!(
+            saved.peers.get("peer").unwrap().setup.as_deref(),
+            Some("set_fixture")
+        );
+        let account = &saved.peers.get("peer").unwrap().accounts[0];
+        assert_eq!(account.service.name(), "kimi-code");
+        assert_eq!(
+            serde_json::to_value(&account.facts.extras).unwrap(),
+            wire["accounts"][0]["extras"]
+        );
+        assert_eq!(
+            wire["accounts"][0]["extras"],
+            json!([
+                {"kind":"grants","id":"future","name":"Credit grants","count":2,"next":true},
+                {"kind":"left","id":"credits","name":"Credits","amount":5.0,"unit":"credits","resetsAt":NOW+60_000}
+            ])
+        );
+    }
+    #[test]
+    fn unsupported_devin_notice_is_not_admitted_even_when_its_future_service_is_listed() {
+        let mut given = raw(NOW);
+        let account = &mut given["accounts"][0];
+        account["service"] = json!("devin");
+        account["identity"] = json!("ABCDEFABCDEFABCD");
+        account["notices"] = json!([{"id":"usage_fixture","row":"devin#abcdefabcdefabcd","service":"devin","window":"five_hour","windowName":"Weekly","accountName":"Devin","milestone":"underTenPercent","at":NOW,"remaining":0.05,"resetsAt":NOW+3600000}]);
+        let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        assert_eq!(read.accounts.len(), 1);
+        assert!(read.accounts[0].identity.is_none());
+        assert!(read.accounts[0].notices.is_empty());
+    }
+    #[test]
+    fn long_notice_history_cannot_displace_the_current_account_windows() {
+        let mut given = raw(NOW);
+        let account = &mut given["accounts"][0];
+        account["notices"]=json!((0..100).map(|n|json!({"id":format!("usage_fixture-{n}"),"row":"claude#abcdefabcdefabcd","service":"claude","window":"five_hour","windowName":"x".repeat(100),"accountName":"x".repeat(100),"milestone":"underTenPercent","at":NOW,"remaining":0.05,"resetsAt":NOW+3600000})).collect::<Vec<_>>());
+        let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        assert_eq!(read.accounts[0].notices.len(), 100);
+        let wire = read.wire();
+        assert_eq!(wire["accounts"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["accounts"][0]["windows"][0]["used"], 0.35);
+        assert!(wire["accounts"][0]["notices"].as_array().unwrap().len() < 100);
+        assert!(serde_json::to_vec(&wire).unwrap().len() <= 40_000);
     }
 }

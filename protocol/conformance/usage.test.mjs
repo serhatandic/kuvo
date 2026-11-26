@@ -2613,7 +2613,8 @@ test('the shared Grok corpus counts completed model turns once and keeps append-
   assert.equal(grown.cost,days[0].cost+0.001);
   await resident.stop();resident=box.start();call=box.connect(await resident.ready());
   await until(async()=>{const day=(await get()).totals.grok.find(d=>d.date===grown.date);return day?.tokens===grown.tokens;},'Grok history did not survive restart');
-  assert.deepEqual((await get()).totals.grok.find(d=>d.date===grown.date),grown);
+  const restored=(await get()).totals.grok.find(d=>d.date===grown.date);
+  assert.deepEqual(restored,grown,`Grok restart: ${JSON.stringify({before:days[0],grown,restored,files:files.map(file=>({name:path.basename(file),bytes:fs.statSync(file).size}))})}`);
 });
 
 test('the shared Claude corpus prices canonical replies, advisor calls and fast usage without counting replays',async t=>{
@@ -3274,4 +3275,32 @@ test('Insights breakdown order and detail agree for mixed priced and partial cal
   assert.deepEqual(data.breakdowns.model.map(row=>row.name),['gpt-5.5','claude-opus-4-6']);
   assert.deepEqual(data.breakdowns.agent.map(row=>row.name),['openai','build']);
   assert.deepEqual(data.providers.map(row=>[row.tokens,row.processed,row.partial]),[[15,100,1],[37,46,2]]);
+});
+
+test('a retained peer reading from a newer computer keeps its service and bounded extras across restart, and leaves with that computer',{timeout:90000},async t=>{
+  const fs=await import('node:fs');const {computer,leases}=await bench(t);
+  const primary=await computer('FuturePrimary',undefined,isolated),lab=await computer('FutureLab',undefined,isolated);
+  let resident=primary.start(),call=primary.connect(await resident.ready());
+  const setup=await call('GET','kuvo/setup');
+  const invite=await call('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'Primary has no relay lease');
+  const joined=await lab.join(invite.json.code);assert.equal(joined.code,0,joined.log);
+  const member=await until(async()=>{const reply=await call('GET','kuvo/setup');return reply.json.computers?.find(c=>c.name==='FutureLab');},'Joined computer was not admitted',30000,100);
+  await resident.stop();
+  // The old reference resident retained this file before either process can
+  // learn today's roster. All account identifiers and readings are fixtures.
+  const heard=Date.now()-30*60000,reset=Date.now()+3600000;
+  const accounts=[{provider:'kimi',service:'kimi-code',identity:'abcdefabcdefabcd',windows:[{id:'week',used:.25,minutes:10080,read:heard,source:'usage',resetsAt:reset}],checked:heard,extras:[{kind:'spent',id:'on_demand',name:'On-demand',amount:43.21,unit:'usd',private:'not a meter'},{kind:'grants',id:'x',name:'X',amount:1,unit:'usd',nested:{not:'plain'}}]},{provider:'invalid',service:'Not A Name!',windows:[]}];
+  const file=path.join(primary.home,'agents','limits-peers.json');
+  fs.rmSync(path.join(primary.home,'agents','usage','accepted-limits-peers.json'),{force:true});
+  write(file,JSON.stringify({peers:{[member.key]:{name:'FutureLab',heard,noticeSetup:setup.json.setup,accounts}}}));
+  const start=async()=>{resident=primary.start();call=primary.connect(await resident.ready());};await start();
+  const read=async()=>{const answer=await call('GET','kuvo/agents/api/kuvo/limits');assert.equal(answer.status,200,answer.text);return answer.json.data;};
+  const kept=async()=>until(async()=>{const data=await read();return data.rows.find(row=>row.service==='kimi-code');},'A retained newer service did not reach the limits route',30000,250);
+  const row=await kept();assert.equal(row.windows[0].used,.25);assert.ok(row.boxes.some(box=>box.name==='FutureLab'&&box.away));
+  assert.deepEqual(row.extras,[{kind:'spent',id:'on_demand',name:'On-demand',amount:43.21,unit:'usd'},{kind:'grants',id:'x',name:'X',amount:1,unit:'usd'}]);
+  assert.ok(!(await read()).rows.some(row=>row.service==='Not A Name!'));
+  await resident.stop();await start();assert.deepEqual((await kept()).extras,row.extras);
+  const removed=await call('DELETE','kuvo/computers/'+encodeURIComponent(member.key),{wipe:false},{'x-kuvo-from':'mac'});assert.equal(removed.status,200,removed.text);
+  await until(async()=>!(await read()).rows.some(row=>row.service==='kimi-code'),'Removed computer retained a limits row',30000,250);
 });

@@ -235,6 +235,7 @@ fn direct_facts(
             name: "Extra Usage".into(),
             amount: credits,
             unit: Unit::Credits,
+            resets_at: None,
         });
     }
     if let Some(resets) = &direct.resets {

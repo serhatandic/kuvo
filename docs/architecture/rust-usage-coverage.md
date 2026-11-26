@@ -838,6 +838,34 @@ removed; all test processes exited.
 Cumulative non-test size: 574,550 new-module characters plus 40,355 added
 existing production characters (614,905 total, 0.894× the TS baseline).
 
+## Seventeenth slice: retaining readings from newer computers
+
+Unknown valid service names and bounded plain fields of future meter extras
+now survive peer mail, retained legacy readings and another restart, without
+inferring a local reader or reset for an unknown service. A real member's
+retained account appears with its name and away state once membership is known,
+then is removed when the member leaves. Both boxes pass this route scenario;
+the previous Rust resident failed to show the newer service. Seven scoped
+component cases check future names/extras and retained state, receiver-clock
+normalization, ignoring unsupported notices, and retaining the current window
+when a large warning history is trimmed. The earlier Rust component tests
+failed on the unknown service and future extra cases.
+
+Rust usage 86/86 applicable on Mac, capped Lokum static musl, WSL static musl,
+and native Windows. TS on Mac 34/35, with one Grok restart cost
+discrepancy (0.00445 instead of 0.0044502) seen once, unrelated to the peer
+reading changes. The immediate exact focused rerun passed; the fixture now
+reports the initial, grown and restored days and source sizes on any repeat.
+Engine sessions 81/81, workspace test-target check and Bun check clean. The
+expanded seeded differential matches 12/13 answers exactly; the other
+differs only in actual `coverage[0].scanned` time. The 12-answer run without
+that clock field and the two-answer native corpus match exactly. Stored
+inventory/projection-format differences remain in the differential logs.
+The remote scratch and cross-target folders were removed, and the Windows
+and WSL process lists and Lokum container list were clear of this run.
+Non-test size: 618,048 characters without leading indentation (0.899×
+the 687,546-character TS usage-directory baseline at 47f51ff5b).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -955,12 +983,12 @@ existing production characters (614,905 total, 0.894× the TS baseline).
 - L484: a box whose group chats didn't start takes plan limits, and says not now to group chat mail, so what mustn't be lost comes again — open.
 - L495: the link saying who your computers are again tells no one again, and an ask is answered once a minute at most — open.
 - L513: a tell lost while a computer's link was off is made up once that link carries mail again — open.
-- L535: an account of a service a newer box knows and this one doesn't is listed by its name — open.
-- L547: what a peer's account has beyond its windows (′extras′) is kept as told, and only what one is — open.
-- L579: a computer you removed goes from the list, with its accounts — open.
-- L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — open.
-- L604: what goes between them is the readings, never a sign-in or who the account is at its maker — open.
-- L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — partial — two-computer peer reading survives restart, exact old wire/cache fixture still open.
+- L535: an account of a service a newer box knows and this one doesn't is listed by its name — covered by both-box retained newer-service route fixture and scoped peer-mail decoder, including invalid service refusal.
+- L547: what a peer's account has beyond its windows (′extras′) is kept as told, and only what one is — covered by both-box retained newer-service route and scoped peer decoder/round-trip, including non-meter fields, nested values and oversized extras.
+- L579: a computer you removed goes from the list, with its accounts — covered by the both-box retained newer-service route, including restart and real membership removal.
+- L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — partial — fixed-time peer decoder checks window/check/hold normalization; next maker read scheduling open.
+- L604: what goes between them is the readings, never a sign-in or who the account is at its maker — partial — scoped mail decoder/encoder strips fixture sign-in and non-meter data; outgoing maker identity and periodic retell fixture open.
+- L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — covered by scoped real Book store/read/roster and retained older-wire route fixture (future service and extras, still visible across restart only for admitted member).
 - L653: a weekly forecast combines both computers' readings and survives a fallback to an older reading — open.
 - L688: a box still shows the weekly forecast it learned from a peer after it restarts — open.
 - L710: usage names a reachable computer while its first limits snapshot is in flight — open.
@@ -1235,7 +1263,7 @@ existing production characters (614,905 total, 0.894× the TS baseline).
 - L58: hidden metric prunes baseline — covered by empty layout hide/show route and dormant fixed-clock trail test.
 - L59: pace near empty and projection gate — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L60: notices go only to peers in the setup — open.
-- L71: large notice history cannot evict the current limits account from peer mail — open.
+- L71: large notice history cannot evict the current limits account from peer mail — covered by scoped real Reading wire serialization with 100 notices, bounded mail and current window retained.
 - L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — open.
 - L96: visibility mappings cover model-specific Codex and Antigravity windows — partial — corrected Spark alias and existing Antigravity mappings; exact multi-window layout fixture open.
 - L102: exact ten percent remaining does not trigger Almost Out — covered by exact 0.90 accepted level sample, then 0.92 crossing.
@@ -1249,7 +1277,7 @@ existing production characters (614,905 total, 0.894× the TS baseline).
 - L198: without layout settings only default meters can decide notices — open.
 - L208: a decision waits for the directory and pins a forwarder only once — open.
 - L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — covered by actual turn/cache/notice scenario, old Rust failed and patched Rust focused check passed.
-- L239: unsupported Devin notice facts from older peers cannot trigger native alerts — open.
+- L239: unsupported Devin notice facts from older peers cannot trigger native alerts — covered by scoped real peer decoder: valid future service row survives, unsupported notices do not.
 - L244: notice wording carries the same named account and window as the panel — open.
 - L256: learning the setup immediately shares pending facts despite a recent unscoped limits mail — open.
 - L272: an exact secondary Claude card's meter visibility and enablement override the family card — open.

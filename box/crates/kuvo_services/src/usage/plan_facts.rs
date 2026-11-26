@@ -47,6 +47,8 @@ pub enum Extra {
         name: String,
         amount: f64,
         unit: Unit,
+        #[serde(rename = "resetsAt", skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
     },
     Resets {
         id: String,
@@ -63,6 +65,23 @@ pub enum Extra {
         name: String,
         message: String,
     },
+    #[serde(untagged)]
+    Future(FutureExtra),
+}
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct FutureExtra {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(flatten)]
+    pub fields: std::collections::BTreeMap<String, Plain>,
+}
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Plain {
+    Text(String),
+    Number(serde_json::Number),
+    Bool(bool),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]

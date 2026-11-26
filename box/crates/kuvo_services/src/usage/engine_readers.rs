@@ -897,6 +897,7 @@ fn chatgpt(body: &Value, now: u64) -> (Vec<Window>, Facts, Option<String>) {
                 name: "Extra Usage".into(),
                 amount: left.max(0.).floor(),
                 unit: Unit::Credits,
+                resets_at: None,
             });
         }
     }
