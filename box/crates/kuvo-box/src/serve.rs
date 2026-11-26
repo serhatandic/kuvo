@@ -566,6 +566,11 @@ pub async fn run(
         home,
     )
     .await;
+    let catch_up = limits.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        catch_up.replay_notices(kuvo_services::usage::limits::now());
+    })
+    .await;
     let (verify_service, verify_agents, verify_readers, verify_engine, verify_home) = (
         limits.clone(),
         agent_shutdown.clone(),
@@ -718,7 +723,8 @@ pub async fn run(
         Some(work_queue.queue_review()),
     );
     let removal = setup.handle();
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), peers.reach_again(), move || {
+    let follows = kuvo_peers::session_follow::Follows::new(peers.reader(), peers.relay_handle(), peers.reach_again());
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), follows, move || {
         removal.computers_listing()
     });
     peers.register_moves(&mut routes, engine.clone());
@@ -740,6 +746,10 @@ pub async fn run(
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
+    // What other computers follow of this one's conversations, answered while they keep it.
+    let _conversation_follows = peers.relay_handle().and_then(|relay| {
+        kuvo_peers::session_follow::serve(peers.reader(), relay, dispatcher.downgrade(), owners.clone())
+    });
     work_queue.serve_archives(archives.clone(), dispatcher.clone());
     let archive_source = tokio::spawn({
         let peers = peers.clone();

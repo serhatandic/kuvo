@@ -208,7 +208,7 @@ fn same_sign_in(a: &Account, b: &Account) -> bool {
         a.provider == b.provider && a.sign_in == b.sign_in
     }
 }
-type Tell = dyn Fn(Fact) + Send + Sync;
+type Tell = dyn Fn(Fact) -> bool + Send + Sync;
 #[derive(Clone)]
 pub struct Service {
     file: PathBuf,
@@ -220,8 +220,10 @@ pub struct Service {
     name: String,
     key: String,
     tell: Arc<std::sync::OnceLock<Arc<Tell>>>,
+    told: Arc<Mutex<BTreeMap<String, u64>>>,
     refreshing: Arc<tokio::sync::Mutex<()>>,
     last_refresh: Arc<std::sync::atomic::AtomicU64>,
+    last_turn_save: Arc<std::sync::atomic::AtomicU64>,
     refresh_failed: Arc<std::sync::atomic::AtomicBool>,
     refresh_completed: Arc<std::sync::atomic::AtomicU64>,
     changes: tokio::sync::watch::Sender<u64>,
@@ -302,8 +304,10 @@ impl Service {
             name,
             key,
             tell: Arc::default(),
+            told: Arc::default(),
             refreshing: Arc::default(),
             last_refresh: Arc::default(),
+            last_turn_save: Arc::default(),
             refresh_failed: Arc::default(),
             refresh_completed: Arc::default(),
             changes: tokio::sync::watch::channel(0).0,
@@ -393,7 +397,7 @@ impl Service {
             }
         };
         if changed {
-            self.answer(now);
+            self.replay_notices(now);
             self.changes.send_modify(|n| *n = n.wrapping_add(1));
         }
     }
@@ -409,29 +413,18 @@ impl Service {
     }
     pub fn take_peer(&self, key: &str, name: &str, reading: Reading, now: u64) {
         let refresh = reading.refresh.clone();
-        let notices = {
+        {
             let mut book = self.peer_book.lock().expect("peer limits");
             if !book.roster.contains_key(key) {
                 return;
             }
-            let notes = book.take(key, name, reading, now);
+            book.take(key, name, reading, now);
             self.save_peers(&book);
-            notes
-        };
-        let accepted = self.answer(now);
+        }
+        self.replay_notices(now);
         self.changes.send_modify(|n| *n = n.wrapping_add(1));
         if !refresh.is_empty() {
             let _ = self.local_refresh.send(refresh);
-        }
-        if let Some(tell) = self.tell.get() {
-            for fact in notices.into_iter().filter(|fact| {
-                fact.forwarder.as_deref() == Some(self.key.as_str())
-                    && accepted["data"]["notices"]
-                        .as_array()
-                        .is_some_and(|facts| facts.iter().any(|kept| kept["id"] == fact.id))
-            }) {
-                tell(fact);
-            }
         }
     }
     pub fn remote_refreshes(&self) -> tokio::sync::broadcast::Receiver<()> {
@@ -504,6 +497,31 @@ impl Service {
     pub fn attach_notices(&self, tell: Arc<Tell>) {
         let _ = self.tell.set(tell);
     }
+    /// Replay after sign-in/roster confirmation, and retry failed notice
+    /// journal writes on later observations. The rendered answer remains the
+    /// authority for which facts still belong to current accepted windows.
+    pub fn replay_notices(&self, at: u64) {
+        let facts = {
+            let state = self.state.lock().expect("limits lock");
+            self.publish(&state, at).1
+        };
+        self.dispatch_notices(facts, at);
+    }
+    fn dispatch_notices(&self, facts: Vec<Fact>, at: u64) {
+        let Some(tell) = self.tell.get() else {
+            return;
+        };
+        let mut delivered = self.told.lock().expect("usage notice deliveries");
+        delivered.retain(|_, read| at.saturating_sub(*read) < 600_000);
+        for fact in facts
+            .into_iter()
+            .filter(|fact| fact.forwarder.as_deref() == Some(self.key.as_str()))
+        {
+            if !delivered.contains_key(&fact.id) && tell(fact.clone()) {
+                delivered.insert(fact.id, fact.at);
+            }
+        }
+    }
     pub fn observe(&self, account: Account, windows: Vec<Window>, now: u64) -> std::io::Result<()> {
         self.observe_facts(account, windows, None, now)
     }
@@ -545,6 +563,11 @@ impl Service {
         only_resets: bool,
     ) -> std::io::Result<()> {
         use super::plan_facts::ProblemKind;
+        let heard = facts.is_none()
+            && !windows.is_empty()
+            && windows
+                .iter()
+                .all(|w| w.source == super::readings::Source::Turn);
         if let Some(error) = &self.cache_error {
             return Err(std::io::Error::other(format!(
                 "Accepted limits cache: {error}"
@@ -559,7 +582,6 @@ impl Service {
         {
             return Ok(());
         }
-        let before = state.clone();
         let old = state
             .entries
             .get(&account.provider)
@@ -731,15 +753,17 @@ impl Service {
                 .get(&row_id)
                 .and_then(|group| group.get(&semantic))
                 .cloned();
-            let local_toggles = if shared_trail.is_none() {
-                toggles.clone()
-            } else {
-                BTreeSet::new()
-            };
+            let local_toggles = toggles.as_ref().map(|toggles| {
+                if shared_trail.is_none() {
+                    toggles.clone()
+                } else {
+                    BTreeSet::new()
+                }
+            });
             let prior_id = equivalent_trail(&entry.trails, &window);
             let mut local = prior_id.as_ref().and_then(|id| entry.trails.remove(id));
             if let Some(trail) = local.as_mut() {
-                if let Some(fired) = trail.observe(window.clone(), &local_toggles) {
+                if let Some(fired) = trail.observe_visible(window.clone(), local_toggles.as_ref()) {
                     facts.extend(fired.into_iter().map(|m| {
                         Fact::new(
                             &entry.account,
@@ -762,12 +786,17 @@ impl Service {
                 }
             } else {
                 local = Trail::new(window.clone());
+                if toggles.is_none()
+                    && let Some(trail) = local.as_mut()
+                {
+                    trail.hide_notice();
+                }
             }
             if let Some(mut shared) = shared_trail {
                 if let Some(local) = local.as_ref() {
                     shared.merge_fired(local);
                 }
-                if let Some(fired) = shared.observe(window, &toggles) {
+                if let Some(fired) = shared.observe_visible(window, toggles.as_ref()) {
                     for m in fired {
                         if let Some(local) = local.as_mut() {
                             local.merge_fired(&shared);
@@ -824,6 +853,27 @@ impl Service {
         window_order.retain(|id| entry.trails.contains_key(id));
         entry.window_order = window_order;
         let provider = entry.account.provider.clone();
+        // The accepted reading is always live. Normal in-window turn samples
+        // need not write the whole cache on each assistant response. Preserve
+        // new windows/sign-ins, dormant scope transitions and new notice facts
+        // immediately; ordinary samples keep TS's thirty-second disk cadence.
+        let critical = state.entries.get(&provider).is_none_or(|old| {
+            !same_sign_in(&old.account, &entry.account)
+                || entry.trails.values().any(|trail| {
+                    old.trails.get(&trail.current.id).is_none_or(|prior| {
+                        prior.current.resets_at != trail.current.resets_at
+                            || prior.notice_is_dormant() != trail.notice_is_dormant()
+                    })
+                })
+        });
+        use std::sync::atomic::Ordering::Relaxed;
+        let last = self.last_turn_save.load(Relaxed);
+        let persist = !heard
+            || critical
+            || !facts.is_empty()
+            || last == 0
+            || now.saturating_sub(last) >= 30_000;
+        let before = persist.then(|| state.clone());
         for sibling in state
             .entries
             .values_mut()
@@ -838,30 +888,28 @@ impl Service {
             state.order.push(provider.clone());
         }
         state.entries.insert(provider, entry);
-        if let Err(err) = kuvo_store::files::write_secret(
-            &self.file,
-            &serde_json::to_vec(&*state).map_err(std::io::Error::other)?,
-        ) {
-            *state = before;
-            return Err(err);
-        }
-        {
+        if persist {
+            if let Err(err) = kuvo_store::files::write_secret(
+                &self.file,
+                &serde_json::to_vec(&*state).map_err(std::io::Error::other)?,
+            ) {
+                if let Some(before) = before {
+                    *state = before;
+                }
+                return Err(err);
+            }
+            if heard {
+                self.last_turn_save.store(now, Relaxed);
+            }
             let book = self.peer_book.lock().expect("peer limits");
             if book.groups.contains_key(&row_id) {
                 self.save_peers(&book);
             }
         }
-        self.publish(&state, now);
+        let (_, current_notices) = self.publish(&state, now);
         self.changes.send_modify(|n| *n = n.wrapping_add(1));
         drop(state);
-        if let Some(tell) = self.tell.get() {
-            for fact in facts
-                .into_iter()
-                .filter(|fact| fact.forwarder.as_deref().is_none_or(|id| id == self.key))
-            {
-                tell(fact);
-            }
-        }
+        self.dispatch_notices(current_notices, now);
         Ok(())
     }
     /// Only current sign-ins may expose kept readings after restart.
@@ -1321,9 +1369,9 @@ impl Service {
     }
     pub fn answer(&self, now: u64) -> Value {
         let state = self.state.lock().expect("limits lock");
-        self.publish(&state, now)
+        self.publish(&state, now).0
     }
-    fn publish(&self, state: &Saved, now: u64) -> Value {
+    fn publish(&self, state: &Saved, now: u64) -> (Value, Vec<Fact>) {
         let mut accounts = vec![];
         let mut rows: Vec<Value> = vec![];
         let mut notices: Vec<Fact> = vec![];
@@ -1689,7 +1737,7 @@ impl Service {
         if updated > 0 {
             data["usageUpdatedAt"] = json!(updated);
         }
-        json!({"data":data})
+        (json!({"data":data}), own_notices)
     }
 }
 fn level(used: f64) -> &'static str {

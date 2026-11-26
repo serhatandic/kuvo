@@ -1894,3 +1894,129 @@ fn google_plan(raw: &str) -> String {
     }
     title(&json!(raw)).unwrap_or_else(|| raw.into())
 }
+#[cfg(test)]
+mod parity_corpus {
+    use super::*;
+    use serde_json::{Value, json};
+    fn labels(name: &str) -> &str {
+        match name {
+            "Session" => "Gemini · 5-hour",
+            "Weekly" => "Gemini · Weekly",
+            "Claude" => "Claude and GPT · 5-hour",
+            "Claude Weekly" => "Claude and GPT · Weekly",
+            "Argon Weekly" => "Gemini 4 Argon · Weekly",
+            n => n,
+        }
+    }
+    fn shaped(windows: &[Window]) -> Value {
+        json!(windows.iter().map(|w|json!({"label":w.name,"used":(w.used*100.).round() as u64,"periodMs":w.minutes.map(|m|m as u64*60_000)})).collect::<Vec<_>>())
+    }
+    fn expected(raw: &Value) -> Value {
+        let Some(items) = raw.as_array() else {
+            return Value::Null;
+        };
+        json!(
+            items
+                .iter()
+                .map(|item| {
+                    let mut item = item.clone();
+                    item["label"] = json!(labels(item["label"].as_str().unwrap_or_default()));
+                    item
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+    #[test]
+    fn shared_antigravity_summary_corpus() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/usage/antigravity-plan-cases.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let got = antigravity_summary(case["bodies"].as_array().unwrap(), 1_794_916_800_000)
+                .as_deref()
+                .map(shaped)
+                .unwrap_or(Value::Null);
+            assert_eq!(got, expected(&case["expected"]), "{}", case["name"]);
+        }
+    }
+    #[test]
+    fn shared_legacy_quota_and_plan_name_corpus() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/usage/antigravity-legacy-plan-cases.json"
+        ))
+        .unwrap();
+        for case in cases["legacy"].as_array().unwrap() {
+            assert_eq!(
+                shaped(&antigravity_legacy(
+                    case["configs"].as_array().unwrap(),
+                    1_794_916_800_000
+                )),
+                expected(&case["expected"])
+            );
+        }
+        for case in cases["plans"].as_array().unwrap() {
+            assert_eq!(
+                json!(str_at(&case["input"]).map(google_plan)),
+                case["expected"]
+            );
+        }
+    }
+    #[test]
+    fn exact_quota_clamp_and_first_usable_pool() {
+        let buckets = ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
+            .map(|id| json!({"bucketId":id,"remainingFraction":0.754}));
+        let summary = json!({"groups":[{"buckets":buckets}]});
+        let found = antigravity_summary(&[json!({"groups":[{"buckets":[{"bucketId":"gemini-5h","remainingFraction":"bad"},{"bucketId":"gemini-image-5h","remainingFraction":0},{"bucketId":"gemini-weekly","remainingFraction":-1}]}]}), summary], 0).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|w| (w.id.as_str(), w.used))
+                .collect::<Vec<_>>(),
+            [
+                ("gemini-5h", 0.25),
+                ("gemini-weekly", 1.0),
+                ("3p-5h", 0.25),
+                ("3p-weekly", 0.25)
+            ]
+        );
+        assert!(antigravity_summary(&[json!({})], 0).is_none());
+        assert!(
+            antigravity_summary(&[json!({"groups":[]})], 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn argon_bucket_requires_an_unambiguous_enabled_weekly_pool() {
+        let b = json!({"bucketId":"argon","window":"weekly","remainingFraction":0.5});
+        let windows = |buckets: Vec<Value>| {
+            antigravity_summary(
+                &[json!({"groups":[{"displayName":"Gemini 4 Argon","buckets":buckets}]})],
+                0,
+            )
+            .unwrap()
+        };
+        assert_eq!(windows(vec![b.clone()])[0].id, "argon-weekly");
+        assert!(windows(vec![b.clone(), b.clone()]).is_empty());
+        for field in [json!(true), json!("false")] {
+            let mut disabled = b.clone();
+            disabled["disabled"] = field;
+            assert!(windows(vec![disabled]).is_empty());
+        }
+        let mut wrong = b.clone();
+        wrong["bucketId"] = json!("gemini-weekly");
+        assert!(windows(vec![wrong]).is_empty());
+    }
+    #[test]
+    fn legacy_quota_keeps_worst_and_ignores_hidden_models() {
+        let configs = json!([{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.8}},{"label":"Gemini 3 Flash"},{"label":"Claude","quotaInfo":{"remainingFraction":0.5}},{"label":"Gemini 4 Argon"},{"label":"Hidden","model":"MODEL_CHAT_20706"}]);
+        assert_eq!(
+            antigravity_legacy(configs.as_array().unwrap(), 0)
+                .iter()
+                .map(|w| (w.name.as_deref().unwrap_or_default(), w.used))
+                .collect::<Vec<_>>(),
+            [("Gemini · 5-hour", 1.0), ("Claude and GPT · 5-hour", 0.5)]
+        );
+    }
+}

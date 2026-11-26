@@ -4,6 +4,7 @@ import { test } from "node:test";
 import path from "node:path";
 import { boxBinary, readJSON, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { sessionOf } from "./engine.mjs";
 
 test("two computers agree on membership and a rename travels through the relay", { timeout: 90000 }, async t => {
   const { computer, leases } = await bench(t);
@@ -168,4 +169,49 @@ test("each computer offers what can be done with it from here", { timeout: 12000
   const self = await primary("POST", `kuvo/computers/${setup.you.key}/connect`, {}, { "x-kuvo-from": "mac" });
   assert.equal(self.status, 409, self.text);
   assert.equal(self.json.message, "Studio is the computer you're asking.");
+});
+
+test("a conversation on another computer is read live, and from its last copy while that computer is away", { timeout: 120000 }, async t => {
+  const { computer, leases } = await bench(t, { presenceEvents: true });
+  const main = await computer("Studio");
+  const other = await computer("Lab");
+  const session = "ses_far";
+  const messages = [{ info: { id: "msg_far", sessionID: session, role: "user" }, parts: [{ type: "text", text: "Hello from Lab" }] }];
+  other.engine.sessions.push(sessionOf({ id: session, directory: other.home, title: "Far" }));
+  other.engine.messages.set(session, messages);
+  const primary = main.connect(await main.start().ready());
+  const setup = (await primary("GET", "kuvo/setup")).json;
+  const invite = await primary("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.setup), "The main computer did not claim a relay lease.");
+  const joined = await other.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const labRun = other.start();
+  const member = other.connect(await labRun.ready());
+  const lab = (await member("GET", "kuvo/setup")).json.you.key;
+  const desktop = { "x-kuvo-from": "app" };
+  const base = `kuvo/peer-session/${lab}/${session}`;
+  const read = what => primary("GET", `${base}/${what}`, undefined, desktop);
+  let last;
+  const live = await until(async () => {
+    last = await read("messages?limit=10");
+    return last.status === 200 && !last.json.away && last;
+  }, () => `the newest page did not come from Lab: ${last?.status} ${last?.text}`, 30000);
+  assert.deepEqual(live.json.data, messages);
+  const location = await read("location");
+  assert.equal(location.status, 200, location.text);
+  assert.equal(location.json.place, "engine");
+  const about = await read("session");
+  assert.equal(about.status, 200, about.text);
+  // Lab reads its own conversation the same way.
+  const own = await member("GET", `kuvo/peer-session/here/${session}/messages?limit=10`, undefined, desktop);
+  assert.equal(own.status, 200, own.text);
+  assert.deepEqual(own.json.data, messages);
+  await labRun.stop();
+  const kept = await until(async () => {
+    last = await read("messages?limit=10");
+    return last.status === 200 && last.json.away && last;
+  }, () => `the last copy was not answered: ${last?.status} ${last?.text}`, 30000);
+  assert.deepEqual(kept.json.data, messages);
+  assert.equal(kept.json.away.computer.id, lab);
 });

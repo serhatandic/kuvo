@@ -28,6 +28,7 @@ pub const FEATURES: &[&str] = &[
     "computers",
     crate::manage::MANAGE_FEATURE,
     crate::manage::RELAY_LEASE_FEATURE,
+    crate::session_follow::FEATURE,
     "line.merged-notices",
     crate::setup_lists::ARCHIVE_FEATURE,
     "line.merged-sessions",
@@ -55,7 +56,7 @@ pub fn register(
     registry: &mut Registry,
     peers: Reader,
     devices: Devices,
-    reach_again: crate::setup_lists::ReachAgain,
+    follows: crate::session_follow::Follows,
     listing: impl Fn() -> crate::manage::Listing
     + Clone
     + Send
@@ -120,11 +121,12 @@ pub fn register(
     );
     read::<get_kuvo_notices::Spec>(registry, &peers, |view, now| Some(view.notices(now)));
     let state = peers.clone();
+    let reach_again = follows.clone();
     registry.register::<post_kuvo_computers_key_connect::Spec, _, _>(
         Access::DesktopOrPaired,
         move |call| {
             let key = call.param("key").unwrap_or_default();
-            std::future::ready(connect(&state.view(), state.now(), key, &reach_again))
+            std::future::ready(connect(&state.view(), state.now(), key, reach_again.reach_again()))
         },
     );
     read::<get_kuvo_computers::Spec>(registry, &peers, move |view, now| {
@@ -141,86 +143,45 @@ pub fn register(
                 .map(RouteReply::json::<200>),
         )
     });
-    let state = peers.clone();
-    registry.register::<get_kuvo_peer_session_computer_session_messages::Spec, _, _>(
-        Access::Any,
-        move |call| {
-            let state = state.clone();
-            async move {
-                if !matches!(
-                    &call.request.caller,
-                    Caller::Paired { .. }
-                        | Caller::Local(Transport::Http {
-                            origin: kuvo_server::LocalOrigin::App | kuvo_server::LocalOrigin::Mac,
-                            ..
-                        })
-                ) {
-                    return Err(Refusal::new(
-                        StatusCode::FORBIDDEN,
-                        "Open the conversation from Kuvo Code.",
-                    ));
-                }
-                let view = state.view();
-                let computer = call.param("computer").unwrap_or_default();
-                let session = call.param("session").unwrap_or_default();
-                let peer = view
-                    .roster
-                    .members
-                    .iter()
-                    .find(|peer| encode(&peer.key) == computer)
-                    .filter(|_| conversation::valid_session(session))
-                    .ok_or_else(|| {
-                        Refusal::new(
-                            StatusCode::NOT_FOUND,
-                            "There’s no such computer in this setup.",
-                        )
-                    })?;
-                let features = view.announced.get(computer);
-                if features.is_none_or(|said| !said.supports("line.peer-conversation")) {
-                    return Err(Refusal::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Update Kuvo Code on that computer to follow it from here.",
-                    ));
-                }
-                if query(&call.request.path, "cursor").is_some()
-                    || (view.relay_connected && view.reach.away_since(computer).is_none())
-                {
-                    return Err(Refusal::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "The conversation’s computer isn’t answering.",
-                    ));
-                }
-                let key = peer.key;
-                let id = session.to_owned();
-                let run = state.run.clone();
-                let kept = tokio::task::spawn_blocking(move || conversation::load(&run, &key, &id))
-                    .await
-                    .map_err(|error| internal(io::Error::other(error)))?;
-                let standing = view.standing(key, state.now());
-                let seen = standing
-                    .away()
-                    .then(|| {
-                        standing
-                            .last_seen()
-                            .unwrap_or_default()
-                            .max(kept.as_ref().map_or(0, |page| page.at))
-                    })
-                    .filter(|seen| *seen != 0);
-                let mut away = serde_json::json!({"computer":peer.computer()});
-                if let Some(seen) = seen {
-                    away["lastSeen"] = seen.into();
-                }
-                if standing.updating() == Some(true) {
-                    away["updating"] = true.into();
-                }
-                Ok(RouteReply::json::<200>(serde_json::json!({
-                    "data":kept.map_or_else(Vec::new, |page| page.data), "away":away,
-                })))
-            }
-        },
-    );
+    use crate::session_follow::Resource;
+    follow_route::<get_kuvo_peer_session_computer_session_location::Spec>(registry, &follows, Resource::Location);
+    follow_route::<get_kuvo_peer_session_computer_session_session::Spec>(registry, &follows, Resource::Session);
+    follow_route::<get_kuvo_peer_session_computer_session_messages::Spec>(registry, &follows, Resource::Messages);
+    follow_route::<get_kuvo_peer_session_computer_session_events::Spec>(registry, &follows, Resource::Events);
+    follow_route::<get_kuvo_peer_session_computer_session_queue::Spec>(registry, &follows, Resource::Queue);
+    follow_route::<get_kuvo_peer_session_computer_session_queue_events::Spec>(registry, &follows, Resource::QueueEvents);
+    follow_route::<get_kuvo_peer_session_computer_session_asks::Spec>(registry, &follows, Resource::Asks);
+    follow_route::<get_kuvo_peer_session_computer_session_asks_events::Spec>(registry, &follows, Resource::AsksEvents);
     register_devices(registry, devices);
     register_attention(registry);
+}
+
+/// A conversation on another computer, followed from here (or read here, for this one).
+fn follow_route<R>(
+    registry: &mut Registry,
+    follows: &crate::session_follow::Follows,
+    resource: crate::session_follow::Resource,
+) where
+    R: kuvo_protocol::RouteSpec<Body = ()> + Send + Sync + 'static,
+{
+    let follows = follows.clone();
+    registry.register::<R, _, _>(Access::Any, move |call| {
+        let follows = follows.clone();
+        async move {
+            let computer = call.param("computer").unwrap_or_default().to_owned();
+            let session = call.param("session").unwrap_or_default().to_owned();
+            let query = call
+                .request
+                .path
+                .split_once('?')
+                .map_or("", |(_, query)| query)
+                .to_owned();
+            let reply = follows
+                .read(call.dispatcher(), &call.request.caller, &computer, &session, resource, &query)
+                .await;
+            Ok(RouteReply::<R>::forwarded(reply))
+        }
+    });
 }
 
 pub fn merged_project_page(
@@ -307,7 +268,7 @@ pub(crate) fn follow<R>(
     });
 }
 
-fn location(
+pub(crate) fn location(
     view: &View,
     run: &Path,
     id: &str,

@@ -128,6 +128,9 @@ fn small(s: &str) -> bool {
 }
 const DAY: i64 = 86_400_000;
 impl Record {
+    pub fn is_partial(&self) -> bool {
+        !self.human && (self.partial || self.tokens.as_ref().and_then(Buckets::complete).is_none())
+    }
     /// Peers can identify only origins authorised by the current signed setup.
     pub fn validate(&mut self, now: i64, origin: &BTreeSet<String>) -> bool {
         if !key(&self.key)
@@ -175,7 +178,6 @@ impl Record {
             self.root = None;
         }
         self.account_observed &= self.account.is_some();
-        self.partial |= !self.human && self.tokens.as_ref().and_then(Buckets::complete).is_none();
         true
     }
 }

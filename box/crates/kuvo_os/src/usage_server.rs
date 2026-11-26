@@ -26,6 +26,7 @@ fn program_name(program: &str) -> String {
         .to_ascii_lowercase();
     name.strip_suffix(".exe").unwrap_or(&name).to_owned()
 }
+#[cfg(not(windows))]
 fn ours(args: &[String]) -> bool {
     args.first().is_some_and(|program| {
         let name = program_name(program);

@@ -136,6 +136,8 @@ pub struct Trail {
     notice_under: Option<bool>,
     #[serde(default)]
     notice_pace: Option<Pace>,
+    #[serde(default)]
+    notice_dormant: bool,
 }
 /// Local and per-peer projections keep the maker's real window ID. Look up
 /// equivalent limits by meaning before accepting a new observation.
@@ -229,6 +231,7 @@ impl Trail {
             recovering: BTreeMap::new(),
             notice_under: None,
             notice_pace: None,
+            notice_dormant: false,
         };
         trail.note();
         trail.notice_under = Some(trail.current.used > 0.9);
@@ -383,6 +386,45 @@ impl Trail {
         }
         Some(notices)
     }
+    /// Hiding a metric makes its notice baseline dormant, without destroying
+    /// the accepted reading or occurrence counters. A subsequent visible
+    /// reading primes the baseline; merely disabling a trigger does not.
+    pub fn hide_notice(&mut self) {
+        self.notice_dormant = true;
+        for milestone in [
+            Milestone::UnderTenPercent,
+            Milestone::HealthyToClose,
+            Milestone::CloseToRunningOut,
+        ] {
+            if self.fired.remove(&milestone) {
+                self.rearmed.insert(milestone, self.current.read);
+            }
+        }
+        self.recovering.clear();
+    }
+    pub(super) fn notice_is_dormant(&self) -> bool {
+        self.notice_dormant
+    }
+    pub fn observe_visible(
+        &mut self,
+        next: Window,
+        toggles: Option<&BTreeSet<Milestone>>,
+    ) -> Option<Vec<Milestone>> {
+        let Some(toggles) = toggles else {
+            let accepted = self.observe(next, &BTreeSet::new());
+            self.hide_notice();
+            return accepted.map(|_| vec![]);
+        };
+        if self.notice_dormant {
+            let accepted = self.observe(next, &BTreeSet::new())?;
+            debug_assert!(accepted.is_empty());
+            self.notice_dormant = false;
+            self.notice_under = Some(self.current.used > 0.9);
+            self.notice_pace = Some(self.pace);
+            return Some(vec![]);
+        }
+        self.observe(next, toggles)
+    }
     fn lookback(&self) -> u64 {
         self.current.minutes.map_or(60 * MINUTE, |m| {
             (u64::from(m) * MINUTE / 5).clamp(30 * MINUTE, 1440 * MINUTE)
@@ -452,7 +494,11 @@ impl Trail {
     /// Wake only for a known reset or an estimate of the 90% crossing.
     /// A wake confirms with the maker; it is not itself a new reading.
     pub fn notice_state(&self) -> NoticeState {
-        let previous = match self.notice_pace.unwrap_or(self.pace) {
+        let previous = match if self.notice_dormant {
+            Pace::Unknown
+        } else {
+            self.notice_pace.unwrap_or(self.pace)
+        } {
             Pace::Unknown => NoticeBucket::Untracked,
             Pace::Healthy => NoticeBucket::Healthy,
             Pace::Close => NoticeBucket::Close,
@@ -462,8 +508,8 @@ impl Trail {
             resets_at: self.current.resets_at,
             fired: self.fired.clone(),
             previous,
-            under: self.notice_under.unwrap_or(self.current.used > 0.9),
-            primed: true,
+            under: !self.notice_dormant && self.notice_under.unwrap_or(self.current.used > 0.9),
+            primed: !self.notice_dormant,
             read: Some(self.current.read),
             anchor: self.current.resets_at.map(|at| (at + 500) / 1000),
             counts: [

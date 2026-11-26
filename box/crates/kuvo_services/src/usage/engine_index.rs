@@ -56,6 +56,8 @@ pub struct Checkpoint {
     pub lineage_version: u8,
     #[serde(default)]
     pub skills_version: u8,
+    #[serde(default)]
+    pub token_version: u8,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -209,6 +211,7 @@ pub fn read(
     let unchanged = previous.history_version == 2
         && previous.lineage_version == 1
         && previous.skills_version == 1
+        && previous.token_version == 1
         && previous.stamp.as_ref() == Some(&stamp)
         && previous.auth_revision == auth_revision;
     if unchanged && !force_headers {
@@ -246,6 +249,7 @@ pub fn read(
         history_version: 2,
         lineage_version: 1,
         skills_version: 1,
+        token_version: 1,
     };
     collect_headers(
         &read,
@@ -299,6 +303,7 @@ pub fn read(
                         old.identity == stamp.identity && old.bytes <= stamp.bytes
                     }) && previous.history_version == 2
                         && previous.skills_version == 1
+                        && previous.token_version == 1
                         && last.is_some_and(|last| last >= *before)
                         && previous.sign_in == sign_in
                 });
