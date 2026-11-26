@@ -878,6 +878,44 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## OpenCode's older conversations and bots (4.7d, in progress)
+
+Conversations made on the engine before OpenCode was a coding agent here, and bots on OpenCode's
+models, move to the OpenCode agent. Removing the engine's place (`Place::Engine`, its start
+triggers and the `api/…` passthrough) is still to come.
+
+- **Listed without OpenCode.** `acp/opencode_history.rs` reads OpenCode's database read-only
+  (`session_v2`) into the agents' inventory, each row as OpenCode's server gave it
+  (`Session.Info`), marked as the OpenCode agent's. A row the engine also lists shows once.
+- **Read on first open.** The first read or change takes the conversation into the agents' store
+  from `opencode session export <id> --standalone`. Its rows are byte for byte the ones OpenCode's
+  server answered (checked on 2.2.6), so the app draws them as before. The rows are counted
+  against OpenCode's database first. `--standalone` keeps the export on its own server, never
+  OpenCode's background service, so nothing stays running. Nothing in OpenCode's database is
+  changed by Kuvo.
+- **Continued.** It keeps its `ses_…` ID, also its ACP session (`acpSession`), so its next turn
+  resumes it (`session/resume`) with all its earlier turns.
+- **Bots.** A bot's conversation on any model with a provider is made with the coding agents
+  (`kit::runs_on_agents`). Editing a bot still uses the agents-only check until the engine goes.
+- **Older records' provider names.** `claude`, `codex` and `grok` (with an `@account`) are the
+  agents' own, never OpenCode's (`Provider::of_model`); their state stays under the name it was
+  kept under. 4.7b had sent them to OpenCode (found by 5.4 in Insights).
+
+| Case | Both boxes | Notes |
+|---|---|---|
+| agents-opencode-history: it's listed with its title, and listing starts no OpenCode | yes | Rust also: no OpenCode process, no engine record |
+| agents-opencode-history: it opens with its whole transcript | yes | same rows and IDs as the reference made |
+| agents-opencode-history: it goes on with a turn that has all that came before | yes | the model hears the earlier turns |
+| bots-opencode (Mac, machine): a bot made from a template on one of its models waits | yes | from `bots.json` |
+| bots-opencode (Mac, machine): it's told who it is and where it runs, its conversation marked as its | yes | from `bots.json`; Rust: on the agent |
+
+Verified on the Mac: both areas on both boxes; bots 36/36, agents-opencode 14/14 and
+engine-sessions 81/81 on Rust. The reference makes the older home, so these run where it runs
+(Mac and Linux).
+
+Left: removing an older conversation lists it again from OpenCode's database (it needs a
+"forgotten" mark); a database from before `session_v2` isn't listed; the engine's place.
+
 ## The box's own terminals (4.7c)
 
 The app's terminals were OpenCode's: `api/pty` passed to its server, so opening one started

@@ -98,7 +98,7 @@ impl Provider {
     /// The agent a model's provider runs on: a coding agent's own, else OpenCode's (its providers
     /// are OpenCode's own, `opencode-go`, `anthropic`…: it has one account).
     pub fn of_model(provider: &str) -> Option<Self> {
-        Self::parse(provider).or_else(|| {
+        Self::parse(provider).or_else(|| Self::legacy(provider)).or_else(|| {
             let opencode = !provider.is_empty()
                 && provider
                     .bytes()
@@ -110,11 +110,30 @@ impl Provider {
         })
     }
 
-    /// Where a model's conversation keeps its agent's state: a coding agent's provider as it is,
-    /// OpenCode's account for each of OpenCode's providers.
+    /// Older records' names for the coding agents' providers (before `claude-code`, `codex-cli`
+    /// and `grok-cli`), with their account: never OpenCode's.
+    fn legacy(provider: &str) -> Option<Self> {
+        let (base, account) = provider.split_once('@').unwrap_or((provider, "default"));
+        let kind = match base {
+            "claude" => AgentKind::Claude,
+            "codex" => AgentKind::Codex,
+            "grok" => AgentKind::Grok,
+            _ => return None,
+        };
+        valid_id(account).then(|| Self {
+            kind,
+            account: account.into(),
+        })
+    }
+
+    /// Where a model's conversation keeps its agent's state: a coding agent's provider as it is
+    /// (an older record's name too, as its state was kept under it), OpenCode's account for each
+    /// of OpenCode's providers.
     pub fn slot(provider: &str) -> String {
         match Self::parse(provider) {
-            None => Self::of_model(provider).map(|parsed| parsed.to_string()),
+            None => Self::of_model(provider)
+                .filter(|parsed| parsed.kind == AgentKind::OpenCode)
+                .map(|parsed| parsed.to_string()),
             Some(_) => None,
         }
         .unwrap_or_else(|| provider.to_owned())
@@ -448,4 +467,27 @@ fn linked(metadata: &fs::Metadata) -> bool {
     }
     #[cfg(unix)]
     metadata.file_type().is_symlink()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_records_names_for_the_agents_providers_are_theirs_never_opencodes() {
+        for (named, kind, account) in [
+            ("codex", AgentKind::Codex, "default"),
+            ("grok@work", AgentKind::Grok, "work"),
+            ("claude", AgentKind::Claude, "default"),
+            ("codex-cli", AgentKind::Codex, "default"),
+            ("opencode-go", AgentKind::OpenCode, "default"),
+            ("anthropic", AgentKind::OpenCode, "default"),
+        ] {
+            let parsed = Provider::of_model(named).unwrap();
+            assert_eq!((parsed.kind, parsed.account.as_str()), (kind, account), "{named}");
+        }
+        // Their state stays where it was kept; OpenCode's providers share its account's.
+        assert_eq!(Provider::slot("codex"), "codex");
+        assert_eq!(Provider::slot("opencode-go"), "opencode-agent");
+    }
 }
