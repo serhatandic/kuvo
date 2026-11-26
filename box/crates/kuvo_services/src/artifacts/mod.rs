@@ -7,7 +7,6 @@ pub mod changes;
 pub mod diff;
 pub mod folders;
 pub mod index;
-pub mod inventory;
 pub mod kinds;
 pub mod paths;
 pub mod policy;
