@@ -1,7 +1,7 @@
 //! The Rust socket and session owner over loopback WebSockets. The stand-in emits the relay's
 //! responses so disconnection, grants, and malformed frames can be tested deterministically.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::{HashMap, VecDeque}, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use kuvo_peers::{
@@ -58,7 +58,7 @@ fn config(url: String) -> Config {
     }
 }
 
-struct TestRelay(WebSocketStream<TcpStream>);
+struct TestRelay(WebSocketStream<TcpStream>, VecDeque<Vec<u8>>);
 
 impl TestRelay {
     async fn connect() -> (Relay, Self) {
@@ -91,6 +91,7 @@ impl TestRelay {
             accept_async(listener.accept().await.unwrap().0)
                 .await
                 .unwrap(),
+            VecDeque::new(),
         );
         assert_eq!(test.binary().await, frames::relay_hello(&secret));
         let address = keys::address_of(&secret);
@@ -111,7 +112,31 @@ impl TestRelay {
     }
 
     async fn binary(&mut self) -> Vec<u8> {
+        if let Some(bytes) = self.1.pop_front() {
+            return bytes;
+        }
         self.0.next().await.unwrap().unwrap().into_data().to_vec()
+    }
+
+    /// Move a paused clock without confusing a quiet computer with a dead
+    /// relay. A pong fences the preceding binary heartbeat: the socket owner
+    /// has read it before the next clock step. Preserve any intervening mail.
+    async fn advance_alive(&mut self, mut elapsed: Duration) {
+        while !elapsed.is_zero() {
+            self.send(vec![0]).await;
+            let marker = b"fixture-heartbeat".to_vec();
+            self.0.send(Ws::Ping(marker.clone().into())).await.unwrap();
+            loop {
+                match self.0.next().await.unwrap().unwrap() {
+                    Ws::Pong(got) if got.as_ref() == marker.as_slice() => break,
+                    Ws::Binary(bytes) => self.1.push_back(bytes.to_vec()),
+                    other => panic!("unexpected relay heartbeat response: {other:?}"),
+                }
+            }
+            let step = elapsed.min(Duration::from_secs(45));
+            tokio::time::advance(step).await;
+            elapsed -= step;
+        }
     }
 
     async fn frame(&mut self) -> (Kind, u32, Vec<u8>) {
@@ -322,6 +347,7 @@ async fn the_relay_disappearing_is_reported_and_the_client_reconnects() {
             accept_async(listener.accept().await.unwrap().0)
                 .await
                 .unwrap(),
+            VecDeque::new(),
         );
         test.binary().await;
         test.0.close(None).await.unwrap();
@@ -334,6 +360,7 @@ async fn the_relay_disappearing_is_reported_and_the_client_reconnects() {
             accept_async(listener.accept().await.unwrap().0)
                 .await
                 .unwrap(),
+            VecDeque::new(),
         );
         assert_eq!(test.binary().await, frames::relay_hello(&RUST_SECRET));
         let address = keys::address_of(&RUST_SECRET);
@@ -342,6 +369,54 @@ async fn the_relay_disappearing_is_reported_and_the_client_reconnects() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn a_full_relay_event_queue_pauses_input_without_stopping_the_connection() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (mut relay, mut wire) = TestRelay::connect().await;
+        let mut observed = relay.handle().subscribe().unwrap();
+        // Leave the durable consumer parked while the relay fills its 128 slots.
+        // The next authenticated event must wait for capacity, not end the socket.
+        for sequence in 0..129 {
+            let value = json!({"pressureSequence": sequence});
+            let sealed = Envelope(value.as_object().unwrap().clone())
+                .seal(&PEER_KEY, &public(RUST_KEY)).unwrap();
+            wire.send(frames::relay_send(&PEER_ADDRESS, &sealed)).await;
+            let event = observed.recv().await.expect("relay stopped under backpressure");
+            assert!(matches!(&*event, RelayEvent::Mail { envelope, .. }
+                if envelope.0["pressureSequence"] == sequence));
+        }
+
+        // The durable consumer can be awaiting a trust or mail command while
+        // the queue is full. Blocking the socket owner on send would deadlock it.
+        relay.sender.trust_applied(config(String::new()).grants, config(String::new()).peers)
+            .await.expect("trust command while the event consumer is busy");
+        let host = Host { key: public(PEER_KEY), address: PEER_ADDRESS };
+        assert!(matches!(
+            relay.sender.start(host.clone(), hello()).await,
+            Err(kuvo_peers::relay::Error::EventBackpressure)
+        ));
+
+        let value = json!({"pressureSequence": 129});
+        let sealed = Envelope(value.as_object().unwrap().clone())
+            .seal(&PEER_KEY, &public(RUST_KEY)).unwrap();
+        wire.send(frames::relay_send(&PEER_ADDRESS, &sealed)).await;
+        for sequence in 0..130 {
+            let event = relay.events.recv().await.expect("relay event stream closed");
+            assert!(matches!(event, Event::Mail { envelope, .. }
+                if envelope.0["pressureSequence"] == sequence));
+        }
+
+        // Once the consumer drains, both directions still use the same socket.
+        let answer = json!({"pressureDone": true});
+        relay.sender.mail(Host { key: public(PEER_KEY), address: PEER_ADDRESS },
+            Envelope(answer.as_object().unwrap().clone())).await.unwrap();
+        assert_eq!(wire.mailed("pressureDone").await, true);
+        let opened = relay.sender.start(host, hello()).await.unwrap();
+        let (kind, number, _) = wire.frame().await;
+        assert_eq!((kind, number), (Kind::Handshake1, opened.number));
+    }).await.unwrap();
 }
 
 /// Run after scripts/build-built.sh and installing the relay deps, with KUVO_RS15_BUN set.
@@ -966,7 +1041,8 @@ async fn owner_submission_recovery_is_advertised_when_attached() {
 
     tokio::time::timeout(Duration::from_secs(8), async {
         let home = tempfile::tempdir().unwrap();
-        let (relay, mut test) = TestRelay::connect().await;
+        // Serving consumes the welcome itself before publishing.
+        let (relay, mut test, _) = TestRelay::welcome(|_| {}).await;
         let clock = Arc::new(AtomicI64::new(12));
         let resident = ResidentPeers::start(
             home.path(),
@@ -2037,10 +2113,17 @@ async fn switch_retry_survives_wall_clock_changes() {
         assert_eq!(sent_at(), 1_000_001);
         assert!(tokio::time::timeout(Duration::from_secs(1), wire.move_step("switch")).await.is_err());
 
+        // Native file notifications run on the OS's real clock. Don't let
+        // Tokio auto-advance a paused timeout ahead of that external event.
+        tokio::time::resume();
         clock.store(990_000, Ordering::Relaxed);
+        // The injected clock changed; wake the actual driver watch rather
+        // than expecting a periodic move scan to discover the change.
+        std::fs::write(home.path().join("run/test-setup-clock.json"), br#"{"offset":-10001}"#).unwrap();
         wire.send(vec![0]).await;
         assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.move_step("switch")).await.unwrap(), first);
         assert_eq!(sent_at(), 990_000);
+        tokio::time::pause();
 
         let proof = |generation, never_switched| {
             let envelope = json!({"at": clock.load(Ordering::Relaxed), "move": {
@@ -2051,8 +2134,7 @@ async fn switch_retry_survives_wall_clock_changes() {
         };
         for minute in 1..=11 {
             clock.store(990_000 + minute * 61_000, Ordering::Relaxed);
-            wire.send(vec![0]).await;
-            tokio::time::advance(Duration::from_secs(61)).await;
+            wire.advance_alive(Duration::from_secs(61)).await;
             assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.next_move()).await.unwrap(), first);
             assert!(journal.exists());
             assert!(wake.join("paused").exists());
@@ -2714,8 +2796,7 @@ async fn source_deadline(deadline: SourceDeadline) {
         tokio::time::pause();
         for seconds in [61, 122] {
             clock.store(1_000_000 + seconds * 1000, Ordering::Relaxed);
-            wire.send(vec![0]).await;
-            tokio::time::advance(Duration::from_secs(61)).await;
+            wire.advance_alive(Duration::from_secs(61)).await;
             let retried = tokio::time::timeout(Duration::from_secs(12), wire.move_step("offer"))
                 .await
                 .unwrap();
@@ -2733,8 +2814,7 @@ async fn source_deadline(deadline: SourceDeadline) {
         };
         tokio::time::pause();
         clock.store(1_094_000, Ordering::Relaxed);
-        wire.send(vec![0]).await;
-        tokio::time::advance(Duration::from_secs(94)).await;
+        wire.advance_alive(Duration::from_secs(94)).await;
         tokio::time::timeout(Duration::from_secs(12), async {
             while waiting(&wire.moving().await) != Some(true) {}
         })
@@ -2749,8 +2829,7 @@ async fn source_deadline(deadline: SourceDeadline) {
     }
 
     clock.store(1_699_000, Ordering::Relaxed);
-    wire.send(vec![0]).await;
-    tokio::time::advance(Duration::from_secs(605)).await;
+    wire.advance_alive(Duration::from_secs(605)).await;
     tokio::time::timeout(Duration::from_secs(12), async {
         while !outcome.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;

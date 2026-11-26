@@ -308,12 +308,12 @@ impl LocalSessions {
                     },
                     changed = agent_changes(&mut agent_edits) => {
                         match changed {
-                            Some(rescan) => {
-                                // A shared FSEvents stream is reconfigured when another
-                                // service adds or removes a root. Recheck the on-disk
-                                // agent rows, but don't invalidate the OpenCode inventory
-                                // when these rows are unchanged.
-                                if rescan && let Some((_, kept, _)) = &inventory
+                            Some(()) => {
+                                // A watch can report a stream reconfiguration, a
+                                // rewritten identical record or another event in
+                                // the agent folder. Recheck the agent rows, but
+                                // don't invalidate OpenCode's unchanged inventory.
+                                if let Some((_, kept, _)) = &inventory
                                     && kept.same_agents(&engine).await
                                 {
                                     continue;
@@ -332,6 +332,11 @@ impl LocalSessions {
                         }
                     } => {
                         if changed.is_ok() {
+                            if let Some((_, kept, _)) = &inventory
+                                && kept.same_agents(&engine).await
+                            {
+                                continue;
+                            }
                             agent_revision.send_modify(|revision| *revision += 1);
                             read_again = true;
                         } else {
@@ -1121,20 +1126,20 @@ async fn background_changes(edits: &mut Option<Subscription>) -> Option<()> {
     None
 }
 
-async fn agent_changes(edits: &mut Option<Subscription>) -> Option<bool> {
+async fn agent_changes(edits: &mut Option<Subscription>) -> Option<()> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan | Notice::Failed(_) => return Some(true),
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path.file_name().is_some_and(|name| name == "session.json")
                         || path.components().count() == 1
                 }) =>
             {
-                return Some(false);
+                return Some(());
             }
             _ => {}
         }

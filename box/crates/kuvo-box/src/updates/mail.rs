@@ -1,7 +1,7 @@
 //! Target packs over the existing authenticated peer release mail.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -14,7 +14,7 @@ use kuvo_keeper::{
     staging::MAX_PACK,
 };
 use kuvo_peers::{
-    directory::UpdateFacts,
+    directory::{PreparedRelease, UpdateFacts},
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, system_clock},
 };
@@ -55,6 +55,30 @@ impl PullProgress {
     }
 }
 
+/// A peer drops its saved request once the authenticated transport accepts
+/// it. Keep accepted checks/retries until the fleet worker has room, without
+/// blocking pack replies on that mailbox. A feed check is one shared action;
+/// for each peer only its latest requested release can still be current.
+#[derive(Default)]
+struct PendingChecks {
+    check: bool,
+    retries: BTreeMap<[u8; 32], PreparedRelease>,
+}
+
+impl PendingChecks {
+    fn pending(&self) -> bool {
+        self.check || !self.retries.is_empty()
+    }
+
+    fn take(&mut self) -> Option<Check> {
+        if std::mem::take(&mut self.check) {
+            Some(Check::Peer)
+        } else {
+            self.retries.pop_first().map(|(_, release)| Check::PeerRetry(release))
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Mail {
     relay: RelayHandle,
@@ -75,9 +99,28 @@ impl Mail {
             let mut mirrors = JoinSet::new();
             let gate = Arc::new(Semaphore::new(1));
             let fetcher = Fetcher::default();
+            let mut pending = PendingChecks::default();
+            let mut checks_open = true;
             loop {
                 let incoming = tokio::select! {
                     _ = mirrors.join_next(), if !mirrors.is_empty() => continue,
+                    permit = checks.reserve(), if checks_open && pending.pending() => {
+                        match permit {
+                            Ok(permit) => {
+                                // The sender may have left since the request arrived.
+                                let view = mail.reader.view();
+                                pending.retries.retain(|key, _| view.roster.member(key).is_some());
+                                if let Some(check) = pending.take() {
+                                    permit.send(check);
+                                }
+                            }
+                            Err(_) => {
+                                checks_open = false;
+                                pending = PendingChecks::default();
+                            }
+                        }
+                        continue
+                    }
                     event = events.recv() => event,
                 };
                 let event = match incoming {
@@ -102,7 +145,7 @@ impl Mail {
                 }
                 if let Some(value) = envelope.0.get("release") {
                     if value["check"] == true {
-                        let _ = checks.try_send(Check::Peer);
+                        if checks_open { pending.check = true; }
                         continue;
                     }
                     if let Some(retry) = value.get("retry")
@@ -114,7 +157,10 @@ impl Mail {
                             .release_target
                             .is_some()
                         {
-                            let _ = checks.try_send(Check::PeerRetry(release));
+                            if checks_open {
+                                pending.retries.retain(|key, _| view.roster.member(key).is_some());
+                                pending.retries.insert(*key, release);
+                            }
                         }
                         continue;
                     }
@@ -465,4 +511,34 @@ async fn reply(
 
 fn unavailable() -> io::Error {
     io::Error::other("The other computers couldn't send this signed release.")
+}
+
+
+#[cfg(test)]
+mod pressure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepted_checks_survive_a_full_update_mailbox() {
+        let (checks, mut receiver) = mpsc::channel(1);
+        checks.send(Check::Offered).await.unwrap_or_else(|_| panic!("mailbox stopped"));
+        let mut pending = PendingChecks::default();
+        pending.check = true;
+        let release = |version: &str| PreparedRelease { version: version.into(), sha256: "fixture".into() };
+        pending.retries.insert([1; 32], release("1"));
+        pending.retries.insert([1; 32], release("2"));
+        pending.retries.insert([2; 32], release("3"));
+        assert!(checks.try_reserve().is_err());
+        assert!(pending.pending());
+        assert!(matches!(receiver.recv().await, Some(Check::Offered)));
+        for expected in [None, Some("2"), Some("3")] {
+            checks.reserve().await.unwrap().send(pending.take().unwrap());
+            match (expected, receiver.recv().await) {
+                (None, Some(Check::Peer)) => {}
+                (Some(version), Some(Check::PeerRetry(release))) => assert_eq!(release.version, version),
+                _ => panic!("lost pending update request"),
+            }
+        }
+        assert!(!pending.pending());
+    }
 }

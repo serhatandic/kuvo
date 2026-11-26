@@ -34,18 +34,17 @@ pub(crate) struct Clock {
 }
 
 impl Clock {
+    fn test_offset(&self) -> Option<i64> {
+        self.offset_file.as_ref().map(|files| {
+            files.read::<serde_json::Value>("run/test-setup-clock.json")
+                .ok().flatten()
+                .and_then(|file| file.get("offset").and_then(serde_json::Value::as_i64))
+                .unwrap_or_default()
+        })
+    }
+
     fn now(&self) -> Timestamp {
-        let offset = self
-            .offset_file
-            .as_ref()
-            .and_then(|files| {
-                files
-                    .read::<serde_json::Value>("run/test-setup-clock.json")
-                    .ok()
-                    .flatten()
-                    .and_then(|file| file.get("offset").and_then(serde_json::Value::as_i64))
-            })
-            .unwrap_or_default();
+        let offset = self.test_offset().unwrap_or_default();
         Timestamp {
             wall: wall().saturating_add_signed(offset),
             uptime: self.started.elapsed().as_secs_f64() * 1000.0 + offset as f64,
@@ -197,6 +196,12 @@ impl Client {
                 .and_then(|settings| settings.always_on)
                 .unwrap_or(cfg!(target_os = "linux")),
         })
+    }
+
+    /// Only the isolated relay fixture has a clock file. Its actual offset,
+    /// not an unrelated directory notification, advances the lease deadline.
+    pub fn test_clock_offset(&self) -> Option<i64> {
+        self.clock.test_offset()
     }
 
     pub fn holds(&self, link: &Link) -> bool {

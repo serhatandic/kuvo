@@ -39,6 +39,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers stay quiet when nothing is working: the Work Queue, transfers, saved messages, bot edits and followed lists respond to changes instead of checking every few seconds. An unused artifact history no longer creates its files at startup.
 
+- Rust computers share file watches instead of opening a watcher for every folder. A burst of changes from another computer no longer stops the relay connection, and a busy computer keeps accepted peer refresh and update requests until it can handle them.
+
 - Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
 
 - Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.

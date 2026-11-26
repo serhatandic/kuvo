@@ -865,8 +865,58 @@ rather than a removed inode. FSEvents path updates are batched; affected subscri
 rescan when registration changes can lose changes. The isolated OS scenario subscribes to
 140 distinct roots, asserts just one additional /proc/self/fd inotify descriptor on Linux,
 and proves notification routing and child coverage before and after a recursive ancestor is
-added and released. The new test and the existing watch/reconnect/poll scenarios pass on
-Mac. Cross verification of the shared watcher follows.
+added and released. The new scenario and existing watch/reconnect/poll scenarios pass on
+Mac, and the 140-root scenario passes on Linux, WSL and Windows; sampled WSL residents
+held at most one inotify instance even in the five-computer retirement case.
+
+The shared watcher sample (65 seconds, same fixture) records resident RSS of 49,696 KiB
+without a client and 54,544 KiB with one, versus 51,952/53,776 KiB before sharing.
+Keeper plus resident uses 63,488 KiB alone and 69,904 KiB following the hot pages
+(previous final sample 65,232/72,128 KiB). The timer counts remain 2/16:
+two relay protocol heartbeats, and with a client 13 line heartbeats and one usage demand
+deadline. No idle application-service timer, agent start, engine or solo lease request.
+The original timer baseline was 267/283 callbacks in the same interval. In a paired
+three-second vmmap sample the resident has 19 stack regions (768 KiB resident), down from
+36 (1,280 KiB) in the timer baseline and 64 (2,032 KiB) before watcher sharing.
+Physical footprint is 15.5 MiB versus 16.0 MiB baseline; malloc remains 11.1 MiB,
+so the remaining RSS difference is mainly mapped code, not an eager data cache.
+All fixture processes exited.
+
+A native watch reconfiguration can require a real rescan, but it must not invalidate
+unrelated engine inventory. Project/background file notices reproject the saved inventory;
+agent notices compare the actual agent rows before invalidating it. The Mac refiling case
+failed twice with the first shared watcher (two unnecessary engine reads), then passed
+focused and engine-sessions 81/81 after separating the projection. On Windows a recursive
+ancestor also reports metadata changes to a logical watched directory; these are not
+changes to its named children. The isolated setup test clock now wakes the lease only
+when its actual offset changes, and production has no test-clock watch.
+
+**Relay pressure.** A single native watcher removed the Linux instance pressure, but the
+WSL retirement case still failed with one inotify descriptor per resident (also when
+pinned to one CPU). The diagnostic relay recorded 34 installer retries successfully
+written by the applicant, all to an offline issuer, although its HTTP lease still renewed.
+The relay's bounded durable-event queue formerly ended the entire connection owner when
+its 128 slots filled. The real loopback regression filled it with authenticated peer mail:
+the old owner closed on event 129; the new owner parks input until consumer capacity,
+preserves queued event order, and continues trust/mail/close commands so a consumer
+awaiting its own command cannot deadlock. A new session start during backpressure receives
+a transient busy answer instead of adding an unbounded backlog. An actual socket failure
+drains accepted events, resets sessions and reconnects, servicing offline commands meanwhile.
+The new pressure case drains 130 ordered events and sends again on the same socket.
+Peer publication also coalesces the latest projection without losing explicit per-peer
+refresh, Connect, move and reconnect intents. Connect waits for its published state before
+answering 202; a cached remote read's background reach remains best-effort.
+
+The TypeScript relay is driven directly by WebSocket callbacks and has no corresponding
+bounded event owner. The other Rust bounded-queue exits examined were deliberate
+connection-local backpressure (SSH agent), slow line attachment detachment with numbered
+replay, or an actually closed consumer; durable holder output pumps from its journal.
+Dirty wake tokens are coalescible. The Work Queue exchange, remote work, move driver,
+delivery recovery and letter outbox retain actual outstanding retries and rearm on
+receipt/route changes; there is no need to restore their idle rounds. The peer update sender clears its saved request after transport acceptance, so its
+bounded fleet mailbox now coalesces a shared check and the latest retry per peer
+until capacity is available, without blocking pack replies. Final cross verification
+of the relay and Windows fixes remains pending.
 
 
 ## 7. Release decisions

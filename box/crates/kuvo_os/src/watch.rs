@@ -456,7 +456,25 @@ impl Worker {
                     let paths: Vec<_> = event
                         .paths
                         .iter()
-                        .filter_map(|path| path.strip_prefix(folder).ok().map(Path::to_owned))
+                        .filter_map(|path| {
+                            let relative = path.strip_prefix(folder).ok()?;
+                            // ReadDirectoryChangesW watches a directory's contents,
+                            // not its own metadata. A recursively watched ancestor
+                            // also reports metadata changes to the logical root:
+                            // writing a child can change that directory's stamp.
+                            // Do not turn those into a change of every named file.
+                            if cfg!(windows)
+                                && relative.as_os_str().is_empty()
+                                && event.kind.is_modify()
+                                && !matches!(
+                                    event.kind,
+                                    notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+                                )
+                            {
+                                return None;
+                            }
+                            Some(relative.to_owned())
+                        })
                         .collect();
                     if !paths.is_empty() {
                         let _ = entry.notices.send(Notice::Changed { paths });

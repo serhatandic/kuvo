@@ -1212,7 +1212,10 @@ impl Owner {
             vec![(self.files.path("run/owned-data/edit-outbox"), false)],
         );
         let mut lease_files = kuvo_os::watch::FileSet::new(hub.clone());
-        lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        let mut clock_offset = self.lease.test_clock_offset();
+        if clock_offset.is_some() {
+            lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        }
         let mut number_files = kuvo_os::watch::FileSet::new(hub);
         number_files.set_files(vec![self.files.path("run/work-queue/numbers.json")]);
         let mut maintenance = Some(Instant::now());
@@ -1249,12 +1252,17 @@ impl Owner {
                     self.refresh();
                 },
                 _ = lease_files.changed() => {
-                    if self.lease_needed() { self.next = Some(Instant::now()); }
+                    let offset = self.lease.test_clock_offset();
+                    if offset != clock_offset {
+                        clock_offset = offset;
+                        if self.lease_needed() { self.next = Some(Instant::now()); }
+                    }
                 },
                 _ = number_files.changed() => {
                     if self.lease_needed() && self.lease.needs_number_reserve(&self.files, &self.link) { self.next = Some(Instant::now()); }
                 },
-                () = async { match until { Some(at) => timer_fires::sleep_until(Timer::SetupDeadline, at).await, None => std::future::pending().await } } => {
+                () = async { match until { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+                    timer_fires::fired(Timer::SetupDeadline);
                     if self.next.is_some_and(|at| at <= Instant::now()) {
                         self.next = Some(Instant::now() + Duration::from_secs(2));
                         if let Err(error) = self.tick().await && !matches!(error, Error::Relay(_) | Error::Conflict) { eprintln!("setup heartbeat: {error}"); }

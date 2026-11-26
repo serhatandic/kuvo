@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -667,7 +667,7 @@ enum Change {
     ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
-    ReachAgain(ComputerKey),
+    ReachAgain(ComputerKey, oneshot::Sender<bool>),
 }
 
 /// Asks the resident to reach a computer that's away again (Connect).
@@ -675,9 +675,19 @@ enum Change {
 pub struct ReachAgain(mpsc::Sender<Change>);
 
 impl ReachAgain {
-    /// False when the ask couldn't be left.
+    /// A cached remote read can try again in the background without waiting.
     pub fn ask(&self, key: ComputerKey) -> bool {
-        self.0.try_send(Change::ReachAgain(key)).is_ok()
+        let (done, _) = oneshot::channel();
+        self.0.try_send(Change::ReachAgain(key, done)).is_ok()
+    }
+
+    /// A successful explicit Connect means the connecting row is published.
+    pub async fn ask_and_wait(&self, key: ComputerKey) -> bool {
+        let (done, answer) = oneshot::channel();
+        if self.0.try_send(Change::ReachAgain(key, done)).is_err() {
+            return false;
+        }
+        answer.await.unwrap_or(false)
     }
 }
 
@@ -1108,7 +1118,11 @@ impl Resident {
                         }
                     },
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
-                    Some(Change::ReachAgain(key)) => {
+                    Some(Change::ReachAgain(key, done)) => {
+                        if !self.view.relay_connected || self.view.roster.member(&key).is_none() {
+                            let _ = done.send(false);
+                            continue;
+                        }
                         // It tells that peer its agents now and asks for theirs: an answer marks
                         // it back at once, and none leaves it away once the try is over.
                         let now = clock();
@@ -1118,6 +1132,9 @@ impl Resident {
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), now, Refresh::Reach { key });
                         }
+                        publish.send_replace(Arc::new(self.view.clone()));
+                        let _ = done.send(true);
+                        continue;
                     }
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
@@ -1569,8 +1586,78 @@ enum Refresh {
     Reach { key: ComputerKey },
 }
 
+/// Coalesce latest state independently of delivery intents. A burst of local
+/// changes needs only one projection, but an explicit peer refresh or Connect
+/// must not be discarded just because the writer is busy sending a copy.
+#[derive(Default)]
+struct RefreshBatch {
+    disconnected: bool,
+    plain: bool,
+    moves: bool,
+    all: bool,
+    peers: BTreeMap<ComputerKey, bool>,
+    reach: BTreeSet<ComputerKey>,
+}
+
+impl RefreshBatch {
+    fn merge(&mut self, refresh: Refresh) {
+        match refresh {
+            Refresh::None => self.plain = true,
+            Refresh::Moves => self.moves = true,
+            Refresh::All => self.all = true,
+            Refresh::Peer { key, ask } => {
+                self.peers.entry(key).and_modify(|before| *before |= ask).or_insert(ask);
+            }
+            Refresh::Reach { key } => { self.reach.insert(key); }
+        }
+    }
+
+    fn forced(&self, key: &ComputerKey) -> bool {
+        self.all || self.peers.contains_key(key) || self.reach.contains(key)
+    }
+
+    fn repeat_moves(&self) -> bool {
+        self.peers.values().any(|ask| *ask)
+    }
+}
+
+#[cfg(test)]
+mod refresh_batch_tests {
+    use super::*;
+
+    #[test]
+    fn busy_publication_coalesces_changes_without_losing_explicit_refreshes() {
+        let mut batch = RefreshBatch::default();
+        let asking = [1; 32];
+        let reaching = [2; 32];
+        let other = [3; 32];
+        batch.merge(Refresh::Peer { key: asking, ask: true });
+        batch.merge(Refresh::Reach { key: reaching });
+        for _ in 0..100 {
+            batch.merge(Refresh::None);
+            batch.merge(Refresh::Peer { key: asking, ask: false });
+        }
+        batch.merge(Refresh::Moves);
+        assert!(batch.forced(&asking));
+        assert!(batch.forced(&reaching));
+        assert!(!batch.forced(&other));
+        assert!(batch.repeat_moves());
+        assert!(batch.moves && batch.plain && !batch.all);
+        assert_eq!(batch.peers.len(), 1);
+        batch.merge(Refresh::All);
+        assert!(batch.forced(&other));
+    }
+}
+
+struct PendingPublication {
+    view: View,
+    now: Millis,
+    refresh: RefreshBatch,
+}
+
 struct Publisher {
-    tx: mpsc::Sender<(View, Millis, Refresh)>,
+    pending: Arc<Mutex<Option<PendingPublication>>>,
+    ready: watch::Sender<u64>,
     task: JoinHandle<()>,
 }
 
@@ -1582,7 +1669,9 @@ impl Drop for Publisher {
 
 impl Publisher {
     fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>, clock: Clock) -> Self {
-        let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
+        let pending = Arc::new(Mutex::new(None::<PendingPublication>));
+        let (ready, mut changes) = watch::channel(0u64);
+        let inbox = pending.clone();
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
             let mut announcements = BTreeMap::new();
@@ -1591,29 +1680,21 @@ impl Publisher {
             let mut next = None;
             loop {
                 tokio::select! {
-                    request = rx.recv() => {
-                        let Some((view, now, refresh)) = request else { break; };
+                    changed = changes.changed() => {
+                        if changed.is_err() { break; }
+                        let request = inbox.lock().unwrap().take();
+                        let Some(PendingPublication { view, now, refresh }) = request else { continue; };
                         if !view.relay_connected || view.roster.members.is_empty() {
                             next = None;
                         } else {
-                            let new_recipients = latest.as_ref().is_none_or(|before| !before.relay_connected
+                            let new_recipients = refresh.disconnected || latest.as_ref().is_none_or(|before| !before.relay_connected
                                 || before.roster.members.iter().map(|peer| (peer.key, peer.address))
                                     .ne(view.roster.members.iter().map(|peer| (peer.key, peer.address))));
-                            let announce = if new_recipients {
-                                // The first connected projection may arrive through a local
-                                // event before the explicit refresh gets into this mailbox.
-                                moves.repeat();
-                                true
-                            } else { match &refresh {
-                                Refresh::Peer { ask: true, .. } => {
-                                    moves.repeat();
-                                    true
-                                }
-                                Refresh::Moves => true,
-                                _ => false,
-                            } };
-                            let before = !new_recipients && matches!(&refresh, Refresh::Moves);
-                            if announce && before {
+                            let repeat = new_recipients || refresh.repeat_moves();
+                            if repeat { moves.repeat(); }
+                            let announce = repeat || refresh.moves;
+                            let before = !repeat && refresh.moves;
+                            if before {
                                 next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, now).await;
                             }
                             publish_round(
@@ -1643,11 +1724,25 @@ impl Publisher {
                 }
             }
         });
-        Self { tx, task }
+        Self { pending, ready, task }
     }
 
     fn request(&mut self, view: View, now: Millis, refresh: Refresh) {
-        let _ = self.tx.try_send((view, now, refresh));
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(request) = pending.as_mut() {
+            request.refresh.disconnected |= !view.relay_connected;
+            request.view = view;
+            request.now = now;
+            request.refresh.merge(refresh);
+            request.refresh.peers.retain(|key, _| request.view.roster.member(key).is_some());
+            request.refresh.reach.retain(|key| request.view.roster.member(key).is_some());
+        } else {
+            let mut batch = RefreshBatch { disconnected: !view.relay_connected, ..RefreshBatch::default() };
+            batch.merge(refresh);
+            *pending = Some(PendingPublication { view, now, refresh: batch });
+        }
+        drop(pending);
+        self.ready.send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 }
 
@@ -1655,7 +1750,7 @@ async fn publish_round(
     relay: &relay::Sender,
     view: View,
     now: Millis,
-    refresh: Refresh,
+    refresh: RefreshBatch,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
     sent_agents: &watch::Sender<AgentMail>,
@@ -1770,8 +1865,7 @@ async fn publish_round(
         let Some(host) = peer.host() else {
             continue;
         };
-        let forced = matches!(refresh, Refresh::All)
-            || matches!(refresh, Refresh::Peer { key, .. } | Refresh::Reach { key } if key == peer.key);
+        let forced = refresh.forced(&peer.key);
         let known = view.announced.get(&encode(&peer.key));
         let (state, announcement_digest) = bridge
             .as_ref()
@@ -1786,9 +1880,8 @@ async fn publish_round(
             let at = before.map_or(now, |(_, before)| now.max(before.saturating_add(1)));
             let mut fields = json!({"at": now, "agents": state});
             fields["agents"]["at"] = json!(at);
-            if matches!(refresh, Refresh::All)
-                || matches!(refresh, Refresh::Reach { key } if key == peer.key)
-                || (known.is_none() && matches!(refresh, Refresh::None))
+            if refresh.all || refresh.reach.contains(&peer.key)
+                || (known.is_none() && refresh.plain)
             {
                 fields["ask"] = json!("agents");
             }
