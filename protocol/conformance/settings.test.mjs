@@ -731,3 +731,193 @@ test("MCP adds a popular server from its row, and keeps a timeout as a number un
   assert.equal(refused.status,403,refused.text);
   assert.equal(config().mcp.timeout.startup,"slow");
 });
+
+// Settings › Agents, with the engine's built-in agents and one of yours.
+const agentBuiltIns=[{id:"build",name:"Build",mode:"primary"},{id:"plan",name:"Plan",mode:"primary"},{id:"general",name:"General",mode:"subagent"},
+  {id:"explore",name:"Explore",mode:"subagent"},{id:"title",name:"Title",mode:"primary",hidden:true}];
+const agentSettings={default_agent:"reviewer",agents:{
+  reviewer:{mode:"all",description:"Reviews changes\nand says what's wrong",steps:12,permissions:[{action:"edit",resource:"*",effect:"deny"},{action:"shell",resource:"git diff *",effect:"allow"}]},
+  plan:{system:"Plan in short steps."},title:{model:"lab/fast"}}};
+const agentsBox=async(t,name,settings=agentSettings,{app=true}={})=>{
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify(settings));
+  box.engine.agents=[...agentBuiltIns,{id:"reviewer",name:"reviewer",mode:"subagent"}];
+  box.engine.providers=[{id:"lab"}];
+  box.engine.models=[{id:"fast",providerID:"lab",name:"Lab Fast"},{id:"big",providerID:"lab",name:"Lab Big"},{id:"off",providerID:"elsewhere",name:"No Account"}];
+  const headers=app?{"x-kuvo-from":"app"}:{};
+  const plain=box.connect(await box.start().ready());
+  const ask=(method,route,body)=>plain(method,route,body,headers);
+  const page=async()=>{const r=await ask("GET","kuvo/settings/agents");assert.equal(r.status,200,r.text);return r.json;};
+  const config=()=>JSON.parse(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"));
+  const change=(r,value,was=r.revision)=>ask("PATCH","kuvo/settings/agents",{row:r.id,value,was});
+  const check=(r,id,values)=>perform(ask,"agents",r,id,values,headers,true);
+  const submit=(r,id,values)=>perform(ask,"agents",r,id,values,headers);
+  const field=(r,id,f)=>action(r,id).form.fields.find(x=>x.id===f);
+  return {box,ask,page,config,change,check,submit,field};
+};
+
+test("Agents lists the built-in agents, then yours, each with how it's used, and keeps listing them with the engine down", async t => {
+  const {box,ask,page,field}=await agentsBox(t,"Agents List");
+  const listed=(await ask("GET","kuvo/settings")).json.sections.find(s=>s.id==="agents");
+  assert.deepEqual([listed.title,listed.group,listed.icon],["Agents","Agents & Tools","bot"]);
+  const shown=await page();
+  const agents=row(shown,"agents");
+  assert.deepEqual(agents.items.map(i=>i.title),["Build","Plan","General","Explore","reviewer"]);
+  assert.deepEqual([agents.add.id,agents.add.title,agents.add.form.title,agents.add.form.submit],["add","New Agent…","New Agent","Create Agent"]);
+  const build=item(shown,"agent-build");
+  assert.deepEqual([build.kind,build.value,build.can,build.line],["switch",true,true,"A mode · The default agent: it can change files and run commands."]);
+  assert.deepEqual(build.actions.map(a=>a.title),["Edit…"]);
+  const plan=item(shown,"agent-plan");
+  assert.deepEqual(plan.badge,{words:"Changed",tone:"quiet"});
+  assert.deepEqual(plan.actions.map(a=>a.title),["Edit…","Reset to Built-In…"]);
+  assert.deepEqual([plan.actions[1].style,plan.actions[1].confirm.title,plan.actions[1].confirm.button],["destructive","Reset Plan to how it's built in?","Reset"]);
+  const reviewer=item(shown,"agent-reviewer");
+  assert.equal(reviewer.line,"A mode and a subagent · Reviews changes");
+  assert.deepEqual([reviewer.actions[1].id,reviewer.actions[1].title,reviewer.actions[1].confirm],["delete","Delete Agent…",
+    {title:"Delete reviewer?",body:`It's removed from ${process.platform==="darwin"?"this Mac":"this computer"}'s settings.`,button:"Delete"}]);
+  assert.equal(shown.notes,undefined);
+  await box.engine.close();
+  const down=await page();
+  assert.deepEqual(row(down,"agents").items.map(i=>i.id),["agent-build","agent-plan","agent-general","agent-explore","agent-reviewer"]);
+  assert.equal(down.notes[0].tone,"warning");
+  assert.match(down.notes[0].words,/isn’t answering/);
+  assert.deepEqual(field(item(down,"agent-reviewer"),"edit","model").choices.map(c=>c.id),[""]);
+});
+
+test("Agents turns one off and on through the engine's settings, and one turned off stops being where sessions start", async t => {
+  const {page,config,change}=await agentsBox(t,"Agents Switch");
+  let shown=(await change(item(await page(),"agent-reviewer"),false)).json;
+  assert.equal(config().agents.reviewer.disabled,true);
+  assert.equal(config().default_agent,undefined);
+  assert.equal(item(shown,"agent-reviewer").value,false);
+  assert.equal((await change(item(await page(),"agent-reviewer"),false,"old")).status,409);
+  shown=(await change(item(shown,"agent-reviewer"),true)).json;
+  assert.equal(config().agents.reviewer.disabled,undefined);
+  assert.equal((await change(item(await page(),"agent-explore"),false)).status,200);
+  assert.deepEqual(config().agents.explore,{disabled:true});
+  assert.equal((await change(item(await page(),"agent-explore"),true)).status,200);
+  assert.equal(config().agents.explore,undefined);
+});
+
+test("Agents New Agent checks as it's typed, refuses with the same words, and makes an agent the engine reads", async t => {
+  const {box,page,config,check,submit,field}=await agentsBox(t,"Agents New");
+  const agents=row(await page(),"agents");
+  const opened=opening(agents,"add");
+  assert.deepEqual(action(agents,"add").form.fields.map(f=>[f.id,f.kind]),[
+    ["name","text"],["mode","choice"],["description","lines"],["model","choice"],["system","lines"],
+    ["may-edit","choice"],["may-shell","choice"],["may-read","choice"],["may-external_directory","choice"],
+    ["may-webfetch","choice"],["may-websearch","choice"],["may-subagent","choice"],["may-skill","choice"],
+    ["allowed","lines"],["asks","lines"],["never","lines"]]);
+  assert.equal(opened.mode,"subagent");
+  assert.deepEqual(field(agents,"add","model").choices.map(c=>c.id),["","lab/fast","lab/big"]);
+  const external=field(agents,"add","may-external_directory");
+  assert.deepEqual([external.value,external.choices],["ask",[{id:"allow",title:"Allow"},{id:"ask",title:"Ask First (Default)"},{id:"deny",title:"Don't Allow"}]]);
+  const has=(c,id,words,tone)=>c.fields.some(f=>f.id===id&&(words instanceof RegExp?words.test(f.words):f.words===words)&&(!tone||f.tone===tone));
+  let checked=(await check(agents,"add",{...opened,name:"Bug  Hunter!"})).json;
+  assert.equal(checked.ready,true,JSON.stringify(checked));
+  assert.ok(has(checked,"name","It'll be called Bug Hunter.","quiet"),JSON.stringify(checked));
+  assert.ok(has(checked,"mode",/another agent hands it part of the work/,"quiet"));
+  checked=(await check(agents,"add",{...opened,name:"Reviewer"})).json;
+  assert.equal(checked.ready,false);
+  assert.ok(has(checked,"name","There's an agent called Reviewer already.","warning"));
+  assert.equal((await check(agents,"add",{...opened,name:"plan"})).json.ready,false);
+  checked=(await check(agents,"add",{...opened,name:"x",asks:"git push *"})).json;
+  assert.ok(has(checked,"asks","“git push *” needs what it's for first, like Run commands: npm test *.","warning"),JSON.stringify(checked));
+  checked=(await check(agents,"add",{...opened,name:"x",never:"Run commands: *"})).json;
+  assert.ok(has(checked,"never","For all of them, set Run commands above.","warning"),JSON.stringify(checked));
+  for (const name of ["__proto__","toString","x".repeat(65)]) assert.equal((await check(agents,"add",{...opened,name})).json.ready,false,name);
+  const before=readFileSync(path.join(box.home,"box/opencode.json"),"utf8");
+  const refused=await submit(agents,"add",{...opened,name:"reviewer"});
+  assert.equal(refused.status,400,refused.text);
+  assert.equal(refused.json.message,"There's an agent called reviewer already.");
+  assert.equal((await submit(agents,"add",{...opened,name:"__proto__"})).status,400);
+  assert.equal(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"),before);
+  const made=await submit(agents,"add",{...opened,name:"Bug Hunter",description:"Finds bugs.",model:"lab/big",system:"Look for bugs; change nothing.",
+    "may-edit":"deny",allowed:"Run commands: npm test *\nshell: bun test *",never:"open web pages: https://*.internal/*"});
+  assert.equal(made.status,200,made.text);
+  assert.deepEqual(config().agents["Bug Hunter"],{mode:"subagent",description:"Finds bugs.",model:"lab/big",system:"Look for bugs; change nothing.",
+    permissions:[{action:"edit",resource:"*",effect:"deny"},{action:"shell",resource:"npm test *",effect:"allow"},
+      {action:"shell",resource:"bun test *",effect:"allow"},{action:"webfetch",resource:"https://*.internal/*",effect:"deny"}]});
+  const hunter=item(made.json,"agent-Bug Hunter");
+  assert.deepEqual([hunter.title,hunter.line],["Bug Hunter","A subagent · Finds bugs."]);
+  const edit=opening(hunter,"edit");
+  assert.deepEqual([edit["may-edit"],edit.allowed,edit.never,edit.on],["deny","Run commands: npm test *\nRun commands: bun test *","Open web pages: https://*.internal/*",true]);
+});
+
+test("Agents Edit saves what changed, keeps what it doesn't show, writes nothing for what's built in, and is stale after", async t => {
+  const {page,config,submit,field}=await agentsBox(t,"Agents Edit");
+  const reviewer=item(await page(),"agent-reviewer");
+  const values=opening(reviewer,"edit");
+  assert.deepEqual([values.mode,values["may-edit"],values.allowed,values.asks,values.never],["all","deny","Run commands: git diff *","",""]);
+  const saved=await submit(reviewer,"edit",{...values,mode:"subagent","may-edit":"allow",asks:"Edit files: *.lock"});
+  assert.equal(saved.status,200,saved.text);
+  assert.deepEqual(config().agents.reviewer,{mode:"subagent",description:"Reviews changes\nand says what's wrong",steps:12,
+    permissions:[{action:"shell",resource:"git diff *",effect:"allow"},{action:"edit",resource:"*.lock",effect:"ask"}]});
+  assert.equal(config().default_agent,undefined);
+  assert.equal((await submit(reviewer,"edit",values)).status,409);
+  const plan=item(saved.json,"agent-plan");
+  const opened=opening(plan,"edit");
+  assert.deepEqual([opened.mode,opened.system,opened["may-edit"]],["primary","Plan in short steps.","deny"]);
+  assert.deepEqual(field(plan,"edit","may-edit").choices[2],{id:"deny",title:"Don't Allow (Default)"});
+  assert.equal((await submit(plan,"edit",opened)).status,200);
+  assert.deepEqual(config().agents.plan,{system:"Plan in short steps."});
+  const again=item(await page(),"agent-plan");
+  assert.equal((await submit(again,"edit",{...opening(again,"edit"),system:"  "})).status,200);
+  assert.equal(config().agents.plan,undefined);
+});
+
+test("Agents leaves permissions in an order its form can't show, a model written as an object, and one only turned off", async t => {
+  const why="Its permissions are in an order only the settings file keeps: change them there.";
+  const lists={odd:[{action:"shell",resource:"rm *",effect:"deny"},{action:"shell",resource:"rm -i *",effect:"allow"}],
+    late:[{action:"shell",resource:"git *",effect:"allow"},{action:"shell",resource:"*",effect:"deny"}]};
+  const {page,config,change,submit,field}=await agentsBox(t,"Agents Kept",{agents:{odd:{mode:"subagent",permissions:lists.odd},late:{mode:"subagent",permissions:lists.late},
+    object:{mode:"subagent",model:{providerID:"lab",modelID:"big"}},bare:{disabled:true}}});
+  for (const id of ["odd","late"]) {
+    const agent=item(await page(),`agent-${id}`);
+    const allowed=field(agent,"edit","allowed");
+    assert.deepEqual([allowed.value,allowed.can],["",{why}]);
+    assert.deepEqual(field(agent,"edit","may-shell").can,{why});
+    assert.equal((await submit(agent,"edit",{...opening(agent,"edit"),description:"Careful"})).status,200);
+    assert.deepEqual(config().agents[id],{mode:"subagent",description:"Careful",permissions:lists[id]});
+  }
+  const object=item(await page(),"agent-object");
+  assert.equal((await submit(object,"edit",opening(object,"edit"))).status,200);
+  assert.deepEqual(config().agents.object.model,{providerID:"lab",modelID:"big"});
+  const shown=(await change(item(await page(),"agent-bare"),true)).json;
+  assert.deepEqual(config().agents.bare,{disabled:false});
+  assert.equal(item(shown,"agent-bare").value,true);
+});
+
+test("Agents Reset and Delete take the settings out; agents that aren't an object are left alone and said so", async t => {
+  const {box,page,config,submit}=await agentsBox(t,"Agents Reset");
+  let shown=(await submit(item(await page(),"agent-plan"),"reset")).json;
+  assert.equal(config().agents.plan,undefined);
+  assert.deepEqual(item(shown,"agent-plan").actions.map(a=>a.id),["edit"]);
+  shown=(await submit(item(shown,"agent-reviewer"),"delete")).json;
+  assert.equal(config().agents.reviewer,undefined);
+  assert.equal(config().default_agent,undefined);
+  assert.deepEqual(config().agents.title,{model:"lab/fast"});
+  assert.equal(item(shown,"agent-reviewer"),undefined);
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify({agents:["not","an","object"]}));
+  const odd=await page();
+  assert.equal(row(odd,"agents").add,undefined);
+  assert.match(item(odd,"agent-build").can.why,/aren't in a form Kuvo can change/);
+  assert.equal(odd.notes[0].tone,"warning");
+});
+
+test("Agents offers Claude Code's agents, and one by a built-in one's name comes over beside it", async t => {
+  const {box,page,config,submit}=await agentsBox(t,"Agents Claude");
+  write(path.join(box.env.HOME,".claude/agents/security.md"),"---\nname: Security Auditor\ndescription: Checks for security problems\n---\nLook for injection.\n");
+  write(path.join(box.env.HOME,".claude/agents/plan.md"),"---\nname: plan\ndescription: Claude's planner\n---\nPlan it.\n");
+  const shown=await until(async()=>{const p=await page();return item(p,"claude-security-auditor")&&p;},"Claude Code's agents must be offered.");
+  const last=shown.groups.at(-1);
+  assert.deepEqual([last.id,last.title],["claude-code","From Claude Code"]);
+  const security=item(shown,"claude-security-auditor");
+  assert.deepEqual([security.title,security.line,security.kind],["Security Auditor","Checks for security problems","actions"]);
+  const after=(await submit(security,"import")).json;
+  assert.deepEqual(config().agents["security-auditor"],{mode:"subagent",description:"Checks for security problems",system:"Look for injection."});
+  assert.deepEqual([item(after,"claude-security-auditor").kind,item(after,"claude-security-auditor").value],["status","Imported"]);
+  assert.equal(item(after,"claude-plan-claude").title,"plan");
+  assert.equal(item(after,"agent-security-auditor").line,"A subagent · Checks for security problems");
+});
