@@ -2,15 +2,14 @@
 use kuvo_os::timer_fires::{self, Timer};
 use super::{changes, list};
 use kuvo_os::{
-    platform::{Platform, is_wsl_windows_drive},
-    watch::{Notice, Options, WatchHub},
+    watch::{FileSet, Notice, Options, WatchHub},
 };
 use serde_json::Value;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tokio::{
     sync::{Notify, watch},
@@ -53,69 +52,60 @@ impl Followers {
         rx
     }
 }
-fn index_stamp(dir: &Path) -> [Option<SystemTime>; 3] {
-    ["index", "HEAD", "logs/HEAD"].map(|file| {
-        std::fs::metadata(dir.join(file))
-            .and_then(|s| s.modified())
-            .ok()
-    })
+async fn git_files(folder: &Path, files: &mut FileSet) {
+    let gitdir = changes::read(folder, &["rev-parse", "--absolute-git-dir"])
+        .await.map(|raw| PathBuf::from(raw.trim())).filter(|path| !path.as_os_str().is_empty());
+    let common = changes::read(folder, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .await.map(|raw| PathBuf::from(raw.trim())).filter(|path| !path.as_os_str().is_empty());
+    let mut paths = vec![folder.join(".git")];
+    let mut folders = Vec::new();
+    if let Some(dir) = gitdir {
+        paths.extend(["index", "HEAD", "logs/HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"].map(|name| dir.join(name)));
+        folders.push((dir.join("refs"), true));
+    }
+    if let Some(dir) = common {
+        paths.extend(["packed-refs", "config"].map(|name| dir.join(name)));
+        folders.push((dir.join("refs"), true));
+    }
+    files.set_targets(paths, folders);
 }
+
 async fn follow(folder: PathBuf, tx: Arc<Sent>, watches: WatchHub) {
-    let gitdir = changes::read(&folder, &["rev-parse", "--absolute-git-dir"])
-        .await
-        .map(|s| PathBuf::from(s.trim()))
-        .filter(|p| !p.as_os_str().is_empty());
-    let watch_files = gitdir.is_some()
-        && (Platform::current() == Platform::Mac
-            || (Platform::current() == Platform::Wsl && !is_wsl_windows_drive(&folder)));
-    let mut watch = if watch_files {
-        watches
-            .subscribe(
-                &folder,
-                Options {
-                    recursive: true,
-                    create: false,
-                },
-            )
-            .await
-            .ok()
-    } else {
-        None
-    };
-    let every = Duration::from_secs(if watch.is_some() { 30 } else { 10 });
-    let mut index = gitdir.as_deref().map(index_stamp);
+    let mut git = FileSet::new(watches.clone());
+    git_files(&folder, &mut git).await;
+    let mut watch = watches.subscribe(&folder, Options { recursive: true, create: false }).await.ok();
+    let mut marker = std::fs::symlink_metadata(folder.join(".git")).and_then(|m| m.modified()).ok();
     loop {
         let started = Instant::now();
-        if let Ok(value) = list::files(&folder).await {
-            tx.tx.send_replace(Some(Snapshot { started, value }));
-        }
+        if let Ok(value) = list::files(&folder).await { tx.tx.send_replace(Some(Snapshot { started, value })); }
         let earliest = Instant::now() + Duration::from_secs(1).max(started.elapsed() * 2);
-        let deadline = Instant::now() + every;
-        let mut check = timer_fires::interval(Timer::GitFollow, Duration::from_secs(1));
-        check.tick().await;
         loop {
             tokio::select! {
-                _=tx.tx.closed()=>return,
-                _=tokio::time::sleep_until(deadline)=>break,
-                _=tx.refresh.notified()=>break,
-                _=check.tick()=>{
-                    let next=gitdir.as_deref().map(index_stamp);
-                    if index != next {index=next;break;}
+                _ = tx.tx.closed() => return,
+                _ = tx.refresh.notified() => break,
+                _ = git.changed() => {
+                    let current = std::fs::symlink_metadata(folder.join(".git")).and_then(|m| m.modified()).ok();
+                    if marker != current { marker = current; git_files(&folder, &mut git).await; }
+                    break;
                 }
-                event=async {
-                    match watch.as_mut() {Some(w)=>w.recv().await,None=>std::future::pending().await}
-                }=>{
+                // Only on a real watch failure, not a periodic check on native filesystems.
+                _ = timer_fires::sleep(Timer::GitFollow, Duration::from_secs(10)), if watch.is_none() => {
+                    watch = watches.subscribe(&folder, Options { recursive: true, create: false }).await.ok();
+                    break;
+                }
+                event = async { match watch.as_mut() { Some(w) => w.recv().await, None => std::future::pending().await } } => {
                     match event {
-                        Some(Notice::Changed{paths}) if paths.iter().all(|path|path.components().any(|c|c.as_os_str()==".git"))=>continue,
-                        Some(_)=>break,
-                        None=>{watch=None;}
+                        Some(Notice::Changed { paths }) if paths.iter().all(|path| path.components().any(|c| c.as_os_str()==".git")) => continue,
+                        Some(Notice::Failed(_)) | None => { watch = None; break; }
+                        Some(_) => break,
                     }
                 }
             }
         }
+        // Debounce actual changes; no independent refresh or index stamp timer.
         tokio::select! {
-            _=tx.tx.closed()=>return,
-            _=tokio::time::sleep_until(earliest)=>{}
+            _ = tx.tx.closed() => return,
+            _ = timer_fires::sleep_until(Timer::GitFollow, earliest) => {},
         }
     }
 }

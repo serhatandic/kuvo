@@ -28,6 +28,7 @@ pub struct ResidentAgents {
     commands: mpsc::Sender<Command>,
     roster: watch::Receiver<Arc<Roster>>,
     sign_ins: Arc<Mutex<SignIns>>,
+    sign_in_changes: watch::Sender<u64>,
     adopted: Arc<[AdoptedTurn]>,
     feed: Feed,
 }
@@ -42,14 +43,25 @@ impl ResidentAgents {
         let (commands, requests) = mpsc::channel(16);
         let sign_ins = Arc::new(Mutex::new(SignIns::default()));
         let expiry = Arc::downgrade(&sign_ins);
+        let (sign_in_changes, mut changes) = watch::channel(0u64);
         tokio::spawn(async move {
-            let mut clock = timer_fires::interval(Timer::AgentSignInExpiry, std::time::Duration::from_secs(60));
             loop {
-                clock.tick().await;
                 let Some(sign_ins) = expiry.upgrade() else {
                     return;
                 };
-                sign_ins.lock().await.expire(Instant::now());
+                let next = {
+                    let mut attempts = sign_ins.lock().await;
+                    attempts.expire(Instant::now());
+                    attempts.next_expiry()
+                };
+                drop(sign_ins);
+                tokio::select! {
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep_until(Timer::AgentSignInExpiry, at).await,
+                        None => std::future::pending().await,
+                    } } => {},
+                }
             }
         });
         tokio::spawn(run(runtime, factories, roster, published, requests));
@@ -58,6 +70,7 @@ impl ResidentAgents {
                 commands,
                 roster: updates,
                 sign_ins,
+                sign_in_changes,
                 adopted: adopted.into(),
                 feed: Feed::default(),
             },
@@ -106,6 +119,7 @@ impl ResidentAgents {
         let mut attempts = self.sign_ins.lock().await;
         let now = Instant::now();
         attempts.expire(now);
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         let id = match attempts.track(provider.clone(), attempt.clone(), now) {
             Ok(id) => id,
             Err(error) => {
@@ -113,6 +127,7 @@ impl ResidentAgents {
                 return Err(error);
             }
         };
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         Ok(Started {
             id,
             page,
@@ -129,6 +144,7 @@ impl ResidentAgents {
             .await
             .status(provider, id, Instant::now())
             .ok_or_else(over)?;
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         if status == Status::Complete {
             entry.credentials_changed().await;
             self.account_changed(provider);
@@ -147,6 +163,7 @@ impl ResidentAgents {
 
     pub async fn cancel_sign_in(&self, provider: &Provider, id: &str) -> io::Result<()> {
         if self.sign_ins.lock().await.cancel(provider, id) {
+            self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
             Ok(())
         } else {
             Err(over())

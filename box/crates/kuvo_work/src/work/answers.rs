@@ -223,6 +223,7 @@ impl Work {
     /// it is. Not while it moves to or from another computer, nor while it can't be reached (nor
     /// where it isn't this engine's): tried again later.
     pub async fn tell_late(&self, id: &str) {
+        let _delivery = self.late_delivery.lock().await;
         let asks = self.kept_asks();
         let Some(ask) = asks.iter().find(|each| each["id"] == id) else {
             return;

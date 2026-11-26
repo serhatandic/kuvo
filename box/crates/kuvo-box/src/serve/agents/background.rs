@@ -29,8 +29,6 @@ use serde_json::{Value, json};
 const SHOWN_OUTPUT: u64 = 24_000;
 /// How often a followed command's output is read again.
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
-/// How often a followed list is read again with nothing said to change (another place's writes).
-const LOOK: Duration = Duration::from_secs(2);
 
 #[derive(Default, Deserialize)]
 struct Command {
@@ -275,30 +273,59 @@ fn decoded(value: Option<&str>) -> String {
         .into_owned()
 }
 
-/// `read`, now and as it changes: when the agents say so, or a while on (another place's writes).
+/// Re-read only on the work file or facts it uses changing, or when an actual row ages out.
 fn followed<F>(
     background: &Background,
+    file: PathBuf,
+    mut listed: Option<Listed>,
     mut read: F,
     cancel: tokio_util::sync::CancellationToken,
 ) -> impl futures_core::Stream<Item = std::io::Result<Value>> + Send + 'static
 where
-    F: FnMut() -> Value + Send + 'static,
+    F: FnMut() -> (Value, Option<u64>) + Send + 'static,
 {
     let mut changes = background.changes();
+    let hub = kuvo_os::watch::WatchHub::default();
+    let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+    files.set_files(vec![file]);
+    let mut bots = kuvo_os::watch::FileSet::new(hub);
+    if let Some(listed) = &listed { bots.set_child_files(listed.bots.clone(), ["bot.json", "session"]); }
     async_stream::try_stream! {
         let mut previous: Option<Value> = None;
         loop {
-            let value = read();
+            let (value, age) = read();
             if previous.as_ref() != Some(&value) {
                 previous = Some(value.clone());
                 yield value;
             }
+            let activity = listed.as_ref().and_then(|listed| {
+                let peer_now = listed.peers.now();
+                listed.peers.view().next_activity_change(peer_now)
+                    .map(|at| now().saturating_add(at.saturating_sub(peer_now).max(0) as u64))
+            });
+            let due = age.into_iter().chain(activity).min();
             tokio::select! {
                 () = cancel.cancelled() => break,
-                _ = changes.changed() => {}
-                () = timer_fires::sleep(Timer::AgentBackground, LOOK) => {}
+                changed = changes.changed() => if changed.is_err() { break; },
+                _ = files.changed() => {},
+                _ = bots.changed(), if listed.is_some() => {},
+                live = listed_change(&mut listed) => if !live { break; },
+                _ = async {
+                    match due {
+                        Some(at) => timer_fires::sleep(Timer::AgentBackground, Duration::from_millis(at.saturating_sub(now()).max(1))).await,
+                        None => std::future::pending().await,
+                    }
+                } => {},
             }
         }
+    }
+}
+
+async fn listed_change(listed: &mut Option<Listed>) -> bool {
+    let Some(listed) = listed else { return std::future::pending().await; };
+    tokio::select! {
+        changed = listed.sessions.changed() => changed,
+        changed = listed.peers.changed() => changed.is_ok(),
     }
 }
 
@@ -319,8 +346,13 @@ pub(in crate::serve) fn register(
         let (file, agents) = (here.clone(), agents.clone());
         async move {
             let lines = followed(
-                &agents,
-                move || read_list(&file, now()),
+                &agents, file.clone(), None,
+                move || {
+                    let value = read_list(&file, now());
+                    let due = value["sessions"].as_object().into_iter().flat_map(|rows| rows.values())
+                        .filter_map(|row| row["since"].as_u64()).map(|at| at.saturating_add(AT_WORK_LIMIT)).min();
+                    (value, due)
+                },
                 call.cancel.clone(),
             );
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
@@ -346,8 +378,8 @@ pub(in crate::serve) fn register(
         async move {
             let session = decoded(call.param("session"));
             let lines = followed(
-                &agents,
-                move || listed.session(&file, &session),
+                &agents, file.clone(), Some(listed.clone()),
+                move || (listed.session(&file, &session), None),
                 call.cancel.clone(),
             );
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
@@ -376,23 +408,28 @@ pub(in crate::serve) fn register(
             let id = decoded(call.param("id"));
             let command = command_of(&file, &agents, &session, &id);
             let cancel = call.cancel.clone();
-            // A line now and again about once a second while it's followed, each time it says
-            // something new; once it says it ended, that line's the last.
+            let mut changes = agents.changes();
+            let mut output = agents.output_changes();
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            files.set_files(vec![file.clone()]);
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last: Option<Value> = None;
                 loop {
                     let now = read_output(&agents, &command, last.as_ref()).await;
                     let ended = now["state"] == "ended";
+                    // Claude's live get_task_output has no pushed bytes/file until the result.
+                    let read_live = now["state"] == "running" && !agents.output_is_pushed(&id);
                     if last.as_ref() != Some(&now) {
                         yield JsonLine::new(serde_json::from_value(now.clone())?)?;
                     }
                     last = Some(now);
-                    if ended {
-                        break;
-                    }
+                    if ended { break; }
                     tokio::select! {
                         () = cancel.cancelled() => break,
-                        () = timer_fires::sleep(Timer::AgentOutputFollow, OUTPUT_EVERY) => {}
+                        changed = changes.changed() => if changed.is_err() { break; },
+                        changed = output.changed() => if changed.is_err() { break; },
+                        _ = files.changed() => {},
+                        () = timer_fires::sleep(Timer::AgentOutputFollow, OUTPUT_EVERY), if read_live => {},
                     }
                 }
             }))

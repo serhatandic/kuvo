@@ -745,6 +745,53 @@ debug-only assertion is skipped there). Addressed receipts, take-back recovery, 
 and Send Now retain their answers.
 The whole Mac engine-session conformance area remains green (81/81 Rust).
 
+**Remaining idle and followed-page owners.** Held bot edits, engine supervision, queue limits,
+late work answers, peer waiting, retained sign-ins, native agent holders and tools, Git,
+backup and skill expiry, Vault SSH listeners and followed work/bot/engine/Library lists now
+use store, session, reach, process and native filesystem changes. Only an actual expiry,
+work retry or compatibility requirement schedules another callback. A pristine resident does
+not open the artifact store or write an empty background inventory; the first real artifact
+use opens it, including a genuine edit baseline. The new conformance cases prove that empty
+resident and followed-page owners park and that an external background record, oversight
+expiry, and disappearing Library source file still update an active view. Existing route
+validation and refusal results are unchanged.
+
+The [timer inventory](rust-idle-timers.md) gives each owner's actual deadline or event and the
+remaining deliberate compatibility/transport waits. It also identifies the platform
+process-launch seam for the next priority pass.
+
+**Final Mac sweep measurement.** Same optimized debug profile, isolated fixture, 65-second
+windows and scripted native-agent account as the baseline above. The initial counter baseline
+did not yet label the old queue-limit round (one missed count per 65 seconds), or the old
+five-minute late-answer and command-server expiry rounds (outside the sample window); the
+final counter covers those branches as well. Baseline figures are the observed counts,
+not an estimate of those omitted callbacks.
+
+| Sample | RSS KiB | Processes | Timer callbacks in 65s | Callbacks/s |
+|---|---:|---:|---:|---:|
+| Resident, no client | 51,952 | 1 | 2 | 0.031 |
+| Resident, one client | 53,776 | 1 | 16 | 0.246 |
+| Keeper + resident, no client | 65,232 | 2 | 2 | 0.031 |
+| Keeper + resident, one client | 70,176 | 2 | 16 | 0.246 |
+| Resident, one client following hot pages | 58,224 | 1 | 16 | 0.246 |
+
+All measured application-service callbacks are zero in the quiet fixture; the two no-client
+callbacks are relay keepalives. A connected line adds 13 wire heartbeats and one actual
+usage demand deadline. Following hot pages adds no periodic work. No agent or engine process
+starts in any sample. The resident-only raw timer count falls 267 to 2 (99.25% fewer), and
+the hot-page count 391 to 16 (95.9% fewer), including the retained transport callbacks.
+RSS is measured, not inferred: the resident-only no-client sample is 2,688 KiB higher than
+the optimized baseline, while the connected resident is 368 KiB lower. The keeper and resident
+combined connected sample is 3,520 KiB higher. A separate paired `vmmap -summary` after the
+same three-second startup settle measured RSS 48,944 to 52,256 KiB, resident executable/shared
+text 165.1 to 166.8 MiB, resident stack 1,216 to 2,032 KiB (37 to 64 stack regions), and malloc
+resident 11.1 to 11.8 MiB (allocated bytes 8,123 to 8,704 KiB). Private physical footprint was
+15.9 to 17.5 MiB. The extra memory is therefore consistent with larger mapped code and the
+native watch subscriptions, stacks and tables, not a multi-megabyte eager catalog cache.
+The artifact database and page subscriptions already wait for use; the resident's remaining
+watchers must be ready for external writes. Sharing more native watch handles could reduce
+stack costs in future without restoring polling. All fixture processes exited.
+
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.

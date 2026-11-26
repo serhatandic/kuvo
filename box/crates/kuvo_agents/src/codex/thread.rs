@@ -441,6 +441,7 @@ impl Actor {
             }
         }
         self.shared.routes().remove(&self.session);
+        self.shared.note_activity();
     }
 
     fn route(&self) {
@@ -449,6 +450,8 @@ impl Actor {
             route.native = self.native.clone();
             route.server = self.server.as_ref().map(|server| server.id);
         }
+        drop(routes);
+        self.shared.note_activity();
     }
 
     async fn command(&mut self, command: Command) -> io::Result<()> {
@@ -724,6 +727,7 @@ impl Actor {
         self.turned_down = 0;
         self.answers.clear();
         self.busy.store(true, Ordering::Relaxed);
+        self.shared.note_activity();
         let result = self
             .begin(input.id, prompt, start, input.instructions, sink)
             .await;
@@ -922,6 +926,7 @@ impl Actor {
         self.loaded = true;
         self.route();
         self.busy.store(true, Ordering::Relaxed);
+        self.shared.note_activity();
         let turn = note
             .state
             .as_ref()
@@ -1971,7 +1976,7 @@ impl Actor {
     fn set_busy(&self) {
         let open = self.server.as_ref().is_some_and(|server| !server.closed());
         let working = self.active.is_some() || open && self.terminals.keeps_working();
-        self.busy.store(working, Ordering::Relaxed);
+        if self.busy.swap(working, Ordering::Relaxed) != working { self.shared.note_activity(); }
     }
 
     /// Lists what it left running again (after a turn, `initial`: never during one otherwise); while

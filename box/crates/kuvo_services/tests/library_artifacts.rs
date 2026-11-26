@@ -486,7 +486,7 @@ async fn secrets_git_policy_budget_restore_and_format_refusal() {
         },
     )
     .unwrap();
-    assert_eq!(store2.storage().budget, 123);
+    assert_eq!(store2.storage().unwrap().budget, 123);
     assert_eq!(store2.set_budget(456, true).unwrap(), None);
     let saved_settings: Value = serde_json::from_str(&fs::read_to_string(&budget_path).unwrap()).unwrap();
     assert_eq!(saved_settings, json!({ "budget": 456, "extra": "preserved", "formatVersion": 1 }));

@@ -124,6 +124,18 @@ impl Reach {
         self.away.contains_key(key) || heard.is_some_and(|at| now.saturating_sub(at) > HEARD_FOR)
     }
 
+    /// Activity uses the last heard fact, not the ordinary list copy's shorter quiet age.
+    pub(crate) fn activity_away_at(&self, key: &str, heard: Millis, release: Option<ReleaseState>, now: Millis) -> Option<Millis> {
+        if self.standing_of(key, self.peer_is_away(key, Some(heard), now), Some(heard), release, now).away() {
+            return None;
+        }
+        let quiet = self.away_since(key).map_or(heard.saturating_add(HEARD_FOR + 1), |_| now);
+        let since = heard.max(self.away_since(key).unwrap_or_default());
+        let grace = if matches!(release, Some(ReleaseState::Ready | ReleaseState::Updating)) { SWITCH_GRACE } else { LIVE_FOR };
+        let due = quiet.max(since.saturating_add(grace));
+        (due > now).then_some(due)
+    }
+
     pub(crate) fn update_presence(
         &self,
         key: &str,
@@ -246,6 +258,20 @@ mod tests {
         let away = seen + 10_000;
         reach.unreachable(dir.path(), "peer", away).unwrap();
         assert_eq!(reach.next_standing_change("peer", Some(seen), None, Some(ReleaseState::Updating), away), Some(away + SWITCH_GRACE));
+    }
+
+    #[test]
+    fn activity_standing_uses_the_actual_heard_or_reach_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reach = Reach::default();
+        let heard = 1_000_000;
+        assert_eq!(reach.activity_away_at("peer", heard, None, heard), Some(heard + HEARD_FOR + 1));
+        assert_eq!(reach.activity_away_at("peer", heard, None, heard + HEARD_FOR + 1), None);
+        let dropped = heard + 10_000;
+        reach.unreachable(dir.path(), "peer", dropped).unwrap();
+        assert_eq!(reach.activity_away_at("peer", heard, None, dropped), Some(dropped + LIVE_FOR));
+        assert_eq!(reach.activity_away_at("peer", heard, Some(ReleaseState::Updating), dropped), Some(dropped + SWITCH_GRACE));
+        assert_eq!(reach.activity_away_at("peer", heard, None, dropped + LIVE_FOR), None);
     }
 
     #[test]

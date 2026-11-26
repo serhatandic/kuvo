@@ -6,7 +6,7 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -344,9 +344,18 @@ struct StoreInner {
 
 #[derive(Clone)]
 pub struct ArtifactStore {
-    inner: Arc<Mutex<StoreInner>>,
+    deferred: Arc<Deferred>,
     policy: CopyPolicy,
     write_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+struct Deferred {
+    root: PathBuf,
+    options: StoreOptions,
+    sessions: Option<PathBuf>,
+    inner: OnceLock<Arc<Mutex<StoreInner>>>,
+    opening: Mutex<()>,
+    changes: broadcast::Sender<Artifact>,
 }
 
 struct WaitingGuard { inner: Arc<Mutex<StoreInner>>, paths: Vec<String> }
@@ -368,21 +377,65 @@ fn wall_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d|
 
 impl ArtifactStore {
     pub fn open(root: impl AsRef<Path>, options: StoreOptions) -> Result<Self, StoreError> {
+        let store = Self::deferred(root, options, None);
+        store.ensure_open()?;
+        Ok(store)
+    }
+
+    /// A subscription is useful before the first recording, but it must not create
+    /// an artifact store. Open the history (and read citations) on actual use.
+    pub fn deferred(root: impl AsRef<Path>, options: StoreOptions, sessions: Option<PathBuf>) -> Self {
         let root = root.as_ref().to_path_buf();
+        let policy = options.disk.clone().map_or_else(|| CopyPolicy::for_folder(root.clone()), CopyPolicy::new);
+        let (changes, _) = broadcast::channel(256);
+        Self {
+            deferred: Arc::new(Deferred { root, options, sessions, inner: OnceLock::new(), opening: Mutex::new(()), changes }),
+            policy,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    pub fn ensure_open(&self) -> Result<(), StoreError> { self.inner().map(|_| ()) }
+
+    /// Passive empty copies need no database. An existing history must still be
+    /// read and any format refusal retained when a real reader asks for it.
+    pub fn ensure_history(&self) -> Result<(), StoreError> {
+        if self.deferred.inner.get().is_some() || !matches!(fs::metadata(&self.deferred.root), Err(e) if e.kind() == io::ErrorKind::NotFound) {
+            self.ensure_open()?;
+        }
+        Ok(())
+    }
+
+    fn history(&self) -> Option<&Arc<Mutex<StoreInner>>> {
+        self.ensure_history().ok()?;
+        self.deferred.inner.get()
+    }
+
+    fn inner(&self) -> Result<&Arc<Mutex<StoreInner>>, StoreError> {
+        let d = &self.deferred;
+        if let Some(inner) = d.inner.get() { return Ok(inner); }
+        let _opening = d.opening.lock().unwrap();
+        if let Some(inner) = d.inner.get() { return Ok(inner); }
+        let root = d.root.clone();
+        let mut options = d.options.clone();
+        let citations = d.sessions.as_ref().map(|sessions| {
+            let prev = super::prepare::load_citation_checkpoints(&root);
+            let (shown, checkpoints) = super::prepare::citation_update(sessions, &prev);
+            options.shown.extend(shown);
+            (prev, checkpoints)
+        });
         fs::create_dir_all(root.join("log"))?;
         fs::create_dir_all(root.join("copies"))?;
-        let policy = options.disk.map_or_else(|| CopyPolicy::for_folder(root.clone()), CopyPolicy::new);
         let chosen_budget = read_settings(&root)?.get("budget").and_then(Value::as_u64);
         let key = key_in(&root)?;
         let artifacts = ArtifactIndex::open(root.join("log"), &root.join("index-v1.sqlite"))?;
-        let (changes, _) = broadcast::channel(256);
         let mut inner = StoreInner {
             root,
             bots: options.bots,
             default_budget: options.budget,
             chosen_budget,
             clock: options.clock.unwrap_or_else(|| Arc::new(system_clock)),
-            policy: policy.clone(),
+            policy: self.policy.clone(),
             key,
             artifacts,
             copies: HashMap::new(),
@@ -390,62 +443,47 @@ impl ArtifactStore {
             waiting: HashMap::new(),
             recorded: HashMap::new(),
             files: HashMap::new(),
-            changes,
+            changes: d.changes.clone(),
         };
         inner.load(&options.shown)?;
-        let store = Self {
-            inner: Arc::new(Mutex::new(inner)),
-            policy,
-            write_lock: Arc::new(tokio::sync::Mutex::new(())),
-        };
-        store.resolve_files();
-        Ok(store)
+        resolve_files(&mut inner);
+        if let Some((prev, checkpoints)) = citations && prev != checkpoints {
+            super::prepare::save_citation_checkpoints(&d.root, &checkpoints);
+        }
+        Ok(d.inner.get_or_init(|| Arc::new(Mutex::new(inner))))
     }
 
     pub fn id_of(path: &str) -> String { format!("art_{}", &hex::encode(Sha256::digest(path.as_bytes()))[..24]) }
-    pub fn subscribe(&self) -> broadcast::Receiver<Artifact> { self.inner.lock().unwrap().changes.subscribe() }
-    pub fn get(&self, id: &str) -> Option<Artifact> { self.inner.lock().unwrap().artifacts.get(id) }
+    pub fn subscribe(&self) -> broadcast::Receiver<Artifact> { self.deferred.changes.subscribe() }
+    pub fn get(&self, id: &str) -> Option<Artifact> { self.history()?.lock().unwrap().artifacts.get(id) }
     pub fn at(&self, path: &str) -> Option<Artifact> { self.get(&Self::id_of(path)) }
-    pub fn can_restore(&self, header: &ArtifactHeader) -> bool { self.inner.lock().unwrap().can_restore(header) }
+    pub fn can_restore(&self, header: &ArtifactHeader) -> bool { self.history().is_some_and(|inner| inner.lock().unwrap().can_restore(header)) }
     pub async fn settled(&self) { let _ = self.write_lock.lock().await; }
-    pub fn bytes(&self, id: &str, n: u64) -> Option<Option<Vec<u8>>> { self.inner.lock().unwrap().bytes(id, n) }
+    pub fn bytes(&self, id: &str, n: u64) -> Option<Option<Vec<u8>>> { self.history()?.lock().unwrap().bytes(id, n) }
     pub fn list(&self, scope: &Scope, limit: usize, before: Option<&str>) -> (Vec<Summary>, Option<String>) {
-        self.inner.lock().unwrap().list(scope, limit, before)
+        self.history().map_or_else(Default::default, |inner| inner.lock().unwrap().list(scope, limit, before))
     }
     pub fn session_outputs(&self, sessions: Option<&[String]>) -> Vec<Summary> {
-        self.inner.lock().unwrap().session_outputs(sessions)
+        self.history().map_or_else(Vec::new, |inner| inner.lock().unwrap().session_outputs(sessions))
     }
     pub fn timeline(&self, scope: &Scope, limit: usize, before: Option<&str>) -> (Vec<(ArtifactHeader, Version)>, Option<String>) {
-        self.inner.lock().unwrap().timeline(scope, limit, before)
+        self.history().map_or_else(Default::default, |inner| inner.lock().unwrap().timeline(scope, limit, before))
     }
-    pub fn storage(&self) -> StorageInfo { self.inner.lock().unwrap().storage() }
+    pub fn storage(&self) -> Result<StorageInfo, StoreError> { Ok(self.inner()?.lock().unwrap().storage()) }
     pub fn set_budget(&self, bytes: u64, confirmed: bool) -> Result<Option<String>, StoreError> {
-        self.inner.lock().unwrap().set_budget(bytes, confirmed)
+        self.inner()?.lock().unwrap().set_budget(bytes, confirmed)
     }
-    pub fn clear_older(&self, before: Option<&str>) -> usize { self.inner.lock().unwrap().clear_older(before) }
+    pub fn clear_older(&self, before: Option<&str>) -> usize { self.history().map_or(0, |inner| inner.lock().unwrap().clear_older(before)) }
 
     pub fn resolve_files(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let mut after = String::new();
-        loop {
-            let batch = inner.artifacts.paths(&after);
-            let Some((last_id, _)) = batch.last() else { break };
-            after = last_id.clone();
-            for (id, path) in batch {
-                if !inner.files.contains_key(&id)
-                    && let Some(real) = real_of(Path::new(&path))
-                {
-                    let real_str = real.to_string_lossy().into_owned();
-                    if real_str != path { inner.files.insert(id, real_str); }
-                }
-            }
-        }
+        if let Some(inner) = self.history() { resolve_files(&mut inner.lock().unwrap()); }
     }
 
     /// Whether `path` matches what the record already has or will record from queued work.
     pub fn as_seen(&self, path: &str) -> bool {
-        let inner = self.inner.lock().unwrap();
         let now = stat_file_stamp(Path::new(path));
+        let Some(inner) = self.history() else { return !matches!(now, StatStamp::File(_)); };
+        let inner = inner.lock().unwrap();
         if let Some(last) = inner.waiting.get(path).and_then(VecDeque::back) {
             return match last {
                 Waiting::Read => true,
@@ -487,15 +525,16 @@ impl ArtifactStore {
         }
     }
 
-    fn enqueue_waiting(&self, paths: &[String], waits: Option<Waiting>) -> WaitingGuard {
+    fn enqueue_waiting(&self, paths: &[String], waits: Option<Waiting>) -> Option<WaitingGuard> {
+        let shared = self.inner().ok()?;
         let Some(waits) = waits else {
-            return WaitingGuard { inner: self.inner.clone(), paths: Vec::new() };
+            return Some(WaitingGuard { inner: shared.clone(), paths: Vec::new() });
         };
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = shared.lock().unwrap();
         for path in paths {
             inner.waiting.entry(path.clone()).or_default().push_back(waits.clone());
         }
-        WaitingGuard { inner: self.inner.clone(), paths: paths.to_vec() }
+        Some(WaitingGuard { inner: shared.clone(), paths: paths.to_vec() })
     }
 
     pub fn change(&self, path: &str, made: Made) -> impl std::future::Future<Output = Option<Artifact>> + Send + 'static {
@@ -503,16 +542,16 @@ impl ArtifactStore {
         let wait = self.enqueue_waiting(std::slice::from_ref(&path), Some(Waiting::Seen { seen: seen.clone(), at_ms }));
         let this = self.clone();
         async move {
-            let _wait = wait;
+            let _wait = wait?;
             let _lock = this.write_lock.lock().await;
             this.policy.learn(&[PathBuf::from(&path)]).await;
-            this.inner.lock().unwrap().change_now(&path, &made, Some((seen, at_ms)))
+            this.inner().ok()?.lock().unwrap().change_now(&path, &made, Some((seen, at_ms)))
         }
     }
 
     pub fn change_all(&self, paths: &[String], made: Made) -> impl std::future::Future<Output = ()> + Send + 'static {
         let paths = paths.to_vec();
-        let wait = (!paths.is_empty()).then(|| self.enqueue_waiting(&paths, Some(Waiting::Read)));
+        let wait = (!paths.is_empty()).then(|| self.enqueue_waiting(&paths, Some(Waiting::Read))).flatten();
         let this = self.clone();
         async move {
             let Some(_wait) = wait else { return };
@@ -520,7 +559,8 @@ impl ArtifactStore {
             let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
             this.policy.learn(&pb).await;
             for path in &paths {
-                let _ = this.inner.lock().unwrap().change_now(path, &made, None);
+                let Ok(inner) = this.inner() else { break; };
+                let _ = inner.lock().unwrap().change_now(path, &made, None);
                 if paths.len() > 1 { tokio::task::yield_now().await; }
             }
         }
@@ -529,16 +569,19 @@ impl ArtifactStore {
     pub fn before(&self, path: &str, bytes: Vec<u8>, bot: Option<String>, at: Option<Timestamp>) -> impl std::future::Future<Output = ()> + Send + 'static {
         let path = path.to_owned();
         let should_wait = {
-            let inner = self.inner.lock().unwrap();
-            inner.artifacts.get(&Self::id_of(&path)).is_none() && !inner.waiting.contains_key(&path)
+            self.inner().is_ok_and(|inner| {
+                let inner = inner.lock().unwrap();
+                inner.artifacts.get(&Self::id_of(&path)).is_none() && !inner.waiting.contains_key(&path)
+            })
         };
         let wait = self.enqueue_waiting(std::slice::from_ref(&path), should_wait.then(|| Waiting::Before(bytes.clone())));
         let this = self.clone();
         async move {
-            let _wait = wait;
+            let Some(_wait) = wait else { return; };
             let _lock = this.write_lock.lock().await;
             this.policy.learn(&[PathBuf::from(&path)]).await;
-            let mut inner = this.inner.lock().unwrap();
+            let Ok(inner) = this.inner() else { return; };
+            let mut inner = inner.lock().unwrap();
             let when = at.unwrap_or_else(|| (inner.clock)());
             inner.before_now(&path, &bytes, bot.as_deref(), when);
         }
@@ -548,14 +591,14 @@ impl ArtifactStore {
         let path = self.get(id).map(|a| PathBuf::from(&a.path));
         let _lock = self.write_lock.lock().await;
         if let Some(path) = path { self.policy.learn(&[path]).await; }
-        self.inner.lock().unwrap().pin_now(id, pinned)
+        self.history()?.lock().unwrap().pin_now(id, pinned)
     }
 
     pub async fn restore(&self, id: &str, n: u64, at: Option<Timestamp>) -> Result<Artifact, String> {
         let path = self.get(id).map(|a| PathBuf::from(&a.path));
         let _lock = self.write_lock.lock().await;
         if let Some(path) = path { self.policy.learn(&[path]).await; }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner().map_err(|e| e.to_string())?.lock().unwrap();
         let when = at.unwrap_or_else(|| (inner.clock)());
         inner.restore_now(id, n, when)
     }
@@ -565,23 +608,23 @@ impl ArtifactStore {
         let wait = self.enqueue_waiting(std::slice::from_ref(&path), Some(Waiting::Read));
         let this = self.clone();
         async move {
-            let _wait = wait;
+            let _wait = wait?;
             let _lock = this.write_lock.lock().await;
             this.policy.learn(&[PathBuf::from(&path)]).await;
-            this.inner.lock().unwrap().shown_now(&path, &made)
+            this.inner().ok()?.lock().unwrap().shown_now(&path, &made)
         }
     }
 
     pub async fn check_gone(&self, id: &str) -> Option<Artifact> {
         let _lock = self.write_lock.lock().await;
-        self.inner.lock().unwrap().check_gone_now(id)
+        self.history()?.lock().unwrap().check_gone_now(id)
     }
 
     pub async fn image_preview(&self, id: &str, n: u64) -> Option<Option<Vec<u8>>> {
         let copy = self.bytes(id, n)?;
         if copy.is_some() { return Some(copy); }
         let (path, hash) = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.history()?.lock().unwrap();
             let artifact = inner.artifacts.get(id)?;
             let version = artifact.versions.last()?;
             let hash = version.hash.as_deref().filter(|h| h.starts_with("sha256:"));
@@ -591,12 +634,29 @@ impl ArtifactStore {
             (PathBuf::from(&artifact.path), hash.unwrap().to_owned())
         };
         self.policy.learn(std::slice::from_ref(&path)).await;
-        match self.inner.lock().unwrap().read_file(&path, None) {
+        match self.history()?.lock().unwrap().read_file(&path, None) {
             ReadOutcome::File(file) if file.hash == hash => Some(file.bytes),
             _ => Some(None),
         }
     }
 }
+
+fn resolve_files(inner: &mut StoreInner) {
+        let mut after = String::new();
+        loop {
+            let batch = inner.artifacts.paths(&after);
+            let Some((last_id, _)) = batch.last() else { break };
+            after = last_id.clone();
+            for (id, path) in batch {
+                if !inner.files.contains_key(&id)
+                    && let Some(real) = real_of(Path::new(&path))
+                {
+                    let real_str = real.to_string_lossy().into_owned();
+                    if real_str != path { inner.files.insert(id, real_str); }
+                }
+            }
+        }
+    }
 
 enum StatStamp { Missing, Unreadable, File(FileStamp) }
 

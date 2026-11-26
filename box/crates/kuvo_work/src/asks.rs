@@ -18,8 +18,6 @@ use kuvo_protocol::routes::{
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
 use serde_json::{Map, Value, json};
 
-/// How often the events line looks at what's asked again.
-const EVERY: Duration = Duration::from_secs(1);
 /// How long an answer waits on the browser to take it.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(5);
 /// What these routes answer.
@@ -283,15 +281,36 @@ impl Asks {
             async move {
                 Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                     let mut last: Option<Value> = None;
+                    let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+                    files.set_files(vec![asks.run.join("browser.pid"), asks.run.join("browser-asks.json")]);
+                    let mut states = asks.engine.states();
+                    let mut watched = None;
+                    let mut exited = None;
                     loop {
                         let said = asks.said().await;
+                        let has_asks = said["asks"].as_array().is_some_and(|rows| !rows.is_empty());
+                        let id = if has_asks {
+                            std::fs::read_to_string(asks.run.join("browser.pid")).ok()
+                                .and_then(|pid| pid.trim().parse::<u32>().ok()).filter(|pid| *pid > 1)
+                                .and_then(|pid| kuvo_os::process::ProcessIdentity::read(pid).ok().flatten())
+                        } else { None };
+                        if watched != id {
+                            exited = id.as_ref().and_then(|id| id.watch_exit().ok());
+                            watched = id;
+                        }
                         if last.as_ref() != Some(&said) {
                             yield JsonLine::new(serde_json::from_value(said.clone())?)?;
                             last = Some(said);
                         }
+                        let fallback = has_asks && exited.is_none();
                         tokio::select! {
                             () = call.cancel.cancelled() => break,
-                            () = timer_fires::sleep(Timer::WorkAsksFollow, EVERY) => {}
+                            _ = files.changed() => {},
+                            changed = states.changed() => if changed.is_err() { break; },
+                            _ = async { match &mut exited {
+                                Some(exit) => { let _ = exit.await; }, None => std::future::pending().await,
+                            } } => { exited = None; },
+                            _ = timer_fires::sleep(Timer::WorkAsksFollow, Duration::from_secs(1)), if fallback => {},
                         }
                     }
                 }))

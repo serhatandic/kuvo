@@ -1,7 +1,6 @@
 //! `kuvo/wakes` and `kuvo/wakes/<session>/…`: a conversation's wake-ups and watches, listed,
 //! followed, added, held, cancelled and sent now, as the bar over a client's composer does.
 
-use kuvo_os::timer_fires::{self, Timer};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -742,8 +741,7 @@ fn posted<T>(wakes: &Wakes, call: &RouteCall<T>) -> Result<String, Refusal> {
     Ok(session)
 }
 
-/// A line now, and again as it changes: made here at once, or beside the box as the folders are
-/// looked at again every two seconds.
+/// A line now and whenever the files or resident wake-up state change.
 fn followed<R, T>(
     wakes: Wakes,
     call: RouteCall<T>,
@@ -757,6 +755,14 @@ where
     let said = std::sync::Arc::new(said);
     async_stream::try_stream! {
         let mut changes = wakes.changes();
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut bots = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut sessions = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut moves = kuvo_os::watch::FileSet::new(hub);
+        let names = ["session", "paused", "wakes", "watches", "summaries"];
+        bots.set_child_files(wakes.roots().bots.clone(), names);
+        sessions.set_child_files(wakes.roots().sessions.clone(), names);
+        moves.set_targets(Vec::new(), vec![(wakes.roots().run.join("moves"), false)]);
         let mut previous: Option<Value> = None;
         loop {
             changes.borrow_and_update();
@@ -769,8 +775,10 @@ where
             }
             tokio::select! {
                 () = call.cancel.cancelled() => break,
-                _ = changes.changed() => {}
-                () = timer_fires::sleep(Timer::WakesFollow, Duration::from_secs(2)) => {}
+                changed = changes.changed() => if changed.is_err() { break; },
+                _ = bots.changed() => {},
+                _ = sessions.changed() => {},
+                _ = moves.changed() => {},
             }
         }
     }

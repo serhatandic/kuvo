@@ -1490,21 +1490,31 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                 let mut last = Value::Null;
                 // The first line remains the durable queue, then the current local engine queue.
                 let mut initial = true;
+                let mut retry = false;
                 loop {
                     if fresh != last {
                         yield JsonLine::new(serde_json::from_value(fresh.clone()).map_err(io::Error::other)?)?;
                         last = fresh.clone();
                     }
                     if initial { initial = false; } else {
+                        let deadline = if target.owner == "here" { here.queues.display_deadline(&here.home, &session).await } else { None };
                         tokio::select! {
                             changed = store.changes.changed() => if changed.is_err() { break; },
                             changed = queue_changes.changed(), if target.owner == "here" => if changed.is_err() { break; },
                             changed = states.changed(), if target.owner == "here" => if changed.is_err() { break; },
                             _ = queue_files.changed(), if target.owner == "here" => {},
+                            _ = async { match deadline {
+                                Some(at) => timer_fires::sleep(Timer::DeliveryFollow, Duration::from_millis(at.saturating_sub(disk::now()).max(1))).await,
+                                None => std::future::pending().await,
+                            } } => {},
+                            _ = timer_fires::sleep(Timer::DeliveryFollow, Duration::from_secs(2)), if retry => {},
                             () = call.cancel.cancelled() => break,
                         }
                     }
-                    if let Ok(queue) = store.queue(Some(&here), &session, &target).await { fresh = queue; }
+                    match store.queue(Some(&here), &session, &target).await {
+                        Ok(queue) => { fresh = queue; retry = false; },
+                        Err(_) => { retry = true; },
+                    }
                 }
             }))
         }

@@ -498,8 +498,7 @@ pub async fn run(
     let approvals_kept = approvals.keep();
     let work_settings =
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
-    let working = sessions.clone();
-    let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let kept_awake = work_settings.keep_awake(sessions.clone());
     let engine_reader = usage::engine_reader(home, &account);
     let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
@@ -940,10 +939,11 @@ async fn publish_peer_waiting(
     mut peers: kuvo_peers::setup_lists::Reader,
     waiting: tokio::sync::watch::Sender<Arc<Vec<kuvo_engine::PeerWaiting>>>,
 ) {
-    let mut refresh = timer_fires::interval(Timer::PeerWaiting, std::time::Duration::from_secs(15));
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let current = peers.view().peer_waiting(peers.now());
+        let now = peers.now();
+        let view = peers.view();
+        let current = view.peer_waiting(now);
+        let expiry = view.next_peer_waiting_change(now);
         waiting.send_if_modified(|last| {
             if **last == current {
                 return false;
@@ -953,7 +953,12 @@ async fn publish_peer_waiting(
         });
         tokio::select! {
             changed = peers.changed() => if changed.is_err() { break; },
-            _ = refresh.tick() => {},
+            _ = async {
+                match expiry {
+                    Some(at) => timer_fires::sleep(Timer::PeerWaiting, std::time::Duration::from_millis(at.saturating_sub(now).max(1) as u64)).await,
+                    None => std::future::pending().await,
+                }
+            } => {},
             _ = waiting.closed() => break,
         }
     }

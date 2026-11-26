@@ -230,4 +230,7 @@ pub trait LibraryPeers: Send + Sync {
     fn ask_item<'a>(&'a self, computer_key: &'a str, method: &'a str, item: &'a str, body: Option<Map<String, Value>>) -> PeerFuture<'a, Result<(u16, Value), (u16, String)>>;
     fn merged_snapshot<'a>(&'a self, filter: &'a Filter, query: &'a str) -> PeerFuture<'a, (Vec<Asked>, Vec<PendingComputer>)>;
     fn changes(&self) -> watch::Receiver<u64>;
+    fn next_change(&self, _query: &str) -> Option<std::time::Duration> { None }
+    fn legacy_keys(&self) -> std::collections::BTreeSet<String> { Default::default() }
+    fn ask_legacy<'a>(&'a self, query: &'a str) -> PeerFuture<'a, Vec<Asked>> { self.ask_peers(query) }
 }

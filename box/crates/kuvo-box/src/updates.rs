@@ -141,30 +141,29 @@ pub fn installed_bridge(home: &Home, profile: &Path) -> Option<BridgeAdmission> 
 
 /// The retained manual engine copies have their own lifetime, including on a
 /// machine that never checks a feed and a Mac whose Helper serves it.
-pub fn sweep_backups(home: Home, own_mac: bool) -> JoinHandle<()> {
-    let delay = if own_mac || is_scratch(&home).unwrap_or(false) {
-        Duration::ZERO
-    } else {
-        Duration::from_secs(60)
-    };
-    let every = if own_mac {
-        Duration::from_secs(30 * 60)
-    } else {
-        CHECK_POLL
-    };
+pub fn sweep_backups(home: Home, _own_mac: bool) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticks = timer_fires::interval_at(Timer::BackupPrune, Instant::now() + delay, every);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_targets(Vec::new(), vec![(home.updates().join("backups"), false)]);
         loop {
-            ticks.tick().await;
-            let home = home.clone();
-            if let Err(error) =
-                tokio::task::spawn_blocking(move || fleet::prune_engine_backups(&home))
-                    .await
-                    .map_err(io::Error::other)
-                    .and_then(|result| result)
-            {
-                eprintln!("Removing expired engine backup copies: {error}");
+            let current = home.clone();
+            let due = match tokio::task::spawn_blocking(move || fleet::prune_engine_backups_until(&current))
+                .await.map_err(io::Error::other).and_then(|result| result) {
+                Ok(Some(at)) => Some(Instant::now() + at.duration_since(std::time::SystemTime::now()).unwrap_or_default()),
+                Ok(None) => None,
+                Err(error) => {
+                    eprintln!("Removing expired engine backup copies: {error}");
+                    Some(Instant::now() + Duration::from_secs(60))
+                }
+            };
+            tokio::select! {
+                _ = files.changed() => {},
+                _ = async {
+                    match due {
+                        Some(at) => timer_fires::sleep_until(Timer::BackupPrune, at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {},
             }
         }
     })

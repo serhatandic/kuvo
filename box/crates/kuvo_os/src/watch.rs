@@ -461,6 +461,7 @@ pub struct FileSet {
     hub: WatchHub,
     paths: Vec<PathBuf>,
     folders: Vec<(PathBuf, bool)>,
+    stable_roots: Vec<PathBuf>,
     child_files: Option<(PathBuf, BTreeSet<std::ffi::OsString>)>,
     watches: BTreeMap<PathBuf, (Targets, JoinHandle<()>)>,
     tx: mpsc::UnboundedSender<()>,
@@ -478,11 +479,10 @@ impl Targets {
     fn matches(&self, path: &Path) -> bool {
         self.all
             || path.as_os_str().is_empty()
-            || self.names.contains(path)
+            || self.names.iter().any(|name| name.starts_with(path))
             || (!self.child_names.is_empty()
                 && (path.components().count() <= 1
-                    || path.components().count() == 2
-                        && path.file_name().is_some_and(|name| self.child_names.contains(name))))
+                    || path.components().nth(1).is_some_and(|name| self.child_names.contains(name.as_os_str()))))
     }
 }
 
@@ -493,6 +493,7 @@ impl FileSet {
             hub,
             paths: Vec::new(),
             folders: Vec::new(),
+            stable_roots: Vec::new(),
             child_files: None,
             watches: BTreeMap::new(),
             tx,
@@ -502,6 +503,7 @@ impl FileSet {
     pub fn clear(&mut self) {
         self.paths.clear();
         self.folders.clear();
+        self.stable_roots.clear();
         self.child_files = None;
         for (_, (_, task)) in std::mem::take(&mut self.watches) {
             task.abort();
@@ -520,17 +522,28 @@ impl FileSet {
     pub fn set_targets(&mut self, paths: Vec<PathBuf>, folders: Vec<(PathBuf, bool)>) {
         self.paths = paths;
         self.folders = folders;
+        self.stable_roots.clear();
+        self.child_files = None;
+        self.bind();
+    }
+    /// Keep a removable folder's named files on its stable parent, rather than
+    /// holding a native watch handle inside the folder itself.
+    pub fn set_files_at_roots(&mut self, paths: Vec<PathBuf>, roots: Vec<PathBuf>) {
+        self.paths = paths;
+        self.folders.clear();
+        self.stable_roots = roots;
         self.child_files = None;
         self.bind();
     }
     /// Watch a stable parent recursively for direct child folders appearing
-    /// or disappearing, and named files within those children. Never keep
+    /// or disappearing, and named files or subtrees within those children. Never keep
     /// handles inside a removable child (on Windows that prevents renames).
     pub fn set_child_files(
         &mut self, folder: PathBuf, names: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
     ) {
         self.paths.clear();
         self.folders.clear();
+        self.stable_roots.clear();
         self.child_files = Some((folder, names.into_iter().map(Into::into).collect()));
         self.bind();
     }
@@ -552,12 +565,24 @@ impl FileSet {
                 path = parent.to_owned();
             }
         }
-        for path in &self.paths {
-            named(&mut wanted, path.clone());
-            if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-                if let Ok(target) = path.canonicalize() {
-                    named(&mut wanted, target);
+        fn rooted(wanted: &mut BTreeMap<PathBuf, Targets>, path: PathBuf, roots: &[PathBuf]) {
+            if let Some(root) = roots.iter().filter(|root| path.starts_with(root)).max_by_key(|root| root.components().count()) {
+                named(wanted, root.clone());
+                if root.is_dir() {
+                    let target = wanted.entry(root.clone()).or_default();
+                    target.recursive = true;
+                    target.names.insert(path.strip_prefix(root).expect("selected root").to_owned());
                 }
+            } else {
+                named(wanted, path);
+            }
+        }
+        for path in &self.paths {
+            rooted(&mut wanted, path.clone(), &self.stable_roots);
+            if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+                && let Ok(target) = path.canonicalize()
+            {
+                rooted(&mut wanted, target, &self.stable_roots);
             }
         }
         for (folder, recursive) in &self.folders {
@@ -595,31 +620,27 @@ impl FileSet {
                 names.clone(),
             );
             let task = tokio::spawn(async move {
-                let Ok(mut sub) = hub
-                    .subscribe(
-                        target,
-                        Options {
-                            recursive: names_for_task.recursive,
-                            create: false,
-                        },
-                    )
-                    .await
-                else {
-                    return;
-                };
-                // Re-read once the actual watch is armed, closing the registration/read race.
-                let _ = tx.send(());
-                while let Some(notice) = sub.recv().await {
-                    match notice {
-                        Notice::Changed { paths }
-                            if !paths.iter().any(|path| names_for_task.matches(path)) =>
-                        {
-                            continue;
-                        }
-                        _ => {
+                let mut retry = Duration::from_secs(1);
+                loop {
+                    match hub.subscribe(&target, Options { recursive: names_for_task.recursive, create: false }).await {
+                        Ok(mut sub) => {
+                            // Re-read once the actual watch is armed, closing the registration/read race.
                             let _ = tx.send(());
+                            retry = Duration::from_secs(1);
+                            while let Some(notice) = sub.recv().await {
+                                match notice {
+                                    Notice::Changed { paths } if !paths.iter().any(|path| names_for_task.matches(path)) => continue,
+                                    Notice::Failed(_) => { let _ = tx.send(()); break; }
+                                    _ => { let _ = tx.send(()); }
+                                }
+                            }
+                            // The failed subscription is dropped before rearming. An ordinary
+                            // change or rescan keeps its original native watch running.
                         }
+                        Err(_) => { let _ = tx.send(()); }
                     }
+                    timer_fires::sleep(Timer::FileWatchRecovery, retry).await;
+                    retry = (retry * 2).min(Duration::from_secs(60));
                 }
             });
             self.watches.insert(folder, (names, task));
@@ -648,5 +669,19 @@ mod file_set_tests {
         assert!(target.matches(Path::new("bot_ada/session")));
         assert!(!target.matches(Path::new("bot_ada/memory.json")));
         assert!(!target.matches(Path::new("bot_ada/files/bot.json")));
+    }
+
+    #[test]
+    fn rooted_file_selection_receives_an_ancestor_removal_without_other_files() {
+        let target = Targets {
+            recursive: true,
+            names: [PathBuf::from("bot_ada/workspace/brief.pdf")].into(),
+            ..Targets::default()
+        };
+        assert!(target.matches(Path::new("bot_ada")));
+        assert!(target.matches(Path::new("bot_ada/workspace")));
+        assert!(target.matches(Path::new("bot_ada/workspace/brief.pdf")));
+        assert!(!target.matches(Path::new("bot_ada/workspace/other.pdf")));
+        assert!(!target.matches(Path::new("bot_ben")));
     }
 }

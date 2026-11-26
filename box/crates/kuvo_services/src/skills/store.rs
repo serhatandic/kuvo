@@ -179,14 +179,24 @@ impl SkillStore {
     }
 
     pub fn clear_skill_trash(&self, now: i64) {
-        let cutoff = now - SKILL_TRASH_DAYS * 86_400;
+        self.sweep_skill_trash(now);
+    }
+
+    fn sweep_skill_trash(&self, now: i64) -> Option<i64> {
+        let mut next = None;
         for id in kuvo_store::files::list_of(&self.trash_dir).into_iter().filter_map(|o| o.into_string().ok()) {
-            if skill_trash_entry(&id).is_some_and(|e| e.deleted <= cutoff) {
+            let Some(entry) = skill_trash_entry(&id) else { continue; };
+            let expires = entry.deleted.saturating_add(SKILL_TRASH_DAYS * 86_400);
+            let due = if expires <= now {
                 let p = self.trash_dir.join(&id);
-                let _ = fs::remove_dir_all(&p).or_else(|_| fs::remove_file(&p));
+                let removed = fs::remove_dir_all(&p).or_else(|_| fs::remove_file(&p));
                 let _ = fs::remove_file(self.trash_record_path(&id));
-            }
+                if removed.is_ok() || fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) { continue; }
+                now.saturating_add(86_400)
+            } else { expires };
+            next = Some(next.map_or(due, |old: i64| old.min(due)));
         }
+        next
     }
 
     pub fn skill_trash_entries(&self) -> Vec<Value> {
@@ -262,17 +272,28 @@ impl SkillStore {
 
     pub fn start_trash_sweeper(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let s = self.clone();
-        s.clear_skill_trash(now_secs());
         tokio::spawn(async move {
-            let mut iv = timer_fires::interval(Timer::SkillsDaily, Duration::from_secs(86_400));
-            iv.tick().await;
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            files.set_targets(Vec::new(), vec![(s.trash_dir.clone(), false)]);
             loop {
-                iv.tick().await;
-                let s = s.clone();
-                let _ = tokio::task::spawn_blocking(move || s.clear_skill_trash(now_secs())).await;
+                let store = s.clone();
+                let due = match tokio::task::spawn_blocking(move || store.sweep_skill_trash(now_secs())).await {
+                    Ok(next) => next,
+                    Err(_) => return,
+                };
+                tokio::select! {
+                    _ = files.changed() => {},
+                    _ = async {
+                        match due {
+                            Some(at) => timer_fires::sleep(Timer::SkillsDaily, Duration::from_secs(at.saturating_sub(now_secs()).max(0) as u64)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {},
+                }
             }
         })
     }
+
 }
 
 pub fn now_secs() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }

@@ -302,45 +302,97 @@ impl Supervisor {
         if let Err(error) = self.load().await {
             eprintln!("Reading the engine record: {error}");
         }
+        let run = self.home.join("run");
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_targets(["off", "paused", "stopped", "fleet-engine-hold.json", "previous",
+            "engine-swap.json", "update.json", ".updating", ".updating/pid"].into_iter()
+            .map(|name| run.join(name)).collect(), Vec::new());
         let mut probing = tokio::task::JoinSet::new();
-        let mut checks = timer_fires::interval_at(Timer::EngineLifetime, Instant::now() + self.timing.check, self.timing.check);
-        checks.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        let mut watched = None;
+        let mut exited = None;
+        let mut retry = None;
+        let mut fallback = Instant::now() + self.timing.check;
         loop {
-            tokio::select! {
+            let current = self.worker.as_ref().map(|worker| worker.identity().clone());
+            if current != watched {
+                exited = current.as_ref().and_then(|id| id.watch_exit().ok());
+                watched = current;
+                fallback = Instant::now() + self.timing.check;
+                retry = None;
+            }
+            let deadline = self.next_check(!probing.is_empty(), exited.is_some(), retry, fallback).await;
+            let look = tokio::select! {
                 biased;
                 command = inbox.recv() => match command {
                     Some(Command::Acquire(demand, reply)) if !reply.is_closed() => {
                         self.acquire(demand, reply).await;
+                        false
                     }
                     Some(Command::Release) => {
                         self.leases -= 1;
                         self.touch();
+                        false
                     }
                     Some(Command::Control(action)) => {
                         if let Err(error) = self.control(action).await {
                             eprintln!("Starting the engine on request: {error}");
                         }
+                        false
                     }
                     Some(Command::Drain(reply)) => {
                         let _ = reply.send(self.drain().await);
+                        false
                     }
-                    Some(Command::Acquire(_, _)) => {},
+                    Some(Command::Acquire(_, _)) => false,
                     None => break,
                 },
                 Some(result) = probing.join_next(), if !probing.is_empty() => {
-                    if let Ok(probe) = result
-                        && let Err(error) = self.park_if_quiet(probe).await
-                    {
-                        eprintln!("Parking the engine: {error}");
+                    if let Ok(probe) = result {
+                        if let Err(error) = self.park_if_quiet(probe).await {
+                            eprintln!("Parking the engine: {error}");
+                            retry = Some(Instant::now() + self.timing.check);
+                        }
                     }
+                    false
                 },
-                _ = checks.tick() => {
-                    if let Err(error) = self.look(&mut probing).await {
-                        eprintln!("Checking the engine: {error}");
-                    }
+                _ = wait_check(deadline) => true,
+                _ = files.changed() => true,
+                _ = wait_exit(&mut exited) => { exited = None; true },
+            };
+            if look {
+                retry = None;
+                fallback = Instant::now() + self.timing.check;
+                if let Err(error) = self.look(&mut probing).await {
+                    eprintln!("Checking the engine: {error}");
+                    retry = Some(Instant::now() + self.timing.check);
                 }
             }
         }
+    }
+
+    async fn next_check(&self, probing: bool, watching_exit: bool, retry: Option<Instant>, fallback: Instant) -> Option<Instant> {
+        // In a never-used engine there is no process, recovery or work to check.
+        if self.worker.is_none() && !self.recover { return None; }
+        let now = Instant::now();
+        let not_before = retry.unwrap_or(now);
+        if stopped(&self.home).await {
+            // With no process-watch support, still reap an actual process.
+            return (self.worker.is_some() && !watching_exit).then_some(fallback);
+        }
+        if self.worker.is_none() || !self.healthy || !watching_exit {
+            return Some(fallback.max(not_before));
+        }
+        if probing || self.leases != 0 || !self.worker.as_ref().is_some_and(Worker::owned) {
+            return None;
+        }
+        let idle_at = self.used + self.timing.idle;
+        if idle_at > now { return Some(idle_at.max(not_before)); }
+        // A live update or swap can disappear without cleaning its lock if killed. This
+        // is an outstanding park/recovery, not a periodic check of an idle box.
+        if crate::release::holding(&self.home.join("run")) || switching(&self.home).await || updating(&self.home).await {
+            return Some(fallback.max(not_before));
+        }
+        Some(not_before)
     }
 
     async fn load(&mut self) -> io::Result<()> {
@@ -619,6 +671,20 @@ impl Supervisor {
             self.stop().await?;
         }
         Ok(())
+    }
+}
+
+async fn wait_check(at: Option<Instant>) {
+    match at {
+        Some(at) => timer_fires::sleep_until(Timer::EngineLifetime, at).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_exit(exit: &mut Option<oneshot::Receiver<io::Result<()>>>) {
+    match exit {
+        Some(exit) => { let _ = exit.await; }
+        None => std::future::pending().await,
     }
 }
 

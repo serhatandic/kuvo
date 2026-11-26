@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { boxBinary, isolatedEnv, localRelay, privateHome, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, localRelay, openLine, privateHome, scratch, startBox, until, write } from "./adapter.mjs";
 
-export async function parkedTimers(t, timers, observeMs=5500) {
+export async function parkedTimers(t, timers, observeMs=5500, topics=null) {
   const binary = boxBinary();
   if (binary.typescript || !["darwin", "linux"].includes(process.platform)) {
     return t.skip("The Rust debug timer reporter uses a Unix signal.");
@@ -21,6 +21,19 @@ export async function parkedTimers(t, timers, observeMs=5500) {
   const reports = path.join(home, "run", "timer-fires");
   if (!fs.existsSync(reports)) return t.skip("Use a debug executable with timer reporting.");
   const report = path.join(reports, String(record.pid) + ".json");
+  if (topics) {
+    const watch = Buffer.from(JSON.stringify(topics)).toString("base64url");
+    const line = await openLine(record, "?watch=" + watch, "kuvo/line", { "x-kuvo-from": "app" }, observeMs + 15000);
+    assert.equal(line.status, 200);
+    t.after(() => line.close());
+    const frames = line.frames();
+    const wanted = new Set(Object.keys(topics));
+    while (wanted.size) {
+      const { value, done } = await frames.next();
+      assert.ok(!done, `missing initial topics: ${[...wanted].join(", ")}`);
+      if (value?.t && value.d !== undefined) wanted.delete(value.t);
+    }
+  }
   const sample = async () => {
     const before = fs.existsSync(report) ? JSON.parse(fs.readFileSync(report)).sequence : 0;
     process.kill(record.pid, "SIGUSR1");

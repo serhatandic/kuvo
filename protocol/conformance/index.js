@@ -50,6 +50,7 @@ const areas = new Map([
   ["vault", "./vault.test.mjs"],
   // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
   ["bots", "./routes.test.mjs"],
+  ["bots-held", "./bots-held.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

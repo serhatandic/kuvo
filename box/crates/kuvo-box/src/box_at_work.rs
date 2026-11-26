@@ -22,10 +22,7 @@ use kuvo_protocol::routes::{
 };
 use kuvo_server::{Access, JsonLine, Registry, RouteReply};
 use kuvo_services::limits_menu::MenuLimits;
-use kuvo_store::{
-    background,
-    files::{FileStamp, file_stamp},
-};
+use kuvo_store::background;
 use kuvo_work::{bots::here::BotHere, wakes::folder::names, work::watch::told};
 use tokio_util::sync::CancellationToken;
 
@@ -68,19 +65,11 @@ fn title(text: &str) -> Option<String> {
 }
 
 impl Menu {
-    fn stamps(&self) -> Vec<Option<FileStamp>> {
-        let run = self.home.join("run");
-        WATCHED
-            .iter()
-            .map(|name| file_stamp(&run.join(name)).ok().flatten())
-            .collect()
-    }
-
     async fn read(
         &self,
         sessions: &mut LocalSessions,
         cancel: &CancellationToken,
-    ) -> read::Status200 {
+    ) -> (read::Status200, Option<u64>) {
         let (record, waiting) = self.engine.waiting_snapshot(sessions, cancel).await;
         let list = record
             .and_then(|record| serde_json::from_value::<LocalList>(record).ok())
@@ -89,8 +78,8 @@ impl Menu {
         let working_ids: HashSet<_> = working.iter().map(|(id, _)| id.as_str()).collect();
         let working_count = working.len();
         let run = self.home.join("run");
-        let background = background::active_sessions(&run, told::now())
-            .iter()
+        let (background, background_due) = background::active_sessions_until(&run, told::now());
+        let background = background.iter()
             .filter(|id| !working_ids.contains(id.as_str()))
             .count();
         let folder = self.home.join("bots");
@@ -165,7 +154,7 @@ impl Menu {
                 .map(|row| row.rings.clone())
                 .collect();
         }
-        read::Status200 {
+        (read::Status200 {
             applies: self.applies,
             working: working_count.into(),
             sessions,
@@ -179,7 +168,7 @@ impl Menu {
             busy: working_count != 0 || background != 0,
             rings: rings.iter().map(|row| row.rings.clone()).collect(),
             computers: Some(computers),
-        }
+        }, background_due)
     }
 }
 
@@ -212,7 +201,7 @@ pub fn register(
         let mut list = source.clone();
         async move {
             Ok(RouteReply::json::<200>(
-                menu.read(&mut list, &call.cancel).await,
+                menu.read(&mut list, &call.cancel).await.0,
             ))
         }
     });
@@ -225,32 +214,35 @@ pub fn register(
             menu.limits.requested();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
-                let mut refresh = timer_fires::interval(Timer::WorkAtWorkFollow, Duration::from_secs(1));
-                refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut stamps = menu.stamps();
-                let mut read_at = tokio::time::Instant::now();
-                let mut due = true;
+                let run = menu.home.join("run");
+                let hub = kuvo_os::watch::WatchHub::default();
+                let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+                files.set_targets(WATCHED.iter().filter(|name| **name != "work-queue/queues").map(|name| run.join(name)).collect(), vec![(run.join("work-queue/queues"), false)]);
+                let mut bots = kuvo_os::watch::FileSet::new(hub);
+                bots.set_child_files(menu.home.join("bots"), ["bot.json", "session"]);
                 loop {
-                    if due {
-                        let current = menu.read(&mut list, &call.cancel).await;
-                        read_at = tokio::time::Instant::now();
-                        if last.as_ref() != Some(&current) {
-                            yield JsonLine::new(current.clone())?;
-                            last = Some(current);
-                        }
+                    let (current, background_due) = menu.read(&mut list, &call.cancel).await;
+                    if last.as_ref() != Some(&current) {
+                        yield JsonLine::new(current.clone())?;
+                        last = Some(current);
                     }
-                    due = tokio::select! {
-                        changed = list.changed() => { if !changed { break; } true },
-                        changed = peers.changed() => { if changed.is_err() { break; } true },
-                        changed = limits.changed() => { if changed.is_err() { break; } true },
+                    let now = told::now();
+                    let peer_now = peers.now();
+                    let peer_due = peers.view().next_helper_change(&run, peer_now)
+                        .map(|at| now.saturating_add(at.saturating_sub(peer_now).max(0) as u64));
+                    let due = peer_due.into_iter().chain(background_due).min();
+                    tokio::select! {
+                        changed = list.changed() => if !changed { break; },
+                        changed = peers.changed() => if changed.is_err() { break; },
+                        changed = limits.changed() => if changed.is_err() { break; },
+                        _ = files.changed() => {},
+                        _ = bots.changed() => {},
                         () = call.cancel.cancelled() => break,
-                        _ = refresh.tick() => {
-                            let next = menu.stamps();
-                            let changed = stamps != next;
-                            stamps = next;
-                            changed || read_at.elapsed() >= Duration::from_secs(15)
-                        },
-                    };
+                        _ = async { match due {
+                            Some(at) => timer_fires::sleep(Timer::WorkAtWorkFollow, Duration::from_millis(at.saturating_sub(told::now()).max(1))).await,
+                            None => std::future::pending().await,
+                        } } => {},
+                    }
                 }
             }))
         }

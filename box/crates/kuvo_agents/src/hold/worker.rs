@@ -381,7 +381,10 @@ impl State {
         let (waiting, mut handshakes) = mpsc::channel(8);
         let handshake_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
         let (commands, mut input) = mpsc::channel(16);
-        let mut tick = timer_fires::interval(Timer::AgentHolderOutput, Duration::from_millis(25));
+        let mut exited = agent.group.as_ref().and_then(|group| group.identity().watch_exit().ok());
+        agent.poll_exit()?;
+        let mut fallback = Instant::now() + Duration::from_millis(25);
+        let mut killed = None;
         let mut pending_input = None;
         let mut stdout_closed = false;
         let mut stderr_closed = false;
@@ -389,6 +392,7 @@ impl State {
         self.departure = Some(Instant::now() + self.orphan);
         loop {
             self.pump()?;
+            if agent.status.is_some() { exit_seen.get_or_insert_with(Instant::now); }
             // A full controller stream holds back agent output. Keep accepting
             // successors even when the current controller has stopped reading.
             let has_room = self.controller.as_ref().is_none_or(|controller| {
@@ -425,6 +429,13 @@ impl State {
             if stdin.is_none() {
                 pending_input = None;
             }
+            let output_deadline = exit_seen.filter(|_| agent.status.is_some() && !(stdout_closed && stderr_closed))
+                .map(|seen| seen + OUTPUT_AFTER_EXIT);
+            let stop_deadline = self.stopping.filter(|_| agent.group.is_some()).map(|(start, sent_term)| {
+                killed.map_or(start + Duration::from_secs(if sent_term { 15 } else { 5 }), |at: Instant| at + Duration::from_secs(1))
+            });
+            let due = [self.departure, output_deadline, stop_deadline,
+                (agent.group.is_some() && exited.is_none()).then_some(fallback)].into_iter().flatten().min();
             tokio::select! {
                 stream = listener.accept() => {
                     let stream = stream?;
@@ -478,8 +489,20 @@ impl State {
                     }
                 }
                 _ = &mut termination, if self.stopping.is_none() => self.stop(&mut agent, "SIGTERM")?,
-                _ = tick.tick() => {
+                _ = async { match &mut exited {
+                    Some(exit) => { let _ = exit.await; },
+                    None => std::future::pending().await,
+                } } => {
+                    exited = None;
+                    fallback = Instant::now() + Duration::from_millis(25);
                     agent.poll_exit()?;
+                }
+                _ = async { match due {
+                    Some(at) => timer_fires::sleep_until(Timer::AgentHolderOutput, at).await,
+                    None => std::future::pending().await,
+                } } => {
+                    agent.poll_exit()?;
+                    fallback = Instant::now() + Duration::from_millis(25);
                     // Something the agent started, outside its group, may keep
                     // its output open: its exit is told a moment later all the same.
                     if agent.status.is_some() && !(stdout_closed && stderr_closed) {
@@ -501,7 +524,10 @@ impl State {
                         && agent.group.is_some()
                     {
                         if start.elapsed() >= Duration::from_secs(15) {
-                            agent.signal(GroupSignal::Kill);
+                            if killed.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(1)) {
+                                agent.signal(GroupSignal::Kill);
+                                killed = Some(Instant::now());
+                            }
                         } else if !*sent_term && start.elapsed() >= Duration::from_secs(5) {
                             agent.signal(GroupSignal::Terminate);
                             *sent_term = true;
@@ -832,10 +858,9 @@ fn termination(
     request: PathBuf,
 ) -> io::Result<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> {
     let asked = async move {
-        let mut look = timer_fires::interval(Timer::AgentHolderLiveness, Duration::from_millis(250));
-        while !request.exists() {
-            look.tick().await;
-        }
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_files(vec![request.clone()]);
+        while !request.exists() { files.changed().await; }
     };
     #[cfg(unix)]
     {

@@ -191,6 +191,10 @@ impl SignIns {
             false
         });
     }
+
+    pub fn next_expiry(&self) -> Option<Instant> {
+        self.attempts.values().map(|entry| entry.deadline + Duration::from_secs(60)).min()
+    }
 }
 
 impl Drop for SignIns {

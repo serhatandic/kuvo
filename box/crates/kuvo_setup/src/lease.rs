@@ -300,7 +300,7 @@ impl Client {
         } else {
             None
         };
-        let roster_hash = roster.as_ref().map(|roster| digest_roster(roster));
+        let roster_hash = roster.as_ref().map(digest_roster);
 
         let next = link
             .value(SharedKind::QueueNumberAllocation)

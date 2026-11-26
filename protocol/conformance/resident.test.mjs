@@ -3,8 +3,63 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, request } from "./adapter.mjs";
+import { openLine, request, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { parkedTimers } from "./idle-counter.mjs";
+
+test("a pristine resident parks its idle services and creates the artifact store on use", { timeout: 95000 }, async t => {
+  const fixture = await parkedTimers(t, ["bots.held", "peers.waiting", "engine.lifetime", "agents.sign-in-expiry", "backup.daily", "engine.queue-limit", "work.late-answer", "agents.tool-expiry"], 65000);
+  if (!fixture) return;
+  const { home, record } = fixture;
+  assert.equal(fs.existsSync(path.join(home, "artifacts")), false);
+  assert.equal(fs.existsSync(path.join(home, "run/work/background.json")), false);
+  const artifacts = await request(record, "GET", "kuvo/artifacts/storage", undefined, { "x-kuvo-from": "app" });
+  assert.equal(artifacts.status, 200, artifacts.text);
+  assert.ok(fs.existsSync(path.join(home, "artifacts/key")));
+});
+
+test("idle followed lists wait for changes instead of periodic reads", { timeout: 30000 }, async t => {
+  await parkedTimers(t, ["agents.background", "bots.follow", "work.follow", "work.at-work-follow", "engine.waiting-follow", "wakes.follow", "work.asks-follow", "artifacts.follow"], 6500, {
+    bots: "kuvo/bots/events", work: "kuvo/work/events", background: "kuvo/work/background/events",
+    waiting: "kuvo/waiting/events", wakes: "kuvo/wakes/events", asks: "kuvo/asks/events", menu: "kuvo/box/at-work/events",
+    library: "kuvo/setup/library/events",
+  });
+});
+
+test("followed work and background answer external records and the actual mark expiry", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Followed records");
+  const record = await here.start().ready();
+  const topics = { background: "kuvo/work/background/events", marks: "kuvo/work/oversight/events" };
+  const watch = Buffer.from(JSON.stringify(topics)).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch, "kuvo/line", { "x-kuvo-from": "app" }, 40000);
+  t.after(() => line.close());
+  assert.equal(line.status, 200);
+  const frames = line.frames();
+  const seen = new Map();
+  const expect = async (topic, matches) => {
+    while (!matches(seen.get(topic))) {
+      const { value, done } = await frames.next();
+      assert.ok(!done, `follow stopped before ${topic} changed`);
+      if (value?.t) seen.set(value.t, value.d);
+    }
+  };
+  await expect("background", row => row?.sessions && !Object.keys(row.sessions).length);
+  await expect("marks", row => row?.marks?.length === 0);
+  const work = path.join(here.home, "run/work");
+  const background = path.join(work, "background.json");
+  write(background, JSON.stringify({ engine: { sessions: { ses_followed: {
+    commands: [{ id: "shl_followed", command: "build", started: Date.now() }],
+  } }, folders: [] } }));
+  await expect("background", row => row?.sessions?.ses_followed?.commands === 1);
+  fs.rmSync(background, { force: true });
+  await expect("background", row => row?.sessions && !Object.keys(row.sessions).length);
+  write(path.join(work, "oversight.json"), JSON.stringify([{
+    id: "oversight-followed", bot: "bot_followed", session: "ses_followed", kind: "started", at: Date.now() - 54000,
+  }]));
+  await expect("marks", row => row?.marks?.some(mark => mark.id === "oversight-followed"));
+  await expect("marks", row => row?.marks?.length === 0);
+});
 
 test("resident publishes usable credentials for kuvo/info", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);

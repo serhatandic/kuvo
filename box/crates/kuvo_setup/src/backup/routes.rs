@@ -814,21 +814,44 @@ pub fn register(
     register_local::<VaultImport>(routes, &service, Action::VaultImport);
     let daily = service.clone();
     let task = tokio::spawn(async move {
-        let mut check = timer_fires::interval_at(Timer::BackupDaily,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(60),
-            std::time::Duration::from_secs(15 * 60),
-        );
-        check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        use std::time::Duration;
+        use tokio::time::Instant;
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_files(vec![daily.config_path()]);
+        let mut selection = None;
+        let mut retry = None;
         loop {
-            check.tick().await;
-            let service = daily.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                if service.config()?.is_some_and(|config| config.enabled) {
-                    service.handle(Action::Now, Request::default())?;
+            let due = match daily.config() {
+                Ok(Some(config)) if config.enabled => {
+                    let chosen = json!([config.source, config.dest, config.disk, config.projects]);
+                    if selection.as_ref() != Some(&chosen) {
+                        selection = Some(chosen);
+                        retry = Some(Instant::now() + Duration::from_secs(60));
+                    }
+                    let now = jiff::Timestamp::now();
+                    let today = now.strftime("%Y-%m-%d").to_string();
+                    if config.last_daily.as_ref().is_some_and(|point| point.id.day() == today)
+                        && config.error.is_none() {
+                        retry = None;
+                        let ms = now.as_millisecond();
+                        let midnight = 86_400_000 - ms.rem_euclid(86_400_000);
+                        Some(Instant::now() + Duration::from_millis(midnight as u64))
+                    } else {
+                        Some(*retry.get_or_insert_with(Instant::now))
+                    }
                 }
-                Ok::<_, Error>(())
-            })
-            .await;
+                _ => { selection = None; retry = None; None }
+            };
+            let Some(due) = due else { files.changed().await; continue; };
+            tokio::select! {
+                _ = files.changed() => continue,
+                _ = timer_fires::sleep_until(Timer::BackupDaily, due) => {},
+            }
+            let service = daily.clone();
+            let _ = tokio::task::spawn_blocking(move || service.handle(Action::Now, Request::default())).await;
+            // A failed scheduled export is real work; keep its retry, including
+            // across the configuration's own newly written error field.
+            retry = Some(Instant::now() + Duration::from_secs(15 * 60));
         }
     });
     Resident { service, task }

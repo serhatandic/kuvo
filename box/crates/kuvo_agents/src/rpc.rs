@@ -381,6 +381,12 @@ impl Rpc {
             .is_ok_and(|gone| gone.is_ok())
     }
 
+    /// Wait for the holder to report exit, with no periodic polling or timeout.
+    pub(crate) async fn wait_ended(&self) {
+        let mut gone = self.gone.clone();
+        let _ = gone.wait_for(|gone| *gone).await;
+    }
+
     /// Whether the agent is gone (or handed to another resident).
     pub fn is_closed(&self) -> bool {
         *self.gone.borrow()

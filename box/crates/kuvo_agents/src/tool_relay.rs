@@ -186,8 +186,13 @@ struct Inner {
     state: Mutex<State>,
     listening: OnceCell<(u16, JoinHandle<()>)>,
     stop: CancellationToken,
+    idle_changed: Arc<tokio::sync::Notify>,
     client: reqwest::Client,
     host: Arc<dyn ServerHost>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) { self.stop.cancel(); }
 }
 
 #[derive(Default)]
@@ -257,6 +262,7 @@ impl ToolRelay {
             state: Mutex::new(State::default()),
             listening: OnceCell::new(),
             stop: CancellationToken::new(),
+            idle_changed: Arc::default(),
             client,
             host,
         })))
@@ -264,6 +270,7 @@ impl ToolRelay {
 
     pub fn set_timing(&self, timing: RelayTiming) {
         self.state().timing = timing;
+        self.0.idle_changed.notify_one();
     }
 
     /// Where the box keeps agents through its updates (a computer's):
@@ -427,6 +434,7 @@ impl ToolRelay {
             stopping
         };
         stopping.iter().for_each(|program| program.stop());
+        self.0.idle_changed.notify_one();
         self.keep();
     }
 
@@ -515,17 +523,26 @@ async fn accept(relay: Weak<Inner>, listener: TcpListener, stop: CancellationTok
 /// that started again has a new one), as the engine stops its own.
 async fn sweep(relay: Weak<Inner>, stop: CancellationToken) {
     loop {
-        let Some(every) = relay.upgrade().map(|inner| ToolRelay(inner).timing().idle / 12) else {
-            return;
+        let Some(inner) = relay.upgrade() else { return; };
+        let idle = inner.idle_changed.clone();
+        let relay = ToolRelay(inner);
+        let (stopping, next) = {
+            let mut state = relay.state();
+            let span = state.timing.idle;
+            let stopping = state.servers.idle(span);
+            let next = state.servers.next_idle(span);
+            (stopping, next)
         };
+        stopping.iter().for_each(|program| program.stop());
+        drop(relay);
         tokio::select! {
             () = stop.cancelled() => return,
-            () = tokio::time::sleep(every) => {}
+            _ = idle.notified() => {},
+            _ = async { match next {
+                Some(at) => kuvo_os::timer_fires::sleep_until(kuvo_os::timer_fires::Timer::AgentToolExpiry, at).await,
+                None => std::future::pending().await,
+            } } => {},
         }
-        let Some(inner) = relay.upgrade() else { return };
-        let relay = ToolRelay(inner);
-        let idle = relay.timing().idle;
-        relay.state().servers.idle(idle).iter().for_each(|program| program.stop());
     }
 }
 
@@ -597,7 +614,7 @@ impl ToolRelay {
                     }
                     // (By its name on the PATH, as the engine starts it.)
                     let command = which(command.as_os_str(), &env, &[]).unwrap_or(Executable::Native(command));
-                    match Program::start(key, Launch { command, args, env }, None, TOOLS.into()) {
+                    match Program::start(key, Launch { command, args, env }, None, TOOLS.into(), None) {
                         Ok(program) => {
                             state.programs.insert(session.to_owned(), program.clone());
                             program
@@ -780,6 +797,7 @@ struct Program {
     input: mpsc::UnboundedSender<String>,
     calls: Mutex<Calls>,
     group: Mutex<Option<ChildGroup>>,
+    idle_changed: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Default)]
@@ -794,7 +812,7 @@ struct Calls {
 }
 
 impl Program {
-    fn start(key: String, launch: Launch, cwd: Option<PathBuf>, name: String) -> io::Result<Arc<Self>> {
+    fn start(key: String, launch: Launch, cwd: Option<PathBuf>, name: String, idle_changed: Option<Arc<tokio::sync::Notify>>) -> io::Result<Arc<Self>> {
         let Launch { command, args, mut env } = launch;
         // (Windows keeps each drive's folder in variables named `=C:`: not
         // a program's to be given.)
@@ -836,6 +854,7 @@ impl Program {
             input,
             calls: Mutex::new(calls),
             group: Mutex::new(Some(group)),
+            idle_changed,
         });
         let reading = Arc::downgrade(&program);
         tokio::spawn(async move {
@@ -859,7 +878,12 @@ impl Program {
     }
 
     fn unused_for(&self, idle: Duration) -> bool {
-        self.calls().used.is_some_and(|used| used.elapsed() > idle)
+        let state = self.calls();
+        state.stopped || state.used.is_some_and(|used| used.elapsed() >= idle)
+    }
+
+    fn idle_deadline(&self, idle: Duration) -> Option<Instant> {
+        self.calls().used.map(|used| used + idle)
     }
 
     fn write(&self, message: &Value) {
@@ -890,6 +914,7 @@ impl Program {
     /// A connection's message; a request's answer (none for a notification).
     async fn send(&self, mut message: Value, timeout: Duration, connection: &str) -> Option<Value> {
         self.calls().used = Some(Instant::now());
+        if let Some(changed) = &self.idle_changed { changed.notify_one(); }
         let Some(original) = message.get("id").cloned().filter(|id| !id.is_null()) else {
             // A cancel names the request as the program knows it.
             let request = message["params"].get("requestId");
@@ -942,6 +967,7 @@ impl Program {
             calls.stopped = true;
             std::mem::take(&mut calls.waiting)
         };
+        if let Some(changed) = &self.idle_changed { changed.notify_one(); }
         for (_, (original, done)) in waiting {
             let _ = done.send(stopped(&original, &self.name));
         }
