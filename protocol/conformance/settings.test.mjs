@@ -1043,3 +1043,114 @@ test("Skills lists the engine's own with search, deleted ones with theirs, and s
   assert.equal(item(after,"skill-empty"),undefined);
   assert.equal(item(after,`skill-${"a".repeat(129)}`),undefined);
 });
+
+// Settings › Storage, over the artifact store the box keeps: one file with an older version.
+const sha=data=>createHash("sha256").update(data).digest("hex");
+const seedOlder=home=>{
+  const doc=path.join(home,"notes.md"),v1="The first version.\n",v2="The second version, longer.\n";
+  write(doc,v2);
+  const header={id:"art_"+sha(doc).slice(0,24),path:doc,name:"notes.md",kind:"document",type:"text/markdown",
+    where:{bots:[],project:home,sessions:["ses_code"],groups:[]},pinned:null,gone:null,updated:"2026-10-26T10:01:00.000Z"};
+  const version=(n,text,at)=>({n,at,by:{kind:"agent",session:"ses_code",agent:"engine"},turn:{session:"ses_code",message:"m"+n},via:["write"],
+    status:n===1?"added":"modified",edits:1,lines:{added:1,removed:n-1},size:Buffer.byteLength(text),hash:"sha256:"+sha(text),kept:true});
+  write(path.join(home,"artifacts/key"),Buffer.alloc(32,0x24));
+  for (const text of [v1,v2]) write(path.join(home,"artifacts/copies",sha(text).slice(0,2),sha(text)),text);
+  write(path.join(home,"artifacts/log/2026-10.jsonl"),[{a:header,v:version(1,v1,"2026-10-26T10:00:00.000Z")},{a:header,v:version(2,v2,"2026-10-26T10:01:00.000Z")}]
+    .map(e=>JSON.stringify({...e,formatVersion:1})).join("\n")+"\n");
+};
+const storageBox=async(t,name,older=false)=>{
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  if (older) seedOlder(box.home);
+  const record=await box.start().ready();
+  const plain=box.connect(record);
+  const ask=(method,route,body)=>plain(method,route,body,{"x-kuvo-from":"app"});
+  const page=async()=>{const r=await ask("GET","kuvo/settings/storage");assert.equal(r.status,200,r.text);return r.json;};
+  const change=(r,value,extra={})=>ask("PATCH","kuvo/settings/storage",{row:r.id,was:r.revision,value,...extra});
+  // (The disk's free space moves by itself.)
+  const kept=async()=>{const {free,...rest}=(await ask("GET","kuvo/artifacts/storage")).json;return rest;};
+  return {box,record,ask,page,change,kept};
+};
+
+test("Storage describes what agents made in decimal units, floors a budget, and refuses stale, wrong or unavailable changes", async t => {
+  const {ask,page,change,kept}=await storageBox(t,"Storage Words");
+  const shown=await page();
+  const made=shown.groups.find(g=>g.id==="agents-made");
+  assert.equal(made.title,"What Agents Made");
+  assert.deepEqual(made.rows.map(r=>[r.id,r.title,r.line]),[
+    ["copies","Copies of what agents made","Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps."],
+    ["older-budget","Older versions keep up to","Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay."],
+    ["older-copies","Older versions","None kept."]]);
+  const budget=row(shown,"older-budget");
+  assert.deepEqual([budget.kind,budget.unit,budget.min],["number",{name:"GB",factor:1000000000,decimals:2,rounding:"nearest"},0]);
+  assert.deepEqual(budget.suggestions.map(s=>s.value),[0.25,0.5,1,2,5,10].map(n=>n*1000000000));
+  assert.equal(budget.confirmBelow.confirm.title,"Keep less of older versions?");
+  assert.equal(budget.confirmBelow.confirm.body,"Older versions take 0 bytes now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.");
+  const clear=row(shown,"older-copies").actions[0];
+  assert.deepEqual([clear.title,clear.confirm],["Clear…",{title:"Clear older versions?",body:"Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.",button:"Clear"}]);
+  // The default is binary, shown as 1.07 GB, and saved untouched it keeps exactly its bytes.
+  assert.equal(budget.value,1073741824);
+  assert.equal((await change(budget,budget.value)).status,200);
+  assert.equal((await ask("GET","kuvo/artifacts/storage")).json.budget,1073741824);
+  const now=row(await page(),"older-budget");
+  assert.equal((await change(now,1000.9)).status,200);
+  assert.equal((await ask("GET","kuvo/artifacts/storage")).json.budget,1000);
+  assert.equal((await change(now,2000)).status,409);
+  assert.equal((await change(row(await page(),"older-budget"),"1000")).status,400);
+  assert.equal((await ask("POST","kuvo/artifacts/storage",{budget:4000000})).status,200);
+  const small=row(await page(),"older-budget");
+  assert.deepEqual(small.unit,{name:"MB",factor:1000000,decimals:2,rounding:"nearest"});
+  assert.equal((await change(small,small.value)).status,200);
+  assert.equal((await ask("GET","kuvo/artifacts/storage")).json.budget,4000000);
+  // Clear with nothing to clear says why, and changes nothing.
+  const before=await kept();
+  const none=row(await page(),"older-copies");
+  assert.equal(none.actions[0].can.why,"None kept.");
+  const refused=await ask("POST","kuvo/settings/storage/older-copies/clear",{was:none.revision});
+  assert.deepEqual([refused.status,refused.json.message],[403,"None kept."]);
+  assert.deepEqual(await kept(),before);
+});
+
+test("Storage asks before keeping less than older versions take, and follows the page, the old budget route and Clear", async t => {
+  const {record,ask,page,change,kept}=await storageBox(t,"Storage Confirm",true);
+  const at=row(await page(),"older-budget");
+  const before=await kept();
+  assert.ok(before.older>0,JSON.stringify(before));
+  for (const confirmed of [undefined,null,false,"true",1]) {
+    const answer=await change(at,0,confirmed===undefined?{}:{confirmed});
+    assert.equal(answer.status,400,String(confirmed));
+    if (confirmed===undefined||confirmed===false) assert.equal(answer.json.message,at.confirmBelow.confirm.body);
+    assert.deepEqual(await kept(),before);
+  }
+  assert.equal((await change(at,at.confirmBelow.value+100)).status,200);
+  assert.equal((await change(row(await page(),"older-budget"),at.confirmBelow.value)).status,200);
+  assert.equal((await ask("GET","kuvo/artifacts/storage")).json.older,before.older);
+  const lines=await openLine(record,"","kuvo/settings/storage/events",{"x-kuvo-from":"app"});
+  try {
+    const frames=lines.frames();
+    const next=async test=>{let frame;do{frame=(await frames.next()).value;}while(!test(frame));return frame;};
+    const first=await next(()=>true);
+    assert.equal((await change(row(first,"older-budget"),2000000)).status,200);
+    await next(p=>row(p,"older-budget").value===2000000);
+    assert.equal((await ask("POST","kuvo/artifacts/storage",{budget:3000000})).status,200);
+    await next(p=>row(p,"older-budget").value===3000000);
+    const bytes=row(await page(),"older-copies").value;
+    assert.equal((await ask("POST","kuvo/artifacts/storage/clear",{was:bytes+1})).status,409);
+    assert.equal((await ask("GET","kuvo/artifacts/storage")).json.older,bytes);
+    assert.equal((await ask("POST","kuvo/artifacts/storage/clear",{})).status,200);
+    await next(p=>row(p,"older-copies").value===0);
+  } finally { lines.close(); }
+});
+
+test("Storage Refresh measures again, saying so at once", async t => {
+  const {box,ask,page}=await storageBox(t,"Storage Refresh");
+  const used=await until(async()=>{const r=row(await page(),"used");return r?.parts&&r;},"Storage did not measure its files.");
+  assert.match(used.title,/^[\d.]+ (bytes|KB|MB|GB) used by Kuvo$/);
+  assert.deepEqual(used.actions.map(a=>[a.id,a.title]),[["refresh","Refresh"]]);
+  assert.equal(row(await page(),"manage-archived").section,"archived");
+  write(path.join(box.home,"browser","more"),Buffer.alloc(400000,1));
+  const refreshed=await ask("POST","kuvo/settings/storage/used/refresh",{was:used.revision});
+  assert.equal(refreshed.status,200,refreshed.text);
+  assert.equal(row(refreshed.json,"used").busy,"Measuring…");
+  await until(async()=>row(await page(),"used").parts?.find(p=>p.id==="browser").value>=400000,"Refresh did not measure again.");
+});
