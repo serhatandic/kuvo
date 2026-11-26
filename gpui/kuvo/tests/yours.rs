@@ -421,7 +421,7 @@ fn a_computer_back_after_a_drop_shows_what_it_told_meanwhile(cx: &mut TestAppCon
     let (notifier, desk) = notifier(cx);
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(true, &[("ntc_old", "finished", None)]), cx));
     // It drops off (not reached for a while), and comes back with news told meanwhile.
-    notifier.update(cx, |notifier, cx| notifier.follow(Vec::new(), cx));
+    notifier.update(cx, |notifier, cx| notifier.follow(None, cx));
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(true, &[("ntc_old", "finished", None), ("ntc_1", "question", None)]), cx));
     let posts = desk.borrow().posts.clone();
     assert_eq!(posts.len(), 1);
