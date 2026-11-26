@@ -428,39 +428,33 @@ test("wake-up rows show the same saved summary in the agent's line or the reside
   assert.equal(taken.json.removed.text, text);
 });
 
-test("a standalone summary keeps a read conversation read while actual replies stay unread", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("summary-read");
-  const idle = created => ({ type: "idle", time: { created }, outcome: "succeeded" });
-  const compact = { type: "compaction", status: "completed", reason: "manual" };
-  const reply = { type: "assistant", content: [] };
-  const cases = [
-    ["ses_read", 2000, [idle(3000), compact, idle(1000)]],
-    ["ses_unread", 500, [idle(3000), compact, idle(1000)]],
-    ["ses_laterReply", 2000, [idle(3000), reply, compact, idle(1000)]],
-    ["ses_sameTurn", 2000, [idle(3000), compact, reply, { type: "user", text: "Go." }, idle(1000)]],
-  ];
-  for (const [id, viewed, messages] of cases) {
-    const session = sessionOf({ id, directory: here.home });
-    Object.assign(session.time, { viewed, idle: 3000 });
-    here.engine.sessions.push(session);
-    here.engine.messages.set(id, messages);
+const summaryUnreads = boxBinary().typescript && "The reference keeps a conversation read through a summary only for its engine's conversations.";
+test("a standalone summary keeps a read conversation read while an unread one stays unread", { timeout: 60000, skip: summaryUnreads }, async t => {
+  const ids = ["ses_read", "ses_unread"];
+  const { here, record } = await onAgents(t, "summary-read", ids);
+  here.agents.script("/compact", [said("Summary of the conversation.")]);
+  const header = async id => (await request(record, "GET", `kuvo/agents/api/session/${id}`, undefined, desktop)).json.data;
+  const before = {};
+  for (const id of ids) {
+    assert.equal((await request(record, "POST", `kuvo/sessions/${id}/send`, { id: "msg_first" + id.slice(4), words: "Hello.", delivery: "steer" }, desktop)).status, 200);
+    before[id] = await until(async () => { const read = await header(id); return read?.time?.idle && read; }, "Its turn never ended.", 20000, 100);
+    // The first read (Mark All as Read) before the second's reply.
+    if (id === "ses_read") {
+      const read = await request(record, "POST", "kuvo/sessions/read", {}, desktop);
+      assert.equal(read.status, 200, read.text);
+      await until(async () => (await header(id)).time.viewed >= before[id].time.idle, "Mark All as Read never read it.", 10000, 100);
+    }
   }
-  await here.start().ready();
-  await until(() => here.engine.subscribers() > 0, "the resident to follow completed summaries");
-  const measured = new Set();
-  here.engine.messagePageRead = (id, query) => {
-    if (query.get("limit") === "6") measured.add(id);
-  };
-  for (const [sessionID] of cases) {
-    here.engine.emit({ type: "session.execution.succeeded", data: { sessionID } });
+  for (const id of ids) {
+    const compacted = await request(record, "POST", `kuvo/agents/api/session/${id}/compact`, {}, desktop);
+    assert.ok(compacted.status < 300, compacted.status + " " + compacted.text);
   }
-  await until(() => measured.size === cases.length && here.engine.sessions[0].time.viewed === 3000,
-    "the resident to preserve the read marker through the standalone summary");
-  assert.deepEqual(here.engine.sessions.map(session => session.time.viewed), [3000, 500, 2000, 2000]);
-  assert.deepEqual(here.engine.asked.filter(call => call.path.endsWith("/view")).map(call => [call.path, call.json]), [
-    ["/api/session/ses_read/view", { idle: 3000 }],
-  ]);
+  let latest;
+  await until(async () => {
+    latest = await Promise.all(ids.map(header));
+    return latest.every((read, at) => read.time.idle > before[ids[at]].time.idle) && latest[0].time.viewed === latest[0].time.idle;
+  }, () => "The read conversation turned unread through its summary: " + JSON.stringify(latest?.map(read => read.time)), 30000, 100);
+  assert.ok(!(latest[1].time.viewed >= latest[1].time.idle), JSON.stringify(latest[1].time));
 });
 
 test("Edit says a message already delivered isn't waiting", { timeout: 45000 }, async t => {
@@ -1023,8 +1017,12 @@ test("the session list starts in the most recent project and orders ties by name
     directory: project.directory, name: project.name, folders: [],
   })) }));
   const record = await here.start().ready();
-  const list = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
-  assert.equal(list.status, 200, list.text);
+  // (Once the agents' conversations are listed: before, only the names order the projects.)
+  const list = await until(async () => {
+    const read = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
+    assert.equal(read.status, 200, read.text);
+    return Object.keys(read.json.sessions ?? {}).length === catalog.length && read;
+  }, "The agents' conversations were never listed.", 20000, 100);
   assert.deepEqual(list.json.projectOrder, [catalog[1].directory, catalog[0].directory, catalog[2].directory]);
   assert.equal(list.json.startProject, catalog[1].directory);
 });

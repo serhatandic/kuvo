@@ -909,7 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 6/7 | see below |
 | engine-asks | 5/5 (1 skipped) | 2/6 | see below |
 | engine-worktree | 7/7 | 5/7 | see below |
-| engine-sessions | 46/46 (7 skipped) | 47/53 | see below |
+| engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
 
 Notes on each area:
 
@@ -951,29 +951,30 @@ Notes on each area:
 
 The queue, its holds, Undo, receipts, the session list and its pages, now on a coding agent's
 line. A conversation at work is one whose turn the scripted Grok holds open. The queue is read
-as the app follows it, on its line (`…/queue/events`). The reference skips 7 cases, for two
+as the app follows it, on its line (`…/queue/events`). The reference skips 9 cases, for four
 findings:
 
 - it doesn't mark a steer waiting in an agent's line as held, nor name the files on its queue
   rows (6 cases);
 - it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
-  parts vector).
+  parts vector, and the agent that takes pictures);
+- a summary turns an agent conversation read with Mark All as Read unread again (it keeps only
+  its engine's conversations read).
 
-Rust's 6 failures are 4.7d step 5's:
+Rust's 7 failures are 4.7d step 5's:
 
 - a Steer on a stopped queue;
 - draining an unpaused saved queue after a restart;
 - a bot's sustained thinking;
 - the place Undo puts a message back;
 - the step words on an agent's rows;
-- the title of its summary.
+- the title of its summary;
+- Mark All as Read (`kuvo/sessions/read`) on agent conversations, and a summary keeping one read.
 
 Kept on the engine:
 
 - "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
-  passthrough stays for released 0.7.x Macs;
-- "a standalone summary keeps a read conversation read…": still to port, as it needs a summary
-  turn on the stand-in.
+  passthrough stays for released 0.7.x Macs.
 
 Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
 (agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the
