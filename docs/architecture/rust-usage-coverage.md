@@ -135,7 +135,10 @@ start rarely used work only on demand.
   passive quota read from starting a coding agent: Codex uses an already running
   app-server, watched recent quota snapshots from its own JSONL logs, or turn events.
   The app can explicitly refresh to ask the native CLI. Claude and Grok's native probes
-  are also explicit-only; HTTP-only sources do not start CLI processes. The rail and
+  are also explicit-only. One manual Claude refresh reads each signed-in account once
+  sequentially, without the old automatic one-minute spacing; a second press joins
+  the running round rather than launching another reader. Restart does not launch
+  a native probe. HTTP-only sources do not start CLI processes. The rail and
   Helper scenarios verify no Codex initialize or quota RPC occurs while log readings
   reach both surfaces. The deadline wake may read already running providers and HTTP
   makers, never launch a CLI. A separately timed periodic/client-detach
@@ -891,6 +894,39 @@ removed, and the Windows/WSL process lists were clear. Non-test size: 620,278
 characters without leading indentation (0.902× the TS baseline).
 Eleven A1 entries are covered in this slice; 169 remain.
 
+## Nineteenth slice: native Claude accounts and concurrent readings
+
+A native maker failure now records the failed check for exactly the still
+admitted account, without discarding its previous windows, plan or extras.
+A held maker response cannot overwrite a newer turn's window, even when the
+difference is small; another pool in that same answer still arrives. Both
+regressions failed on the preceding Rust binary. The two-account fixture
+checks the native folders, exact hashed account identities, windows, plan,
+extra usage, sign-out/replacement, restart, and absence of an injected dummy
+OAuth token in the CLI invocation. It also checks the Mac-only explanation
+and refusal of resets without another holder. The default Terminal sign-in
+works without a config-folder override. A second refresh joins the held
+round; its final separate short and long rings reach the limits event feed.
+Old Claude turn warnings have the same wording and deduplication in both
+binary transcripts; the Rust route additionally checks the accepted windows.
+No passive CLI starts, no automatic one-minute spacing; see work timing.
+One related gap was found: a failed maker's capped extra displays the last
+amount as stale but incorrectly updates its as-of time. The window times
+and card lines remain exact; the extra timestamp is tracked in the display
+batch below, not counted as covered.
+
+Mac Rust usage 95/95, TS 40/40 applicable (the added Terminal fixture is
+Rust-only), engine sessions 81/81, holder 12/12, Claude turns 59 passing and
+one pre-existing handover-cursor TODO, workspace test-target and Bun checks
+clean. The seeded history differential matches 12/13 answers exactly (only
+actual coverage scan time differs); the two-answer native corpus matches
+exactly. Stored inventory/projection-format differences remain documented.
+Native Windows, WSL static musl and capped Lokum static musl each passed
+95/95 applicable cases. Remote scratch and cross targets removed; Windows
+and WSL process lists clear. Non-test size:
+621,674 characters without leading indentation (0.904× the TS baseline).
+19 A1 entries closed; 150 remain.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -1011,12 +1047,12 @@ does not block completion of the row.
 
 - L67: a 5-hour window used at a steady pace says when it runs out, ahead of its reset, and the ring gets a warning dot — covered by accepted pace/card route, exact words and ETA.
 - L79: a window used slowly lasts until its reset, and says so with no dot — covered by the slow account in the accepted pace/card route.
-- L87: with too few readings nothing is predicted: what's left and when it resets, no more — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L87: with too few readings nothing is predicted: what's left and when it resets, no more — covered by the actual two-account Claude first-reading card: remaining percentage and reset, no invented prediction.
 - L95: what the readings said is kept through a restart of the box — covered by accepted pace/card route with exact before/after card and rail.
 - L103: each card shows only its own account, named among its agent's others — covered by named three-account route.
 - L124: a reset is offered only where one can be used, naming the soonest to expire — partial — real Codex reset card words and action, inventory/confirm fixture; no-credit card edge case open.
 - L139: an agent's many accounts share one ring, its card a strip of them emptiest first, fine ones counted — covered by three-account accepted pace/card/rail route.
-- L158: each coding agent's last numbers stay on its card, as of when, once it can't be read any more — open.
+- L158: each coding agent's last numbers stay on its card, as of when, once it can't be read any more — partial — the actual Claude maker failure route preserves last rings, exact card lines and window read times. The capped extra is visibly stale but still uses the failed attempt time instead of its last successful read; discovered in slice 19, to fix in the display batch.
 - L179: an account with no numbers read yet has no ring, rather than an empty one — covered by legacy cache account-switch scenario.
 - L208: a weekly window read every minute still shows a forecast after eight hours — open.
 - L213: a busy weekly window keeps its forecast through a box restart — open.
@@ -1069,7 +1105,7 @@ does not block completion of the row.
 - L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — open.
 - L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
 - L358: an account with no resets left, or none at all, is refused before anything is offered — partial — missing and unknown account refusal conformance; zero-inventory test remains open.
-- L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — open.
+- L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — covered by the two-account native Claude fixture on Mac: exact extra usage, unavailable reset message, and refusal with the same message.
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
 - L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — open.
@@ -1106,38 +1142,38 @@ does not block completion of the row.
 - L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — partial — standalone fixture removes real credential file, watcher withdraws retained rows before a client reads; Accounts action route variant open.
 - L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — open.
 - L165: a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none — covered by native usage-control fixture and OAuth credential removal; explicit-only process start is deliberate work timing.
-- L186: a newly signed-in Mac Claude publishes its first reading before the next limits round — open.
+- L186: a newly signed-in Mac Claude publishes its first reading before the next limits round — superseded — the resident admits a locally signed-in Claude account immediately but only an explicit refresh starts a plan-reading CLI, as approved in Deliberate work-timing changes; the two-account fixture proves no passive start and first explicit reading.
 - L209: what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file — duplicate — the standalone sign-out regression removes the retained credential-backed cache while no client reads, and the legacy upgrade route refuses an old reading before a different sign-in can inherit it. Resident admission is direct, not an independent bridge confirmation.
 - L229: each ring has its own provider's windows only: Cursor's own Grok Bot week stays Cursor's, and Grok's row has Grok's — covered by standalone maker fixture.
-- L244: a sign-in check that fails (offline) isn't a sign-out: the ring and its readings stay — open.
-- L256: an agent that never says how its sign-in stands holds up no reading: the others are read, and it's as it was — open.
+- L244: a sign-in check that fails (offline) isn't a sign-out: the ring and its readings stay — covered by the two-account native Claude fixture: both failed maker answers preserve admitted sign-ins and last readings, without making the refresh look successful. Admission is local, not a network sign-in probe.
+- L256: an agent that never says how its sign-in stands holds up no reading: the others are read, and it's as it was — superseded — the independent bridge sign-in-status wait does not exist in the resident. The native two-account maker failure and engine mixed-provider scenarios prove a failed read leaves the other account usable.
 - L266: started again, the box lists what it last read of an account still signed in here until its agent says, so the ring doesn't blink out; one signed out meanwhile isn't — duplicate — the Cursor held-plan fixture preserves its exact windows through restart and removes its row on sign-out; the legacy upgrade checks first GET after restart with the confirmed sign-in and again with a changed one. There is no separate bridge sign-in-announcement wait.
 
 ### `box/test/usage/limits.test.ts`
 
-- L157: an older Claude Code's event, with only the window that limits it, keeps that one — open.
-- L165: Claude Code's warning of a limit says how much of which one is used, and close only from 90% (#257) — open.
-- L200: each login is its own row with what Claude Code says of it (its windows, plan and extra usage), its resets say they show only from Linux, and Anthropic is never asked with its sign-in — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L157: an older Claude Code's event, with only the window that limits it, keeps that one — covered by the actual old Claude turn fixture: the older event admits only its named weekly window, then other named windows arrive independently.
+- L165: Claude Code's warning of a limit says how much of which one is used, and close only from 90% (#257) — covered by both-box old Claude turn transcript, exact quarter/Opus/90% warning words and repeated threshold suppression.
+- L200: each login is its own row with what Claude Code says of it (its windows, plan and extra usage), its resets say they show only from Linux, and Anthropic is never asked with its sign-in — covered by the native two-account Claude fixture, including distinct identities, plans, windows, Fable, extra usage, Mac-only reset wording and refusal; isolated mode cannot contact the real maker.
 - L248: its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none — partial — Claude grant fixture proves no repeat inventory read on confirmation; failed hourly read and extra usage timing remain open.
-- L294: each login is its own row, asked of Claude Code in its own folder, one a minute — open.
-- L318: an added account's usage is asked of Claude Code with that account's folder, and never with a token — open.
-- L339: a read under way is kept before it's answered: a restart meanwhile doesn't ask again — open.
-- L356: a refresh right after a read doesn't read another Claude account within the minute — open.
+- L294: each login is its own row, asked of Claude Code in its own folder, one a minute — covered by the native two-account fixture, one get_usage in each account folder per explicit round. The old automatic one-minute spacing is superseded by the approved manual round without passive CLI starts.
+- L318: an added account's usage is asked of Claude Code with that account's folder, and never with a token — covered by exact added-account invocation folder, with an injected dummy environment OAuth token absent from the CLI environment.
+- L339: a read under way is kept before it's answered: a restart meanwhile doesn't ask again — superseded — there are no autonomous native Claude reads to repeat after restart. The admitted reading is retained; explicit-only probes run once per manual round, and a second press joins an in-progress round (the real held-read fixture).
+- L356: a refresh right after a read doesn't read another Claude account within the minute — superseded — the approved manual Claude refresh reads all signed-in accounts once sequentially, with no one-minute throttle. The running round joins an overlapping refresh; the two-account and held-read fixtures prove both.
 - L370: a restart while one Claude account is being read doesn't read another in the same minute — later (rare) — a restart during a minute-spaced read of one Claude account, followed by another account precisely within that same minute; restart admission and read spacing are still required.
-- L387: Claude Code not signed in: its row says to sign in again, it isn't started again while that's so, and signed in again, it's asked again — open.
-- L409: what a turn hears keeps a window current between reads, even while a read is under way — open.
-- L432: the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses — open.
+- L387: Claude Code not signed in: its row says to sign in again, it isn't started again while that's so, and signed in again, it's asked again — covered by credential removal and new sign-in in the two-account fixture. No passive process starts; the old account disappears, the new identity receives its own values on explicit refresh.
+- L409: what a turn hears keeps a window current between reads, even while a read is under way — covered by the held native usage-control route: a turn sees 51% while the maker request waits, the old 50% response cannot replace it, the other weekly reading is still admitted, and a second refresh joins the round.
+- L432: the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses — covered by the Terminal sign-in fixture without a config-folder override and the added-account folder fixture.
 - L483: its plan's windows and a model's own are what Codex says for its sign-in — open.
 - L499: Codex limits are read again on schedule, each time from Codex — open.
 - L510: a configured API key never starts Codex or reads ChatGPT plan limits — open.
 - L521: an API key has no plan limits: not listed — open.
-- L547: one Claude login on a Mac and a Linux computer is one identity, another login another, and neither says who — open.
+- L547: one Claude login on a Mac and a Linux computer is one identity, another login another, and neither says who — covered by the exact domain-separated identity assertion with the same synthetic maker identity on all tested OSes, different added account identity, and the existing accepted-account peer merge.
 - L573: signed in to another account since, what was kept of the one before isn't shown as this one's — duplicate — the real legacy upgrade route checks a confirmed identity and retained 82% row, changes the sign-in while stopped, starts again, and asserts the new identity does not inherit the old windows or ring.
 - L597: Codex's ChatGPT sign-in is its account and workspace member, the same as the engine's sign-in to it — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L611: a switched Codex account is read with its own sign-in — open.
-- L631: says each account's windows, how much is used, when each resets and as of when — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L631: says each account's windows, how much is used, when each resets and as of when — covered by exact native Claude account windows, ratios, period minutes, reset and reading times, plus existing Codex/engine maker scenarios.
 - L666: with the coding agents not running, says so as an error — superseded — plan_limits is now a resident tool: an idle coding-agent process is not an unavailable usage service. The demand-started and passive-reader scenarios prove it can answer without starting the agent; [design §5](rust-box.md#5-what-not-to-port).
-- L677: Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event — open.
+- L677: Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event — covered by the held native Claude route and limits event feed; the completed row has its separate short and long rings.
 - L704: a plan with one window has one ring, and one with none has none — open.
 - L715: a row says the account's level: its rings' higher one, a balance's or a capped extra's, and none where nothing has a limit — open.
 - L736: the box picks which of a maker's windows is each ring — open.
@@ -1327,7 +1363,7 @@ does not block completion of the row.
 - L54: evaluator disabled provider prunes baseline — covered by provider hide/re-enable route regression and dormant baseline state.
 - L55: evaluator remaining threshold uses remaining regardless display mode — duplicate — the Helper menu and warning facts route directly compares the percentage remaining from the accepted ring with the reported Almost Out fact, independent of card drawing.
 - L56: client delivery failure leaves fact available for retry — covered by retained-fact missing receipt / restart and later observation retry scenario.
-- L57: failed read cannot create notices or cache zero — open.
+- L57: failed read cannot create notices or cache zero — covered by native Claude complete/mixed failed reads: last accepted windows stay unchanged, no additional notice and no zero is saved.
 - L58: hidden metric prunes baseline — covered by empty layout hide/show route and dormant fixed-clock trail test.
 - L59: pace near empty and projection gate — superseded — the old one-sample elapsed-window projection is intentionally replaced by accepted current-window samples (slice 14, #990). The scoped cold/unknown and healthy-close-running-out matrices prove the replacement.
 - L60: notices go only to peers in the setup — open.

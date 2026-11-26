@@ -509,7 +509,7 @@ test('Claude Code answers its plan via its own demand-started control process (R
   const reset=new Date(Date.now()+7200000).toISOString();
   write(path.join(claude.env.HOME,'claude-usage.json'),JSON.stringify({subscription_type:'max',rate_limits_available:true,rate_limits:{five_hour:{utilization:42,resets_at:reset},seven_day:{utilization:17,resets_at:reset},extra_usage:{is_enabled:true,used_credits:1234,monthly_limit:5000}}}));
   const listener=await claude.start();
-  assert.equal(claude.heard().filter(row=>row.message?.request?.subtype==='get_usage').length,0);
+  assert.equal(claude.heard().filter(row=>row.request?.subtype==='get_usage').length,0);
   const answer=await request(listener,'POST','kuvo/agents/api/kuvo/limits/refresh',{});
   assert.equal(answer.status,200,answer.text);
   const account=await until(async()=>{
@@ -3430,4 +3430,151 @@ test('a temporarily unreadable setup record does not turn accepted preferences i
     assert.deepEqual(reply.json.data.settings,{totalSpend:{show:true}});
     assert.deepEqual(reply.json.data.versions,changed.json.data.versions);
   } finally { write(file,original); }
+});
+
+test('each Claude account refreshes its own plan without passing tokens and keeps its last reading when the maker fails',async t=>{
+  if(boxBinary().typescript)return t.skip('This fixture supplies the native Claude usage-control reader.');
+  const {scriptedClaude}=await import('./claude.mjs');
+  const fs=await import('node:fs');const crypto=await import('node:crypto');
+  const claude=await scriptedClaude();t.after(()=>claude.close());
+  claude.env.CLAUDE_CODE_OAUTH_TOKEN='fixture-injected-token';
+  const own=claude.env.CLAUDE_CONFIG_DIR,other=path.join(claude.home,'agents','claude','accounts','a1');
+  write(path.join(claude.home,'agents','accounts.json'),JSON.stringify([{formatVersion:1},{kind:'claude',id:'a1',label:'Work'}]));
+  const signIn=(folder,id,token)=>{
+    write(path.join(folder,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:id,organizationUuid:'fixture-org'}}));
+    write(path.join(folder,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:token,expiresAt:Date.now()+3600000}}));
+  };
+  signIn(own,'fixture-default','fixture-token-default');signIn(other,'fixture-work','fixture-token-work');
+  const reset=new Date(Date.now()+7200000).toISOString();
+  const windows=(folder,plan,short,long,spend)=>write(path.join(folder,'claude-usage.json'),JSON.stringify({subscription_type:plan,rate_limits_available:true,rate_limits:{five_hour:{utilization:short,resets_at:reset},seven_day:{utilization:long,resets_at:reset},...(folder===own?{model_scoped:[{display_name:'Fable',utilization:7,resets_at:reset}]}:{}),extra_usage:{is_enabled:true,used_credits:spend,monthly_limit:5000}}}));
+  windows(own,'max',42,17,1234);windows(other,'pro',71,29,500);
+  let listener=await claude.start();const base='kuvo/agents/api/kuvo/limits';
+  const reads=()=>claude.heard().filter(r=>r.request?.subtype==='get_usage');
+  const get=async()=>{const r=await request(listener,'GET',base);assert.equal(r.status,200,r.text);return r.json.data;};
+  const ask=async()=>{const r=await request(listener,'POST',base+'/refresh',{});assert.equal(r.status,200,r.text);return until(async()=>{const data=await get();return !data.refreshPending&&data;},'Claude refresh did not settle');};
+  const idle=await get();assert.equal(idle.accounts.filter(a=>a.provider.startsWith('claude-code')).length,2);
+  assert.ok(idle.accounts.filter(a=>a.provider.startsWith('claude-code')).every(a=>!a.windows.length));
+  assert.equal(reads().length,0);
+  const data=await ask();const byProvider=d=>Object.fromEntries(d.accounts.map(a=>[a.provider,a]));
+  const accounts=byProvider(data);const identity=id=>crypto.createHash('sha256').update('kuvo-code plan limits account v1\nanthropic:'+id+'|fixture-org').digest('hex').slice(0,16);
+  for(const [id,folder,plan,short,long,spend,who] of [['claude-code',own,'Max',.42,.17,12.34,'fixture-default'],['claude-code@a1',other,'Pro',.71,.29,5,'fixture-work']]){
+    const account=accounts[id];assert.ok(account,JSON.stringify(data));assert.equal(account.plan,plan);assert.equal(account.identity,identity(who));
+    assert.equal(account.windows.find(w=>w.id==='five_hour').used,short);assert.equal(account.windows.find(w=>w.id==='seven_day').used,long);
+    assert.deepEqual(account.extras.find(e=>e.id==='extra_usage'),{kind:'capped',id:'extra_usage',name:'Extra Usage',amount:spend,limit:50,unit:'usd'});
+    const invocation=claude.heard().find(r=>r.argv&&r.env?.CLAUDE_CONFIG_DIR===folder&&reads().some(q=>q.pid===r.pid));assert.ok(invocation,JSON.stringify(claude.heard()));
+    assert.equal(invocation.env.CLAUDE_CODE_OAUTH_TOKEN,undefined);assert.equal(invocation.env.ANTHROPIC_API_KEY,undefined);
+  }
+  assert.deepEqual(accounts['claude-code'].windows.map(w=>[w.id,w.used,w.minutes,w.resetsAt]),[['five_hour',.42,300,Date.parse(reset)],['seven_day',.17,10080,Date.parse(reset)],['seven_day_fable',.07,10080,Date.parse(reset)]]);
+  assert.equal(accounts['claude-code'].windows.at(-1).model,'Fable');
+  if(process.platform==='darwin')for(const id of ['claude-code','claude-code@a1']){
+    const why=accounts[id].extras.find(e=>e.id==='resets').message;assert.match(why,/Linux computer/);
+    const row=data.rows.find(r=>r.provider===id);const refused=await request(listener,'POST',base+'/reset',{row:row.id});assert.equal(refused.status,409,refused.text);assert.equal(refused.json.message,why);
+  }
+  const workBefore=data.rows.find(r=>r.provider==='claude-code@a1');
+  assert.equal(workBefore.rings.short.used,.71);assert.equal(workBefore.rings.long.used,.29);
+  const shortLine=workBefore.card.lines.find(l=>l.window==='five_hour');assert.equal(shortLine.words[0].text,'29% left');assert.equal(shortLine.words.at(-1).at,Date.parse(reset));
+  assert.ok(!JSON.stringify(shortLine.words).includes('lasts until reset'));
+  assert.equal(reads().length,2);
+  for(const secret of ['fixture-default','fixture-work','fixture-org','fixture-token-default','fixture-token-work','fixture-injected-token'])assert.ok(!JSON.stringify(data).includes(secret));
+  fs.unlinkSync(path.join(other,'claude-usage.json'));
+  const failed=await ask();const kept=byProvider(failed)['claude-code@a1'];assert.equal(failed.refreshFailed,false,'The other account succeeded');assert.equal(kept.problem?.kind,'failed',JSON.stringify(kept));
+  assert.deepEqual(kept.windows,accounts['claude-code@a1'].windows);assert.deepEqual(kept.extras,accounts['claude-code@a1'].extras);
+  const workAfter=failed.rows.find(r=>r.provider==='claude-code@a1');assert.equal(workAfter.rings.short.used,.71);assert.deepEqual(workAfter.card.lines,workBefore.card.lines);
+  // Window observations keep their own accepted time. A capped extra's
+  // separate last-success timestamp is tracked in the display coverage map.
+  const windowReadTimes=r=>r.usage.meters.filter(m=>m.title!=='Extra Usage').map(m=>m.readAt);
+  assert.deepEqual(windowReadTimes(workAfter),windowReadTimes(workBefore));
+  assert.equal(workAfter.usage.meters.find(m=>m.title==='Extra Usage').freshForMs,0);
+  assert.equal(byProvider(failed)['claude-code'].problem,undefined);
+  fs.unlinkSync(path.join(own,'claude-usage.json'));
+  const offline=await ask();assert.equal(offline.refreshFailed,true);assert.deepEqual(offline.notices,failed.notices);
+  const last=byProvider(offline);for(const id of ['claude-code','claude-code@a1'])assert.equal(last[id].problem.kind,'failed');
+  assert.deepEqual(last['claude-code'].windows,byProvider(failed)['claude-code'].windows);assert.deepEqual(last['claude-code@a1'].windows,kept.windows);
+  windows(own,'max',43,18,1234);
+  fs.unlinkSync(path.join(other,'.credentials.json'));
+  assert.ok(!byProvider(await get())['claude-code@a1']);
+  signIn(other,'fixture-new','fixture-token-new');windows(other,'pro',3,7,25);
+  const renewed=byProvider(await ask())['claude-code@a1'];assert.equal(renewed.identity,identity('fixture-new'));assert.equal(renewed.windows.find(w=>w.id==='five_hour').used,.03);assert.equal(renewed.problem,undefined);
+  const count=reads().length;await claude.stop();listener=await claude.start();
+  const restarted=byProvider(await get());assert.equal(restarted['claude-code@a1'].identity,renewed.identity);assert.deepEqual(restarted['claude-code@a1'].windows,renewed.windows);assert.equal(reads().length,count);
+});
+
+test('old Claude turn events keep only the named quota window and say the actual warning threshold',async t=>{
+  const {scriptedClaude,result}=await import('./claude.mjs');
+  const claude=await scriptedClaude({signedIn:true});t.after(()=>claude.close());
+  write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'fixture-turn-account',organizationUuid:'fixture-org'}}));
+  write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-turn',expiresAt:Date.now()+3600000}}));
+  const id='ses_old_claude_limits',base='kuvo/agents/api/kuvo/limits';
+  claude.seed(id);const listener=await claude.start();
+  const reset=Math.floor(Date.now()/1000)+7200;
+  const event=(kind,used,threshold)=>({type:'rate_limit_event',rate_limit_info:{status:'allowed_warning',rateLimitType:kind,utilization:used,surpassedThreshold:threshold,resetsAt:reset}});
+  claude.script('old window',[event('seven_day',.25,.25),event('seven_day',.25,.25),result(['$UUID'])]);
+  await claude.prompt(id,'old window');let rows=await claude.idles(id);
+  const get=async()=>{const r=await request(listener,'GET',base);assert.equal(r.status,200,r.text);return r.json.data.accounts.find(a=>a.provider==='claude-code');};
+  // The TS scratch bridge supplies the turn transcript, not the resident's
+  // separate native-usage feed. Its original unit case checks window parsing.
+  if(!boxBinary().typescript){
+    const first=await until(async()=>{const account=await get();return account?.windows?.some(w=>w.used===.25)&&account;},'Claude old limit event did not reach the resident');
+    assert.deepEqual(first.windows.map(w=>[w.id,w.used,w.minutes,w.resetsAt]),[['seven_day',.25,10080,reset*1000]]);
+  }
+  assert.equal(JSON.stringify(rows).split("You've used 25% of your weekly Claude limit.").length-1,1);
+  claude.script('near window',[event('seven_day_opus',.756,.75),event('five_hour',.9,.9),result(['$UUID'])]);
+  await claude.prompt(id,'near window');rows=await claude.idles(id,2);
+  assert.ok(JSON.stringify(rows).includes("You've used 76% of your weekly Opus limit."));
+  assert.ok(JSON.stringify(rows).includes("You're close to your 5-hour Claude limit: 90% used."));
+  if(!boxBinary().typescript){
+    const latest=await until(async()=>{const a=await get();return a?.windows.find(w=>w.id==='five_hour')?.used===.9&&a;},'Claude close limit was not accepted');
+    assert.deepEqual(Object.fromEntries(latest.windows.map(w=>[w.id,w.used])),{seven_day:.25,seven_day_opus:.756,five_hour:.9});
+  }
+});
+
+test('a Claude turn that hears a newer quota while refresh waits keeps its newer window',async t=>{
+  if(boxBinary().typescript)return t.skip('Requires the native usage-control fixture and accepted-turn resident path.');
+  const {scriptedClaude,result}=await import('./claude.mjs');const fs=await import('node:fs');
+  const claude=await scriptedClaude({signedIn:true});t.after(()=>claude.close());
+  const own=claude.env.CLAUDE_CONFIG_DIR,file=path.join(own,'claude-usage.json');
+  write(path.join(own,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'fixture-wait',organizationUuid:'fixture-org'}}));
+  write(path.join(own,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-wait',expiresAt:Date.now()+3600000}}));
+  const reset=Math.floor(Date.now()/1000)+7200,iso=new Date(reset*1000).toISOString();
+  write(file,JSON.stringify({subscription_type:'max',rate_limits_available:true,rate_limits:{five_hour:{utilization:50,resets_at:iso},seven_day:{utilization:20,resets_at:iso}}}));
+  write(file+'.hold','');
+  const id='ses_claude_waiting_limit',base='kuvo/agents/api/kuvo/limits';claude.seed(id);
+  const listener=await claude.start();
+  const refresh=await request(listener,'POST',base+'/refresh',{});assert.equal(refresh.status,200,refresh.text);
+  await until(()=>claude.heard().some(r=>r.request?.subtype==='get_usage'),'The maker did not start its read');
+  const joined=await request(listener,'POST',base+'/refresh',{});assert.equal(joined.status,200,joined.text);
+  const read=async()=>{const r=await request(listener,'GET',base);assert.equal(r.status,200,r.text);return r.json.data;};
+  claude.script('newer turn',[{type:'rate_limit_event',rate_limit_info:{status:'allowed',rateLimitType:'five_hour',utilization:.51,resetsAt:reset}},result(['$UUID'])]);
+  await claude.prompt(id,'newer turn');await claude.idles(id);
+  const account=d=>d.accounts.find(a=>a.provider==='claude-code');
+  const before=await until(async()=>{const d=await read();return d.refreshPending&&account(d)?.windows?.some(w=>w.used===.51)&&account(d);},'The turn reading did not arrive during the held refresh');
+  const {openLine}=await import('./adapter.mjs');const line=await openLine(listener,'',base+'/events',{},15000);t.after(()=>line.close());
+  fs.unlinkSync(file+'.hold');
+  let published=false;
+  for await(const frame of line.frames()){
+    if(frame.changed){const d=await read();if(!d.refreshPending&&account(d)?.windows.some(w=>w.id==='seven_day')){published=true;break;}}
+  }
+  line.close();assert.equal(published,true,'The completed Claude rings were not published');
+  const settled=await until(async()=>{const d=await read();return !d.refreshPending&&account(d)?.windows?.some(w=>w.id==='seven_day')&&d;},'The held maker read did not finish');
+  assert.equal(settled.refreshFailed,false);
+  const windows=account(settled).windows;
+  assert.deepEqual(windows.find(w=>w.id==='five_hour'),before.windows.find(w=>w.id==='five_hour'));
+  assert.equal(windows.find(w=>w.id==='seven_day').used,.2);
+  const row=settled.rows.find(r=>r.provider==='claude-code');assert.equal(row.rings.short.used,.51);assert.equal(row.rings.long.used,.2);
+  assert.equal(claude.heard().filter(r=>r.request?.subtype==='get_usage').length,1,'An overlapping refresh must not launch another read');
+});
+
+test('Claude’s default account uses the Terminal sign-in when there is no config folder override',async t=>{
+  if(boxBinary().typescript)return t.skip('Requires the native usage-control fixture.');
+  const {scriptedClaude}=await import('./claude.mjs');const claude=await scriptedClaude();t.after(()=>claude.close());
+  delete claude.env.CLAUDE_CONFIG_DIR;
+  write(path.join(claude.env.HOME,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'fixture-terminal',organizationUuid:'fixture-org'}}));
+  write(path.join(claude.env.HOME,'.claude','.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-terminal',expiresAt:Date.now()+3600000}}));
+  const reset=new Date(Date.now()+7200000).toISOString();
+  write(path.join(claude.env.HOME,'claude-usage.json'),JSON.stringify({subscription_type:'pro',rate_limits_available:true,rate_limits:{five_hour:{utilization:1,resets_at:reset},seven_day:{utilization:2,resets_at:reset}}}));
+  const listener=await claude.start(),base='kuvo/agents/api/kuvo/limits';
+  const reply=await request(listener,'POST',base+'/refresh',{});assert.equal(reply.status,200,reply.text);
+  const account=await until(async()=>{const r=await request(listener,'GET',base);return !r.json.data.refreshPending&&r.json.data.accounts.find(a=>a.provider==='claude-code'&&a.windows.length);},'The Terminal Claude account was not read');
+  assert.deepEqual(account.windows.map(w=>w.used),[.01,.02]);
+  const call=claude.heard().find(r=>r.request?.subtype==='get_usage');assert.ok(call);assert.equal(claude.heard().find(r=>r.argv&&r.pid===call.pid).env.CLAUDE_CONFIG_DIR,undefined);
 });
