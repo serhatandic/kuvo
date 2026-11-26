@@ -906,7 +906,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 |---|---|---|---|
 | engine-delivery | 4/4 | 5/5 | none |
 | engine-search | 4/4 | 4/4 | the engine's read counts; an engine whose list fails |
-| engine-typed | 7/7 | 6/7 | see below |
+| engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 7/7 | see below |
 | engine-sessions | 46/46 (9 skipped) | 48/55 | see below |

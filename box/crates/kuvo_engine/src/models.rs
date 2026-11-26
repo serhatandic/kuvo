@@ -516,7 +516,7 @@ fn entries<T: serde::de::DeserializeOwned>(values: Vec<Value>) -> Vec<T> {
         .collect()
 }
 
-fn action(do_what: &str, label: &str, help: impl AsRef<str>) -> Value {
+pub(crate) fn action(do_what: &str, label: &str, help: impl AsRef<str>) -> Value {
     json!({ "do": do_what, "label": label, "help": help.as_ref() })
 }
 

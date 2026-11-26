@@ -129,6 +129,27 @@ impl AgentCatalog {
         (!self.complete(account) || self.unavailable.contains(&wanted.provider)).then_some(wanted)
     }
 
+    /// Why `model` can't run now, in the words the engine's catalog uses for its own (`refusal`,
+    /// `action`); none when it runs, or it isn't one of the coding agents'.
+    pub(crate) fn readiness(&self, model: &ModelRef) -> Option<Value> {
+        let account = self.account(&model.provider)?;
+        if !account.installed || account.signed_in {
+            return None;
+        }
+        let name = self
+            .models
+            .iter()
+            .filter(|entry| entry.provider == model.provider)
+            .find(|entry| entry.id == model.id || entry.aliases.contains(&model.id))
+            .map_or(model.id.as_str(), |entry| entry.name.as_str());
+        let provider = &account.name;
+        Some(json!({
+            "model": model, "runs": false, "missing": "signIn",
+            "refusal": format!("{name} needs a sign-in to {provider}: sign in, or choose another model."),
+            "action": crate::models::action("signIn", "Sign In", format!("Sign in to {provider}")),
+        }))
+    }
+
     pub(crate) fn first(&self) -> Option<ModelRef> {
         self.models
             .iter()
