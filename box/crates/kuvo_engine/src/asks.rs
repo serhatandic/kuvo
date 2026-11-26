@@ -1148,6 +1148,31 @@ pub(crate) struct Words {
 
 pub(crate) type Book = std::collections::BTreeMap<String, Pending>;
 
+/// The coding agents' asks waiting on you, beside the engine's.
+pub(crate) fn include_agents(book: &mut Book, asks: &[crate::AgentWaiting]) {
+    for ask in asks {
+        let (kind, summary) = match &ask.ask {
+            crate::AgentAsk::Permission { action, resources } => {
+                let files = resources.iter().map(String::as_str).collect::<Vec<_>>();
+                ("permission", action_words(Some(action), &files))
+            }
+            crate::AgentAsk::Question => ("question", "has a question for you".into()),
+        };
+        book.insert(
+            format!("agents:{}", ask.id),
+            Pending {
+                session: ask.session.clone(),
+                at: ask.at,
+                place: "agents".into(),
+                asks: Words {
+                    kind: kind.into(),
+                    summary,
+                },
+            },
+        );
+    }
+}
+
 pub(crate) fn include_external(book: &mut Book, asks: &[crate::ExternalWaiting]) {
     for ask in asks {
         let (kind, summary) = match ask.kind {
@@ -1283,7 +1308,11 @@ fn permission_words(item: &Value) -> String {
         .flatten()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
-    let file = match files.as_slice() {
+    action_words(item["action"].as_str(), &files)
+}
+
+fn action_words(action: Option<&str>, files: &[&str]) -> String {
+    let file = match files {
         [] => "a file".to_owned(),
         [file] => clip(
             file.trim_end_matches('/')
@@ -1294,7 +1323,7 @@ fn permission_words(item: &Value) -> String {
         ),
         _ => format!("{} files", files.len()),
     };
-    match item["action"].as_str() {
+    match action {
         Some("edit" | "patch" | "write") => format!("asks to edit {file}"),
         Some("read") => format!("asks to read {file}"),
         Some("shell" | "bash") => "asks to run a command".into(),

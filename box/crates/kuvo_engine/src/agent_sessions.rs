@@ -75,10 +75,34 @@ pub struct AgentEvent {
     pub data: Value,
 }
 
+/// An ask waiting on you in a coding agent's conversation, as the waiting counts and the
+/// Needs you list count it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentWaiting {
+    /// As clients answer it.
+    pub id: String,
+    pub session: String,
+    /// When it was first heard (ms).
+    pub at: u64,
+    pub ask: AgentAsk,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgentAsk {
+    /// To do `action` (`edit`, `bash`, ...) with these files.
+    Permission { action: String, resources: Vec<String> },
+    Question,
+}
+
 pub trait AgentSessionSource: Send + Sync {
     fn inventory(&self) -> AgentSessionRead<'_>;
 
     fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
+        None
+    }
+
+    /// The asks waiting in its conversations, as they change.
+    fn waiting(&self) -> Option<watch::Receiver<Arc<Vec<AgentWaiting>>>> {
         None
     }
 
