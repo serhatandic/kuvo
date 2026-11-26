@@ -75,7 +75,7 @@ pub use external_asks::{
     AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,
     ExternalReply, ExternalWaiting,
 };
-pub use launch::pinned_version;
+pub use launch::{agent_program, pinned_version};
 pub use lifetime::{Engine, EngineEvent, State, Timing};
 pub use queue::{WorkStopped, WorkStops};
 pub use queue::limit::{limit_reached, reset_time, resets_in};

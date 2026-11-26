@@ -1,13 +1,13 @@
 //! Kuvo Code's tools and the computer's MCP servers for the coding agents,
-//! through the box's tools relay: the servers as the engine has them for a
-//! conversation's folder, Kuvo Code's own as the engine's settings start
-//! them. What an agent is given of them is its adapter's to ask
+//! through the box's tools relay: the servers in the settings for a
+//! conversation's folder (OpenCode only renews their sign-ins while it runs),
+//! Kuvo Code's own as the engine's settings start them. What an agent is given of them is its adapter's to ask
 //! (`ToolRelay::agent_tools` and `relayed_servers`).
 
 use http::Method;
 use kuvo_agents::{
     runtime::Runtime,
-    tool_relay::{EngineApi, EngineServers, ToolPlaces, ToolRelay},
+    tool_relay::{EngineApi, SettingsServers, ToolPlaces, ToolRelay},
 };
 use kuvo_engine::Engine;
 use serde_json::Value;
@@ -35,7 +35,7 @@ impl EngineApi for EnginePort {
 pub(in crate::serve) fn relay(home: &Path, engine: Engine) -> io::Result<ToolRelay> {
     let places = Arc::new(ToolPlaces::default());
     places.set_program_settings(std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref());
-    let host = Arc::new(EngineServers::new(Arc::new(EnginePort(engine)), None));
+    let host = Arc::new(SettingsServers::new(home.to_owned(), Arc::new(EnginePort(engine)), None));
     let relay = ToolRelay::with_host(Some(home.join("run/agents/relay.json")), places, host)?;
     relay.set_forwarder(std::env::current_exe().ok());
     Ok(relay)

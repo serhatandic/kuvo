@@ -172,7 +172,7 @@ impl SessionStore {
             return Ok(None);
         };
         let id = id.to_owned();
-        let provider = provider.to_owned();
+        let provider = crate::accounts::Provider::slot(provider);
         let background = self.background.clone();
         let own_turns = self.own_turns.clone();
         tokio::task::spawn_blocking(move || {
@@ -240,7 +240,7 @@ impl SessionStore {
         state: VendorState,
     ) -> io::Result<bool> {
         let session = id.to_owned();
-        let provider = provider.to_owned();
+        let provider = crate::accounts::Provider::slot(provider);
         self.mutate_existing(id, move |folder| {
             let header = read_header(folder, &session)?.ok_or(ErrorKind::NotFound)?;
             let mut agent = read_agent(folder)?;

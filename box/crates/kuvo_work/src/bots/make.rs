@@ -121,10 +121,8 @@ impl Bots {
                 NO_KIT,
             ));
         };
-        let starting = match self.inner.engine.bot_engine().await {
-            Some(engine) => reach::starting_model(&engine).await,
-            None => None,
-        };
+        // (OpenCode's kept models stand in while it isn't running: opening New Bot starts nothing.)
+        let starting = reach::starting_model(&self.inner.engine.work_engine().await).await;
         let machine = self.inner.machine.as_deref();
         let projects = box_projects(&self.inner.home)
             .into_iter()

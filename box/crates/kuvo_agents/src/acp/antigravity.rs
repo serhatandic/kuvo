@@ -402,7 +402,7 @@ impl Antigravity {
             );
             let checked = async {
                 let wait = Some(Duration::from_secs(120));
-                rpc.request("initialize", Some(initialize(true, None)), wait)
+                rpc.request("initialize", Some(initialize(true, None, Default::default())), wait)
                     .await?;
                 rpc.request("authenticate", Some(json!({"methodId": METHOD})), wait)
                     .await?;
@@ -543,7 +543,7 @@ impl Antigravity {
                         filter: None,
                     },
                 );
-                let init = initialize(false, None);
+                let init = initialize(false, None, Default::default());
                 if let Ok(init) = rpc
                     .request("initialize", Some(init), Some(Duration::from_secs(60)))
                     .await
