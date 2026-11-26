@@ -776,11 +776,13 @@ known database, and deletion during operation and while stopped. TS passes;
 the previous Rust resident repeatedly retained 255 tokens when the true total
 was 145. The corrected route passes on Mac.
 
-Mac verification: Rust usage 75/75 applicable, TS 25/25 applicable, engine
+Verification: Rust usage 75/75 applicable on Mac, Lokum (static musl in one
+capped container), WSL and native Windows; TS 25/25 applicable on Mac. Engine
 sessions 81/81, the four scoped shared fixture tests, workspace test check
 and Bun check. The exact expanded seeded differential has only the actual
 `coverage[0].scanned` time difference (12/13); both native corpus answers
-match exactly. Musl/Windows binaries built, cross-platform runs pending.
+match exactly. All remote scratch directories, copied Node archive and cross
+targets removed; no test processes remain.
 Cumulative non-test size: 573,825 new-module characters plus 40,355 added
 existing production characters (614,180 total, 0.893× the 687,546 TS characters).
 
