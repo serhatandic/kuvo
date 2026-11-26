@@ -1901,7 +1901,8 @@ describe.skipIf(!canFence)("Codex in the box's sandbox", () => {
     await until(() => !running())
   })
 
-  test("you let the project's commands write another folder while an agent Codex spawned still works: it goes on, in the same Codex, and the session's next turn too", async () => {
+  // TS box frozen until removal: since 2fb35aaea a newly Also Allowed folder holds the next turn until Codex's spawned agent ends; the Rust box has no sandbox, so nothing relaunches its Codex for it.
+  test.skip("you let the project's commands write another folder while an agent Codex spawned still works: it goes on, in the same Codex, and the session's next turn too", async () => {
     codex = new TestCodex(messagedCodex(root, true, false), root)
     const agent = codex
     sessions = new Sessions(new Store(join(root, "sessions")), { find: (id: string | undefined) => (id === agent.providerID ? agent : undefined) } as unknown as Roster, new Auto(root))
