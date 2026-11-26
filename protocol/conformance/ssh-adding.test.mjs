@@ -529,17 +529,21 @@ if [ "$1" = --version ]; then printf '%s\\n' ${quote(version)}; exit 0; fi
 exec ${quote(process.execPath)} ${quote(fixture)} "$@"
 `, { mode: 0o700 });
   }
-  t.after(() => {
+  t.after(async () => {
     const pids = fs.existsSync(started) ? fs.readFileSync(started, "utf8").trim().split("\n").map(Number) : [];
+    const stopped = [];
     for (const pid of pids) {
       if (!Number.isSafeInteger(pid) || pid < 2) continue;
       let command;
       try { command = execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }); }
       catch { continue; }
       if (command.includes(verifiedProcess ? program : fixture)) {
-        try { process.kill(pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+        try { process.kill(pid, "SIGTERM"); stopped.push(pid); } catch (error) { if (error.code !== "ESRCH") throw error; }
       }
     }
+    // A stopped stand-in may still be writing under the scratch folder; remove it once it's gone.
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    await until(() => !stopped.some(alive), "a stopped engine stand-in did not exit", 15000).catch(() => {});
     fs.rmSync(folder, { recursive: true, force: true });
   });
   return {

@@ -419,7 +419,13 @@ pub(crate) async fn prepare_headless(
     check(&root)?;
     let marker = journal_path(&root)?;
     let receipts = parent(&marker)?;
-    let _guard = OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
+    // A member's receipts are kept beside the home, where an installer that holds the wipe lock
+    // reads them. A standalone wipe prepares only inside its own home, and stops whoever holds the
+    // lock, as TypeScript's resident does: the lock keeps only the erase waiting.
+    let _guard = member
+        .is_some()
+        .then(|| OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO))
+        .transpose()?;
     let kept = Files::new(root.clone());
     prepare_configured_backup(&kept, &root, link, authority, model::ComputerKind::Machine).await?;
     if let Some(member) = &member {
