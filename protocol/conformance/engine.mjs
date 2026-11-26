@@ -18,6 +18,7 @@ export async function standInEngine(root, env) {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
   const streams = new Set();
+  engine.hasEventStream = () => streams.size > 0;
   const publish = value => {
     for (const stream of streams) stream.write(`data: ${JSON.stringify(value)}\n\n`);
   };

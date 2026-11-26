@@ -197,6 +197,7 @@ impl Work {
             Ok(Outcome::Answer(answer)) => Went::Answer(Said {
                 text: answer.text,
                 refused: answer.refused,
+                delivery: None,
             }),
             Ok(Outcome::Failed(why)) => Went::Failed(why),
             Ok(Outcome::Older) => Went::Older,

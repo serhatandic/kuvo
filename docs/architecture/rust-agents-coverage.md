@@ -1435,3 +1435,78 @@ The final differential again matched the Rust-to-Rust request answers, with no
 new TS-to-Rust request difference paths. One real OpenCode Go turn on DeepSeek
 v4.1 Flash passed in the isolated live case; its scratch key and home were
 removed. Workspace test-target and TypeScript type checks passed.
+
+## 4.11 — letters now, and next-step delivery
+
+Deliberate difference from TypeScript, requested by the user (Work Queue #5057):
+`send_message` uses Send Now by default, even for a busy conversation owned by a coding
+agent. `delivery: "steer"` waits for its next step; `delivery: "queue"` waits for its
+turn. An idle conversation starts a turn, unless it was stopped with a held queue.
+Local confirmed answers retain `text` and `isError` and add a delivery disposition;
+mail to another computer remains asynchronous and cannot promise its eventual
+disposition before the receiving computer confirms it.
+
+- Claude Code and Codex hand the input to the running native turn, with the existing
+  native receipt gate. A confirmed native refusal of Send Now uses its interrupt/resume
+  fallback; an uncertain receipt is not sent twice.
+- Grok, Antigravity and OpenCode share ACP: a second active prompt is not supported
+  ("Session already has an active ACP prompt"). Send Now cancels the active prompt
+  and starts the selected input; a next-step request remains marked until a
+  tool finishes or a step ends, then uses that same path. The adapter emits an
+  internal `StepBoundary` for that real boundary (including a hidden tool);
+  synthetic closing rows of a failed or stopped turn do not fire it. No pending
+  input means no queue file read on step notifications.
+- The engine's native next-step inbox remains in use until 4.7d removes that place.
+- Cursor is added by 4.5: its adapter must add the case from
+  `agents-steering.test.mjs`—hold a running prompt at a tool step, write a default
+  letter and an explicit next-step message, assert their delivery before the
+  original turn ends (or the same cancel/resume at the boundary if no native steer),
+  once each. Then check that an explicit after-turn message waits. An adapter
+  without native steering emits `StepBoundary` only while its turn is actually
+  advancing, not as it writes the closing rows.
+
+| TypeScript scenario or contract | Rust proof |
+|---|---|
+| `agent-tools.test.js`: 171 named letter, 180 stopped queue, 220 legacy wait, 226 no such name, 235 message limit | `tools`, `agent-tools.test.mjs` (receipt and new timing), `work-elsewhere.test.mjs` (remote letter timing) |
+| `agents/sessions.test.ts`: 261 message while working, 292 Stop holds, 324 idle queue, 368 program drain | `kuvo_agents/tests/inbox.rs`; new delivery flag remains a steer rather than being downgraded for a non-steering agent |
+| `agents/sessions.test.ts`: 1610 native steer, 1632 non-native steer waits for turn | `agents-steering.test.mjs` (Claude Code, Codex, Grok, Antigravity); the non-native case deliberately now fires at a reported boundary |
+| Queue Send Now and steer, stopped/held line, retry and reorder (`queue-items.test.ts`, `queue-stop.test.ts`) | Existing `engine-sessions`, new `agent-tools` case; `kuvo_agents/tests/inbox.rs` selected message goes first |
+| OpenCode ACP and engine next-step boundary | `agents-opencode.test.mjs`, `engine-steering.test.mjs` on the pinned engine and a labelled model |
+
+The side-by-side synthetic busy-engine scenario compared the same three requests and
+both resulting homes. The new reply has only the added delivery field; the new queue
+file is unpaused with a resume timestamp, as for Send Now. The engine's message
+payload and all other answers match (each box generates its own message ID).
+A baseline comparison with the pre-fix Rust binary has the same unrelated home
+differences (setup keys, usage index, generated timestamps and runtime directories).
+The new field and the saved resume are deliberate, not comparison exclusions.
+
+The existing remote-work approval case explicitly seeds the Auto mode it describes
+and checks each implementation's exact refusal: Rust presents it as Ask First until
+6.1 (no permission behavior changed).
+The shared route fixture now waits for the engine's actual event stream before
+injecting a live event. Native Windows repeatedly missed the first finish event
+because the initial route answered before the stream subscribed; with the gate,
+the unchanged work scenario passed (15/15). One unrelated agent-program-update version
+check failed once and passed its single focused rerun; its test already includes
+the program's reported state on failure. The unchanged TypeScript Codex background
+terminal Stop case timed out once and passed its single focused rerun.
+
+Platform proof — the exact final binaries (cross-checked by hash) ran the new
+steering area (11/11), agent tools (4/4), OpenCode (16/16, including its long
+active prompt and next tool completion), and the native engine's next-step
+case (1/1) on macOS, static Linux musl under WSL, and native Windows. The
+preceding cross binaries also passed engine-sessions 81/81, holders 12/12,
+tools 10/10 and remote work (WSL 6/6; Windows 5/5 and the Unix-only timer skip).
+The final native work suite passed 15/15 with the synchronized fixture. On macOS,
+the final engine-sessions (81/81), holders (12/12), Grok (10/10), Antigravity
+(11/11), Claude routes (20/20), session reads (4/4), native session and turn
+fixtures (10/10), tools (10/10), work (15/15), remote work (6/6), and engine
+golden home (1/1) passed; notices passed with the existing machine-side skip.
+The final Claude turn and Codex guards passed (59 passed, one existing 4.6 TODO;
+100/100, respectively). The move and letter guards passed (70 passed, one
+two-binary reach-file comparison skipped). The TypeScript
+reference ran the shared engine, agent, tools and work scenarios and the golden
+home; new steering behavior is deliberately Rust-only. The inbox integration
+tests (28/28) and ACP projection unit tests (4/4) also passed.
+All model-facing scenarios here use stand-ins; no live sign-ins were copied.

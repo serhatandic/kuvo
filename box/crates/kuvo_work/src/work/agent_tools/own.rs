@@ -62,6 +62,7 @@ fn ran_words(ran: std::io::Result<std::process::Output>, program: &Path) -> Said
             Said {
                 text: text.to_owned(),
                 refused: failed,
+                delivery: None,
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => refused(format!(
@@ -316,6 +317,7 @@ impl Work {
             Some(Said {
                 text: text.to_owned(),
                 refused: failed,
+                delivery: None,
             })
         };
         let _ = kuvo_store::files::create_private_dirs(&folder);

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { launch, typescriptRuntime, write } from "./adapter.mjs";
+import { launch, typescriptRuntime, until, write } from "./adapter.mjs";
 import { git, sessionOf } from "./engine.mjs";
 
 const files = new URL("../../box/test/fixtures/routes/box/", import.meta.url);
@@ -140,7 +140,10 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       engine.emit({ type: "shell.exited", location: { directory: job?.folder }, data: { id: given.id } });
     },
     // One of the engine's events, as its feed tells it.
-    engineEvent(given) {
+    async engineEvent(given) {
+      // All these scenarios give a live event after starting the resident.
+      // A route answering doesn't mean the engine's event stream is connected yet.
+      await until(() => engine.hasEventStream(), "The resident did not subscribe to the engine's events.");
       engine.emit(given);
     },
     // What a conversation asks before it's done (`run/work/asks.json`), asked just now: making a

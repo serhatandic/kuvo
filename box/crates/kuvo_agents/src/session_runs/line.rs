@@ -36,6 +36,7 @@ pub(super) enum Request {
         id: String,
         delivery: Delivery,
         into: bool,
+        now: bool,
         reply: Reply<()>,
     },
     Cancel {
@@ -121,10 +122,11 @@ impl Service {
                 id,
                 delivery,
                 into,
+                now,
                 reply,
             } => {
                 let answer = self
-                    .set_delivery(state, &session, &id, delivery, into)
+                    .set_delivery(state, &session, &id, delivery, into, now)
                     .await;
                 let _ = reply.send(answer);
             }
@@ -437,6 +439,7 @@ impl Service {
         let nothing_runs = matches!(conversation.doing, Doing::Idle) || ended;
         input.delivery = if into.is_some()
             || input.held
+            || (!nothing_runs && input.delivery == Delivery::Steer)
             || (nothing_runs && (input.delivery != Delivery::Queue || line.is_empty()))
         {
             Delivery::Steer
@@ -466,6 +469,9 @@ impl Service {
             ));
         }
         let delivery = input.delivery;
+        if delivery == Delivery::Steer && !nothing_runs && into.is_none() {
+            state.conversation(session).step_waiting = true;
+        }
         let _ = self.events.send(InboxEvent::Enqueued {
             session: session.to_owned(),
             input: Box::new(input.clone()),
@@ -608,6 +614,7 @@ impl Service {
             }
         }
         let cancelled = cancelled.load(Ordering::SeqCst);
+        let immediate = state.conversation(&session).immediate.remove(&id);
         let succeeded = self.last_succeeded(&session).await;
         let conversation = state.conversation(&session);
         // Its turn ended meanwhile, or is ending: it goes next as you asked
@@ -628,11 +635,15 @@ impl Service {
         if !taken {
             if cancelled {
                 let _ = self.cancel(state, &session, &id, true).await;
+            } else if immediate {
+                let _ = self
+                    .set_delivery(state, &session, &id, Delivery::Steer, false, true)
+                    .await;
             } else if next || continue_after_exit {
                 self.advance(state, &session, None).await;
             } else {
                 let _ = self
-                    .set_delivery(state, &session, &id, Delivery::Queue, false)
+                    .set_delivery(state, &session, &id, Delivery::Queue, false, false)
                     .await;
             }
             return;
@@ -788,6 +799,27 @@ impl Service {
         if remaining {
             self.check_steers_soon(state, session);
         }
+        if !state.conversation(session).immediate.is_empty()
+            && let Ok(Some(line)) = self.store.line(session).await
+        {
+            let conversation = state.conversation(session);
+            conversation
+                .immediate
+                .retain(|id| line.iter().any(|input| &input.id == id));
+            if retry
+                && let Some(input) = line.iter().find(|input| {
+                    input.steer_receipt.is_none()
+                        && conversation.immediate.contains(&input.id)
+                        && !conversation.handing.contains_key(&input.id)
+                })
+            {
+                conversation.immediate.remove(&input.id);
+                let _ = self
+                    .set_delivery(state, session, &input.id, Delivery::Steer, false, true)
+                    .await;
+                return;
+            }
+        }
         let succeeded = self.last_succeeded(session).await;
         let conversation = state.conversation(session);
         if matches!(conversation.doing, Doing::Idle)
@@ -814,19 +846,35 @@ impl Service {
         id: &str,
         delivery: Delivery,
         into: bool,
+        now: bool,
     ) -> io::Result<()> {
+        if into
+            && delivery == Delivery::Steer
+            && state.conversation(session).handing.contains_key(id)
+        {
+            if now {
+                state.conversation(session).immediate.insert(id.to_owned());
+            }
+            return Ok(());
+        }
         let wanted = id.to_owned();
         let changed = self
             .store
-            .edit_line(session, move |line| match line.find_mut(&wanted) {
-                None => (Err(ErrorKind::NotFound), false),
-                Some(input) if input.steer_receipt.is_some() => {
-                    (Err(ErrorKind::InvalidInput), false)
+            .edit_line(session, move |line| {
+                let Some(at) = line.inputs.iter().position(|input| input.id == wanted) else {
+                    return (Err(ErrorKind::NotFound), false);
+                };
+                if line.inputs[at].steer_receipt.is_some() {
+                    return (Err(ErrorKind::InvalidInput), false);
                 }
-                Some(input) if input.delivery == delivery => (Ok((false, input.clone())), false),
-                Some(input) => {
-                    input.delivery = delivery;
-                    (Ok((true, input.clone())), true)
+                let changed = line.inputs[at].delivery != delivery;
+                line.inputs[at].delivery = delivery;
+                if now && at != 0 {
+                    let input = line.inputs.remove(at);
+                    line.inputs.insert(0, input.clone());
+                    (Ok((changed, input)), true)
+                } else {
+                    (Ok((changed, line.inputs[at].clone())), changed)
                 }
             })
             .await?
@@ -845,17 +893,33 @@ impl Service {
         if delivery != Delivery::Steer {
             return Ok(());
         }
+        if state.closing {
+            return Ok(());
+        }
         let conversation = state.conversation(session);
         if into
             && let Doing::Running(live) = &conversation.doing
             && live.thread.takes_steers()
-            && !conversation.handing.contains_key(id)
+            && !live.turn.is_done()
+            && !self.programs.holds(&live.provider)
         {
             let live = live.clone();
+            if now {
+                conversation.immediate.insert(id.to_owned());
+            }
             self.steer_now(state, session, live, input);
-            return Ok(());
+        } else if now
+            && matches!(
+                conversation.doing,
+                Doing::Running(_) | Doing::Starting { .. }
+            )
+        {
+            conversation.step_waiting = true;
+            self.resume_next(state, session).await;
+        } else {
+            conversation.step_waiting = true;
+            self.wake(state, session).await;
         }
-        self.wake(state, session).await;
         Ok(())
     }
 
@@ -928,8 +992,83 @@ impl Service {
             .ok_or_else(|| missing(session))
     }
 
+    pub(super) async fn started_delivery(&self, state: &mut State, session: &str) {
+        if state.closing {
+            return;
+        }
+        let conversation = state.conversation(session);
+        let seen = std::mem::take(&mut conversation.step_seen_while_starting);
+        if !conversation.step_waiting {
+            return;
+        }
+        let Doing::Running(live) = &conversation.doing else {
+            return;
+        };
+        let live = live.clone();
+        if live.thread.takes_steers() {
+            conversation.step_waiting = false;
+            if let Ok(Some(line)) = self.store.line(session).await {
+                for input in line.into_iter().filter(|input| {
+                    input.delivery == Delivery::Steer
+                        && !input.held
+                        && input.steer_receipt.is_none()
+                }) {
+                    if !state.conversation(session).handing.contains_key(&input.id) {
+                        self.steer_now(state, session, live.clone(), input);
+                    }
+                }
+            }
+        } else if seen {
+            self.step_boundary(state, session, &live.id).await;
+        }
+    }
+
+    /// An agent without native mid-turn steering can receive a waiting steer
+    /// at a tool/step boundary by the same interrupt-and-resume as Send Now.
+    pub(super) async fn step_boundary(&self, state: &mut State, session: &str, turn: &str) {
+        if state.closing {
+            return;
+        }
+        let conversation = state.conversation(session);
+        if !conversation.step_waiting {
+            return;
+        }
+        if matches!(&conversation.doing, Doing::Starting { id, .. } if id == turn) {
+            conversation.step_seen_while_starting = true;
+            return;
+        }
+        let Doing::Running(live) = &conversation.doing else {
+            return;
+        };
+        if live.id != turn || live.turn.is_done() || live.thread.takes_steers() {
+            return;
+        }
+        let Ok(Some(line)) = self.store.line(session).await else {
+            return;
+        };
+        if !line
+            .iter()
+            .any(|input| input.delivery == Delivery::Steer && !input.held)
+        {
+            state.conversation(session).step_waiting = false;
+            return;
+        }
+        self.resume_next(state, session).await;
+    }
+
+    async fn resume_next(&self, state: &mut State, session: &str) {
+        if let Stopping::Turn(turn) = self.interrupt(state, session, true).await {
+            tokio::spawn(async move {
+                let _ = turn.interrupt().await;
+            });
+        }
+    }
+
     async fn interrupt(&self, state: &mut State, session: &str, resume: bool) -> Stopping {
         let conversation = state.conversation(session);
+        if !resume {
+            conversation.immediate.clear();
+        }
         match std::mem::take(&mut conversation.doing) {
             Doing::Running(live) | Doing::Stopping(live) => {
                 let turn = live.turn.clone();
@@ -1153,6 +1292,9 @@ impl Service {
             let Ok(Some(line)) = self.store.line(&session).await else {
                 continue;
             };
+            if line.iter().any(|input| input.delivery == Delivery::Steer) {
+                state.conversation(&session).step_waiting = true;
+            }
             if line.iter().any(|input| input.steer_receipt.is_some()) {
                 self.check_steers_soon(state, &session);
             }

@@ -82,6 +82,10 @@ enum Command {
     Line(line::Request),
     /// A message handed to a turn: what its agent said.
     Steered(Box<line::Steered>),
+    StepBoundary {
+        session: String,
+        turn: String,
+    },
     /// Uncertain handoffs looked at again.
     Reconciled {
         session: String,
@@ -161,6 +165,11 @@ struct Conversation {
     handing: BTreeMap<String, Arc<AtomicBool>>,
     retired: bool,
     checking: bool,
+    /// A next-step delivery may be waiting; idle step notifications do not read disk.
+    step_waiting: bool,
+    step_seen_while_starting: bool,
+    /// Native steers whose confirmed refusal should use Send Now's fallback.
+    immediate: BTreeSet<String>,
     /// The turn an earlier resident left under way, being taken up here.
     recovered: Option<AdoptedTurn>,
     /// A turn its agent began on its own, taken: it starts before what waits in line.
@@ -464,6 +473,20 @@ impl SessionRuns {
             id,
             delivery,
             into,
+            now: false,
+            reply,
+        })
+        .await
+    }
+
+    /// Shared queue delivery: native steering, or interrupt/resume for Send Now.
+    pub async fn advance_line(&self, session: String, id: String, now: bool) -> io::Result<()> {
+        self.line(|reply| line::Request::SetDelivery {
+            session,
+            id,
+            delivery: Delivery::Steer,
+            into: true,
+            now,
             reply,
         })
         .await
@@ -769,6 +792,9 @@ impl Service {
             }
             Command::Line(request) => self.line_request(state, request).await,
             Command::Steered(steered) => self.steered(state, *steered).await,
+            Command::StepBoundary { session, turn } => {
+                self.step_boundary(state, &session, &turn).await
+            }
             Command::Reconciled {
                 session,
                 retry,
@@ -847,6 +873,7 @@ impl Service {
                 let _ = self.events.send(InboxEvent::Started {
                     session: session.clone(),
                 });
+                self.started_delivery(state, &session).await;
             }
             Err(_) => {
                 // A turn that never started ends as a failed one.
@@ -875,6 +902,7 @@ impl Service {
     ) {
         let conversation = state.conversation(session);
         let stopped = matches!(conversation.doing, Doing::Stopping(_));
+        let resuming = stopped && conversation.go;
         conversation.doing = Doing::Idle;
         if let Some(recovered) = conversation.recovered.take() {
             update::stopped_restoring(&self.restoring, session);
@@ -894,6 +922,7 @@ impl Service {
             session: session.to_owned(),
             outcome: outcome.clone(),
             stopped,
+            resuming,
         });
         let exited = !stopped && matches!(outcome, Some(Outcome::AgentExited(_)));
         let succeeded = !stopped && matches!(outcome, Some(Outcome::Succeeded));
@@ -1102,7 +1131,26 @@ impl Service {
             self.store.background().clone(),
             stop,
         );
-        let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer, foreground);
+        let (commands, step_session, step_turn) =
+            (self.commands.clone(), session.to_owned(), id.clone());
+        let boundary = move || {
+            let (commands, session, turn) =
+                (commands.clone(), step_session.clone(), step_turn.clone());
+            async move {
+                if let Some(commands) = commands.upgrade() {
+                    let _ = commands.send(Command::StepBoundary { session, turn }).await;
+                }
+            }
+        };
+        let turn = RunningTurn::launch(
+            thread.clone(),
+            input,
+            sink,
+            writes,
+            writer,
+            foreground,
+            boundary,
+        );
         Ok(Live {
             turn,
             id,
