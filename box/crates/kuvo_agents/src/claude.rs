@@ -222,12 +222,7 @@ impl Agent for Claude {
                 Ok(answer) => answer,
                 Err(error) => {
                     eprintln!("Could not refresh Claude Code limits: {error}");
-                    let mut direct = DirectPlanReading::windows(PlanLimitReading {
-                        windows: vec![],
-                        sign_in: Some(mark),
-                    });
-                    direct.status = DirectPlanStatus::Failed;
-                    return Ok(Some(direct));
+                    return Ok(Some(DirectPlanReading::failed(mark)));
                 }
             };
             let rate = &answer["rate_limits"];

@@ -238,6 +238,7 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
         extras,
         problem,
         checked: time(&value["checked"]).map(|t| clock(t, offset, now)),
+        values_read: time(&value["valuesRead"]).map(|t| clock(t, offset, now)),
         next: time(&value["next"])
             .map(|t| (i128::from(t) + offset).clamp(0, i128::from(u64::MAX)) as u64),
     };
@@ -439,6 +440,7 @@ impl Book {
                     account.windows.retain(Window::valid_kept);
                     if count != account.windows.len() {
                         account.facts.checked = None;
+                        account.facts.values_read = None;
                         account.facts.next = None;
                     }
                 }
@@ -680,9 +682,11 @@ mod parity_corpus {
         let mut given = raw(ahead);
         given["accounts"][0]["problem"] =
             json!({"kind":"rate-limited","message":"Fixture hold","until":ahead+600000});
+        given["accounts"][0]["valuesRead"] = json!(ahead - 120000);
         let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
         assert_eq!(read.accounts[0].windows[0].read, NOW);
         assert_eq!(read.accounts[0].facts.checked, Some(NOW));
+        assert_eq!(read.accounts[0].facts.values_read, Some(NOW - 120000));
         assert_eq!(read.accounts[0].facts.next, Some(NOW + 600000));
         assert_eq!(
             read.accounts[0].facts.problem.as_ref().unwrap().until,

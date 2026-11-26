@@ -471,6 +471,8 @@ test('engine credential plans are read with their own sign-ins and display bound
   assert.equal(accounts.openai.windows[0].used,0.3);
   assert.deepEqual(accounts.openai.extras,[{kind:'left',id:'credits',name:'Extra Usage',amount:821,unit:'credits'},{kind:'resets',id:'resets',name:'Rate Limit Resets',count:0,usable:false}]);
   assert.equal(accounts.xai.windows[0].used,0.64);
+  assert.equal(accounts.xai.windows[0].minutes,10080);assert.equal(accounts.xai.windows[0].resetsAt,now+4*86400000);
+  assert.deepEqual(Object.fromEntries(Object.entries(accounts).map(([id,a])=>[id,a.service])),{openai:'codex',xai:'grok','github-copilot':'copilot',openrouter:'openrouter','zai-coding-plan':'zai','opencode-go':'opencode'});
   assert.deepEqual(accounts['github-copilot'].windows[0].amount,{used:180,limit:300,unit:'requests'});
   assert.deepEqual(accounts.openrouter.balance,{left:12.5,limit:20,unit:'usd'});
   assert.equal(accounts['zai-coding-plan'].windows.find(w=>w.id==='web_search').used,0.4);
@@ -773,8 +775,23 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   replies['/antigravity/main/v1internal:retrieveUserQuotaSummary'].groups[0].buckets[0]=bucket('gemini-5h',1,now+10800000);
   const next=await refresh();
   assert.equal(next.accounts.find(a=>a.provider==='antigravity').windows.find(w=>w.id==='gemini-5h').used,0.8);
+  // A changed external sign-in is admitted while the existing feed is open.
+  const {openLine}=await import('./adapter.mjs');const listener=await resident.ready();
+  const line=await openLine(listener,'','kuvo/agents/api/kuvo/limits/events',{},15000);t.after(()=>line.close());
+  const newGrok=['e30',Buffer.from(JSON.stringify({sub:'new-grok-fixture'})).toString('base64url'),'fixture'].join('.');
+  const grokAuth=path.join(box.env.GROK_HOME,'auth.json');write(grokAuth,JSON.stringify({fixture:{key:newGrok}}));
+  write(path.join(box.env.GROK_HOME,'billing.json'),JSON.stringify({config:{currentPeriod:{start:new Date(now).toISOString(),end:new Date(end).toISOString()},creditUsagePercent:70}}));
+  const switched=(await refresh()).accounts.find(a=>a.provider==='grok-cli');assert.notEqual(switched.identity,accounts['grok-cli'].identity);assert.equal(switched.windows[0].used,.70);
+  const executable=path.join(box.env.PATH.split(path.delimiter)[0],process.platform==='win32'?'grok.cmd':'grok');
+  const savedProgram=fs.readFileSync(executable);fs.unlinkSync(executable);
+  const removed=(await call('GET','kuvo/agents/api/kuvo/limits')).json.data;assert.ok(!removed.accounts.some(a=>a.provider==='grok-cli'));
+  let gone=false;for await(const frame of line.frames()){
+    if(frame.changed){const data=(await call('GET','kuvo/agents/api/kuvo/limits')).json.data;if(!data.accounts.some(a=>a.provider==='grok-cli')){gone=true;break;}}
+  }
+  line.close();assert.equal(gone,true);assert.equal(fs.existsSync(grokAuth),true);
+  fs.writeFileSync(executable,savedProgram,{mode:0o755});
   // Signing out externally must withdraw the live rows without waiting for a provider fetch.
-  fs.unlinkSync(path.join(box.env.GROK_HOME,'auth.json'));
+  fs.unlinkSync(grokAuth);
   fs.unlinkSync(path.join(box.home,'agents','cursor','auth.json'));
   fs.unlinkSync(path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json'));
   await until(()=>{
@@ -795,7 +812,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   resident=box.start(undefined,{XAI_API_KEY:'fixture-key'});
   call=box.connect(await resident.ready());
   const withKey=await refresh();
-  assert.equal(withKey.accounts.find(a=>a.provider==='grok-cli')?.windows[0]?.used,0.61);
+  assert.equal(withKey.accounts.find(a=>a.provider==='grok-cli')?.windows[0]?.used,0.70);
   const keyCalls=fs.readFileSync(path.join(box.env.GROK_HOME,'heard.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(keyCalls.filter(m=>m.method==='authenticate').at(-1)?.params.methodId,'xai.api_key');
   assert.ok((await accountRow()).connections.some(c=>c.status.status==='connected'),'Accounts recognises the same environment key');
@@ -2399,7 +2416,7 @@ test('a malformed SuperGrok answer retains the previous window, but an ended pla
   const jwt=['e30',Buffer.from(JSON.stringify({sub:'fixture-grok'})).toString('base64url'),'fixture'].join('.');
   const {refresh}=await engineQuotaFixture(t,'GrokEnded',()=>({body:{config:mode==='active'?{currentPeriod:{start,end},creditUsagePercent:40}:mode==='malformed'?{current_period:{start,end},creditUsagePercent:20}:{isUnifiedBillingUser:true}}}),[engineSign('xai',{type:'oauth',access:jwt,expires:now+3600000})]);
   let data=await refresh();
-  assert.equal(data.rows.find(r=>r.provider==='xai').rings.long.used,0.4);
+  assert.equal(data.rows.find(r=>r.provider==='xai').rings.long.used,0.4);const completed=data.refreshCompletedAt;assert.ok(completed);
   mode='malformed';data=await refresh();
   assert.equal(data.accounts[0].problem.kind,'failed');
   assert.equal(data.rows.find(r=>r.provider==='xai').rings.long.used,0.4);
@@ -2409,6 +2426,8 @@ test('a malformed SuperGrok answer retains the previous window, but an ended pla
   assert.equal(row.problem.kind,'ended');
   assert.deepEqual(row.windows,[]);
   assert.deepEqual(row.rings,{});
+  assert.equal(data.refreshFailed,false);assert.ok(data.refreshCompletedAt>=completed);
+  assert.equal(row.usage.updatedAt,data.accounts[0].checked);assert.deepEqual(row.usage.meters,[]);
 });
 
 test('a turned-away engine OAuth sign-in waits for renewal of that credential, then reads the same account',async t=>{
@@ -3480,11 +3499,12 @@ test('each Claude account refreshes its own plan without passing tokens and keep
   const failed=await ask();const kept=byProvider(failed)['claude-code@a1'];assert.equal(failed.refreshFailed,false,'The other account succeeded');assert.equal(kept.problem?.kind,'failed',JSON.stringify(kept));
   assert.deepEqual(kept.windows,accounts['claude-code@a1'].windows);assert.deepEqual(kept.extras,accounts['claude-code@a1'].extras);
   const workAfter=failed.rows.find(r=>r.provider==='claude-code@a1');assert.equal(workAfter.rings.short.used,.71);assert.deepEqual(workAfter.card.lines,workBefore.card.lines);
-  // Window observations keep their own accepted time. A capped extra's
-  // separate last-success timestamp is tracked in the display coverage map.
-  const windowReadTimes=r=>r.usage.meters.filter(m=>m.title!=='Extra Usage').map(m=>m.readAt);
-  assert.deepEqual(windowReadTimes(workAfter),windowReadTimes(workBefore));
+  const readTimes=r=>r.usage.meters.map(m=>m.readAt);
+  assert.deepEqual(readTimes(workAfter),readTimes(workBefore));
   assert.equal(workAfter.usage.meters.find(m=>m.title==='Extra Usage').freshForMs,0);
+  const failedCount=reads().length;await claude.stop();listener=await claude.start();
+  const afterRestart=(await get()).rows.find(r=>r.provider==='claude-code@a1');assert.deepEqual(readTimes(afterRestart),readTimes(workBefore));
+  assert.equal(afterRestart.problem.kind,'failed');assert.equal(reads().length,failedCount);
   assert.equal(byProvider(failed)['claude-code'].problem,undefined);
   fs.unlinkSync(path.join(own,'claude-usage.json'));
   const offline=await ask();assert.equal(offline.refreshFailed,true);assert.deepEqual(offline.notices,failed.notices);
@@ -3577,4 +3597,134 @@ test('Claude’s default account uses the Terminal sign-in when there is no conf
   const account=await until(async()=>{const r=await request(listener,'GET',base);return !r.json.data.refreshPending&&r.json.data.accounts.find(a=>a.provider==='claude-code'&&a.windows.length);},'The Terminal Claude account was not read');
   assert.deepEqual(account.windows.map(w=>w.used),[.01,.02]);
   const call=claude.heard().find(r=>r.request?.subtype==='get_usage');assert.ok(call);assert.equal(claude.heard().find(r=>r.argv&&r.pid===call.pid).env.CLAUDE_CONFIG_DIR,undefined);
+});
+
+test('Codex uses each account’s own folder and only ChatGPT sign-ins have plan windows',async t=>{
+  if(boxBinary().typescript)return t.skip('Requires the native account app-server fixture.');
+  const crypto=await import('node:crypto');const fs=await import('node:fs');const http=await import('node:http');const {DatabaseSync}=await import('node:sqlite');
+  const codex=await scriptedCodex();t.after(()=>codex.close());
+  const own=path.join(codex.root,'.codex'),work=path.join(codex.home,'agents','codex','accounts','a1'),key=path.join(codex.home,'agents','codex','accounts','a2');
+  write(path.join(codex.home,'agents','accounts.json'),JSON.stringify([{formatVersion:1},{kind:'codex',id:'a1',label:'Work'},{kind:'codex',id:'a2',label:'API'}]));
+  const signIn=(folder,member)=>{const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture-workspace',chatgpt_user_id:member}})).toString('base64url'),'fixture'].join('.');write(path.join(folder,'auth.json'),JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:token,account_id:'fixture-workspace'}}));return token;};
+  const ownToken=signIn(own,'personal');signIn(work,'work');write(path.join(key,'auth.json'),JSON.stringify({auth_mode:'apikey',OPENAI_API_KEY:'fixture-key'}));
+  const reset=Math.floor(Date.now()/1000)+7200;
+  const maker=http.createServer((req,res)=>{
+    assert.ok(['/chatgpt','/chatgpt/resets'].includes(req.url));assert.equal(req.headers.authorization,'Bearer '+ownToken);assert.equal(req.headers['chatgpt-account-id'],'fixture-workspace');
+    if(req.url==='/chatgpt/resets'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({available_count:1,credits:[{id:'credit',status:'available',expires_at:reset+7200}]}));return;}
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({plan_type:'plus',rate_limit:{primary_window:{used_percent:42,limit_window_seconds:18000,reset_at:reset},secondary_window:{used_percent:17,limit_window_seconds:604800,reset_at:reset}},additional_rate_limits:[{limit_name:'GPT-5.3-Codex-Spark',limit_id:'gpt-5.3-codex-spark',rate_limit:{primary_window:{used_percent:12,limit_window_seconds:18000,reset_at:reset}}}],credits:{has_credits:true,balance:823},rate_limit_reset_credits:{available_count:1}}));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  codex.env.KUVO_TEST_USAGE_BASE='http://127.0.0.1:'+maker.address().port+'/';
+  const engineFolder=path.join(codex.home,'data','opencode');fs.mkdirSync(engineFolder,{recursive:true});
+  const engine=new DatabaseSync(path.join(engineFolder,'opencode.db'));engine.exec('CREATE TABLE credential(id TEXT,integration_id TEXT,value TEXT,active INTEGER,time_updated INTEGER)');
+  engine.prepare('INSERT INTO credential VALUES(?,?,?,?,?)').run('own','openai',JSON.stringify({type:'oauth',access:ownToken,expires:Date.now()+3600000,metadata:{accountID:'fixture-workspace'}}),1,Date.now());engine.close();
+  const limits=(folder,short,long,credits,spark)=>write(path.join(folder,'codex-limits.json'),JSON.stringify({rateLimitsByLimitId:{codex:{planType:'plus',primary:{usedPercent:short,windowDurationMins:300,resetsAt:reset},secondary:{usedPercent:long,windowDurationMins:10080,resetsAt:reset},credits:{hasCredits:true,balance:String(credits)}},...(spark?{'gpt-5.3-codex-spark':{limitName:'GPT-5.3-Codex-Spark',primary:{usedPercent:spark,windowDurationMins:300,resetsAt:reset}}}:{})},rateLimitResetCredits:{availableCount:1,credits:[{id:'credit',status:'available',expiresAt:reset+7200}]}}));
+  limits(own,42,17,823,12);limits(work,71,29,150,23);
+  const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const get=async()=>{const r=await request(listener,'GET',base);assert.equal(r.status,200,r.text);return r.json.data;};
+  const read=async()=>{const r=await request(listener,'POST',base+'/refresh',{});assert.equal(r.status,200,r.text);return until(async()=>{const data=await get();return !data.refreshPending&&data;},'Codex account refresh did not settle');};
+  const byProvider=d=>Object.fromEntries(d.accounts.map(a=>[a.provider,a]));
+  const initial=byProvider(await get());assert.ok(!initial['codex-cli@a2']);assert.equal(codex.sent('account/rateLimits/read').length,0);
+  const result=await read(),rows=byProvider(result);assert.ok(!rows['codex-cli@a2']);
+  const identity=user=>crypto.createHash('sha256').update('kuvo-code plan limits account v1\nchatgpt:fixture-workspace/'+user).digest('hex').slice(0,16);
+  for(const [id,folder,user,short,long,credits,spark] of [['codex-cli',own,'personal',.42,.17,823,.12],['codex-cli@a1',work,'work',.71,.29,150,.23]]){
+    const account=rows[id];assert.ok(account,JSON.stringify(result));assert.equal(account.identity,identity(user));assert.equal(account.plan,'Plus');
+    assert.deepEqual(Object.fromEntries(account.windows.map(w=>[w.id,w.used])),{primary:short,secondary:long,'gpt-5.3-codex-spark.primary':spark});
+    assert.equal(account.windows.find(w=>w.id==='gpt-5.3-codex-spark.primary').model,'GPT-5.3-Codex-Spark');
+    assert.deepEqual(account.extras.find(e=>e.id==='credits'),{kind:'left',id:'credits',name:'Extra Usage',amount:credits,unit:'credits'});
+    assert.equal(account.extras.find(e=>e.id==='resets').count,1);
+    const invocation=codex.heard().find(r=>r.env?.CODEX_HOME===folder&&codex.heard().some(q=>q.pid===r.pid&&q.message?.method==='account/rateLimits/read'));assert.ok(invocation,JSON.stringify(codex.heard()));
+  }
+  assert.equal(rows.openai.identity,rows['codex-cli'].identity);assert.equal(result.rows.filter(r=>r.identity===identity('personal')).length,1);
+  assert.equal(codex.sent('account/rateLimits/read').length,2);assert.ok(!codex.heard().some(r=>r.env?.CODEX_HOME===key));
+  assert.ok(!JSON.stringify(result).includes('fixture-workspace'));
+  const unavailable=path.join(work,'codex-limits-refused');write(unavailable,'');
+  const partial=await read(),held=byProvider(partial)['codex-cli@a1'];assert.equal(partial.refreshFailed,false);
+  assert.equal(held.problem?.kind,'failed',JSON.stringify(held));assert.deepEqual(held.windows,rows['codex-cli@a1'].windows);assert.deepEqual(held.extras,rows['codex-cli@a1'].extras);
+  assert.equal(byProvider(partial)['codex-cli'].problem,undefined);fs.unlinkSync(unavailable);
+  signIn(work,'new-member');limits(work,3,4,30,5);
+  const switched=byProvider(await read())['codex-cli@a1'];assert.equal(switched.identity,identity('new-member'));assert.equal(switched.windows.find(w=>w.id==='primary').used,.03);
+  fs.unlinkSync(path.join(work,'auth.json'));assert.ok(!byProvider(await get())['codex-cli@a1']);
+});
+
+test('an engine API key with no coding plan is omitted and an expired OAuth account is not contacted',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine quota calls.');
+  const {refresh,seen}=await engineQuotaFixture(t,'NoCodingPlan',req=>{
+    assert.equal(req.url,'/zai');return {body:{success:false,msg:'No coding plan found for this key'}};
+  },[engineSign('openai',{type:'api',key:'fixture-no-plan'}),engineSign('zai',{type:'api',key:'fixture-zai-no-plan'}),engineSign('xai',{type:'oauth',access:'fixture-old-oauth',expires:Date.now()-1000})]);
+  const data=await refresh();assert.deepEqual(data.accounts.map(a=>[a.provider,a.problem?.kind]),[['xai','expired']]);
+  assert.deepEqual(seen.map(r=>r.path),['/zai']);
+});
+
+test('a reset is refused when Codex itself reports another account, and zero inventory cannot be offered',async t=>{
+  if(boxBinary().typescript)return t.skip('Requires the native Codex account and reset journal fixture.');
+  const codex=await scriptedCodex();t.after(()=>codex.close());
+  const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture-reset-account',chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');
+  write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:'fixture-reset-account'}}));
+  const reset=Math.floor(Date.now()/1000)+7200,file=path.join(codex.root,'codex-limits.json');
+  const maker=(accountId,count)=>write(file,JSON.stringify({accountId,rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:count,credits:count?[{id:'fixture-credit',status:'available',expiresAt:reset+3600}]:[]}}));
+  maker('fixture-reset-account',1);
+  const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{const r=await request(listener,'POST',base+'/refresh',{});assert.equal(r.status,200,r.text);return until(async()=>{const data=(await request(listener,'GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='codex-cli');},'Codex reset inventory did not arrive');};
+  const first=await refresh(),row=first.id;
+  const post=body=>request(listener,'POST',base+'/reset',body);
+  const offered=await post({row});assert.equal(offered.status,200,offered.text);
+  maker('fixture-other-account',1);
+  const refused=await post({row,confirm:offered.json.data.confirm});assert.notEqual(refused.json?.data?.outcome,'reset');assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+  maker('fixture-reset-account',1);
+  const again=await post({row});assert.equal(again.status,200,again.text);
+  const used=await post({row,confirm:again.json.data.confirm});assert.equal(used.json.data.outcome,'reset');assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,1);
+  maker('fixture-reset-account',0);
+  const zero=await refresh();assert.equal(zero.extras.find(e=>e.kind==='resets').count,0);assert.ok(!zero.card.resets?.action);
+  const noOffer=await post({row});assert.equal(noOffer.status,409,noOffer.text);assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,1);
+});
+
+test('a second manual refresh joins a short running native read instead of starting the round again',async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the resident’s explicit native refresh round.');
+  const {scriptedClaude}=await import('./claude.mjs');const fs=await import('node:fs');
+  const claude=await scriptedClaude();t.after(()=>claude.close());
+  const own=claude.env.CLAUDE_CONFIG_DIR,file=path.join(own,'claude-usage.json');
+  write(path.join(own,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'fixture-coalesced',organizationUuid:'fixture-org'}}));
+  write(path.join(own,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-coalesced',expiresAt:Date.now()+3600000}}));
+  const reset=new Date(Date.now()+7200000).toISOString();write(file,JSON.stringify({subscription_type:'pro',rate_limits_available:true,rate_limits:{five_hour:{utilization:25,resets_at:reset}}}));write(file+'.hold','');
+  const listener=await claude.start(),base='kuvo/agents/api/kuvo/limits';
+  const asks=()=>claude.heard().filter(r=>r.request?.subtype==='get_usage');
+  const first=request(listener,'POST',base+'/refresh',{});
+  await until(()=>asks().length===1,'The first refresh did not reach Claude');
+  const second=request(listener,'POST',base+'/refresh',{});
+  // Allow the second HTTP request to reach the resident while the stand-in
+  // remains held, then release well inside its two-second reply wait.
+  await new Promise(resolve=>setTimeout(resolve,200));fs.unlinkSync(file+'.hold');
+  for(const reply of await Promise.all([first,second]))assert.equal(reply.status,200,reply.text);
+  await until(async()=>{const r=await request(listener,'GET',base);return !r.json.data.refreshPending&&r.json.data.accounts.some(a=>a.provider==='claude-code'&&a.windows[0]?.used===.25);},'Shared refresh did not complete');
+  assert.equal(asks().length,1,JSON.stringify(claude.heard()));
+});
+
+test('an accepted quota expires on the open limits feed without starting another native reader', {timeout:25000},async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the demand-driven resident deadline.');
+  const {scriptedClaude}=await import('./claude.mjs');const {openLine}=await import('./adapter.mjs');
+  const claude=await scriptedClaude();t.after(()=>claude.close());
+  const own=claude.env.CLAUDE_CONFIG_DIR;
+  write(path.join(own,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'fixture-expiry',organizationUuid:'fixture-org'}}));
+  write(path.join(own,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-expiry',expiresAt:Date.now()+3600000}}));
+  const id='ses_claude_quota_expiry';claude.seed(id);
+  const listener=await claude.start(),base='kuvo/agents/api/kuvo/limits';
+  const reset=Date.now()+5500,long=reset+7200000;
+  write(path.join(own,'claude-usage.json'),JSON.stringify({subscription_type:'pro',rate_limits_available:true,rate_limits:{five_hour:{utilization:95,resets_at:new Date(reset).toISOString()},seven_day:{utilization:75,resets_at:new Date(long).toISOString()}}}));
+  const reply=await request(listener,'POST',base+'/refresh',{});assert.equal(reply.status,200,reply.text);
+  const get=async()=>{const r=await request(listener,'GET',base);assert.equal(r.status,200,r.text);return r.json.data.rows.find(r=>r.provider==='claude-code');};
+  const before=await until(async()=>{const r=await get();return r?.rings.short?.used===.95&&r;},'The first short window did not arrive');
+  assert.equal(before.bar,'short');assert.equal(before.title,'Claude');
+  const line=await openLine(listener,'',base+'/events',{},12000);t.after(()=>line.close());
+  let after;
+  try {
+    for await(const frame of line.frames()){
+      if(frame.changed){const r=await get();if(r?.rings.short?.used===0&&Date.now()>=reset){after=r;break;}}
+    }
+  } catch(error) {if(!after)throw new Error('The feed never published the expiry', {cause:error});}
+  finally {line.close();}
+  assert.ok(after);assert.deepEqual(after.rings.short,{window:'five_hour',used:0,level:'calm'});assert.equal(after.bar,'long');assert.equal(after.rings.long.used,.75);
+  const expired=after.windows.find(w=>w.id==='five_hour');assert.equal(expired.expired,true);assert.equal(expired.resetsAt,undefined);assert.equal(expired.amount,undefined);
+  const tool=await request(listener,'POST','kuvo/agent-tools',{name:'plan_limits',arguments:{},session:id});assert.equal(tool.status,200,tool.text);assert.match(tool.json.text,/started over, not read since/);
+  assert.equal(claude.heard().filter(r=>r.request?.subtype==='get_usage').length,1,'Expiry itself does not launch another native CLI');
 });

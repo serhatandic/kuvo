@@ -5,6 +5,7 @@ use std::{
     ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -36,6 +37,7 @@ pub(super) struct Program {
     pub provider: String,
     /// An added account's own CODEX_HOME.
     managed: Option<PathBuf>,
+    auth: Arc<AuthReads>,
 }
 
 /// Its ChatGPT sign-in, as Codex keeps it.
@@ -56,6 +58,7 @@ impl Program {
             holder_binary,
             provider,
             managed,
+            auth: Arc::default(),
         }
     }
 
@@ -175,37 +178,31 @@ impl Program {
     /// Native sign-in metadata, without starting Codex or renewing its credentials. The claims
     /// are for display only, never authorization. API keys are not returned from this method.
     pub async fn account_info(&self) -> Option<(Value, Option<String>)> {
-        let home = self.codex_home()?;
-        tokio::task::spawn_blocking(move || {
-            let saved = read_auth(&home)?;
-            if let Some(credentials) = oauth(&saved) {
-                let access = claims(&credentials.token).unwrap_or_default();
-                let id = saved["tokens"]["id_token"]
-                    .as_str()
-                    .and_then(claims)
-                    .unwrap_or_default();
-                let auth = "https://api.openai.com/auth";
-                let profile = "https://api.openai.com/profile";
-                let email = id["email"]
-                    .as_str()
-                    .or_else(|| access[profile]["email"].as_str());
-                let plan = id[auth]["chatgpt_plan_type"]
-                    .as_str()
-                    .or_else(|| access[auth]["chatgpt_plan_type"].as_str());
-                let identity = chatgpt_identity(&credentials.token, credentials.account.as_deref());
-                return Some((
-                    json!({"type":"chatgpt","email":email,"planType":plan}),
-                    identity,
-                ));
-            }
-            saved["OPENAI_API_KEY"]
+        let saved = self.auth.read(self.codex_home()?, read_auth).await?;
+        if let Some(credentials) = oauth(&saved) {
+            let access = claims(&credentials.token).unwrap_or_default();
+            let id = saved["tokens"]["id_token"]
                 .as_str()
-                .filter(|key| !key.is_empty())?;
-            Some((json!({"type":"apiKey"}), None))
-        })
-        .await
-        .ok()
-        .flatten()
+                .and_then(claims)
+                .unwrap_or_default();
+            let auth = "https://api.openai.com/auth";
+            let profile = "https://api.openai.com/profile";
+            let email = id["email"]
+                .as_str()
+                .or_else(|| access[profile]["email"].as_str());
+            let plan = id[auth]["chatgpt_plan_type"]
+                .as_str()
+                .or_else(|| access[auth]["chatgpt_plan_type"].as_str());
+            let identity = chatgpt_identity(&credentials.token, credentials.account.as_deref());
+            return Some((
+                json!({"type":"chatgpt","email":email,"planType":plan}),
+                identity,
+            ));
+        }
+        saved["OPENAI_API_KEY"]
+            .as_str()
+            .filter(|key| !key.is_empty())?;
+        Some((json!({"type":"apiKey"}), None))
     }
 
     pub fn catalog_file(&self) -> PathBuf {
@@ -218,11 +215,7 @@ impl Program {
     /// Its ChatGPT sign-in: `auth.json`, or the Keychain's or keyring's item where its settings
     /// keep it there. Never an API key's, and never renewed here.
     pub async fn credentials(&self) -> Option<Credentials> {
-        let home = self.codex_home()?;
-        tokio::task::spawn_blocking(move || read_credentials(&home))
-            .await
-            .ok()
-            .flatten()
+        oauth(&self.auth.read(self.codex_home()?, read_auth).await?)
     }
 
     /// Who it's signed in as with ChatGPT (`chatgpt:<account>/<user>`), from its token's own claims.
@@ -277,11 +270,48 @@ impl Program {
     }
 }
 
-fn read_credentials(home: &Path) -> Option<Credentials> {
-    oauth(&read_auth(home)?)
+/// A concurrent account status and plan read share one native credential lookup.
+/// Only overlapping callers keep its result; a later sign-in check sees the store again.
+#[derive(Default)]
+struct AuthReads {
+    active: Mutex<Option<(PathBuf, Weak<tokio::sync::OnceCell<Option<Value>>>)>>,
+}
+impl AuthReads {
+    async fn read(
+        &self,
+        home: PathBuf,
+        load: impl FnOnce(&Path) -> Option<Value> + Send + 'static,
+    ) -> Option<Value> {
+        let cell = {
+            let mut active = self.active.lock().expect("Codex auth read");
+            if let Some(cell) = active
+                .as_ref()
+                .filter(|(path, _)| path == &home)
+                .and_then(|(_, cell)| cell.upgrade())
+            {
+                cell
+            } else {
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                *active = Some((home.clone(), Arc::downgrade(&cell)));
+                cell
+            }
+        };
+        cell.get_or_init(|| async move {
+            tokio::task::spawn_blocking(move || load(&home))
+                .await
+                .ok()
+                .flatten()
+        })
+        .await
+        .clone()
+    }
 }
 
 fn read_auth(home: &Path) -> Option<Value> {
+    read_auth_using(home, keychain)
+}
+
+fn read_auth_using(home: &Path, lookup: impl FnOnce(&str) -> Option<Value>) -> Option<Value> {
     let mode = fs::read_to_string(home.join("config.toml"))
         .ok()
         .and_then(|settings| {
@@ -293,7 +323,7 @@ fn read_auth(home: &Path) -> Option<Value> {
             })
         });
     if mode.is_some()
-        && let Some(saved) = keychain(home)
+        && let Some(saved) = lookup(&keychain_account(home))
     {
         return Some(saved);
     }
@@ -321,10 +351,12 @@ fn oauth(saved: &Value) -> Option<Credentials> {
 }
 
 /// The Keychain's (or keyring's) item Codex keeps its sign-in in, by its home.
-fn keychain(home: &Path) -> Option<Value> {
+fn keychain_account(home: &Path) -> String {
     let canonical = fs::canonicalize(home).unwrap_or_else(|_| home.to_owned());
     let digest = Sha256::digest(canonical.as_os_str().as_encoded_bytes());
-    let account = format!("cli|{}", &hex::encode(digest)[..16]);
+    format!("cli|{}", &hex::encode(digest)[..16])
+}
+fn keychain(account: &str) -> Option<Value> {
     let env: Environment = std::env::vars_os().collect();
     // Tests never read the computer's Keychain.
     if env_value(Platform::current(), &env, "KUVO_TEST_PATH_ONLY") == Some(OsStr::new("1")) {
@@ -337,7 +369,7 @@ fn keychain(home: &Path) -> Option<Value> {
                 "-s",
                 "Codex Auth",
                 "-a",
-                &account,
+                account,
                 "-w",
             ])
             .stdin(std::process::Stdio::null())
@@ -354,7 +386,7 @@ fn keychain(home: &Path) -> Option<Value> {
                 "service",
                 "Codex Auth",
                 "username",
-                &account,
+                account,
                 "target",
                 "default",
             ])
@@ -499,6 +531,84 @@ mod tests {
         assert_eq!(
             (found.token.as_str(), found.account.as_deref()),
             ("x", Some("a"))
+        );
+    }
+
+    #[test]
+    fn a_keyring_store_uses_the_canonical_folder_and_never_falls_back_to_a_file() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(
+            folder.path().join("config.toml"),
+            "cli_auth_credentials_store = \"keyring\"\n",
+        )
+        .unwrap();
+        fs::write(
+            folder.path().join("auth.json"),
+            r#"{"tokens":{"access_token":"file-fixture","account_id":"file"}}"#,
+        )
+        .unwrap();
+        let key = format!(
+            "cli|{}",
+            &hex::encode(Sha256::digest(
+                fs::canonicalize(folder.path())
+                    .unwrap()
+                    .as_os_str()
+                    .as_encoded_bytes()
+            ))[..16]
+        );
+        let saved = read_auth_using(folder.path(), |account| {
+            assert_eq!(account, key);
+            Some(json!({"tokens":{"access_token":"keyring-fixture","account_id":"keyring"}}))
+        })
+        .unwrap();
+        assert_eq!(oauth(&saved).unwrap().account.as_deref(), Some("keyring"));
+        assert!(read_auth_using(folder.path(), |_| None).is_none());
+        fs::write(
+            folder.path().join("config.toml"),
+            "cli_auth_credentials_store = \"auto\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            oauth(&read_auth_using(folder.path(), |_| Some(saved.clone())).unwrap())
+                .unwrap()
+                .account
+                .as_deref(),
+            Some("keyring")
+        );
+        assert_eq!(
+            oauth(&read_auth_using(folder.path(), |_| None).unwrap())
+                .unwrap()
+                .account
+                .as_deref(),
+            Some("file")
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_auth_reads_share_one_lookup_but_the_next_read_is_fresh() {
+        let reader = AuthReads::default();
+        let home = PathBuf::from("fixture");
+        let (begun, started) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let first = reader.read(home.clone(), move |_| {
+            begun.send(()).unwrap();
+            wait.recv().unwrap();
+            Some(json!({"account":"first"}))
+        });
+        let second = reader.read(home.clone(), |_| panic!("A pending lookup must be shared"));
+        let unlock = async {
+            started.await.unwrap();
+            release.send(()).unwrap();
+        };
+        let (first, second, ()) = tokio::join!(first, second, unlock);
+        assert_eq!(first, second);
+        assert_eq!(first.unwrap()["account"], "first");
+        assert_eq!(
+            reader
+                .read(home, |_| Some(json!({"account":"next"})))
+                .await
+                .unwrap()["account"],
+            "next"
         );
     }
 }

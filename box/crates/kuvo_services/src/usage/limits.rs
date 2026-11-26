@@ -256,6 +256,9 @@ pub struct Service {
     tell: Arc<std::sync::OnceLock<Arc<Tell>>>,
     told: Arc<Mutex<BTreeMap<String, u64>>>,
     refreshing: Arc<tokio::sync::Mutex<()>>,
+    /// Odd while a client manual round runs, advanced when it ends. A manual
+    /// press can join that round even if it completes before its reply wait.
+    explicit_round: Arc<std::sync::atomic::AtomicU64>,
     last_refresh: Arc<std::sync::atomic::AtomicU64>,
     last_turn_save: Arc<std::sync::atomic::AtomicU64>,
     refresh_failed: Arc<std::sync::atomic::AtomicBool>,
@@ -311,6 +314,7 @@ impl Service {
                     .notices
                     .retain(|notice| entry.trails.contains_key(&notice.window));
                 entry.facts.checked = None;
+                entry.facts.values_read = None;
                 entry.facts.next = None;
                 entry.borrowed_until = None;
             }
@@ -343,6 +347,7 @@ impl Service {
             tell: Arc::default(),
             told: Arc::default(),
             refreshing: Arc::default(),
+            explicit_round: Arc::default(),
             last_refresh: Arc::default(),
             last_turn_save: Arc::default(),
             refresh_failed: Arc::default(),
@@ -764,6 +769,9 @@ impl Service {
                     }
                     entry.facts = facts;
                 } else {
+                    if entry.facts.balance.is_some() || !entry.facts.extras.is_empty() {
+                        entry.facts.values_read = entry.facts.meter_read();
+                    }
                     entry.facts.problem = facts.problem;
                     entry.facts.checked = facts.checked;
                     entry.facts.next = facts.next;
@@ -1921,6 +1929,7 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
     let mut local = json!({"provider":acc.provider,"service":acc.service,"title":title,"windows":ordered_trails(entry).into_iter().map(|t|shown(&t.current,now)).collect::<Vec<_>>()});
     if let Ok(Value::Object(mut facts)) = serde_json::to_value(&entry.facts) {
         facts.shift_remove("partial");
+        facts.shift_remove("valuesRead");
         local.as_object_mut().expect("account").extend(facts);
     }
     let mut box_record = json!({"key":key,"name":name,"provider":acc.provider,"here":true});
@@ -2153,10 +2162,11 @@ where
     tokio::spawn(async move {
         let mut changes = deadlines.changes.subscribe();
         let mut attempted = BTreeMap::<String, u64>::new();
+        let mut projected_through = now();
         loop {
             let next = {
                 let state = deadlines.state.lock().expect("limits lock");
-                state
+                let read = state
                     .entries
                     .values()
                     .flat_map(|entry| {
@@ -2168,14 +2178,54 @@ where
                     })
                     .filter(|(provider, at)| attempted.get(provider).is_none_or(|last| at > last))
                     .min_by_key(|(_, at)| *at)
+                    .map(|(provider, at)| (Some(provider), at));
+                // A window starts over at its reset, regardless of whether the
+                // maker can be asked again yet. Publish that view without a probe.
+                let book = deadlines.peer_book.lock().expect("peer limits");
+                let reset = state
+                    .entries
+                    .values()
+                    .flat_map(|entry| {
+                        entry
+                            .trails
+                            .values()
+                            .filter_map(|trail| trail.current.resets_at)
+                    })
+                    .chain(
+                        book.peers
+                            .iter()
+                            .filter(|(key, peer)| {
+                                book.roster.contains_key(*key)
+                                    && book.scope.is_some()
+                                    && peer.setup == book.scope
+                            })
+                            .flat_map(|(_, peer)| {
+                                peer.accounts.iter().flat_map(|account| {
+                                    account.windows.iter().filter_map(|window| window.resets_at)
+                                })
+                            }),
+                    )
+                    .filter(|at| *at > projected_through)
+                    .min()
+                    .map(|at| (None, at));
+                read.into_iter()
+                    .chain(reset)
+                    .min_by_key(|(provider, at)| (*at, provider.is_some()))
             };
             if let Some((provider, at)) = next {
                 tokio::select! {
                     result=changes.changed()=>{if result.is_err(){return;}},
                     _=tokio::time::sleep(std::time::Duration::from_millis(at.saturating_sub(now())))=>{
-                        if start_read(&deadlines,deadline_reader.clone(),true,false,Some(provider.clone()),false) {
-                            attempted.insert(provider,at);
-                        } else if changes.changed().await.is_err(){return;}
+                        if let Some(provider) = provider {
+                            if start_read(&deadlines,deadline_reader.clone(),true,false,Some(provider.clone()),false) {
+                                attempted.insert(provider,at);
+                            } else if changes.changed().await.is_err(){return;}
+                        } else {
+                            projected_through = now().max(at);
+                            let service = deadlines.clone();
+                            let _ = tokio::task::spawn_blocking(move || service.answer(projected_through)).await;
+                            deadlines.changes.send_modify(|n| *n = n.wrapping_add(1));
+                        }
                     }
                 }
             } else if changes.changed().await.is_err() {
@@ -2188,15 +2238,22 @@ where
     routes.register::<Refresh, _, _>(Access::Any, move |_| {
         let (service, read) = (manual.clone(), reader.clone());
         async move {
-            if !start_read(&service, read.clone(), true, true, None, true) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let round = service.explicit_round.load(Relaxed);
+            if !start_read(&service, read.clone(), true, true, None, true) && round % 2 == 0 {
+                // A passive or peer-selected read is not a full manual round.
+                // Honor the press after it, unless another client round did.
                 if let Ok(guard) = tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     service.refreshing.lock(),
                 )
                 .await
                 {
+                    let already_read = service.explicit_round.load(Relaxed) != round;
                     drop(guard);
-                    start_read(&service, read, true, true, None, true);
+                    if !already_read {
+                        start_read(&service, read, true, true, None, true);
+                    }
                 }
             }
             let _ =
@@ -2253,6 +2310,9 @@ where
     }
     if let Ok(guard) = service.refreshing.clone().try_lock_owned() {
         service.last_refresh.store(at, Relaxed);
+        if explicit && fanout {
+            service.explicit_round.fetch_add(1, Relaxed);
+        }
         let service = service.clone();
         tokio::spawn(async move {
             let before = explicit.then(|| service.checked_times());
@@ -2262,6 +2322,9 @@ where
                 service.refresh_failed.store(failed, Relaxed);
                 if !failed {
                     service.refresh_completed.store(now(), Relaxed);
+                }
+                if fanout {
+                    service.explicit_round.fetch_add(1, Relaxed);
                 }
             }
             drop(guard);

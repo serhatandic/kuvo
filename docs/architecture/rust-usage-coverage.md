@@ -927,6 +927,50 @@ and WSL process lists clear. Non-test size:
 621,674 characters without leading indentation (0.904× the TS baseline).
 19 A1 entries closed; 150 remain.
 
+## Twentieth slice: native Codex, display deadlines and refresh completion
+
+Separate native Codex sign-ins read in their own folders; the API-key slot
+has no plan reader or row, a switched sign-in gets its own values, and the
+same ChatGPT workspace member in the native CLI and saved engine SQLite
+credentials has one domain-separated identity and row. Plan/model windows,
+credits and reset inventory are checked, including maker/account mismatch
+and zero inventory refusal. Concurrent account status and usage reads share
+one pending native credential lookup; the result is not kept for subsequent
+independent checks. Synthetic account-key and pending-read tests use no real
+Keychain. The Grok fixture changes its external sign-in and removes the
+executable with the credential still present; the feed and Accounts agree.
+The engine no-plan/expired-key fixture and the exact six service names and
+SuperGrok ended completion cover the ordinary credential answers.
+
+Four actual regressions failed on the preceding Rust binary: a Codex maker
+failure was not reported on the affected account; a failed capped extra was
+labelled with the new attempt time; a second press could repeat the whole
+manual round when its first answer arrived within two seconds; and the
+limits feed did not publish quota expiry until a later maker poll. The new
+reader keeps a failed account's last facts, the sparse retained values time
+preserves each meter's last successful read through failure/restart and peer
+mail, one manual round satisfies both presses (a pending passive/peer read
+can still be followed by the requested client round), and the resident's
+next actual reset deadline republishes the empty ring without starting a
+native CLI. Maker reread remains a separate deadline. The route also checks
+plan_limits tool wording after reset. Fixed-clock production projections
+cover ring/bar selection, exact known names, capped and uncapped values,
+expired amounts, and independent Antigravity pools. The weekly Trail test
+folds 481 readings into bounded samples, retains the forecast across
+serialization/restart and rejected reset jitter, then builds a new forecast
+only from new-period readings.
+
+Mac Rust usage 100/100 applicable, TS 40/40, engine sessions 81/81,
+holder 12/12, native Codex agent scenarios 100/100, Claude turns 59 passing
+and one pre-existing handover-cursor TODO; workspace test-target check and
+Bun check clean. Scoped Codex credential 4/4, display 9/9, peer reading
+7/7, accepted readings 14/14. The seeded history differential matches 12/13
+answers exactly (only actual coverage scan time differs); the native corpus
+matches both answers exactly. Stored inventory/projection-format differences
+remain documented. Remote runs pending the cross-build. Non-test size:
+625,294 characters without leading indentation (0.909× the TS baseline).
+36 A1 entries closed; 114 remain.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -987,8 +1031,8 @@ does not block completion of the row.
 - L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — covered by the Copilot organization route case, including transient failure, filtered fee products and no admin rights.
 - L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — covered by the Copilot organization case (only first organization asked while held).
 - L152: ChatGPT's credits and reset credits, read with the engine's sign-in — covered by engine credential plan scenario plus usable credit inventory read and confirmed spending with the saved OAuth identity.
-- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — partial — read-only engine database alias/active/no-plan/expired fixture (OpenCode Go and OpenAI API key); specific Z.ai no-plan response still open.
-- L173: SuperGrok's weekly pool, as the Grok CLI reads it — partial — engine credential plan scenario (xAI weekly reading, not the standalone CLI).
+- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — covered by the actual engine no-coding-plan fixture: OpenAI API key absent, Z.ai no-plan answer omitted, expired xAI listed expired and never contacted.
+- L173: SuperGrok's weekly pool, as the Grok CLI reads it — covered by the exact xAI weekly period and reset in the engine credential fixture and the standalone Grok ACP billing fixture.
 - L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — covered by the active/malformed/ended SuperGrok route fixture.
 - L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — covered by the malformed SuperGrok route case (last accepted ring remains).
 - L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — covered by the read-only engine database alias/no-plan fixture.
@@ -996,7 +1040,7 @@ does not block completion of the row.
 - L241: an API key turned away is tried again later, not held to that key as a lapsed sign-in — covered by extended engine plan route with rejected OpenRouter key and successful retry.
 - L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — covered by exact domain-separated identity assertions in extended engine plan route (cross-computer grouping tested separately).
 - L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — covered by extended engine plan route (same login with changed case and credential, then different login).
-- L320: an account's mark in Accounts is the service its limits are read as — open.
+- L320: an account's mark in Accounts is the service its limits are read as — covered by the exact integration-ID to service mapping asserted for all six engine credential rows.
 - L326: OpenCode Go's 30-day window shows a forecast after frequent refreshes — later (rare) — the exact eight-hour, every-minute explicit refresh of a thirty-day window, beyond the ordinary weekly/new-window forecast matrix.
 
 ### `box/test/usage/insights-checkpoints.test.ts`
@@ -1050,15 +1094,15 @@ does not block completion of the row.
 - L87: with too few readings nothing is predicted: what's left and when it resets, no more — covered by the actual two-account Claude first-reading card: remaining percentage and reset, no invented prediction.
 - L95: what the readings said is kept through a restart of the box — covered by accepted pace/card route with exact before/after card and rail.
 - L103: each card shows only its own account, named among its agent's others — covered by named three-account route.
-- L124: a reset is offered only where one can be used, naming the soonest to expire — partial — real Codex reset card words and action, inventory/confirm fixture; no-credit card edge case open.
+- L124: a reset is offered only where one can be used, naming the soonest to expire — covered by the local Codex earliest-expiry confirmation route and actual zero-inventory card with no action or offer.
 - L139: an agent's many accounts share one ring, its card a strip of them emptiest first, fine ones counted — covered by three-account accepted pace/card/rail route.
-- L158: each coding agent's last numbers stay on its card, as of when, once it can't be read any more — partial — the actual Claude maker failure route preserves last rings, exact card lines and window read times. The capped extra is visibly stale but still uses the failed attempt time instead of its last successful read; discovered in slice 19, to fix in the display batch.
+- L158: each coding agent's last numbers stay on its card, as of when, once it can't be read any more — covered by actual Claude and Codex failed maker routes: retained windows, extras, card lines and last accepted meter timestamps; capped extra and all window timestamps survive failure and restart.
 - L179: an account with no numbers read yet has no ring, rather than an empty one — covered by legacy cache account-switch scenario.
-- L208: a weekly window read every minute still shows a forecast after eight hours — open.
-- L213: a busy weekly window keeps its forecast through a box restart — open.
-- L219: Codex keeps a weekly forecast when its reported reset time moves by a few minutes — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L208: a weekly window read every minute still shows a forecast after eight hours — covered by fixed-clock production Trail with 481 one-minute weekly samples, bounded retained sample size and the correct lasts prediction.
+- L213: a busy weekly window keeps its forecast through a box restart — covered by the same dense weekly Trail serialized/reloaded; the actual accepted card restart fixture independently proves kept card/rail projection.
+- L219: Codex keeps a weekly forecast when its reported reset time moves by a few minutes — covered by the weekly Trail fixture across six-minute forward reset jitter and return to original reset.
 - L233: a downward correction within the same week keeps the forecast — later (rare) — a maker lowers a same-week quota count after a multi-hour forecast was built.
-- L244: a new quota period starts its own forecast after the last reset — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L244: a new quota period starts its own forecast after the last reset — covered by the weekly Trail fixture: real rollover clears the old prediction, and new-period samples build the new prediction.
 - L262: Antigravity's unused pools can forecast while Google keeps moving their reset times — later (rare) — repeated moving reset times on unused Antigravity pools throughout a forecast sample history. Existing evidence: related accepted-window and notice tests above; this exact case not yet ported.
 
 ### `box/test/usage/limit-display.test.ts`
@@ -1070,7 +1114,7 @@ does not block completion of the row.
 - L77: Usage gives plain next steps instead of exposing the provider’s error — covered by exact status word matrix including no/ended plan and private error.
 - L93: Usage draws capped credit balances and extras even without normal windows — covered by credit/extras meter and sidebar level component test.
 - L113: Reset labels round up across hour and day boundaries, by elapsed time across DST — covered by fixed-clock exact label and DST matrix.
-- L142: Limits include the check time for an ended plan without meters — partial — display component preserves `updatedAt` on ended plan; actual global completion field case open.
+- L142: Limits include the check time for an ended plan without meters — covered by the actual SuperGrok active/malformed/ended refresh route: ended plan still has exact check time and successful global completion, no meters or rings.
 - L154: A delayed provider leaves refresh pending and sends an update when the new snapshot is ready — covered by slow maker/limits events route fixture.
 - L189: A failed provider refresh keeps the prior successful completion time — covered by mixed/wholly failed refresh route fixture.
 
@@ -1104,7 +1148,7 @@ does not block completion of the row.
 - L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — partial — Codex fixture reports unknown, resident restarts, then maker replies already redeemed under the same request.
 - L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — open.
 - L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
-- L358: an account with no resets left, or none at all, is refused before anything is offered — partial — missing and unknown account refusal conformance; zero-inventory test remains open.
+- L358: an account with no resets left, or none at all, is refused before anything is offered — covered by the actual zero-credit inventory route and empty/unknown account refusal case, no offer or consume call.
 - L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — covered by the two-account native Claude fixture on Mac: exact extra usage, unavailable reset message, and refusal with the same message.
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
@@ -1163,48 +1207,48 @@ does not block completion of the row.
 - L387: Claude Code not signed in: its row says to sign in again, it isn't started again while that's so, and signed in again, it's asked again — covered by credential removal and new sign-in in the two-account fixture. No passive process starts; the old account disappears, the new identity receives its own values on explicit refresh.
 - L409: what a turn hears keeps a window current between reads, even while a read is under way — covered by the held native usage-control route: a turn sees 51% while the maker request waits, the old 50% response cannot replace it, the other weekly reading is still admitted, and a second refresh joins the round.
 - L432: the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses — covered by the Terminal sign-in fixture without a config-folder override and the added-account folder fixture.
-- L483: its plan's windows and a model's own are what Codex says for its sign-in — open.
-- L499: Codex limits are read again on schedule, each time from Codex — open.
-- L510: a configured API key never starts Codex or reads ChatGPT plan limits — open.
-- L521: an API key has no plan limits: not listed — open.
+- L483: its plan's windows and a model's own are what Codex says for its sign-in — covered by native two-account Codex fixture: exact plan, primary/secondary and model-specific Spark windows in each account folder.
+- L499: Codex limits are read again on schedule, each time from Codex — superseded — passive readers no longer launch Codex. Native log observations keep a subscribed rail and Helper menu current without starting an app-server; explicit refresh reads the native CLI, as documented in Deliberate work-timing changes.
+- L510: a configured API key never starts Codex or reads ChatGPT plan limits — covered by native Codex three-slot fixture: API-key slot has no app-server invocation and no quota RPC.
+- L521: an API key has no plan limits: not listed — covered by the same native Codex API-key slot, absent from both admitted accounts and plan rows.
 - L547: one Claude login on a Mac and a Linux computer is one identity, another login another, and neither says who — covered by the exact domain-separated identity assertion with the same synthetic maker identity on all tested OSes, different added account identity, and the existing accepted-account peer merge.
 - L573: signed in to another account since, what was kept of the one before isn't shown as this one's — duplicate — the real legacy upgrade route checks a confirmed identity and retained 82% row, changes the sign-in while stopped, starts again, and asserts the new identity does not inherit the old windows or ring.
-- L597: Codex's ChatGPT sign-in is its account and workspace member, the same as the engine's sign-in to it — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L611: a switched Codex account is read with its own sign-in — open.
+- L597: Codex's ChatGPT sign-in is its account and workspace member, the same as the engine's sign-in to it — covered by actual native Codex and read-only engine SQLite ChatGPT credential with the same workspace member: exact shared identity and one merged row, with a different member separate.
+- L611: a switched Codex account is read with its own sign-in — covered by actual switched added Codex account in its own folder, fresh maker window, changed identity, then credential removal.
 - L631: says each account's windows, how much is used, when each resets and as of when — covered by exact native Claude account windows, ratios, period minutes, reset and reading times, plus existing Codex/engine maker scenarios.
 - L666: with the coding agents not running, says so as an error — superseded — plan_limits is now a resident tool: an idle coding-agent process is not an unavailable usage service. The demand-started and passive-reader scenarios prove it can answer without starting the agent; [design §5](rust-box.md#5-what-not-to-port).
 - L677: Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event — covered by the held native Claude route and limits event feed; the completed row has its separate short and long rings.
-- L704: a plan with one window has one ring, and one with none has none — open.
-- L715: a row says the account's level: its rings' higher one, a balance's or a capped extra's, and none where nothing has a limit — open.
-- L736: the box picks which of a maker's windows is each ring — open.
-- L750: Antigravity's rings are one pool's, as its reader lists them: Gemini's session is never paired with Claude's week — open.
-- L771: every provider's rows and windows have a name — open.
+- L704: a plan with one window has one ring, and one with none has none — covered by fixed-clock production ring matrix: one weekly window has one ring and empty account no rings, bar or level.
+- L715: a row says the account's level: its rings' higher one, a balance's or a capped extra's, and none where nothing has a limit — covered by fixed-clock ring/bar/balance matrix and capped-extra projection, including uncapped/no-limit and rings taking priority over balance.
+- L736: the box picks which of a maker's windows is each ring — covered by fixed-clock production ring selection: whole-plan windows outrank model-specific Spark and named separate counters; named pool and no-period ring cases.
+- L750: Antigravity's rings are one pool's, as its reader lists them: Gemini's session is never paired with Claude's week — covered by explicit Gemini versus Claude/GPT pool ring component matrix and existing actual Antigravity menu route; both rings use the same tightest pool.
+- L771: every provider's rows and windows have a name — covered by fixed-clock exact known service and duration names, native model/label fixture, plus actual maker-named counter/pool routes. A future service keeps its received name.
 - L796: two rows that would have one name are told apart, as seen from the box that answers — open.
-- L813: one bar shows the fuller ring, the session where they're as full, and a ring that started over counts as empty — open.
-- L823: a window whose reset has passed has started over: empty, calm, and without the old period's reset or amount — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L838: on the route and its event: named accounts and rows, and clients told when a window starts over — open.
-- L872: a box that reads arms a timer for the next window to start over, and stopping clears it — open.
-- L894: the agents' plan_limits tool says a window that started over isn't read since — open.
+- L813: one bar shows the fuller ring, the session where they're as full, and a ring that started over counts as empty — covered by the fixed-clock fuller/tied/expired ring and bar matrix.
+- L823: a window whose reset has passed has started over: empty, calm, and without the old period's reset or amount — covered by exact expired ratio/level/amount/reset/short-ring component matrix and real deadline route.
+- L838: on the route and its event: named accounts and rows, and clients told when a window starts over — covered by actual accepted Claude quota expiry over the open limits feed: named row, short ring starts over and bar changes to long, without another native probe.
+- L872: a box that reads arms a timer for the next window to start over, and stopping clears it — covered by the actual reset deadline event and resident-owned deadline task, which has no periodic wake without a deadline and ends when the resident stops.
+- L894: the agents' plan_limits tool says a window that started over isn't read since — covered by the actual Claude deadline scenario calling the agent plan_limits route after expiry: started over, not read since.
 - L905: a plan that ended is one, whatever another computer kept of it — open.
-- L915: a newly added provider is read immediately before its first scheduled tick — open.
+- L915: a newly added provider is read immediately before its first scheduled tick — superseded — the old automatic read-again after adding a native provider is replaced by explicit-only native probes; the newly admitted account gets its own reading on the first manual round, without passive CLI starts.
 
 ### `box/test/usage/native-usage.test.ts`
 
-- L44: each Codex account's plan is what Codex itself says in that account's own folder: windows, plan, credits and resets — partial — Codex native refresh and reset inventory scenarios; added slot and Spark exact case open.
+- L44: each Codex account's plan is what Codex itself says in that account's own folder: windows, plan, credits and resets — covered by the real native Codex multi-account fixture with distinct folder, identities, plan windows, Spark, credits and reset inventory.
 - L71: a Codex account signed out in its folder shows nothing to read, and Codex isn't started for it — duplicate — the subscribed Codex rail fixture reads native log windows without initializing Codex, deletes the actual fixture credential and confirms the account immediately disappears. The legacy restart fixture additionally confirms the wrong sign-in cannot display retained windows or initialize a process.
-- L81: Codex publishes its limits immediately after sign-in and reports the first later threshold crossing — open.
+- L81: Codex publishes its limits immediately after sign-in and reports the first later threshold crossing — covered by subscribed log/rail first reading without starting Codex, actual admitted account first explicit native refresh and the later accepted-turn threshold crossing. Automatic sign-in probe launch is superseded by deliberate work timing.
 - L127: a Codex reset credit is spent through Codex: the soonest to expire, once, as the journal's request, even confirmed twice — covered by the local Codex reset replay scenario (including earliest expiry and duplicate confirmation).
 - L152: Grok's plan is what Grok itself says in the account's folder, signing in with the sign-in it keeps there — covered by standalone Grok ACP cached-token fixture.
 
 ### `box/test/usage/service.test.ts`
 
 - L46: the limits route reads and renders all six plans from their fixture credentials and APIs — duplicate — actual native Claude, Codex, Grok, Cursor, Antigravity and engine credential conformance routes assert the separate maker answers, and mixed-provider refresh proves independent progress. The original test’s additional bridge observation/PID HTTP checks belong to the removed split service; the current switched-account maker reading remains tracked at limits.test.ts L611.
-- L148: an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind — open.
+- L148: an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind — covered by the extended actual standalone Grok fixture: external credential changes identity and reading on the open feed, CLI removal withdraws while auth file remains, Accounts and limits agree.
 - L230: the bridge retries its latest window after the services process restarts — superseded — the separate bridge-to-services HTTP replay and bridge PID/revision are gone; [design §5](rust-box.md#5-what-not-to-port). The resident accepts turn observations directly and retains accepted windows; see the turn/cache and restart scenarios.
 - L267: a provider removed from the admitted accounts during a round is not read — later (rare) — a provider is withdrawn exactly between admission and its request in a multi-account read round; ordinary credential withdrawal remains required.
-- L285: a Codex login stored only in Keychain is read with the exact account for its home — open.
-- L302: Codex auto storage joins pending keyring lookups and prefers the keyring credential — open.
-- L326: a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself — partial — Codex reset replay scenario refuses changed sign-in; full maker/file divergence scenario open.
+- L285: a Codex login stored only in Keychain is read with the exact account for its home — covered by the production credential store reader with a synthetic Keychain seam, exact canonical-folder hash and keyring-only selection. Tests never touch the real Keychain.
+- L302: Codex auto storage joins pending keyring lookups and prefers the keyring credential — covered by production pending-read sharing scenario (one lookup for concurrent callers, next check fresh) and synthetic keyring/auto selection with preference and fallback.
+- L326: a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself — covered by actual Codex maker account mismatch while retained file sign-in is unchanged: no consume RPC, then restored maker identity spends exactly once.
 
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
@@ -1241,7 +1285,7 @@ does not block completion of the row.
 - L158: Mac ps/lsof stand-ins require own profile — open.
 - L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — covered by local-only profile route fixture.
 - L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — covered by extended owned loopback route fixture.
-- L211: the overview shows heavy use of the tightest available pool without mixing pools — open.
+- L211: the overview shows heavy use of the tightest available pool without mixing pools — duplicate — the actual Antigravity menu route changes which pool is tightest, checks both rings from the same pool, and matches Helper menu percentages. The fixed-clock ring matrix also verifies one pool per pair.
 - L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
 - L278: legacy project-plan 403 still permits quota retrieval — later (rare) — an old project-plan endpoint responds with a specific legacy 403 while quota remains available.
 - L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
@@ -1308,7 +1352,7 @@ does not block completion of the row.
 - L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — partial — Cursor history route UTC, prior complete data retained, repricing without page reads; non-UTC and idle round scenarios open.
 - L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — open.
 - L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — open.
-- L445: signed out of Cursor here: no Cursor row from this box — open.
+- L445: signed out of Cursor here: no Cursor row from this box — duplicate — the standalone maker scenario removes Cursor’s actual credential and waits for its retained row to disappear while no client reads; the next real limits GET has no account or row.
 - L460: a row's extras are its newest reading's: one with none says there are none now, though an older box still has some — open.
 - L471: a row takes its newest box's reading, never a sum — open.
 - L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — open.
