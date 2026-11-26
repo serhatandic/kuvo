@@ -216,6 +216,11 @@ pub fn agent_program(home: &Path, env: Environment) -> io::Result<(PathBuf, Envi
     Ok((executable(home, &pinned_version()), env))
 }
 
+/// Whether the pinned OpenCode is on this computer, for the coding agent to run.
+pub(crate) fn agent_here(home: &Path) -> bool {
+    executable(home, &pinned_version()).is_file()
+}
+
 fn environment(home: &Path, password: Option<&str>, mut env: Environment) -> io::Result<Environment> {
     let platform = Platform::current();
     if cfg!(windows) {

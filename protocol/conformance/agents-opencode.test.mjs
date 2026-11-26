@@ -35,6 +35,11 @@ describe("OpenCode conversations", { skip }, () => {
     model = await standInModel(script);
     write(path.join(home, "config", "opencode", "opencode.json"), JSON.stringify(standInSettings(model.url)));
     write(path.join(home, "box", "opencode.json"), "{}\n");
+    if (process.platform !== "win32") {
+      fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+      fs.copyFileSync(new URL("../../box/src/keeper/kuvo-wake", import.meta.url), path.join(home, "bin", "kuvo-wake"));
+      fs.chmodSync(path.join(home, "bin", "kuvo-wake"), 0o755);
+    }
     const env = { ...isolatedEnv(root), KUVO_SANDBOX: "off", OPENCODE_DISABLE_MODELS_FETCH: "1" };
     relay = await localRelay();
     if (binary.typescript) {
@@ -273,5 +278,30 @@ describe("OpenCode conversations", { skip }, () => {
     const step = tools(rows).find(part => /subagent|task/.test(part.tool ?? part.name ?? ""));
     assert.ok(step, JSON.stringify(tools(rows)).slice(0, 800));
     assert.equal(step.state?.status, "completed");
+  });
+
+  test("its wake-ups are its own: set by its tools or from the app, and Wake Up Now reaches it", { timeout: 90000 }, async () => {
+    script.push({ text: "Ready." });
+    const id = await begin();
+    await send(id, "Get ready.");
+    await answered(id, "Ready.");
+    const made = await call("POST", "kuvo/agent-tools", { name: "schedule_wake_up", arguments: { when: "+2h", note: "Look again." }, session: id });
+    assert.equal(made.status, 200, made.text);
+    assert.equal(made.json.isError, false, made.json.text);
+    assert.match(made.json.text, /^Scheduled /);
+    const added = await call("POST", `kuvo/wakes/${id}`, { due: Math.floor(Date.now() / 1000) + 3 * 3600, note: "From the app." });
+    assert.equal(added.status, 200, added.text);
+    const listed = (await call("GET", `kuvo/wakes/${id}`)).json;
+    assert.deepEqual(listed.wakes.map(wake => wake.note), ["Look again.", "From the app."]);
+    // (Kept as a coding agent's, so its round never starts OpenCode's server.)
+    if (!binary.typescript) {
+      assert.equal(fs.readFileSync(path.join(home, "wakes", id, "via"), "utf8").trim(), "bridge");
+    }
+    script.push({ text: "Woke up." });
+    const now = await call("POST", `kuvo/wakes/${id}/now`, { wake: listed.wakes[0].id });
+    assert.equal(now.status, 200, now.text);
+    await answered(id, "Woke up.");
+    assert.ok(JSON.stringify(model.requests.at(-1).messages).includes("Look again."), "It didn't hear its note.");
+    assert.ok(!engineStarted(), "Its wake-ups started OpenCode's server.");
   });
 });

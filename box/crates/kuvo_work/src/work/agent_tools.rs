@@ -11,9 +11,7 @@ mod receipts;
 mod sessions;
 mod start;
 
-use std::time::Duration;
-
-use http::{Method, StatusCode};
+use http::StatusCode;
 use kuvo_engine::BotEngine;
 use kuvo_peers::calls::{Bot, Lead, Rule};
 use kuvo_protocol::routes::post_kuvo_agent_tools as route;
@@ -22,7 +20,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     Work,
-    watch::{encoded, tools::Said},
+    watch::tools::Said,
 };
 use crate::bots::here::BotHere;
 
@@ -61,8 +59,6 @@ const NOT_YET: &[(&str, &str)] = &[
     ("show_widget", "6.4"),
 ];
 
-const WAIT: Duration = Duration::from_secs(10);
-
 pub(super) fn said(text: impl Into<String>) -> Said {
     Said {
         text: text.into(),
@@ -85,12 +81,13 @@ pub(super) fn session_id(given: &str) -> bool {
 
 /// The conversation a call works for: its root here (a subagent's, the one that started it; a
 /// coding agent's engine run, the one it runs for), its name as the others know it, and the bot it
-/// is.
+/// is, and whether the coding agents run it (else the engine).
 pub struct Caller {
     pub session: String,
     pub data: Value,
     pub name: String,
     pub bot: Option<BotHere>,
+    pub agents: bool,
 }
 
 impl Caller {
@@ -217,17 +214,17 @@ impl Work {
     }
 
     /// The conversation `session` works for, here: itself, or up its starters' (a subagent's) and
-    /// the conversations coding agents' engine runs are for, six steps at most.
-    async fn root_of(&self, engine: &BotEngine, session: Option<&str>) -> Option<(String, Value)> {
+    /// the conversations coding agents' engine runs are for, six steps at most; the coding agents'
+    /// own conversations too (`true`), found without the engine.
+    async fn root_of(&self, engine: &BotEngine, session: Option<&str>) -> Option<(String, Value, bool)> {
         let mut id = session?.to_owned();
         let mut found = None;
         for _ in 0..6 {
-            let path = format!("api/session/{}", encoded(&id));
-            let Some(data) = engine
-                .call(Method::GET, &path, None, WAIT)
+            let Some((data, agents)) = engine
+                .session_found(&id)
                 .await
                 .ok()
-                .filter(|data| data["id"] == id.as_str())
+                .filter(|(data, _)| data["id"] == id.as_str())
             else {
                 break;
             };
@@ -235,7 +232,7 @@ impl Work {
                 .as_str()
                 .or_else(|| data["metadata"]["kuvo"]["engineFor"].as_str())
                 .map(str::to_owned);
-            found = Some((id, data));
+            found = Some((id, data, agents));
             match above {
                 Some(above) => id = above,
                 None => break,
@@ -245,7 +242,7 @@ impl Work {
     }
 
     /// A conversation here, as the tools name it: its bot's name, else its title.
-    fn caller_of(&self, session: String, data: Value) -> Caller {
+    fn caller_of(&self, session: String, data: Value, agents: bool) -> Caller {
         let bot = self.bot_of_conversation(&session);
         let title = data["title"].as_str().filter(|title| !title.is_empty());
         let name = match &bot {
@@ -258,6 +255,7 @@ impl Work {
             data,
             name,
             bot,
+            agents,
         }
     }
 
@@ -285,11 +283,10 @@ impl Work {
             )));
         }
         let engine = self.list.engine().running_bot_engine().await;
-        let root = match &engine {
-            Some(engine) => self.root_of(engine, session).await,
-            None => None,
-        };
-        let caller = root.map(|(session, data)| self.caller_of(session, data));
+        // (The coding agents' conversations are found while the engine isn't running.)
+        let finder = self.list.engine().work_engine().await;
+        let root = self.root_of(&finder, session).await;
+        let caller = root.map(|(session, data, agents)| self.caller_of(session, data, agents));
         if caller
             .as_ref()
             .is_some_and(|caller| super::watch::truthy(&caller.data["metadata"]["kuvo"]["seat"]))
@@ -339,27 +336,22 @@ impl Work {
             }
             "schedule_wake_up" | "watch_for_change" | "list_wake_ups" | "cancel_wake_up" => {
                 // (The caller's own conversation: a subagent's, where it isn't its root's.)
-                let own = match (&caller, session, &engine) {
-                    (Some(caller), Some(session), _) if caller.session == session => {
-                        Some(caller.data.clone())
+                let own = match (&caller, session) {
+                    (Some(caller), Some(session)) if caller.session == session => {
+                        Some((caller.data.clone(), caller.agents))
                     }
-                    (_, Some(session), Some(engine)) => engine
-                        .call(
-                            Method::GET,
-                            &format!("api/session/{}", encoded(session)),
-                            None,
-                            WAIT,
-                        )
+                    (_, Some(session)) => finder
+                        .session_found(session)
                         .await
                         .ok()
-                        .filter(|data| data["id"] == session),
+                        .filter(|(data, _)| data["id"] == session),
                     _ => None,
                 };
                 self.wake_tool(
                     name,
                     args,
                     session,
-                    own.as_ref(),
+                    own.as_ref().map(|(data, agents)| (data, *agents)),
                     caller.as_ref(),
                     operation,
                 )

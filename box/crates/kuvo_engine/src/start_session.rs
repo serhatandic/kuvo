@@ -501,9 +501,10 @@ async fn create_as(
                 )
             })?)
         }
-        // OpenCode's own providers: the OpenCode agent, where this box runs the coding agents.
-        Some(_) => engine.agent_sessions.clone(),
-        None => None,
+        // OpenCode's own providers: the OpenCode agent, where this box runs the coding agents and
+        // its program is here; else the engine, which still serves its conversations.
+        Some(_) if crate::launch::agent_here(&engine.home) => engine.agent_sessions.clone(),
+        Some(_) | None => None,
     };
 
     let created_tree = if flag("worktree") {
