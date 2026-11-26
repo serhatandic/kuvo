@@ -554,3 +554,180 @@ test("reading catalog-backed Settings pages does not start an absent OpenCode", 
   assert.equal(existsSync(engineRecord),false);
   assert.equal(box.engine.asked.length,0);
 });
+
+// Settings › MCP Servers, with the servers a user keeps: one on this computer, one on the web, and
+// Kuvo Code's own browser tools, which aren't listed.
+const mcpServers = {files:{type:"local",command:["sh","-c","serve files"],environment:{ROOT:"/srv"},codemode:false},
+  tracker:{type:"remote",url:"https://tracker.example.com/mcp"},"kuvo-browser":{type:"local",command:["kuvo-browser"]}};
+const mcpHere = process.platform==="darwin"?"this Mac":"this computer";
+const mcpBox = async (t,name,settings={mcp:{servers:mcpServers}}) => {
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify(settings));
+  const app={"x-kuvo-from":"app"};
+  const record=await box.start().ready();
+  const plain=box.connect(record);
+  const ask=(method,route,body,headers=app)=>plain(method,route,body,headers);
+  const page=async()=>{const r=await ask("GET","kuvo/settings/mcp");assert.equal(r.status,200,r.text);return r.json;};
+  const config=()=>JSON.parse(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"));
+  const change=(r,value,was=r.revision)=>ask("PATCH","kuvo/settings/mcp",{row:r.id,value,was});
+  const check=(r,id,values)=>perform(ask,"mcp",r,id,values,app,true);
+  const submit=(r,id,values)=>perform(ask,"mcp",r,id,values,app);
+  return {box,record,ask,page,config,change,check,submit};
+};
+
+test("MCP lists your servers with how each is doing, and Try Again connects a failed one", async t => {
+  const {box,ask,page,submit}=await mcpBox(t,"MCP List");
+  box.engine.mcpServers=[{name:"files",status:{status:"failed",error:"spawn serve ENOENT"}},{name:"tracker",status:{status:"needs_auth"}}];
+  const listed=(await ask("GET","kuvo/settings")).json.sections.find(s=>s.id==="mcp");
+  assert.deepEqual([listed.title,listed.group,listed.icon],["MCP Servers","Agents & Tools","sliders"]);
+  const shown=await page();
+  const servers=row(shown,"servers");
+  assert.deepEqual(servers.items.map(i=>i.id),["server-files","server-tracker"]);
+  assert.equal(shown.groups[0].title,"Servers");
+  assert.equal(shown.groups[0].note,`A server on ${mcpHere} runs a command; one on the web is a URL.`);
+  assert.deepEqual([servers.add.id,servers.add.title,servers.add.form.title,servers.add.form.submit],["add","Add Server…","Add Server","Add Server"]);
+  const files=item(shown,"server-files");
+  assert.deepEqual([files.kind,files.value,files.can,files.line],["switch",true,true,'sh -c "serve files"']);
+  assert.deepEqual(files.badge,{words:"Couldn’t connect",tone:"failed"});
+  assert.deepEqual(files.notice,{words:"spawn serve ENOENT",tone:"warning"});
+  assert.deepEqual(files.actions.map(a=>a.title),["Try Again","Edit…","Remove…"]);
+  assert.deepEqual([files.actions[2].style,files.actions[2].confirm],["destructive",{title:"Remove files?",body:"The agent loses its tools.",button:"Remove"}]);
+  const tracker=item(shown,"server-tracker");
+  assert.equal(tracker.line,"https://tracker.example.com/mcp");
+  assert.deepEqual(tracker.badge,{words:"Needs sign-in",tone:"warning"});
+  const startup=row(shown,"timeout-startup");
+  assert.deepEqual([startup.title,startup.kind,startup.placeholder,startup.can],["Time to start, in milliseconds","number","30000",true]);
+  assert.deepEqual([shown.groups.at(-1).title,shown.groups.at(-1).note],["Timeouts","For every server, unless one sets its own."]);
+  assert.equal(shown.notes,undefined);
+  // Try Again asks the engine to connect it again.
+  const tried=await submit(files,"try-again");
+  assert.equal(tried.status,200,tried.text);
+  assert.ok(box.engine.asked.some(r=>r.method==="POST"&&r.path==="/api/experimental/mcp/files/connect"));
+  // How a server is doing never makes a reading stale.
+  box.engine.mcpServers[0].status={status:"connected"};
+  const now=item(await page(),"server-files");
+  assert.deepEqual(now.badge,{words:"Connected",tone:"good"});
+  assert.equal(now.notice,undefined);
+  assert.deepEqual(now.actions.map(a=>a.id),["edit","remove"]);
+  assert.equal(now.revision,files.revision);
+  // With its engine down, the servers are still listed, and the page says why it can't say how they are.
+  await box.engine.close();
+  const down=await page();
+  assert.equal(item(down,"server-files").badge,undefined);
+  assert.deepEqual(down.notes,[{words:`The engine isn’t running on ${mcpHere}, so how each server is doing isn’t known. They’re listed as the settings have them.`,tone:"warning"}]);
+});
+
+test("MCP switches a server off and on, refusing a stale switch with the page now", async t => {
+  const {page,config,change}=await mcpBox(t,"MCP Switch");
+  const files=item(await page(),"server-files");
+  const off=await change(files,false);
+  assert.equal(off.status,200,off.text);
+  assert.equal(config().mcp.servers.files.disabled,true);
+  assert.deepEqual([item(off.json,"server-files").value,item(off.json,"server-files").badge],[false,{words:"Off",tone:"quiet"}]);
+  const stale=await change(files,false);
+  assert.equal(stale.status,409,stale.text);
+  assert.equal(stale.json.message,"It changed since you read it.");
+  assert.equal(item(stale.json.page,"server-files").value,false);
+  assert.equal((await change(item(await page(),"server-tracker"),false)).status,200);
+  assert.equal((await change(item(await page(),"server-files"),"off")).status,400);
+  assert.equal((await change(item(await page(),"server-files"),true)).status,200);
+  assert.equal(config().mcp.servers.files.disabled,undefined);
+  assert.equal(config().mcp.servers.tracker.disabled,true);
+});
+
+test("MCP Add Server checks as it's typed, fills in a pasted setup, refuses without writing, and adds", async t => {
+  const {box,page,config,change,check,submit}=await mcpBox(t,"MCP Add");
+  const servers=row(await page(),"servers");
+  assert.deepEqual(servers.add.form.fields.map(f=>[f.id,f.kind,f.shown?.is??null]),[
+    ["name","text",null],["runs","choice",null],["command","lines",["local"]],["cwd","folder",["local"]],
+    ["environment","pairs",["local"]],["url","text",["remote"]],["oauth","switch",["remote"]],["headers","pairs",["remote"]],["codemode","switch",null]]);
+  assert.deepEqual(servers.add.form.fields[1].choices,[{id:"local",title:`On ${mcpHere}`},{id:"remote",title:"On the web"}]);
+  const opened=opening(servers,"add");
+  let checked=(await check(servers,"add",{...opened,name:"my files"})).json;
+  assert.equal(checked.ready,false);
+  assert.ok(checked.fields.some(f=>f.id==="name"&&f.words==="It'll be called my-files."&&f.tone==="quiet"),JSON.stringify(checked));
+  checked=(await check(servers,"add",{...opened,name:"files",command:"sh -c 'x'"})).json;
+  assert.equal(checked.ready,false);
+  assert.ok(checked.fields.some(f=>f.id==="name"&&f.words==="There's a server called files already."));
+  assert.ok(checked.fields.some(f=>f.id==="command"&&f.words===`sh is on ${mcpHere}.`&&f.tone==="good"),JSON.stringify(checked));
+  checked=(await check(servers,"add",{...opened,name:"kuvo-browser",command:"no-such-program-here --flag"})).json;
+  assert.ok(checked.fields.some(f=>f.id==="name"&&f.words==="Kuvo Code uses that name for its own tools."));
+  assert.ok(checked.fields.some(f=>f.id==="command"&&f.words===`no-such-program-here isn’t on ${mcpHere}. Install it there first, or use a command it has.`),JSON.stringify(checked));
+  checked=(await check(servers,"add",{...opened,name:"web",runs:"remote",url:"not an address"})).json;
+  assert.ok(checked.fields.some(f=>f.id==="url"&&f.words==="That isn’t a web address. Give one like https://example.com/mcp."&&f.tone==="warning"));
+  // A server's setup pasted into its name fills the form in.
+  const pasted=JSON.stringify({mcpServers:{github:{command:"npx",args:["-y","@github/mcp"],env:{GITHUB_TOKEN:"x"}}}});
+  checked=(await check(servers,"add",{...opened,name:pasted})).json;
+  assert.deepEqual(checked.values,{name:"github",runs:"local",command:"npx -y @github/mcp",environment:[{key:"GITHUB_TOKEN",value:"x"}]});
+  assert.ok(checked.fields.some(f=>f.id==="command"&&f.words==="Filled in from the setup you pasted."&&f.tone==="good"));
+  const remote=(await check(servers,"add",{...opened,name:"claude mcp add --transport http linear https://mcp.linear.app/mcp"})).json;
+  assert.deepEqual([remote.values.name,remote.values.runs,remote.values.url],["linear","remote","https://mcp.linear.app/mcp"]);
+  const several=(await check(servers,"add",{...opened,name:JSON.stringify({mcpServers:{a:{command:"a"},b:{command:"b"}}})})).json;
+  assert.ok(several.fields.some(f=>f.id==="name"&&f.words==="This sets up 2 servers (a, b). Paste one server’s part at a time."&&f.tone==="warning"));
+  // What isn't ready is refused with the same words, and nothing is written.
+  const before=readFileSync(path.join(box.home,"box/opencode.json"),"utf8");
+  const refused=await submit(servers,"add",{...opened,name:"files",command:"sh"});
+  assert.equal(refused.status,400,refused.text);
+  assert.equal(refused.json.message,"There's a server called files already.");
+  assert.ok(refused.json.fields.some(f=>f.id==="name"&&f.words==="There's a server called files already."&&f.tone==="warning"));
+  assert.equal(readFileSync(path.join(box.home,"box/opencode.json"),"utf8"),before);
+  assert.equal((await submit(servers,"add")).status,400);
+  // Another server changed meanwhile: the form read before still goes.
+  await change(item(await page(),"server-tracker"),false);
+  const added=await submit(servers,"add",{...opened,name:"docs",command:"npx -y docs-server ~/Docs",environment:[{key:"TOKEN",value:"{env:DOCS}"}],codemode:true});
+  assert.equal(added.status,200,added.text);
+  assert.deepEqual(config().mcp.servers.docs,{type:"local",command:["npx","-y","docs-server","~/Docs"],environment:{TOKEN:"{env:DOCS}"},codemode:true});
+  assert.deepEqual([item(added.json,"server-docs").value,item(added.json,"server-docs").line],[true,"npx -y docs-server ~/Docs"]);
+});
+
+test("MCP Edit keeps what its form doesn't show and goes stale, Remove keeps the rest, and the page follows the file", async t => {
+  const {box,record,page,config,submit}=await mcpBox(t,"MCP Edit",{mcp:{servers:{files:{type:"local",command:["sh"],timeout:9000,codemode:true},tracker:mcpServers.tracker,"kuvo-browser":mcpServers["kuvo-browser"]}}});
+  const files=item(await page(),"server-files");
+  const edit=action(files,"edit");
+  assert.deepEqual([edit.form.title,edit.form.submit],["files","Save"]);
+  const values=opening(files,"edit");
+  assert.deepEqual([values.runs,values.command,values.codemode],["local","sh",true]);
+  const saved=await submit(files,"edit",{...values,runs:"remote",url:"mcp.example.com/mcp",oauth:false});
+  assert.equal(saved.status,200,saved.text);
+  assert.deepEqual(config().mcp.servers.files,{type:"remote",url:"https://mcp.example.com/mcp",oauth:false,timeout:9000,codemode:true});
+  const stale=await submit(files,"edit",{...values,command:"sh -x"});
+  assert.equal(stale.status,409,stale.text);
+  assert.equal(config().mcp.servers.files.type,"remote");
+  const removed=await submit(item(await page(),"server-files"),"remove");
+  assert.equal(removed.status,200,removed.text);
+  assert.deepEqual(Object.keys(config().mcp.servers).sort(),["kuvo-browser","tracker"]);
+  assert.equal(item(removed.json,"server-files"),undefined);
+  const lines=await openLine(record,"","kuvo/settings/mcp/events");
+  try {
+    const frames=lines.frames();
+    assert.ok(item((await frames.next()).value,"server-tracker"));
+    write(path.join(box.home,"box/opencode.json"),JSON.stringify({mcp:{servers:{other:{type:"local",command:["sh"]}}}}));
+    let next;
+    do { next=await frames.next(); assert.equal(next.done,false); } while(!item(next.value,"server-other"));
+    assert.equal(item(next.value,"server-tracker"),undefined);
+  } finally { lines.close(); }
+});
+
+test("MCP adds a popular server from its row, and keeps a timeout as a number unless set by hand otherwise", async t => {
+  const {box,page,config,change,submit}=await mcpBox(t,"MCP Popular");
+  write(path.join(box.home,"bin/mcp-catalog.json"),JSON.stringify({servers:[{id:"context7",title:"Context7",summary:"Docs for libraries.",access:"open",settings:{type:"remote",url:"https://mcp.context7.com/mcp"}}]}));
+  const shown=await page();
+  const open=shown.groups.find(g=>g.id==="popular-open");
+  assert.equal(open.title,"No Account Needed");
+  assert.match(open.note,/official MCP Registry/);
+  const added=await submit(item(shown,"popular-context7"),"add");
+  assert.equal(added.status,200,added.text);
+  assert.deepEqual(config().mcp.servers.context7,{codemode:false,type:"remote",url:"https://mcp.context7.com/mcp"});
+  assert.deepEqual([item(added.json,"popular-context7").kind,item(added.json,"popular-context7").value],["status","Added"]);
+  assert.ok(item(added.json,"server-context7"));
+  const startup=row(await page(),"timeout-startup");
+  assert.equal((await change(startup,45000)).status,200);
+  assert.equal(config().mcp.timeout.startup,45000);
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify({mcp:{timeout:{startup:"slow"}}}));
+  const handwritten=row(await page(),"timeout-startup");
+  assert.deepEqual(handwritten.can,{why:"This is set in the settings file as something other than a number. Change it there."});
+  const refused=await change(handwritten,1000);
+  assert.equal(refused.status,403,refused.text);
+  assert.equal(config().mcp.timeout.startup,"slow");
+});
