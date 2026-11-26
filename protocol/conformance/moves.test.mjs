@@ -2291,7 +2291,8 @@ test("a cold move receipt index resumes its bounded scan after a restart", {
   await readyToMove(original, session, member);
   const retry = await start();
   assert.equal(retry.status, 202, retry.text);
-  assert.equal((await settled(retry.json.move.id)).state, "done");
+  const retried = await settled(retry.json.move.id);
+  assert.equal(retried.state, "done", JSON.stringify(retried));
   assert.deepEqual(readJSON(path.join(there.home, "run/owned-data/mutations", shadow + ".json")), fence);
 });
 
