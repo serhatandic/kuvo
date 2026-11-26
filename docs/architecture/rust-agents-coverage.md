@@ -878,6 +878,69 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## The box's own terminals (4.7c)
+
+The app's terminals were OpenCode's: `api/pty` passed to its server, so opening one started
+OpenCode. They are the box's own now, at the same paths, answers and socket frames, so the app is
+unchanged. `kuvo_os::pty` opens a pseudo-terminal (`posix_openpt` on Unix, a ConPTY on Windows)
+and starts the program in it through the shared `Spawn`, owned as any child: its group on Unix,
+its job on Windows. `kuvo_services::terminals` serves `api/pty` (made, listed, read, resized,
+renamed, removed) and the `api/pty/:id/connect` socket.
+
+- **As OpenCode answers.** Measured on the pinned 2.2.6: `{location, data}` answers, `pty_` IDs,
+  `Terminal <last 4>` titles, `-l` added for a POSIX shell, `exited` with its code kept until
+  removed, `204` on removal and `PtyNotFoundError` after. The socket sends what was printed since
+  `?cursor=` (none for `-1`; `0` when it isn't a number), then a binary note
+  `\0{"cursor":n}`, then output as text. OpenCode counts in UTF-16 units and keeps the last 2 MiB,
+  sent again in 64 KiB pieces; so does the box. The shell exiting closes sockets `1000`; a socket
+  opened after that is closed `4404 session exited`; a client's close code comes back to it.
+- **Light.** Nothing runs for terminals until one is made. Each running terminal is one task; on
+  Unix its output is read without a thread (the controller registered with the runtime), on
+  Windows one thread reads the ConPTY's pipe. Removing one hangs up on its programs, then stops
+  them; nothing is left (the case checks its shell is gone).
+- **Its shell's environment** is the box's own, without `KUVO_*`, `OPENCODE_*` and `BUN_*`, with
+  `TERM=xterm-256color`. OpenCode's terminals had OpenCode's: its server password and Kuvo's
+  folders as `XDG_*` homes. The case checks no password reaches the shell.
+- **The engine's terminal socket proxy is gone** (`proxy::socket`), and the engine no longer stays
+  up for a terminal (its busy check asked `api/pty`).
+
+### Cases
+
+| Case (terminals) | Both boxes | Notes |
+|---|---|---|
+| A terminal is the computer's shell in the folder asked for, listed for that folder only | yes | |
+| What's typed reaches it, as text or binary, at the size it's drawn at, and what it prints comes back | yes | Rust also: no password in its shell |
+| A socket opened again takes up where its cursor says, and its note says where the output got to | yes | |
+| Its shell exiting closes its sockets; it's kept, with its code, until removed | yes | |
+| A terminal removed while its socket is open closes it | yes | its shell is gone after |
+| A long burst is kept as OpenCode keeps it: its last 2 MiB, sent again in 64 KiB pieces | yes | Windows' console repaints the burst, so only the pieces are checked there |
+| A terminal's socket is refused without serve's password, only for a terminal and a known route version | yes | statuses compared; the reason words are each server's |
+
+`box/test/pty-socket.test.ts` (3 scenarios) maps onto the first, second and last cases; its
+stand-in engine is gone with the engine's part in terminals. `kuvo_os` has three pty tests (the
+program's console and size, typing and resizing, the exit code) and `kuvo_services` five
+(cursor units, the 2 MiB window, characters split across reads, the shell's environment, IDs).
+
+### Differences from OpenCode's terminals
+
+| Difference | Why |
+|---|---|
+| The shell doesn't get OpenCode's environment (its password, Kuvo's folders as `XDG_*` homes) | A user's shell shouldn't hold a server password or read its settings from Kuvo's folders. |
+| A folder that isn't there starts the shell in the home folder (OpenCode's shell failed to start there) | `cwd` still says the folder asked for. |
+| A terminal is read, changed and removed by its ID from any folder (OpenCode looked in the request's folder) | IDs are unique; the app always names the folder it made it in. |
+| Refusals say `401 Unauthorized` and so on, where the reference says `401 Refused` | Clients read the status only. |
+| Terminals end when the box restarts or updates | OpenCode's ended with the engine too; the reference held an engine switch while one ran (`engine-swap.ts`). |
+
+### Verification
+
+| Platform | terminals, Rust | terminals, TypeScript |
+|---|---:|---:|
+| macOS | 7/7 | 7/7 (on the pinned OpenCode) |
+| WSL2, Ubuntu (static musl) | 7/7 | — |
+| Native Windows x64 (ConPTY, Git Bash) | 7/7 | — |
+
+Also on the Mac, Rust: engine-sessions 81/81.
+
 ## OpenCode as a coding agent (4.7b)
 
 New conversations on OpenCode's models run on the OpenCode agent: the pinned binary as `opencode

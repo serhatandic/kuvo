@@ -9,6 +9,7 @@ use tokio::{
 };
 use tokio_tungstenite::WebSocketStream;
 pub use tokio_tungstenite::tungstenite::Message;
+pub use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
 use tokio_util::sync::CancellationToken;
 
 pub struct Socket {

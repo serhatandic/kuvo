@@ -250,6 +250,7 @@ pub(super) fn spawn(
     spec: &Spawn,
     _recovery_name: Option<&str>,
     _resident: bool,
+    console: Option<&crate::pty::Console>,
 ) -> io::Result<ChildGroup> {
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
@@ -258,6 +259,24 @@ pub(super) fn spawn(
     command.args(&spec.args).env_clear().envs(&spec.env);
     if let Some(cwd) = &spec.cwd {
         command.current_dir(cwd);
+    }
+    // A terminal's program has the terminal as all three, and as its controlling terminal.
+    if let Some(console) = console {
+        let terminal = console.terminal();
+        command
+            .stdin(terminal.try_clone()?)
+            .stdout(terminal.try_clone()?)
+            .stderr(terminal.try_clone()?);
+        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe system calls. The new
+        // session's leader takes its stdin, the terminal, as its controlling terminal.
+        unsafe {
+            command.pre_exec(|| {
+                rustix::process::setsid()?;
+                rustix::process::ioctl_tiocsctty(std::os::fd::BorrowedFd::borrow_raw(0))?;
+                Ok(())
+            });
+        }
+        return started(command);
     }
     let (stdin, child_stdin) = match &spec.stdin {
         Stdio::Pipe => {
@@ -278,6 +297,12 @@ pub(super) fn spawn(
     unsafe {
         command.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
     }
+    let mut group = started(command)?;
+    (group.stdin, group.stdout, group.stderr) = (stdin, stdout, stderr);
+    Ok(group)
+}
+
+fn started(mut command: Command) -> io::Result<ChildGroup> {
     let owner = Owner {
         child: command.spawn()?,
         status: None,
@@ -294,9 +319,9 @@ pub(super) fn spawn(
     Ok(ChildGroup {
         owner,
         identity,
-        stdin,
-        stdout,
-        stderr,
+        stdin: None,
+        stdout: None,
+        stderr: None,
     })
 }
 

@@ -191,7 +191,7 @@ impl Spawn {
     }
 
     pub fn spawn(&self) -> io::Result<ChildGroup> {
-        self.launch(None, false)
+        self.launch(None, false, None)
     }
 
     /// Supervise this resident while leaving nested workers to their own owners.
@@ -217,10 +217,15 @@ impl Spawn {
                 "invalid recovery name",
             ));
         }
-        self.launch(Some(recovery_name), resident)
+        self.launch(Some(recovery_name), resident, None)
     }
 
-    fn launch(&self, recovery_name: Option<&str>, resident: bool) -> io::Result<ChildGroup> {
+    pub(crate) fn launch(
+        &self,
+        recovery_name: Option<&str>,
+        resident: bool,
+        console: Option<&crate::pty::Console>,
+    ) -> io::Result<ChildGroup> {
         let valid = |value: &OsStr| !value.as_encoded_bytes().contains(&0);
         if !self.executable.path().is_absolute()
             || self.cwd.as_deref().is_some_and(|path| !path.is_absolute())
@@ -237,7 +242,7 @@ impl Spawn {
                 "process requires an absolute executable and valid arguments, directory and environment",
             ));
         }
-        sys::spawn(self, recovery_name, resident)
+        sys::spawn(self, recovery_name, resident, console)
     }
 }
 

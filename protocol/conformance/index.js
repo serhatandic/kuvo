@@ -32,6 +32,7 @@ const areas = new Map([
   ["clock", "./clock.test.mjs"],
   ["settings", "./settings.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
+  ["terminals", "./terminals.test.mjs"],
   ["engine-typed", "./engine-typed.test.mjs"],
   ["engine-delivery", "./engine-delivery.test.mjs"],
   ["engine-asks", "./engine-asks.test.mjs"],

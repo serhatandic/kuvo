@@ -422,6 +422,7 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
+    kuvo_services::terminals::register(&mut routes, home);
     kuvo_services::programs::register(&mut routes, account.clone());
     let integration_keys = kuvo_services::integrations::register(
         &mut routes,

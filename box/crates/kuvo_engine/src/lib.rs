@@ -128,8 +128,6 @@ impl Engine {
         submissions::register(self, list.clone(), delivery, routes);
         let engine = self.clone();
         routes.engine(move |request, cancel| proxy::http(engine.clone(), request, cancel));
-        let engine = self.clone();
-        routes.sockets(move |request, cancel| proxy::socket(engine.clone(), request, cancel));
 
         let engine = self.clone();
         routes.register::<start::Spec, _, _>(Access::Any, move |_| {
