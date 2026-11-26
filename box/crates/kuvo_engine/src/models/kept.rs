@@ -121,7 +121,15 @@ pub(crate) fn read(home: &Path) -> Option<(Source, Raw)> {
         && let Some(models) = agent_models(home)
         && !kept.as_ref().is_some_and(|kept| listed(kept, &models))
     {
-        let raw = made(&database(home), Some(&models));
+        let raw = made(&database(home), Some(&models)).map(|mut raw| {
+            // (OpenCode's own accounts, with their ways to sign in, stand where it gave them.)
+            if let Some(own) = kept.as_ref().filter(|kept| kept.source == Source::Engine) {
+                let given = |account: &Value| own.raw.accounts.iter().any(|one| one["id"] == account["id"]);
+                raw.accounts.retain(|account| !given(account));
+                raw.accounts.splice(0..0, own.raw.accounts.iter().cloned());
+            }
+            raw
+        });
         if let Some(raw) = raw {
             write(home, &Kept { source: Source::Agent, agent: offered, raw: raw.clone() });
             return Some((Source::Agent, raw));

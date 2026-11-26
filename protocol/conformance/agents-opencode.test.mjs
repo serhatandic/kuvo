@@ -7,6 +7,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
+import { stopFixtureHolders } from "./claude.mjs";
 import { boxBinary, isolatedEnv, launch, localRelay, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { STAND_IN, standInModel, standInSettings } from "./opencode-model.mjs";
 
@@ -57,6 +58,7 @@ describe("OpenCode conversations", { skip }, () => {
 
   after(async () => {
     await box?.stop();
+    if (home) await stopFixtureHolders(home);
     await worker?.stop?.();
     await relay?.close();
     await model?.close();
@@ -140,13 +142,17 @@ describe("OpenCode conversations", { skip }, () => {
     assert.ok(user, "Its message isn't there.");
   });
 
-  test("once a conversation ran, the picker lists the models OpenCode offered it, and still doesn't start it", {
+  test("once a conversation ran, the picker and its accounts list what OpenCode offered it, and still don't start it", {
     timeout: 60000, skip: binary.typescript && "The reference starts OpenCode to list its models.",
   }, async () => {
     const answer = await offered();
     const listed = answer.models.filter(model => model.side !== "agents").map(model => `${model.providerID}/${model.id}`);
     assert.ok(listed.includes("standin/scripted") && listed.includes("standin/other"), JSON.stringify(listed));
     assert.ok(!answer.models.some(model => model.providerID === "opencode-agent"), "Still offered as not yet listed.");
+    // Its accounts too, as an older client lists them.
+    const accounts = await call("GET", "api/integration");
+    assert.equal(accounts.status, 200, accounts.text);
+    assert.ok(accounts.json.data.some(account => account.id === "standin"), accounts.text);
     assert.ok(!engineStarted(), "Listing started OpenCode's server.");
   });
 

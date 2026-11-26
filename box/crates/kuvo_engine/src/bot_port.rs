@@ -200,7 +200,7 @@ impl BotEngine {
     /// The model a new conversation starts on here, by the box's rule (`models.rs`): the default,
     /// else the first that runs. `None` while the engine can't say; `Some(None)` for none.
     pub async fn starting_model(&self, directory: &str) -> Option<Option<Value>> {
-        crate::models::starting_here(&self.engine, self.lease().ok()?, directory).await
+        crate::models::starting_here(&self.engine, self.lease.as_ref(), directory).await
     }
 
     /// The conversation's rules and notes changed in its turn, as `change` makes them from the

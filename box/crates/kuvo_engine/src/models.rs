@@ -968,16 +968,18 @@ impl Names {
 }
 
 /// The model a new conversation in `directory` starts on here, with none named (`starting_model`).
+/// The model a new conversation starts on here: by OpenCode's list, or its kept one while it
+/// isn't running.
 pub(crate) async fn starting_here(
     engine: &Engine,
-    lease: &Lease,
+    lease: Option<&Lease>,
     directory: &str,
 ) -> Option<Option<Value>> {
-    engine
-        .catalogs
-        .get(engine, lease, directory, false)
-        .await?
-        .starting_model()
+    match lease {
+        Some(lease) => engine.catalogs.get(engine, lease, directory, false).await,
+        None => Catalog::kept(engine).await.map(std::sync::Arc::new),
+    }?
+    .starting_model()
 }
 
 pub(crate) async fn readiness(engine: &Engine, lease: &Lease, session: &Session) -> Option<Value> {
