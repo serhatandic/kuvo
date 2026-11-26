@@ -170,7 +170,9 @@ process.stdin.on("data", (chunk) => {
     }
     else if (method === "initialized") {}
     else if (method === "account/rateLimits/read") {
-      answer(read("codex-limits.json", {}));
+      const own = path.join(home, "codex-limits.json");
+      if (fs.existsSync(path.join(home, "codex-limits-refused"))) refuse(-32000, "Fixture maker unavailable");
+      else answer(fs.existsSync(own) ? JSON.parse(fs.readFileSync(own,"utf8")) : read("codex-limits.json", {}));
     }
     else if (method === "account/rateLimitResetCredit/consume") {
       const journal=read("../box/agents/limits-resets.json", {});

@@ -540,8 +540,9 @@ impl Actor {
         model: &str,
         instructions: &str,
         sink: &Arc<dyn TurnSink>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> io::Result<Arc<Server>> {
-        let server = self.shared.server().await?;
+        let server = self.shared.server_cancellable(cancel).await?;
         if self.server.as_ref().is_none_or(|old| old.id != server.id) {
             self.server = Some(server.clone());
             self.loaded = false;
@@ -729,7 +730,14 @@ impl Actor {
         self.busy.store(true, Ordering::Relaxed);
         self.shared.note_activity();
         let result = self
-            .begin(input.id, prompt, start, input.instructions, sink)
+            .begin(
+                input.id,
+                prompt,
+                start,
+                input.instructions,
+                sink,
+                &input.start_cancel,
+            )
             .await;
         if result.is_err() {
             self.set_busy();
@@ -744,8 +752,9 @@ impl Actor {
         start: TurnStart,
         instructions: String,
         sink: Arc<dyn TurnSink>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> io::Result<()> {
-        self.ensure_thread(&start.model, &instructions, &sink)
+        self.ensure_thread(&start.model, &instructions, &sink, cancel)
             .await?;
         let mut active = Active {
             id: id.clone(),

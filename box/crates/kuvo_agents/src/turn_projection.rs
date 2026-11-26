@@ -918,6 +918,7 @@ mod tests {
             permissions: PermissionMode::AskFirst,
             plan: false,
             auto: false,
+            start_cancel: Default::default(),
         };
         let ring = Arc::new(Ring::default());
         let mut projection = Projection::start(

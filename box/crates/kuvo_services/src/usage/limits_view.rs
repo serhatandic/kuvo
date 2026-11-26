@@ -299,7 +299,7 @@ pub(super) fn display(entry: &Entry, members: &[Member], now: u64) -> Value {
                         index,
                         "Credits".into(),
                         1. - b.left / limit,
-                        members[index].entry.facts.checked.unwrap_or(0),
+                        members[index].entry.facts.meter_read().unwrap_or(0),
                         None,
                     );
                 }
@@ -323,7 +323,7 @@ pub(super) fn display(entry: &Entry, members: &[Member], now: u64) -> Value {
                             index,
                             name.clone(),
                             amount / limit,
-                            members[index].entry.facts.checked.unwrap_or(0),
+                            members[index].entry.facts.meter_read().unwrap_or(0),
                             *resets_at,
                         );
                     }
@@ -889,6 +889,7 @@ pub(super) fn merged_facts(members: &[Member]) -> crate::usage::plan_facts::Fact
         balance,
         extras,
         checked,
+        values_read: chosen.and_then(|m| m.entry.facts.values_read),
         next,
         problem,
         partial: false,
@@ -937,6 +938,7 @@ mod tests {
                     label: None,
                     identity: Some("0123456789abcdef".into()),
                     sign_in: "fixture".into(),
+                    notice_card: None,
                 },
                 facts,
                 trails,
@@ -1240,5 +1242,182 @@ mod tests {
             serde_json::to_value(labels(Some(after), before, before)).unwrap(),
             json!([{"at":before,"words":"resets in 2 h"}])
         );
+    }
+    #[test]
+    fn rings_use_the_plan_pool_and_expiry_not_a_model_or_the_old_amount() {
+        use crate::usage::plan_facts::Amount;
+        let short = |id, used| window(id, 300, used, NOW - MINUTE, Some(NOW + 10 * MINUTE));
+        let long = |id, used| window(id, 10080, used, NOW - MINUTE, Some(NOW + 60 * MINUTE));
+        let project = |service, windows, facts| {
+            let mut m = member("Studio", windows, facts);
+            m.entry.account.service = service;
+            super::super::project(&m.entry, "fixture", "Studio", NOW).1
+        };
+        let mut spark = short("spark_primary", 0.95);
+        spark.model = Some("Spark".into());
+        let row = project(
+            Provider::Codex,
+            vec![spark, short("primary", 0.2), long("secondary", 0.75)],
+            Facts::default(),
+        );
+        assert_eq!(row["rings"]["short"]["window"], "primary");
+        assert_eq!(row["rings"]["long"]["window"], "secondary");
+        assert_eq!(row["bar"], "long");
+        assert_eq!(row["level"], "near");
+        for (first, second, expected) in [
+            (0.95, 0.1, "short"),
+            (0.5, 0.5, "short"),
+            (0.3, 0.8, "long"),
+        ] {
+            let row = project(
+                Provider::Claude,
+                vec![short("five_hour", first), long("seven_day", second)],
+                Facts::default(),
+            );
+            assert_eq!(row["bar"], expected);
+        }
+        let one = project(
+            Provider::Claude,
+            vec![long("seven_day", 0.1)],
+            Facts::default(),
+        );
+        assert_eq!(one["rings"].as_object().unwrap().len(), 1);
+        assert_eq!(one["bar"], "long");
+        assert_eq!(one["level"], "calm");
+        let empty = project(Provider::Claude, vec![], Facts::default());
+        assert_eq!(empty["rings"], json!({}));
+        assert!(empty.get("bar").is_none() && empty.get("level").is_none());
+        let mut expired = short("five_hour", 0.95);
+        expired.resets_at = Some(NOW);
+        let mut searches = window("searches", 300, 0.97, NOW - MINUTE, Some(NOW - 1));
+        searches.minutes = None;
+        searches.name = Some("Web searches".into());
+        searches.amount = Some(Amount {
+            used: 97.,
+            limit: 100.,
+            unit: Unit::Requests,
+        });
+        let row = project(
+            Provider::Claude,
+            vec![expired, long("seven_day", 0.75), searches],
+            Facts::default(),
+        );
+        assert_eq!(
+            row["rings"]["short"],
+            json!({"window":"five_hour","used":0.,"level":"calm"})
+        );
+        assert_eq!(row["bar"], "long");
+        let windows = row["windows"].as_array().unwrap();
+        for expired in windows.iter().filter(|w| w["expired"] == true) {
+            assert_eq!(expired["used"], 0);
+            assert_eq!(expired["level"], "calm");
+            assert!(expired.get("resetsAt").is_none() && expired.get("amount").is_none());
+        }
+        assert_eq!(windows.iter().filter(|w| w["expired"] == true).count(), 2);
+        let pool = |id: &str, name: &str, min, used| {
+            let mut w = window(id, min, used, NOW - MINUTE, Some(NOW + 60 * MINUTE));
+            w.name = Some(name.into());
+            w
+        };
+        let ag = project(
+            Provider::Antigravity,
+            vec![
+                pool("gemini-5h", "Gemini · 5-hour", 300, 0.6),
+                pool("gemini-weekly", "Gemini · Weekly", 10080, 0.2),
+                pool("3p-5h", "Claude and GPT · 5-hour", 300, 0.1),
+                pool("3p-weekly", "Claude and GPT · Weekly", 10080, 0.85),
+            ],
+            Facts::default(),
+        );
+        assert_eq!(ag["rings"]["short"]["window"], "3p-5h");
+        assert_eq!(ag["rings"]["long"]["window"], "3p-weekly");
+        let mut searches = window("web_search", 43200, 0.99, NOW - MINUTE, Some(NOW + MINUTE));
+        searches.name = Some("Web searches".into());
+        let zai = project(
+            Provider::Zai,
+            vec![short("session", 0.2), long("weekly", 0.3), searches],
+            Facts::default(),
+        );
+        assert_eq!(zai["rings"]["short"]["window"], "session");
+        assert_eq!(zai["rings"]["long"]["window"], "weekly");
+        let mut key = window("key", 300, 0.2, NOW, None);
+        key.minutes = None;
+        key.name = Some("Key limit".into());
+        let key_row = project(Provider::Openrouter, vec![key], Facts::default());
+        assert_eq!(key_row["rings"]["long"]["window"], "key");
+        for (balance, expected) in [(80., "calm"), (25., "near"), (4., "over")] {
+            let r = project(
+                Provider::Openrouter,
+                vec![],
+                Facts {
+                    balance: Some(Balance {
+                        left: balance,
+                        limit: Some(100.),
+                        unit: Unit::Usd,
+                    }),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(r["rings"], json!({}));
+            assert_eq!(r["level"], expected);
+        }
+        let unbounded = project(
+            Provider::Openrouter,
+            vec![],
+            Facts {
+                balance: Some(Balance {
+                    left: 10.,
+                    limit: None,
+                    unit: Unit::Usd,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(unbounded.get("level").is_none());
+        let calm = project(
+            Provider::Codex,
+            vec![long("secondary", 0.1)],
+            Facts {
+                balance: Some(Balance {
+                    left: 1.,
+                    limit: Some(100.),
+                    unit: Unit::Credits,
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(calm["level"], "calm");
+    }
+
+    #[test]
+    fn known_service_and_window_names_are_projected_by_the_resident() {
+        let cases = [
+            (Provider::Claude, true, "Claude", "Session", 300),
+            (Provider::Codex, true, "Codex", "Weekly", 10080),
+            (Provider::Codex, false, "ChatGPT", "8-hour", 480),
+            (Provider::Grok, true, "Grok", "6-day", 8640),
+            (Provider::Grok, false, "SuperGrok", "Weekly", 10080),
+            (Provider::Cursor, true, "Cursor", "Monthly", 43200),
+            (Provider::Antigravity, true, "Antigravity", "Session", 300),
+            (Provider::Copilot, false, "Copilot", "Monthly", 43200),
+            (Provider::Openrouter, false, "OpenRouter", "Monthly", 43200),
+            (Provider::Zai, false, "Z.ai", "Session", 300),
+            (Provider::Opencode, false, "OpenCode Go", "Monthly", 44640),
+            (Provider::Ollama, false, "Ollama", "Limit", 1),
+        ];
+        for (service, native, name, window_name, minutes) in cases {
+            let mut m = member(
+                "Studio",
+                vec![window("window", minutes, 0.1, NOW, None)],
+                Facts::default(),
+            );
+            m.entry.account.provider = service.name().into();
+            m.entry.account.service = service;
+            m.entry.account.account = native.then(|| "default".into());
+            let (account, row) = super::super::project(&m.entry, "fixture", "Studio", NOW);
+            assert_eq!(account["title"], name);
+            assert_eq!(row["title"], name);
+            assert_eq!(row["windows"][0]["title"], window_name);
+        }
     }
 }

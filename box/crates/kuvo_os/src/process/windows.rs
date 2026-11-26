@@ -284,6 +284,10 @@ pub(super) fn spawn(
     if resident {
         limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
     }
+    if spec.priority == Priority::Background {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+        limits.BasicLimitInformation.PriorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+    }
     let name = recovery_name.map(|name| wide(OsStr::new(name)));
     // SAFETY: the name, if present, is NUL-terminated. The handle is non-inheritable.
     let job = owned(unsafe {
@@ -373,6 +377,11 @@ pub(super) fn spawn(
     }
     startup.lpAttributeList = attributes.list;
     let mut result = PROCESS_INFORMATION::default();
+    let priority = if spec.priority == Priority::Background {
+        BELOW_NORMAL_PRIORITY_CLASS
+    } else {
+        0
+    };
     // SAFETY: all buffers below are NUL-terminated (the environment has two terminators), the
     // writable command line and result are exclusive, and startup carries the live attributes.
     ok(unsafe {
@@ -386,6 +395,7 @@ pub(super) fn spawn(
             // attach to it.)
             EXTENDED_STARTUPINFO_PRESENT
                 | CREATE_UNICODE_ENVIRONMENT
+                | priority
                 | if console.is_some() {
                     0
                 } else {

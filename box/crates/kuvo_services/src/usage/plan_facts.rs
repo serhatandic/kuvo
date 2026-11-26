@@ -127,8 +127,17 @@ pub struct Facts {
     pub problem: Option<Problem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked: Option<u64>,
+    /// Last accepted balance/extra values when a later maker check failed.
+    #[serde(rename = "valuesRead", skip_serializing_if = "Option::is_none")]
+    pub values_read: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<u64>,
+}
+
+impl Facts {
+    pub(super) fn meter_read(&self) -> Option<u64> {
+        self.values_read.or(self.checked)
+    }
 }
 
 fn false_value(value: &bool) -> bool {

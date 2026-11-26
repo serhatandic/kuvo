@@ -430,6 +430,7 @@ impl<R: Reach> Round<'_, R> {
                 if self.reach.stopped(&session).await {
                     continue;
                 }
+                kuvo_os::process::wait_for_background_memory().await;
                 let changed = {
                     let (folder, fence, env, now) =
                         (folder.clone(), fence.clone(), env.clone(), self.now);

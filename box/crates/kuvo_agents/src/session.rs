@@ -110,6 +110,8 @@ pub struct TurnInput {
     pub plan: bool,
     /// On Auto, surface a usage limit promptly so the resident can switch.
     pub auto: bool,
+    /// Withdraw a new process start that's waiting for memory before this turn.
+    pub start_cancel: tokio_util::sync::CancellationToken,
 }
 
 /// A conversation on an account. Implementations may share a process between
@@ -327,6 +329,15 @@ pub struct DirectPlanReading {
     pub only_resets: bool,
 }
 impl DirectPlanReading {
+    pub fn failed(sign_in: String) -> Self {
+        let mut reading = Self::windows(PlanLimitReading {
+            windows: vec![],
+            sign_in: Some(sign_in),
+        });
+        reading.status = DirectPlanStatus::Failed;
+        reading
+    }
+
     pub fn windows(reading: PlanLimitReading) -> Self {
         Self {
             reading,

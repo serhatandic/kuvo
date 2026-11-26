@@ -543,6 +543,7 @@ impl Supervisor {
 
     async fn start(&mut self, purpose: LeaseUse) -> io::Result<Option<ProcessIdentity>> {
         let _ = self.updates.send(State::Starting);
+        kuvo_os::process::wait_for_background_memory().await;
         let home = self.home.clone();
         let version = self.version.clone();
         let env = self.env.clone();

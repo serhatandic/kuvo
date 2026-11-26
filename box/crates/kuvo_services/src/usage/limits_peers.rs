@@ -48,6 +48,7 @@ impl AccountMail {
             label: self.label.clone(),
             identity: self.identity.clone(),
             sign_in: String::new(),
+            notice_card: None,
         }
     }
     pub fn row(&self, key: &str) -> String {
@@ -238,6 +239,7 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
         extras,
         problem,
         checked: time(&value["checked"]).map(|t| clock(t, offset, now)),
+        values_read: time(&value["valuesRead"]).map(|t| clock(t, offset, now)),
         next: time(&value["next"])
             .map(|t| (i128::from(t) + offset).clamp(0, i128::from(u64::MAX)) as u64),
     };
@@ -404,6 +406,13 @@ pub struct Book {
     pub roster: BTreeMap<String, String>,
 }
 impl Book {
+    /// A named admitted computer whose first reading has not arrived yet.
+    pub(super) fn pending(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.roster
+            .iter()
+            .filter(|(id, _)| !self.peers.contains_key(*id))
+            .map(|(id, name)| (id.as_str(), name.as_str()))
+    }
     /// Only a successful maker observation from a currently admitted peer
     /// stands in for our own fetch. Borrowed local rows have no checked time.
     pub fn freshest(&self, account: &Account) -> Option<&AccountMail> {
@@ -439,6 +448,7 @@ impl Book {
                     account.windows.retain(Window::valid_kept);
                     if count != account.windows.len() {
                         account.facts.checked = None;
+                        account.facts.values_read = None;
                         account.facts.next = None;
                     }
                 }
@@ -680,9 +690,11 @@ mod parity_corpus {
         let mut given = raw(ahead);
         given["accounts"][0]["problem"] =
             json!({"kind":"rate-limited","message":"Fixture hold","until":ahead+600000});
+        given["accounts"][0]["valuesRead"] = json!(ahead - 120000);
         let read = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
         assert_eq!(read.accounts[0].windows[0].read, NOW);
         assert_eq!(read.accounts[0].facts.checked, Some(NOW));
+        assert_eq!(read.accounts[0].facts.values_read, Some(NOW - 120000));
         assert_eq!(read.accounts[0].facts.next, Some(NOW + 600000));
         assert_eq!(
             read.accounts[0].facts.problem.as_ref().unwrap().until,
@@ -805,5 +817,27 @@ mod parity_corpus {
         assert_eq!(wire["accounts"][0]["windows"][0]["used"], 0.35);
         assert!(wire["accounts"][0]["notices"].as_array().unwrap().len() < 100);
         assert!(serde_json::to_vec(&wire).unwrap().len() <= 40_000);
+    }
+    #[test]
+    fn a_named_member_waits_for_its_first_reading_and_scope_changes_only_forget_notices() {
+        let mut given = raw(NOW);
+        given["accounts"][0]["notices"] = json!([{"id":"usage_fixture","row":"claude#abcdefabcdefabcd","service":"claude","window":"five_hour","windowName":"Session","accountName":"Claude","milestone":"underTenPercent","at":NOW,"remaining":0.05,"resetsAt":NOW+3600000,"forwarder":"peer"}]);
+        let mut book = Book::default();
+        let names = BTreeMap::from([("peer".into(), "Lab".into())]);
+        book.roster(&names, Some("set_fixture"));
+        assert_eq!(book.pending().collect::<Vec<_>>(), vec![("peer", "Lab")]);
+        let reading = Reading::from(&given, NOW, Some("set_fixture")).unwrap();
+        assert_eq!(reading.accounts[0].notices.len(), 1);
+        let windows = reading.accounts[0].windows.clone();
+        book.take("peer", "Lab", reading, NOW);
+        assert_eq!(book.pending().count(), 0);
+        assert_eq!(book.peers["peer"].accounts[0].notices.len(), 1);
+        book.roster(&names, Some("set_next"));
+        assert!(book.peers["peer"].accounts[0].notices.is_empty());
+        assert!(book.peers["peer"].accounts[0].notice_state.is_empty());
+        assert_eq!(book.peers["peer"].accounts[0].windows, windows);
+        let old = Reading::from(&given, NOW, Some("set_next")).unwrap();
+        assert!(old.accounts[0].notices.is_empty());
+        assert_eq!(old.accounts[0].windows, windows);
     }
 }

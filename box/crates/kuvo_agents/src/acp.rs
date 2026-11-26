@@ -236,6 +236,8 @@ impl Agent for Acp {
     /// its lines from where its earliest turn began.
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            // A start held for memory must not hold up replacement of the resident.
+            self.shared.halt();
             for process in self.shared.running().await {
                 if let Some(from) = process.earliest_turn()
                     && !process.rpc.prepare(from).await
