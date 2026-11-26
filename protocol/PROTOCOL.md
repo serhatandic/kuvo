@@ -833,6 +833,10 @@ closes the socket.
 - While an agent works in a page, a viewer can't change the page's size; otherwise the latest view
   or input sets it. A client asks you before it opens another app's URL. Vectors:
   `vectors/browser-view.json`.
+- Passkeys are unsupported: an explicit passkey request sends `Kuvo.passkeyAsked {targetId, host}`
+  once per page and site. `Kuvo.hello.params.passkeys` carries the outstanding target-to-host map;
+  `Kuvo.passkeyCleared {targetId}` removes the notice when the tab closes or leaves the site.
+  Existing and new asks for that host carry `passkey: true` for the recent request.
 
 ## For released Macs
 

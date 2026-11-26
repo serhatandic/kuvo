@@ -267,6 +267,18 @@ test("an interrupted download can be asked for again and is published once",{tim
   assert.ok(fs.existsSync(path.join(box.home,"browser","current","chrome")));
 });
 
+test("a failed first browser download reports why and observes its retry time",{timeout:60000,skip:process.platform==="win32"},async t=>{
+  const {startSource}=await import("../../box/bridge-tests/browser-source-stand-in.js");
+  const {ask,state,source,until}=await installation(t,files=>startSource(files,address=>address.endsWith(".zip")?{status:503,body:Buffer.from("fixture offline")}:null));
+  const failed=await until(async()=>{const status=await state();return status.state==="failed"&&status.retryAt>Date.now()&&status;},"The download failure was not reported",30000);
+  assert.match(failed.message,/download|reach|503/i);
+  assert.ok(failed.retryAt>Date.now());
+  const count=source.asked.length;
+  await ask("POST","kuvo/browser",{});
+  assert.deepEqual(await state(),failed);
+  assert.equal(source.asked.length,count,"The download is not retried during backoff");
+});
+
 async function browserMcp(box, record, relay) {
   const { boxBinary, launch, typescriptRuntime } = await import("./adapter.mjs");
   const { createInterface } = await import("node:readline");
@@ -293,9 +305,9 @@ function indexOf(snapshot,pattern){const line=snapshot.split("\n").find(line=>pa
 async function webPage(t){
   const http=await import("node:http"),{once}=await import("node:events");
   const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+7b4kAAAAASUVORK5CYII=","base64");
-  const main=`<!doctype html><meta charset=utf-8><title>Browser fixture</title><link rel=icon href=/favicon.ico><h1>Local browser fixture</h1><button style="position:fixed;left:320px;top:10px;width:100px;height:40px;z-index:9" onclick="confirm('Fixture question')">Ask a question</button><button onclick="document.getElementById('clicked').textContent='Clicked locally'">Click me</button><p id=clicked>Waiting</p><input placeholder="Type here" oninput="document.getElementById('typed').textContent=this.value"><p id=typed>Nothing typed</p><label>Attach <input type=file name=attachment onchange="document.getElementById('attached').textContent=this.files[0].name"></label><p id=attached>Nothing attached</p><a href=/download>Download example</a><a href=/login>Sign-in fixture</a><div style="height:1800px"></div><p>Bottom of fixture</p>`;
-  const login=`<!doctype html><title>Ask fixture</title><h1>Sign-in fixture</h1><label>Username <input autocomplete=username name=username></label><label>Password <input type=password autocomplete=current-password name=password></label><button onclick="document.getElementById('done').textContent='Sign-in entered'">Submit sign-in</button><p id=done></p><label>One-time code <input autocomplete=one-time-code name=code oninput="document.getElementById('codeDone').textContent='Code entered'"></label><p id=codeDone></p>`;
-  const server=http.createServer((req,res)=>{if(req.url==="/download"){res.writeHead(200,{"content-type":"application/octet-stream","content-disposition":"attachment; filename=example.txt"});res.end("local download");}else if(req.url==="/favicon.ico"){res.writeHead(200,{"content-type":"image/png"});res.end(png);}else{res.writeHead(200,{"content-type":"text/html"});res.end(req.url==="/login"?login:main);}});
+  const main=`<!doctype html><meta charset=utf-8><title>Browser fixture</title><link rel=icon href=/favicon.ico><h1>Local browser fixture</h1><button style="position:fixed;left:320px;top:10px;width:100px;height:40px;z-index:9" onclick="confirm('Fixture question')">Ask a question</button><button onclick="document.getElementById('clicked').textContent='Clicked locally'">Click me</button><p id=clicked>Waiting</p><input placeholder="Type here" oninput="document.getElementById('typed').textContent=this.value"><p id=typed>Nothing typed</p><label>Attach <input style="position:fixed;left:20px;top:60px;width:220px;z-index:9" type=file name=attachment onchange="const file=this.files[0];file.text().then(text=>document.getElementById('attached').textContent=file.name+': '+text)"></label><p id=attached>Nothing attached</p><a href=/download>Download example</a><a href=/login>Sign-in fixture</a><div style="height:1800px"></div><p>Bottom of fixture</p>`;
+  const login=`<!doctype html><title>Ask fixture</title><h1>Sign-in fixture</h1><button style="position:fixed;left:20px;top:10px;width:120px;height:32px;z-index:9" onclick="navigator.credentials.get({publicKey:{challenge:new Uint8Array(32)}}).catch(e=>document.getElementById('passkey').textContent=e.name)">Use passkey</button><p id=passkey></p><button onclick="navigator.credentials.get({mediation:'conditional',publicKey:{challenge:new Uint8Array(32)}}).catch(e=>document.getElementById('passkey').textContent=e.name)">Look for passkeys quietly</button><label>Username <input autocomplete=username name=username></label><label>Password <input type=password autocomplete=current-password name=password></label><button onclick="document.getElementById('done').textContent='Sign-in entered'">Submit sign-in</button><p id=done></p><label>One-time code <input autocomplete=one-time-code name=code oninput="document.getElementById('codeDone').textContent='Code entered'"></label><p id=codeDone></p>`;
+  const server=http.createServer((req,res)=>{if(req.url==="/download"){res.writeHead(200,{"content-type":"application/octet-stream","content-disposition":"attachment; filename=example.txt"});res.end("local download");}else if(req.url==="/favicon.ico"){res.writeHead(200,{"content-type":"image/png"});res.end(png);}else{res.writeHead(200,{"content-type":"text/html",...(req.url==="/cookie"?{"set-cookie":"fixture_login=synthetic; Max-Age=3600; Path=/"}:{})});res.end(req.url==="/login"?login:req.url==="/frame"?`<!doctype html><title>Frame fixture</title><iframe style="position:fixed;inset:0;width:450px;height:280px;border:0" allow="publickey-credentials-get *" src="http://127.0.0.1:${server.address().port}/login"></iframe>`:main);}});
   server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>new Promise(resolve=>server.close(resolve)));
   return `http://localhost:${server.address().port}`;
 }
@@ -327,6 +339,10 @@ test("real Chrome reads, acts, prints, uploads, downloads, changes tabs and stre
     page=said(await mcp.call("browser_upload",{index:indexOf(page,/name="attachment"/),files:[upload]}));assert.match(page,/local.txt/);
     page=said(await mcp.call("browser_click",{index:indexOf(page,/Download example/)}));
     await until(()=>fs.existsSync(path.join(box.home,"browser","downloads","example.txt")),"The download wasn't kept",15000);
+    assert.equal(fs.readFileSync(path.join(box.home,"browser","downloads","example.txt"),"utf8"),"local download");
+    page=said(await mcp.call("browser_click",{index:indexOf(page,/Download example/)}));
+    await until(()=>fs.existsSync(path.join(box.home,"browser","downloads","example 2.txt")),"The second download didn't get its own name",15000);
+    assert.equal(fs.readFileSync(path.join(box.home,"browser","downloads","example 2.txt"),"utf8"),"local download");
     assert.equal(fs.readFileSync(path.join(box.home,"browser","downloads","example.txt"),"utf8"),"local download");
     const picture=await mcp.call("browser_screenshot");const image=picture.content.find(c=>c.type==="image");assert.equal(image.mimeType,"image/png");assert.deepEqual(Buffer.from(image.data,"base64").subarray(0,8),Buffer.from("89504e470d0a1a0a","hex"));
     assert.match(said(await mcp.call("browser_save_pdf",{path:pdf})),/Saved the page as a/);assert.equal(fs.readFileSync(pdf).subarray(0,5).toString(),"%PDF-");
@@ -360,6 +376,8 @@ test("real Chrome reads, acts, prints, uploads, downloads, changes tabs and stre
     const target=pages.params.active||pages.params.pages[0].targetId;
     view.send({id:1,method:"Kuvo.view",params:{targetId:target,width:480,height:320,maxFps:10}});
     const openedView=await view.until(m=>m.id===1);assert.ok(openedView.result,JSON.stringify(openedView));
+    const viewport=await view.until(m=>m.method==="Kuvo.viewport"&&m.params.targetId===target&&m.params.width===480);
+    assert.equal(viewport.params.height,320);
     const frame=await view.until(m=>m.binary);
     const length=frame.binary.readUInt32BE(0),header=JSON.parse(frame.binary.subarray(4,4+length));
     assert.equal(header.method,"Kuvo.frame");assert.equal(header.params.targetId,target);assert.ok(header.params.width>0&&header.params.height>0);
@@ -381,13 +399,148 @@ test("real Chrome reads, acts, prints, uploads, downloads, changes tabs and stre
     assert.ok(nextHeader.params.frameId!==header.params.frameId);
     assert.notDeepEqual(nextFrame.binary.subarray(4+nextLength),frame.binary.subarray(4+length));
     view.send({method:"Kuvo.frameAck",params:{frameId:nextHeader.params.frameId}});
+    view.send({id:7,method:"Kuvo.input",params:{targetId:target,kind:"mouse",type:"mousePressed",x:40,y:70,button:"left",clickCount:1}});
+    assert.ok((await view.until(m=>m.id===7)).result);
+    view.send({id:8,method:"Kuvo.input",params:{targetId:target,kind:"mouse",type:"mouseReleased",x:40,y:70,button:"left",clickCount:1}});
+    await view.until(m=>m.method==="Kuvo.fileChooser"&&m.params.targetId===target);
+    view.send({id:9,method:"Kuvo.upload",params:{targetId:target,files:[{name:"viewer.txt",data:Buffer.from("viewer upload").toString("base64")}]}});
+    assert.ok((await view.until(m=>m.id===9)).result);
+    assert.ok((await view.until(m=>m.id===8)).result);
+    await until(async()=>said(await mcp.call("browser_snapshot")).includes("viewer.txt: viewer upload"),"The viewer's chosen bytes did not reach the page",15000);
+    assert.equal((await view.until(m=>m.method==="Kuvo.viewport"&&m.params.targetId===target&&m.params.by==="agent")).params.width,1280);
+    assert.equal((await view.until(m=>m.method==="Kuvo.viewport"&&m.params.targetId===target&&m.params.by==="viewer"&&m.params.width===480)).params.height,320);
     const history=await ask("GET","kuvo/browser/history");assert.equal(history.status,200);assert.ok(history.json.sites.some(s=>s.host===new URL(url).host));
+    await view.close();view=null;
+    write(path.join(box.home,"box","opencode.json"),"{}");
+    write(path.join(box.home,"bin","integrations.json"),JSON.stringify({integrations:[{id:"fixture",title:"Fixture",summary:"Local fixture",kind:"Social",symbol:"at",site:url,how:"In the browser",way:"browser",signInCookie:{domain:"localhost",name:"fixture_login"}}]}));
+    const signedIn=async()=>{const result=await ask("GET","kuvo/integrations");assert.equal(result.status,200,result.text);return result.json.integrations.find(i=>i.id==="fixture")?.siteSignedIn;};
+    await mcp.call("browser_navigate",{url:url+"/cookie"});
+    await mcp.call("browser_new_tab",{url:url.replace("localhost","127.0.0.1")+"/cookie"});
+    assert.equal(await signedIn(),true);
+    const sites=await ask("GET","kuvo/browser/sites");
+    assert.ok(sites.json.sites.some(s=>s.site==="localhost"&&s.kinds.includes("cookies")));
+    assert.ok(sites.json.sites.some(s=>s.site==="127.0.0.1"&&s.kinds.includes("cookies")));
+    const removed=await ask("DELETE","kuvo/browser/sites/localhost");
+    assert.equal(removed.status,200,removed.text);
+    assert.ok(!removed.json.sites.some(s=>s.site==="localhost"));
+    assert.ok(removed.json.sites.some(s=>s.site==="127.0.0.1"&&s.kinds.includes("cookies")));
+    assert.equal(await signedIn(),false);
+    await until(async()=>!fs.existsSync(path.join(box.home,"run","browser.pid"))&&await processes()===0,"Chrome did not sleep with MCP still connected",45000);
+    assert.match(said(await mcp.call("browser_navigate",{url})),/Browser fixture/);
+    assert.ok(await processes()>0,"the same MCP connection woke Chrome again");
   }catch(error){problem=error;throw error;}
   finally{
     await view?.close();await mcp.close();
     try {await until(async()=>!fs.existsSync(path.join(box.home,"run","browser.pid"))&&await processes()===0,()=>{let pid="none";try{pid=fs.readFileSync(path.join(box.home,"run","browser.pid"),"utf8");}catch{}return "The idle test Chrome didn't exit; keeper PID file: "+pid+"; socket still exists: "+fs.existsSync(path.join(box.home,"run","browser.sock"));},45000);}
     catch(error){ if(problem) console.error("Browser cleanup:",error.message); else throw error; }
     t.diagnostic(`Chrome processes with the fixture profile: cold 0, tool listing 0, browsing ${browsing}, after idle ${await processes()}`);
+  }
+});
+
+test("a site asking for a passkey is reported to tools, viewers and asks until the page leaves",{timeout:90000,skip:!chromeBuild||process.platform==="win32"},async t=>{
+  const {computer,relay}=await bench(t),fs=await import("node:fs");
+  const {write,until}=await import("./adapter.mjs"),{sessionOf}=await import("./engine.mjs");
+  const url=await webPage(t);
+  const box=await computer("Passkeys",undefined,()=>({KUVO_BROWSER_IDLE:"15"}));
+  const work=path.join(box.home,"work");write(path.join(work,"fixture.txt"),"fixture");
+  box.engine.sessions.push(sessionOf({id:"ses_browser",title:"Browser",directory:work}));
+  fs.mkdirSync(path.join(box.home,"browser"),{recursive:true});
+  fs.symlinkSync(fs.realpathSync(chromeBuild),path.join(box.home,"browser","current"));
+  const record=await box.start().ready(),ask=box.connect(record);
+  await ask("GET","kuvo/info");
+  const mcp=await browserMcp(box,record,relay);
+  let view,later;
+  try{
+    let page=said(await mcp.call("browser_navigate",{url:url+"/login"}));
+    view=await openView(record);
+    const pages=await view.until(m=>m.method==="Kuvo.pages"&&m.params.pages.length);
+    const target=pages.params.active||pages.params.pages[0].targetId;
+    page=said(await mcp.call("browser_click",{index:indexOf(page,/Look for passkeys quietly/)}));
+    assert.match(page,/NotAllowedError/);
+    assert.doesNotMatch(page,/This site asked for a passkey/);
+    page=said(await mcp.call("browser_snapshot"));
+    said(await mcp.call("browser_click",{index:indexOf(page,/Use passkey/)}));
+    const asked=await view.until(m=>m.method==="Kuvo.passkeyAsked");
+    page=said(await mcp.call("browser_snapshot"));
+    assert.match(page,/This site asked for a passkey, which this browser can't use/);
+    assert.match(page,/NotAllowedError/);
+    assert.deepEqual(asked.params,{targetId:target,host:"http://localhost"});
+    later=await openView(record);
+    const hello=await later.until(m=>m.method==="Kuvo.hello");
+    assert.deepEqual(hello.params.passkeys,{[target]:"http://localhost"});
+    const pending=mcp.call("browser_ask_user",{instruction:"Sign in another way"});
+    const userAsk=await until(async()=>{const result=await ask("GET","kuvo/asks");return result.json?.asks?.find(a=>a.kind==="action");},"No action ask",20000);
+    assert.equal(userAsk.passkey,true);
+    assert.equal((await ask("POST",`kuvo/asks/${userAsk.id}`,{answer:"declined"})).status,200);
+    await pending;
+    await mcp.call("browser_navigate",{url:url.replace("localhost","127.0.0.1")+"/login"});
+    assert.deepEqual((await view.until(m=>m.method==="Kuvo.passkeyCleared")).params,{targetId:target});
+    assert.doesNotMatch(said(await mcp.call("browser_snapshot")),/This site asked for a passkey/);
+    const outstanding=mcp.call("browser_ask_user",{instruction:"Sign in"});
+    const otherAsk=await until(async()=>{const result=await ask("GET","kuvo/asks");return result.json?.asks?.find(a=>a.kind==="action");},"No second action ask",20000);
+    assert.equal(otherAsk.passkey,undefined);
+    view.send({id:1,method:"Kuvo.view",params:{targetId:target,width:480,height:320}});
+    assert.ok((await view.until(m=>m.id===1)).result);
+    for(const [id,type] of [[2,"mousePressed"],[3,"mouseReleased"]]){
+      view.send({id,method:"Kuvo.input",params:{targetId:target,kind:"mouse",type,x:80,y:25,button:"left",clickCount:1}});
+      assert.ok((await view.until(m=>m.id===id)).result);
+    }
+    assert.deepEqual((await view.until(m=>m.method==="Kuvo.passkeyAsked")).params,{targetId:target,host:"http://127.0.0.1"});
+    const marked=await until(async()=>{const result=await ask("GET","kuvo/asks");return result.json?.asks?.find(a=>a.id===otherAsk.id&&a.passkey===true);},"The existing ask was not marked",20000);
+    assert.equal(marked.host,"http://127.0.0.1");
+    assert.equal((await ask("POST",`kuvo/asks/${marked.id}`,{answer:"done"})).status,200);
+    await outstanding;
+    // A cross-site sign-in frame reports its containing page's site, not the
+    // frame's host. The frame is served by the same local fixture.
+    assert.match(said(await mcp.call("browser_navigate",{url:url+"/frame"})),/Frame fixture/);
+    await view.until(m=>m.method==="Kuvo.passkeyCleared");
+    for(const [id,type] of [[4,"mousePressed"],[5,"mouseReleased"]]){
+      view.send({id,method:"Kuvo.input",params:{targetId:target,kind:"mouse",type,x:80,y:25,button:"left",clickCount:1}});
+      assert.ok((await view.until(m=>m.id===id)).result);
+    }
+    assert.deepEqual((await view.until(m=>m.method==="Kuvo.passkeyAsked")).params,{targetId:target,host:"http://localhost"});
+    assert.match(said(await mcp.call("browser_snapshot")),/This site asked for a passkey/);
+  }finally{
+    await later?.close();await view?.close();await mcp.close();
+    await until(()=>!fs.existsSync(path.join(box.home,"run","browser.pid")),"The fixture browser did not idle",45000);
+  }
+});
+
+test("a cold browser view opens Chrome and restores the page after the resident restarts",{timeout:90000,skip:!chromeBuild||process.platform==="win32"},async t=>{
+  const {computer,relay}=await bench(t),fs=await import("node:fs"),{boxBinary,until}=await import("./adapter.mjs");
+  const box=await computer("Cold view",undefined,()=>({KUVO_BROWSER_IDLE:"15"}));
+  const url=await webPage(t);
+  fs.mkdirSync(path.join(box.home,"browser"),{recursive:true});
+  fs.symlinkSync(fs.realpathSync(chromeBuild),path.join(box.home,"browser","current"));
+  const binary=boxBinary();
+  if(binary.typescript){
+    fs.mkdirSync(path.join(box.home,"bin"),{recursive:true});
+    for(const file of ["kuvo-link.js","kuvo-browser.js"])fs.copyFileSync(path.join(path.dirname(binary.file),file),path.join(box.home,"bin",file));
+  }
+  let resident=box.start(),record=await resident.ready(),ask=box.connect(record);
+  await ask("GET","kuvo/info");
+  const pid=path.join(box.home,"run","browser.pid");
+  assert.ok(!fs.existsSync(pid));
+  let view;
+  try{
+    view=await openView(record);
+    await view.until(m=>m.method==="Kuvo.hello");
+    assert.ok(fs.existsSync(pid));
+    const pages=await view.until(m=>m.method==="Kuvo.pages"&&m.params.pages.length);
+    const target=pages.params.active||pages.params.pages[0].targetId;
+    view.send({id:1,method:"Kuvo.go",params:{targetId:target,input:url}});
+    assert.ok((await view.until(m=>m.id===1)).result);
+    await view.until(m=>m.method==="Kuvo.pages"&&m.params.pages.some(p=>p.url.replace(/\/$/,"")===url));
+    await view.close();view=null;
+    await resident.stop();
+    resident=box.start();record=await resident.ready();ask=box.connect(record);
+    await ask("GET","kuvo/info");
+    view=await openView(record);
+    const restored=await view.until(m=>m.method==="Kuvo.pages"&&m.params.pages.some(p=>p.url.replace(/\/$/,"")===url));
+    assert.ok(restored.params.pages.some(p=>p.url.replace(/\/$/,"")===url));
+  }finally{
+    await view?.close();
+    await until(()=>!fs.existsSync(pid),"The fixture browser did not idle after the view closed",45000);
   }
 });
 
@@ -403,7 +556,7 @@ async function openView(record){
   socket.on("error",error=>problem=error.message);
   await once(socket,"connect");socket.write(`GET /kuvo/browser/view HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString("base64")}\r\nAuthorization: Basic ${Buffer.from("opencode:"+record.password).toString("base64")}\r\nX-Kuvo-Route-Version: 1\r\n\r\n`);
   await until(()=>{if(problem)throw new Error(problem);return upgraded;},"View socket did not open",15000);
-  return {send(message){const payload=Buffer.from(JSON.stringify(message)+"\n");const mask=crypto.randomBytes(4),head=payload.length<126?Buffer.from([0x81,0x80|payload.length]):Buffer.from([0x81,0xfe,payload.length>>8,payload.length&255]);for(let i=0;i<payload.length;i++)payload[i]^=mask[i%4];socket.write(Buffer.concat([head,mask,payload]));},until:predicate=>until(()=>{if(problem)throw new Error(problem);const index=messages.findIndex(predicate);return index<0?null:messages.splice(index,1)[0];},"No matching browser view message",15000),close:async()=>{if(socket.destroyed)return;const closed=once(socket,"close");const mask=crypto.randomBytes(4);socket.write(Buffer.concat([Buffer.from([0x88,0x80]),mask]));socket.end();const timer=setTimeout(()=>socket.destroy(),1000);try{await closed;}finally{clearTimeout(timer);}}};
+  return {send(message){const payload=Buffer.from(JSON.stringify(message)+"\n");const mask=crypto.randomBytes(4),head=payload.length<126?Buffer.from([0x81,0x80|payload.length]):Buffer.from([0x81,0xfe,payload.length>>8,payload.length&255]);for(let i=0;i<payload.length;i++)payload[i]^=mask[i%4];socket.write(Buffer.concat([head,mask,payload]));},until:predicate=>until(()=>{if(problem)throw new Error(problem);const index=messages.findIndex(predicate);return index<0?null:messages.splice(index,1)[0];},()=> "No matching browser view message; received "+JSON.stringify(messages.filter(m=>!m.binary).slice(-12)),15000),close:async()=>{if(socket.destroyed)return;const closed=once(socket,"close");const mask=crypto.randomBytes(4);socket.write(Buffer.concat([Buffer.from([0x88,0x80]),mask]));socket.end();const timer=setTimeout(()=>socket.destroy(),1000);try{await closed;}finally{clearTimeout(timer);}}};
 }
 
 test("site data lists and removes only matching sites without starting Chrome", {timeout:60000}, async t=>{
@@ -441,7 +594,7 @@ test("a Mac opens only its registered browser app, once, and forwards the browse
   write(path.join(box.home,"box","kind"),"mac\n");
   const bundle=path.join(box.env.HOME,"Fixture Browser.app"), desktop=path.join(box.env.HOME,"Fixture Desktop.app");
   const password="fixture-helper-password",token="fixture-browser-tool-token";
-  let starts=0, calls=0, record, tools;
+  let starts=0, calls=0, record, tools, refuseOpen=false;
   const app={"x-kuvo-from":"app"},mac={"x-kuvo-from":"mac"};
   const host=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;
@@ -453,6 +606,7 @@ test("a Mac opens only its registered browser app, once, and forwards the browse
     }else if(req.url==="/app/open" && req.headers.authorization==="Bearer "+password){
       starts++;
       assert.equal(value.bundle,bundle);
+      if(refuseOpen){res.statusCode=500;res.end(JSON.stringify({message:"fixture refused"}));return;}
       const answer=await request(record,"POST","kuvo/box/app",{bundle,tools},app);
       assert.equal(answer.status,200,answer.text);
       res.end("{}");
@@ -491,9 +645,59 @@ test("a Mac opens only its registered browser app, once, and forwards the browse
   const mcp=await browserMcp(box,record,relay);
   try{assert.equal(said(await mcp.call("browser_snapshot")),"Fixture Mac browser");assert.equal(calls,1);}
   finally{await mcp.close();}
+  assert.equal((await ask("POST","kuvo/box/app",{updating:true},app)).status,200);
+  const waiting=ask("POST","kuvo/box/app/open",{},mac);
+  await until(async()=>(await ask("GET","kuvo/box/app",undefined,mac)).json.opening===true,"Browser calls did not wait for the update");
+  assert.equal(starts,1,"An update must not launch the app");
+  assert.equal((await ask("POST","kuvo/box/app",{tools},app)).status,200);
+  assert.equal((await waiting).status,200);
+  assert.equal(starts,1);
+  assert.equal((await ask("POST","kuvo/box/app",{tools:null},app)).status,200);
+  refuseOpen=true;
+  const failed=await ask("POST","kuvo/box/app/open",{},mac);
+  assert.equal(failed.status,503);
+  assert.match(failed.json.message,/fixture refused/);
+  const rested=await ask("POST","kuvo/box/app/open",{},mac);
+  assert.equal(rested.status,503);
+  assert.equal(rested.json.message,failed.json.message);
+  assert.equal(starts,2,"A failed opening rests instead of launching again");
+  assert.equal((await ask("POST","kuvo/box/app",{tools},app)).status,200);
+  assert.equal((await ask("POST","kuvo/box/app/open",{},mac)).status,200);
+  assert.equal(starts,2);
   assert.equal((await ask("GET","kuvo/browser/view")).status,404);
   assert.ok(!fs.existsSync(path.join(box.home,"run","browser.pid")));
   }catch(error){t.diagnostic(child.log());throw error;}
+});
+
+test("a Mac refuses a browser view through the relay without starting Chrome",{timeout:45000,skip:process.platform!=="darwin"},async t=>{
+  const {hasWire,loadWire,relayDesktop}=await import("./paired.mjs");
+  if(!hasWire())return t.skip("The TypeScript wire fixture is not available");
+  const {computer,relay}=await bench(t),{write,boxBinary}=await import("./adapter.mjs"),{randomBytes,createHmac}=await import("node:crypto");
+  const http=await import("node:http"),{once}=await import("node:events");
+  const box=await computer("Mac relay",undefined,()=>({OPENCODE_PASSWORD:"fixture-local-password"}));
+  write(path.join(box.home,"box","kind"),"mac\n");
+  const wire=await loadWire(box.home,box.env),secret=randomBytes(32),password="fixture-host-password";
+  const keys={key:wire.newKey().toString("base64url"),secret:secret.toString("base64url"),sign:wire.newSigningSeed()};
+  const host=http.createServer(async(req,res)=>{
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);
+    const value=JSON.parse(Buffer.concat(chunks).toString()||"{}");
+    res.setHeader("content-type","application/json");
+    res.setHeader("x-kuvo-host-version","1");
+    if(req.url==="/hello"){
+      res.end(JSON.stringify({proof:createHmac("sha256",password).update(`kuvo-host-hello\0${value.nonce}\0${req.headers.host}`).digest("hex")}));
+    }else if(req.url==="/link/identity"&&req.headers.authorization==="Bearer "+password)res.end(JSON.stringify(keys));
+    else{res.statusCode=403;res.end("{}");}
+  });
+  host.listen(0,"127.0.0.1");await once(host,"listening");
+  t.after(()=>{host.close();host.closeAllConnections();});
+  write(path.join(box.home,"run","host.json"),JSON.stringify({formatVersion:1,url:`http://127.0.0.1:${host.address().port}`,password}));
+  const ask=box.connect(await box.start().ready());
+  assert.equal((await ask("GET","kuvo/info")).status,200);
+  const desktop=await relayDesktop(t,relay,box,ask,randomBytes(32),401,"Browser viewer",{relaySecret:secret});
+  const refused=await desktop.refusedSocket("kuvo/browser/view");
+  assert.equal(refused.status,boxBinary().typescript?502:404);
+  assert.match(refused.text,/no browser of its own/);
+  assert.ok(!existsSync(path.join(box.home,"run","browser.pid")));
 });
 
 test("the shared capture clock backs off still images and keeps the input wake-up floor", async()=>{
@@ -519,6 +723,8 @@ test("native Windows reports that Chrome is not available instead of starting an
   const status=await ask("GET","kuvo/browser");
   assert.equal(status.status,200);
   assert.equal(status.json.state,"failed");
+  const {boxBinary}=await import("./adapter.mjs");
+  if(!boxBinary().typescript) assert.ok(!(await ask("GET","kuvo/info")).json.features.includes("browser.view"),"The app must not offer an unavailable browser tab");
   assert.match(status.json.message,/runs on Linux and macOS; this machine is win32/);
   assert.equal((await ask("POST","kuvo/browser",{now:true})).status,202);
   assert.ok(!fs.existsSync(path.join(box.home,"browser","profile")));
