@@ -11,7 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 /// OpenCode's answers the picker reads (`api/provider`, `api/model`, `api/integration` and
 /// `api/model/default`, the last absent where it didn't answer).
@@ -163,13 +163,47 @@ fn open(database: &Path) -> Option<rusqlite::Connection> {
     Some(connection)
 }
 
-/// The catalog OpenCode downloaded: each provider's name and models, as it keeps it.
-fn catalog(connection: &rusqlite::Connection) -> Option<Map<String, Value>> {
+/// A provider in the catalog OpenCode downloaded, with only what the picker reads of it: the rest
+/// (most of its megabytes) is never held.
+#[derive(Deserialize)]
+struct Listed {
+    #[serde(default)]
+    name: Value,
+    #[serde(default)]
+    models: BTreeMap<String, Known>,
+}
+
+#[derive(Deserialize)]
+struct Known {
+    #[serde(default)]
+    name: Value,
+    #[serde(default, rename = "type")]
+    kind: Value,
+    #[serde(default)]
+    status: Value,
+    #[serde(default)]
+    tool_call: Value,
+    #[serde(default)]
+    capabilities: Value,
+    #[serde(default)]
+    cost: Value,
+    #[serde(default)]
+    release_date: Value,
+    #[serde(default)]
+    limit: Value,
+}
+
+/// The catalog OpenCode downloaded: each provider's name and models.
+fn catalog(connection: &rusqlite::Connection) -> Option<BTreeMap<String, Listed>> {
+    #[derive(Deserialize)]
+    struct Stored {
+        body: String,
+    }
     let kept: String = connection
         .query_row("SELECT value FROM kv WHERE key = 'models-dev:v2:catalog'", [], |row| row.get(0))
         .ok()?;
-    let kept: Value = serde_json::from_str(&kept).ok()?;
-    serde_json::from_str(kept["body"].as_str()?).ok()
+    let kept: Stored = serde_json::from_str(&kept).ok()?;
+    serde_json::from_str(&kept.body).ok()
 }
 
 /// The providers signed in to (an active sign-in), by OpenCode's name for them.
@@ -187,12 +221,12 @@ fn signed_in(connection: &rusqlite::Connection) -> BTreeSet<String> {
 
 /// A model OpenCode offers without asking anything more of it: one that chats with tools, not
 /// retired or early, and (for OpenCode's own provider, with no sign-in) free.
-fn offerable(provider: &str, model: &Value) -> bool {
-    let chats = model["type"].as_str().is_none_or(|kind| kind == "chat");
-    let tools = model["capabilities"]["tools"]["supported"] != false && model["tool_call"] != false;
-    let settled = !matches!(model["status"].as_str(), Some("deprecated" | "alpha" | "beta"));
+fn offerable(provider: &str, model: &Known) -> bool {
+    let chats = model.kind.as_str().is_none_or(|kind| kind == "chat");
+    let tools = model.capabilities["tools"]["supported"] != false && model.tool_call != false;
+    let settled = !matches!(model.status.as_str(), Some("deprecated" | "alpha" | "beta"));
     let free = || {
-        let price = |side: &str| model["cost"]["text"][side]["price"].as_f64();
+        let price = |side: &str| model.cost["text"][side]["price"].as_f64();
         price("input") == Some(0.0) && price("output") == Some(0.0)
     };
     chats && tools && settled && (provider != "opencode" || free())
@@ -205,17 +239,17 @@ fn made(database: &Path, offered: Option<&[(String, String, String)]>) -> Option
     let connection = database.is_file().then(|| open(database)).flatten();
     let catalog = connection.as_ref().and_then(catalog).unwrap_or_default();
     let mut models: BTreeMap<(String, String), Value> = BTreeMap::new();
-    let row = |provider: &str, id: &str, name: &str, known: Option<&Value>| {
+    let row = |provider: &str, id: &str, name: &str, known: Option<&Known>| {
         let mut row = json!({"providerID": provider, "id": id, "name": name, "enabled": true});
         if let Some(known) = known {
-            let released = known["release_date"].as_str().and_then(|day| {
+            let released = known.release_date.as_str().and_then(|day| {
                 format!("{day}T00:00:00Z").parse::<jiff::Timestamp>().ok()
             });
             if let Some(released) = released {
                 row["time"] = json!({"released": released.as_millisecond()});
             }
-            if let Some(limit) = known.get("limit") {
-                row["limit"] = limit.clone();
+            if !known.limit.is_null() {
+                row["limit"] = known.limit.clone();
             }
         }
         row
@@ -223,7 +257,7 @@ fn made(database: &Path, offered: Option<&[(String, String, String)]>) -> Option
     match offered {
         Some(offered) => {
             for (provider, id, name) in offered {
-                let known = catalog.get(provider).and_then(|entry| entry["models"].get(id));
+                let known = catalog.get(provider).and_then(|entry| entry.models.get(id));
                 models.insert((provider.clone(), id.clone()), row(provider, id, name, known));
             }
         }
@@ -232,11 +266,11 @@ fn made(database: &Path, offered: Option<&[(String, String, String)]>) -> Option
             let mut providers = signed_in(connection);
             providers.insert("opencode".into());
             for provider in providers {
-                let Some(listed) = catalog.get(&provider).and_then(|entry| entry["models"].as_object()) else {
+                let Some(listed) = catalog.get(&provider) else {
                     continue;
                 };
-                for (id, model) in listed.iter().filter(|(_, model)| offerable(&provider, model)) {
-                    let name = model["name"].as_str().unwrap_or(id);
+                for (id, model) in listed.models.iter().filter(|(_, model)| offerable(&provider, model)) {
+                    let name = model.name.as_str().unwrap_or(id);
                     models.insert((provider.clone(), id.clone()), row(&provider, id, name, Some(model)));
                 }
             }
@@ -249,7 +283,7 @@ fn made(database: &Path, offered: Option<&[(String, String, String)]>) -> Option
     let accounts = providers
         .iter()
         .map(|provider| {
-            let name = catalog.get(*provider).and_then(|entry| entry["name"].as_str()).unwrap_or(provider);
+            let name = catalog.get(*provider).and_then(|entry| entry.name.as_str()).unwrap_or(provider);
             json!({"id": provider, "name": name, "methods": [], "connections": []})
         })
         .collect();
