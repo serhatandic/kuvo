@@ -28,13 +28,11 @@ impl Writer {
                             .await?,
                     );
                 }
+                let client =
+                    writer.client(&call.request.caller, &call.request.headers, Some(&fields));
                 typed(
                     writer
-                        .edit_for_client(
-                            reference,
-                            fields,
-                            local_work_queue_app(&call.request.caller),
-                        )
+                        .edit_for_client(reference, fields, client)
                         .await?,
                 )
             }

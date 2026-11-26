@@ -198,6 +198,26 @@ fn assignment(command: &str, prefix: &str, profile: &str, flag: bool) -> bool {
     })
 }
 #[cfg(target_os = "macos")]
+fn mac_profile(command: &str, profile: &str) -> bool {
+    assignment(command, "GEMINI_HOME=", profile, false)
+        || assignment(command, "--app_data_dir=", profile, true)
+        || assignment(command, "--app_data_dir ", profile, true)
+}
+#[cfg(target_os = "macos")]
+fn mac_listening_ports(sockets: &str) -> BTreeSet<u16> {
+    sockets
+        .lines()
+        .filter_map(|line| {
+            line.strip_suffix(" (LISTEN)")?
+                .rsplit_once(':')?
+                .1
+                .parse::<u16>()
+                .ok()
+        })
+        .filter(|port| *port > 0)
+        .collect()
+}
+#[cfg(target_os = "macos")]
 async fn output(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
@@ -235,10 +255,7 @@ async fn mac(profile: &Path) -> Vec<Endpoint> {
         let Some(full) = output("/bin/ps", &["eww", "-p", pid, "-o", "command="]).await else {
             continue;
         };
-        if !assignment(&full, "GEMINI_HOME=", &profile, false)
-            && !assignment(&full, "--app_data_dir=", &profile, true)
-            && !assignment(&full, "--app_data_dir ", &profile, true)
-        {
+        if !mac_profile(&full, &profile) {
             continue;
         }
         let Some(exe) = output("/bin/ps", &["-p", pid, "-o", "comm="]).await else {
@@ -258,17 +275,7 @@ async fn mac(profile: &Path) -> Vec<Endpoint> {
         else {
             continue;
         };
-        let ports = sockets
-            .lines()
-            .filter_map(|line| {
-                line.strip_suffix(" (LISTEN)")?
-                    .rsplit_once(':')?
-                    .1
-                    .parse::<u16>()
-                    .ok()
-            })
-            .filter(|port| *port > 0)
-            .collect();
+        let ports = mac_listening_ports(&sockets);
         let out = endpoints(&args, ports);
         if !out.is_empty() {
             return out;
@@ -413,5 +420,55 @@ pub async fn discover(profile: PathBuf, fixture: Option<PathBuf>) -> Vec<Endpoin
     {
         let _ = profile;
         vec![]
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_fixture {
+    use super::*;
+    #[test]
+    fn process_and_listening_socket_records_select_only_the_own_profile() {
+        let profile = "/fixture/My Profile [a]+(work)/profile";
+        for full in [
+            format!(
+                "/fixture/language_server --csrf_token fixture GEMINI_HOME={profile} PATH=/usr/bin"
+            ),
+            format!("/fixture/language_server --app_data_dir={profile} --csrf_token fixture"),
+            format!("/fixture/language_server --app_data_dir \"{profile}\" --csrf_token fixture"),
+        ] {
+            assert!(mac_profile(&full, profile), "{full}");
+        }
+        assert!(!mac_profile(
+            &format!("/fixture/language_server GEMINI_HOME={profile}-other PATH=/usr/bin"),
+            profile
+        ));
+        assert!(!mac_profile(
+            &format!("/fixture/language_server NOT_GEMINI_HOME={profile} PATH=/usr/bin"),
+            profile
+        ));
+        let sockets = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nls 123 fixture 3u IPv4 0 0t0 TCP 127.0.0.1:4111 (LISTEN)\nls 123 fixture 4u IPv6 0 0t0 TCP [::1]:4222 (LISTEN)\nls 123 fixture 5u IPv4 0 0t0 TCP 127.0.0.1:4333->127.0.0.1:4444 (ESTABLISHED)";
+        let ports = mac_listening_ports(sockets);
+        assert_eq!(ports, BTreeSet::from([4111, 4222]));
+        let language_server = vec!["/fixture/language_server".into()];
+        assert!(endpoints(&language_server, ports.clone()).is_empty());
+        let agy = vec!["/fixture/agy".into()];
+        assert!(ours(&agy));
+        assert_eq!(endpoints(&agy, ports.clone()).len(), 4);
+        assert!(
+            endpoints(&agy, ports.clone())
+                .iter()
+                .all(|e| e.csrf.is_empty())
+        );
+        let with_csrf = vec![
+            "/fixture/language_server".into(),
+            "--csrf_token".into(),
+            "fixture".into(),
+        ];
+        assert!(ours(&with_csrf));
+        assert!(
+            endpoints(&with_csrf, ports)
+                .iter()
+                .all(|e| e.csrf == "fixture")
+        );
     }
 }

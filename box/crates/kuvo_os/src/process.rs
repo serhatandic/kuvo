@@ -204,7 +204,7 @@ impl Spawn {
     }
 
     pub fn spawn(&self) -> io::Result<ChildGroup> {
-        self.launch(None, false)
+        self.launch(None, false, None)
     }
 
     /// Supervise this resident while leaving nested workers to their own owners.
@@ -230,7 +230,7 @@ impl Spawn {
                 "invalid recovery name",
             ));
         }
-        self.launch(Some(recovery_name), resident)
+        self.launch(Some(recovery_name), resident, None)
     }
 
     #[cfg(unix)]
@@ -245,9 +245,14 @@ impl Spawn {
         sys::spawn_debug_pipe(self)
     }
 
-    fn launch(&self, recovery_name: Option<&str>, resident: bool) -> io::Result<ChildGroup> {
+    pub(crate) fn launch(
+        &self,
+        recovery_name: Option<&str>,
+        resident: bool,
+        console: Option<&crate::pty::Console>,
+    ) -> io::Result<ChildGroup> {
         self.validate()?;
-        sys::spawn(self, recovery_name, resident)
+        sys::spawn(self, recovery_name, resident, console)
     }
 
     fn validate(&self) -> io::Result<()> {

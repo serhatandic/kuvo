@@ -2329,7 +2329,7 @@ test("a project file change refiles the saved inventory without another engine r
   assert.deepEqual(Object.keys(changed.sessions), [session]);
   assert.deepEqual(changed.projects[project].shown, [session]);
   assert.equal(changed.projects[tree], undefined);
-  assert.equal(calls(), readBefore, `Engine reads: ${JSON.stringify(here.engine.asked.filter(call => call.method === "GET" && call.path.includes("session")))}`);
+  assert.equal(calls(), readBefore, JSON.stringify({ readBefore, reads: calls(), asked: here.engine.asked.filter(call => call.method === "GET" && call.path.includes("session")), latest }));
 
   const formerProject = path.join(here.home, "former-project");
   write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({ handedOver: { [tree]: formerProject } }));

@@ -210,6 +210,54 @@ mod parity_corpus {
     use super::*;
     use serde_json::Value;
     #[test]
+    fn a_wal_commit_during_a_read_leaves_a_complete_snapshot_and_changes_the_next_stamp() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/usage/antigravity-blobs.json"
+        ))
+        .unwrap();
+        let first = hex::decode(fixture["cases"][0]["hex"].as_str().unwrap()).unwrap();
+        let second = hex::decode(fixture["cases"][2]["hex"].as_str().unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)").unwrap();
+        writer
+            .execute(
+                "INSERT INTO gen_metadata VALUES(?,?)",
+                rusqlite::params![0, first],
+            )
+            .unwrap();
+        let before = crate::usage::engine_index::stamp(&path).unwrap().unwrap();
+        let reader = crate::usage::engine_index::open_maker(&path).unwrap();
+        let mut seen = vec![];
+        read(&reader, "fixture", 0, |idx, event| {
+            seen.push((idx, event.at));
+            if idx == 0 {
+                writer.execute(
+                    "INSERT INTO gen_metadata VALUES(?,?)",
+                    rusqlite::params![1, &second],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 1);
+        let after = crate::usage::engine_index::stamp(&path).unwrap().unwrap();
+        assert!(before != after);
+        seen.clear();
+        read(&reader, "fixture", 0, |idx, event| {
+            seen.push((idx, event.at));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.iter().map(|(idx, _)| *idx).collect::<Vec<_>>(), [0, 1]);
+        let cutoff = seen.iter().map(|(_, at)| *at).max().unwrap() + 1;
+        read(&reader, "fixture", cutoff, |_, _| {
+            panic!("an old generation survived the cutoff")
+        })
+        .unwrap();
+    }
+    #[test]
     fn bounded_generation_fixture() {
         let raw: Value = serde_json::from_str(include_str!(
             "../../../../test/fixtures/usage/antigravity-blobs.json"

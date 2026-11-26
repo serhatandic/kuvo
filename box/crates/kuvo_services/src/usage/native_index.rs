@@ -1058,3 +1058,25 @@ pub fn place_of(computer: &str, folder: &Path, part: Option<&str>) -> String {
     }
     hex::encode(&hash.finalize()[..8])
 }
+
+#[cfg(test)]
+mod place_tests {
+    use super::place_of;
+    #[test]
+    fn the_same_folder_on_two_computers_has_distinct_usage_places() {
+        let folder = tempfile::tempdir().unwrap();
+        let a = place_of("computer-one", folder.path(), None);
+        let b = place_of("computer-two", folder.path(), None);
+        assert_eq!(a.len(), 16);
+        assert!(
+            a.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+        assert_ne!(a, b);
+        assert_eq!(a, place_of("computer-one", &folder.path().join("."), None));
+        assert_ne!(
+            place_of("computer-one", folder.path(), Some("go")),
+            place_of("computer-one", folder.path(), Some("zen"))
+        );
+    }
+}

@@ -15,5 +15,6 @@ pub mod marketplace;
 pub mod programs;
 pub mod settings;
 pub mod skills;
+pub mod terminals;
 pub mod usage;
 pub mod vault;

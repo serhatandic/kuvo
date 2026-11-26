@@ -563,13 +563,14 @@ test('a Codex reset is offered without spending, journaled before the maker, and
   const confirm=offer.json.data.confirm;
   const unknown=await post({row,confirm});
   assert.equal(unknown.status,200,unknown.text);
-  assert.equal(unknown.json.data.outcome,'unknown');
+  assert.equal(unknown.json.data.outcome,'unknown');assert.match(unknown.json.data.message,/may have been used/);
   const first=codex.sent('account/rateLimitResetCredit/consume');
   assert.equal(first.length,1);
   assert.equal(first[0].params.creditId,'soon');
   await codex.stop();
   listener=await codex.start();
-  const again=await post({row,confirm});
+  const retry=await post({row});assert.equal(retry.status,200,retry.text);assert.notEqual(retry.json.data.confirm,confirm);
+  const again=await post({row,confirm:retry.json.data.confirm});
   assert.equal(again.status,200,again.text);
   assert.equal(again.json.data.outcome,'reset');
   const twice=codex.sent('account/rateLimitResetCredit/consume');
@@ -1134,9 +1135,20 @@ test('Antigravity history reads only usable generation stores, follows WAL chang
   const refresh=async()=>{const res=await call('POST',base+'/refresh?zone=UTC',{});assert.equal(res.status,200,res.text);};
   const read=async()=>{const res=await call('GET',base+'?zone=UTC');assert.equal(res.status,200,res.text);return res.json.data.totals.antigravity.reduce((sum,d)=>sum+d.tokens,0);};
   const settle=async n=>{let seen;return until(async()=>{seen=await read();return seen===n;},()=>`Antigravity stores did not settle to ${n}; last total ${seen}\n${resident.log()}`);};
+  const revisions=()=>{
+    const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+    try{return db.prepare("SELECT f.source_order AS source,MAX(n.revision) AS revision FROM native_file f JOIN native_call n ON f.source=n.source WHERE f.kind='antigravity' GROUP BY f.source_order ORDER BY f.source_order").all();}finally{db.close();}
+  };
+  const stamps=()=>{
+    const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+    try{return {kept:db.prepare("SELECT source_order,cursor FROM native_file WHERE kind='antigravity' ORDER BY source_order").all(),files:['first.db','live.db','live.db-wal'].map(name=>{const s=fs.statSync(path.join(folder,name),{bigint:true});return {name,ino:String(s.ino),mtime:String(s.mtimeNs),ctime:String(s.ctimeNs),bytes:String(s.size)};})};}finally{db.close();}
+  };
   await refresh();await settle(170);
+  const firstReads=boxBinary().typescript?null:revisions();
+  if(firstReads){const before=stamps();await refresh();await settle(170);assert.deepEqual(revisions(),firstReads,'Unchanged stores were decoded again: '+JSON.stringify({before,after:stamps()}));}
   live.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2,generation(30));
   await refresh();await settle(210);
+  if(firstReads){const changed=revisions();for(const prior of firstReads){const next=changed.find(r=>r.source===prior.source);assert.ok(next);if(prior.source.endsWith('live.db'))assert.ok(next.revision>prior.revision);else assert.equal(next.revision,prior.revision);}}
   const legacy=new DatabaseSync(path.join(folder,'legacy.db'));
   legacy.exec('CREATE TABLE steps(idx INTEGER PRIMARY KEY, metadata BLOB)');
   legacy.prepare('INSERT INTO steps VALUES (?,?)').run(1,bytes(1,integer(1,at/1000)));legacy.close();
@@ -1461,21 +1473,25 @@ test('Cursor keeps complete account-wide UTC days, reprices saved counts and ref
   const http=await import('node:http');
   const {DatabaseSync}=await import('node:sqlite');
   const at=Date.now(),day=86400000,today=Math.floor(at/day)*day;
-  const access=['e30',Buffer.from(JSON.stringify({sub:'workos|cursor-history-fixture',exp:Math.floor(at/1000)+3600})).toString('base64url'),'fixture'].join('.');
+  let user='cursor-history-fixture',key='fixture-cursor-history';
+  const access=()=>['e30',Buffer.from(JSON.stringify({sub:'workos|'+user,exp:Math.floor(at/1000)+3600})).toString('base64url'),'fixture'].join('.');
   const asked=[],model='fixture-cursor-history-model';
-  let failToday=false;
+  let failToday=false,mode="normal";
   const server=http.createServer((request,response)=>{
     const send=value=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify(value));};
-    if(request.url==='/cursor/exchange'){assert.equal(request.headers.authorization,'Bearer fixture-cursor-history');send({accessToken:access});return;}
+    if(request.url==='/cursor/exchange'){assert.equal(request.headers.authorization,'Bearer '+key);send({accessToken:access()});return;}
     if(request.url==='/cursor/GetCurrentPeriodUsage'){send({enabled:true,planUsage:{limit:100,totalPercentUsed:12}});return;}
     if(request.url==='/cursor/GetPlanInfo'){send({planInfo:{planName:'pro'}});return;}
     if(request.url==='/cursor/dashboard/get-filtered-usage-events'){
       let body='';request.on('data',chunk=>body+=chunk);
       request.on('end',()=>{
         const given=JSON.parse(body),start=Number(given.startDate);
-        asked.push(start);assert.equal(request.headers.cookie,'WorkosCursorSessionToken=cursor-history-fixture%3A%3A'+access);
+        asked.push(start);assert.equal(request.headers.cookie,'WorkosCursorSessionToken='+user+'%3A%3A'+access());
+        if(mode==='unknown'&&start===today-2*day){response.writeHead(503);response.end('{}');return;}
+        if(mode==='held'&&start<=today-5*day){return;}
         if(start!==today&&start!==today-day){send({totalUsageEventsCount:0,usageEventsDisplay:[]});return;}
         const event={timestamp:String(start+1000),model,tokenUsage:{inputTokens:100,outputTokens:10,cacheReadTokens:20,cacheWriteTokens:5}};
+        if(start===today&&mode==='growing'){send({totalUsageEventsCount:given.page===1?2:3,usageEventsDisplay:[event]});return;}
         if(start===today&&failToday){
           send({totalUsageEventsCount:2,usageEventsDisplay:given.page===1?[event]:[]});return;
         }
@@ -1489,7 +1505,7 @@ test('Cursor keeps complete account-wide UTC days, reprices saved counts and ref
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const {computer}=await bench(t);
   const box=await computer('CursorHistory',undefined,folder=>({...isolated(folder),KUVO_TEST_CURSOR_HISTORY:'1',KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+server.address().port+'/'}));
-  write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:'fixture-cursor-history'}));
+  const auth=path.join(box.home,'agents','cursor','auth.json');write(auth,JSON.stringify({apiKey:key}));
   const catalog=path.join(box.home,'agents','usage','pricing','litellm.json');
   const rates=multiplier=>JSON.stringify({models:{[model]:{i:multiplier,o:2*multiplier,cw:multiplier,cr:0.1*multiplier}}});
   write(catalog,rates(1));
@@ -1499,6 +1515,11 @@ test('Cursor keeps complete account-wide UTC days, reprices saved counts and ref
   assert.equal(first.accountWide,true);
   assert.equal(new Set(asked).size,32);
   assert.equal(asked.length,32);
+  const instant=await view('POST','kuvo/agents/api/kuvo/usage/refresh?zone=UTC',{});assert.equal(instant.status,200);assert.equal(asked.length,32);
+  const pacific=await view('GET','kuvo/agents/api/kuvo/usage?zone=America/Los_Angeles');
+  const rowPacific=pacific.json.data.rows.find(r=>r.provider==='cursor');
+  const civil=at=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'}).format(at);
+  assert.deepEqual(rowPacific.days.filter(d=>d.tokens).map(d=>[d.date,d.tokens]),[[civil(today+1000),135],[civil(today-day+1000),135]]);
   const initialCost=first.days.reduce((sum,d)=>sum+d.cost,0);
   assert.ok(initialCost>0);
   write(catalog,rates(2));
@@ -1513,6 +1534,41 @@ test('Cursor keeps complete account-wide UTC days, reprices saved counts and ref
   const after=await read();
   assert.deepEqual(after.days,repriced.days,'An incomplete day cannot replace a complete cached day');
   assert.deepEqual([...new Set(asked)].sort(),[today-day,today]);
+  await resident.stop();
+  const age=()=>{const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'));db.prepare('UPDATE cursor_account SET scanned=scanned-61000').run();db.close();};
+  age();asked.length=0;failToday=false;mode='growing';
+  resident=box.start();view=box.connect(await resident.ready());
+  await until(()=>asked.length>=3,'The changing-total page was not retried',20000,100);
+  assert.deepEqual((await read()).days,repriced.days);
+  await resident.stop();const sends=asked.length;write(auth,'{');
+  resident=box.start();view=box.connect(await resident.ready());
+  assert.deepEqual((await read()).days,repriced.days);
+  assert.equal((await view('POST','kuvo/agents/api/kuvo/usage/refresh?zone=UTC',{})).status,200);
+  assert.equal(asked.length,sends);
+  // A never-read account with one failed day cannot publish a zero for it.
+  await resident.stop();user='cursor-new-user';key='fixture-new-key';write(auth,JSON.stringify({apiKey:key}));mode='unknown';asked.length=0;
+  resident=box.start();view=box.connect(await resident.ready());
+  await until(()=>new Set(asked).size===32,'The new account did not attempt every day',30000,100);
+  await until(async()=>!(await read()),'An incomplete first account published a history row');
+  await resident.stop();asked.length=0;mode='normal';resident=box.start();view=box.connect(await resident.ready());
+  await until(async()=>{const row=await read();return row?.days.reduce((n,d)=>n+d.tokens,0)===270;},'A complete next read did not publish the account');
+  assert.ok(new Set(asked).size<32,'The next read must reuse completed days');
+  fs.unlinkSync(auth);await until(async()=>!(await read()),'Signing out did not remove Cursor history');
+  // A slow connection can exhaust the account's read deadline. Complete
+  // days before the stall survive and the next resident asks only the rest.
+  await resident.stop();user='cursor-timeout-user';key='fixture-timeout-key';mode='held';asked.length=0;write(auth,JSON.stringify({apiKey:key}));
+  resident=box.start();view=box.connect(await resident.ready());
+  const stoppedAtDeadline=()=>{
+    const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+    try{return db.prepare("SELECT user_key FROM cursor_account WHERE provider='cursor' AND scanned IS NULL").get();}finally{db.close();}
+  };
+  const timed=await until(stoppedAtDeadline,'The timed-out history did not keep its account checkpoint',30000,100);
+  assert.ok(!(await read()),'A timed-out first read cannot publish a fabricated complete history');
+  const keptDays=()=>{const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});try{return db.prepare('SELECT start FROM cursor_day WHERE user_key=? AND complete=1 ORDER BY start').all(timed.user_key).map(row=>row.start);}finally{db.close();}};
+  const savedDays=keptDays();assert.ok(savedDays.some(start=>start<today-day),'No complete older day survived the deadline');
+  await resident.stop();mode='normal';asked.length=0;resident=box.start();view=box.connect(await resident.ready());
+  await until(async()=> (await read())?.days.reduce((n,d)=>n+d.tokens,0)===270,'The timed-out account did not finish the next read',30000,100);
+  for(const start of savedDays.filter(start=>start<today-day))assert.ok(!asked.includes(start),'A complete older day was requested again');
 });
 
 test('engine ChatGPT history uses read-only OAuth windows, not paid API calls or duplicate channels',async t=>{
@@ -1595,12 +1651,13 @@ test('Claude file-owned reset grants spend the maker’s named next grant once, 
   assert.deepEqual(offered.json.data.refills,['seven_day']);assert.equal(spent.length,0);
   const confirm=offered.json.data.confirm;
   const first=await post({row:row.id,confirm});
-  assert.equal(first.json.data.outcome,'unknown');assert.equal(spent.length,1);
+  assert.equal(first.json.data.outcome,'unknown');assert.match(first.json.data.message,/may have been used/);assert.equal(spent.length,1);
   assert.equal(spent[0].grant_id,'grant-b');
   assert.equal(reads,1,'Grant inventory is not fetched again for confirmation');
   await claude.stop();listener=await claude.start();
   outcome='already_used';
-  const replay=await post({row:row.id,confirm});
+  const retry=await post({row:row.id});assert.equal(retry.status,200,retry.text);assert.notEqual(retry.json.data.confirm,confirm);
+  const replay=await post({row:row.id,confirm:retry.json.data.confirm});
   assert.equal(replay.json.data.outcome,'reset');assert.equal(spent.length,2);
   assert.deepEqual(spent[0],spent[1]);
   await post({row:row.id,confirm});assert.equal(spent.length,2);
@@ -1683,7 +1740,8 @@ test('a computer without the plan sign-in spends once on the holder, and shares 
   });
   await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
-  const {computer,leases}=await bench(t);
+  const {computer,leases,relay}=await bench(t,{presenceEvents:true});
+  const {relayAddress}=await import('./adapter.mjs');const fs=await import('node:fs');
   const holder=await computer('ResetHolder',undefined,folder=>({...claudeEnvironment(boxBinary(),path.join(folder,'box'),isolatedEnv(folder),{turns:true}),...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
   const asker=await computer('ResetAsker',undefined,isolated);
   write(path.join(holder.env.CLAUDE_CONFIG_DIR,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'remote-grant-fixture',organizationUuid:org}}));
@@ -1711,9 +1769,18 @@ test('a computer without the plan sign-in spends once on the holder, and shares 
   const confirm=offered.json.data.confirm;
   const pending=await post({row:row.id,confirm});
   assert.equal(pending.json.data.outcome,'unknown');assert.equal(spends.length,1);
+  const link=JSON.parse(fs.readFileSync(path.join(holder.home,'run','link.json'),'utf8'));
+  const address=relayAddress(Buffer.from(link.secret,'base64url'));const reconnect=relay.disconnect(address);t.after(reconnect);
+  await until(()=>!relay.has(address),'Holder link did not disconnect');
+  const unavailable=await call('POST',base+'/reset',{row:row.id,confirm},undefined,65000);assert.equal(unavailable.status,200,unavailable.text);
+  assert.notEqual(unavailable.json.data.outcome,'reset');assert.match(unavailable.json.data.message,/earlier try may have gone|may have been used/i);assert.equal(spends.length,1);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(asker.home,'agents','limits-resets.json'),'utf8')).spends.some(s=>s.id===confirm&&s.state==='sending'));
+  reconnect();await until(()=>relay.has(address),'Holder link did not return',30000,100);
   await resident.stop();resident=asker.start();call=asker.connect(await resident.ready());
   outcome='already_used';
-  const replay=await post({row:row.id,confirm});
+  const retry=await until(async()=>{const r=await post({row:row.id});return r.status===200&&r;},'Retry confirmation was not available',30000,200);
+  assert.notEqual(retry.json.data.confirm,confirm);
+  const replay=await post({row:row.id,confirm:retry.json.data.confirm});
   assert.equal(replay.json.data.outcome,'reset');assert.equal(spends.length,2);assert.deepEqual(spends[0],spends[1]);
   const done=await post({row:row.id,confirm});assert.equal(done.json.data.outcome,'reset');assert.equal(spends.length,2);
   const always=await call('PUT',base+'/reset/always',{row:row.id,always:true});assert.equal(always.status,200,always.text);
@@ -1822,16 +1889,16 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   const {spawnSync}=await import('node:child_process');
   const {computer}=await bench(t);
   const at=Date.now(),methods=[],cloudCalls=[];
-  let localStatus=200,localCsrf='fixture-csrf';
+  let localStatus=200,localCsrf='fixture-csrf',cloudStatus=200,cloudRemaining=.5,statusHeld=false,localGroups=true,localRemaining=.2;
   const cloud=http.createServer((req,res)=>{
     cloudCalls.push(req.url);assert.equal(req.headers.authorization,'Bearer fixture-cloud-token');
-    const body=req.url.includes('loadCodeAssist')?{paidTier:{id:'g1-pro-tier'}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.5,resetTime:new Date(at+7200000).toISOString()}))}]};
-    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
+    const body=req.url.includes('loadCodeAssist')?{paidTier:{id:'g1-pro-tier'}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:cloudRemaining,resetTime:new Date(at+7200000).toISOString()}))}]};
+    res.writeHead(cloudStatus,{'Content-Type':'application/json'});res.end(JSON.stringify(cloudStatus===200?body:{}));
   });
   await new Promise(resolve=>cloud.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{cloud.close(resolve);cloud.closeAllConnections();}));
   // Temporary self-signed fixture, never an installed trust root or a real key.
-  const box=await computer('AntigravityOwnedServer',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+cloud.address().port+'/'}));
+  const box=await computer('Antigravity Owned [profile] (fixture)+',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+cloud.address().port+'/'}));
   const key=path.join(box.env.HOME,'fixture-key.pem'),cert=path.join(box.env.HOME,'fixture-cert.pem');
   const made=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-subj','/CN=fixture.invalid','-days','1','-keyout',key,'-out',cert],{stdio:'ignore'});
   assert.equal(made.status,0,'The fixture certificate could not be generated');
@@ -1840,7 +1907,8 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
     assert.equal(req.headers.authorization,undefined);
     assert.equal(req.headers['x-codeium-csrf-token']??'',localCsrf);
     if(localStatus!==200){res.writeHead(localStatus,{'Content-Type':'application/json'});res.end('{}');return;}
-    const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.2,resetTime:new Date(at+7200000).toISOString()}))}]};
+    if(method==='GetUserStatus'&&statusHeld){res.writeHead(429,{'Retry-After':'3600','Content-Type':'application/json'});res.end('{}');return;}
+    const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:localGroups?{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:localRemaining,resetTime:new Date(at+7200000).toISOString()}))}]}:{};
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(answer));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -1890,6 +1958,13 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   localStatus=200;authless=methods.length;
   await refresh(r=>r.rings.short?.used===0.8&&r.problem===undefined);
   assert.ok(methods.length>authless);assert.equal(cloudCalls.length,cloudBefore);
+  // The optional plan status can be held without poisoning usable local quotas.
+  write(path.join(profile,'antigravity-acp','acp_token.json'),JSON.stringify({access_token:'fixture-cloud-token',expires_at:Math.floor(at/1000)+3600}));
+  cloudStatus=503;statusHeld=true;localRemaining=.25;
+  const usable=await refresh(r=>r.rings.short?.used===.75);assert.equal(usable.problem,undefined);
+  const statuses=methods.filter(m=>m==='GetUserStatus').length;localRemaining=.15;
+  await refresh(r=>r.rings.short?.used===.85);assert.equal(methods.filter(m=>m==='GetUserStatus').length,statuses);
+  localGroups=false;cloudStatus=200;cloudRemaining=.1;await refresh(r=>r.rings.short?.used===.9);assert.equal(methods.filter(m=>m==='GetUserStatus').length,statuses);
 });
 
 test('the engine ChatGPT reset credit uses the saved OAuth identity without starting the engine',async t=>{
@@ -2957,7 +3032,7 @@ test('Cursor exchanges only its own key, retries a refused access token once, an
 test('Cursor plan meters match the shared subscription, team, credit and Grok Bot corpus',async t=>{
   if(boxBinary().typescript)return t.skip('The isolated TS resident disables Cursor provider reads.');
   const {readFileSync}=await import('node:fs');
-  const http=await import('node:http');
+  const http=await import('node:http'),crypto=await import('node:crypto');
   const corpus=JSON.parse(readFileSync(new URL('../../box/test/fixtures/usage/cursor-plan-cases.json',import.meta.url),'utf8')).cases;
   const now=Date.now(),day=86400000,shift=Math.floor(now/day)*day+30*day-1764892800000;
   const summaryShift=Math.floor(now/day)*day+30*day-Date.parse('2026-12-01T00:00:00Z');
@@ -2971,7 +3046,7 @@ test('Cursor plan meters match the shared subscription, team, credit and Grok Bo
     const args=current.args;
     const send=data=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data??{}));};
     if(req.url==='/cursor/exchange'){
-      const access=['e30',Buffer.from(JSON.stringify({sub:'auth0|cursor-corpus-'+serial,exp:Math.floor(now/1000)+3600})).toString('base64url'),'fixture'].join('.');
+      const access=['e30',Buffer.from(JSON.stringify({sub:'auth0|Cursor-Corpus-'+serial,exp:Math.floor(now/1000)+3600})).toString('base64url'),'fixture'].join('.');
       assert.equal(req.headers.authorization,'Bearer fixture-cursor-'+serial);send({accessToken:access});return;
     }
     if(req.url==='/cursor/GetCurrentPeriodUsage'){
@@ -2979,7 +3054,7 @@ test('Cursor plan meters match the shared subscription, team, credit and Grok Bo
       for(const key of ['billingCycleStart','billingCycleEnd'])if(usage[key]!==undefined)usage[key]=Number(usage[key])+shift;
       send(usage);return;
     }
-    if(req.url==='/cursor/GetPlanInfo'){send({planInfo:{planName:args.planName}});return;}
+    if(req.url==='/cursor/GetPlanInfo'){if(args.planInfoUnavailable){res.writeHead(503);res.end('{}');return;}send({planInfo:{planName:args.planName}});return;}
     if(req.url==='/cursor/GetCreditGrantsBalance'){send(args.creditGrants);return;}
     if(req.url==='/cursor/auth/stripe'){send({customerBalance:-(args.stripeBalanceCents??0)});return;}
     if(req.url==='/cursor/usage-summary'){send(shiftedSummary(args.summary));return;}
@@ -2997,7 +3072,9 @@ test('Cursor plan meters match the shared subscription, team, credit and Grok Bo
   const refresh=async()=>{
     write(auth,JSON.stringify({apiKey:'fixture-cursor-'+ ++serial}));
     assert.equal((await call('POST',base+'/refresh',{})).status,200);
-    return until(async()=>{const result=(await call('GET',base)).json.data;return !result.refreshPending&&result.accounts.find(a=>a.provider==='cursor'&&a.checked);},'Cursor corpus reading did not settle: '+current.name);
+    const reading=await until(async()=>{const result=(await call('GET',base)).json.data;return !result.refreshPending&&result.accounts.find(a=>a.provider==='cursor'&&a.checked);},'Cursor corpus reading did not settle: '+current.name);
+    assert.equal(reading.identity,crypto.createHash('sha256').update('kuvo-code plan limits account v1\ncursor:cursor-corpus-'+serial).digest('hex').slice(0,16),current.name);
+    return reading;
   };
   for(const each of corpus.filter(c=>c.fn==='mapUsage')){
     current=each;const reading=await refresh();const want=each.expected;
@@ -3047,6 +3124,31 @@ test('Cursor plan meters match the shared subscription, team, credit and Grok Bo
     const spend=want.lines.find(l=>l.label==='On-demand'&&l.dollars!==undefined);
     assert.deepEqual(reading.extras??[],spend?[{id:'on_demand',name:'On-demand',kind:'spent',amount:spend.dollars,unit:'usd'}]:[],each.name);
   }
+  for(const each of corpus.filter(c=>c.fn==='fallback')){
+    current=each;const reading=await refresh();
+    if(each.expected.message){
+      assert.equal(reading.problem?.kind,'failed',each.name);
+      assert.equal(reading.problem.message,each.expected.message,each.name);
+      assert.deepEqual(reading.windows,[],each.name);
+    }else{assert.equal(reading.problem,undefined,each.name);assert.ok(reading.windows.length>0,each.name);}
+  }
+  for(const each of corpus.filter(c=>c.fn==='reading')){
+    current=each;const reading=await refresh();const want=each.expected;
+    assert.equal(reading.plan,want.plan,each.name);
+    assert.deepEqual(reading.windows.map(w=>({id:w.id,name:w.name,used:w.used,amount:w.amount??null})),want.windows,each.name);
+    assert.deepEqual(reading.balance??null,want.balance,each.name);
+    assert.deepEqual(reading.extras??[],want.extras.map(e=>e.resetsAt===undefined?e:{...e,resetsAt:e.resetsAt+shift}),each.name);
+  }
+  const append=corpus.find(c=>c.fn==='appendMissingOnDemand');
+  current={name:append.name,fn:'appendMissingOnDemand',args:{...append.args,planName:'team',usage:{enabled:true,planUsage:{limit:5000,totalSpend:2500},spendLimitUsage:{limitType:'team'}}}};
+  const added=await refresh(),wanted=append.expected.lines[0],on=added.windows.find(w=>w.id==='on_demand');
+  assert.ok(on);assert.deepEqual(on.amount,{used:wanted.used,limit:wanted.limit,unit:'usd'});assert.equal(on.resetsAt,wanted.resetsAt+summaryShift);assert.equal(on.minutes,wanted.periodMs/60000);
+  const names=corpus.find(c=>c.fn==='planNames');
+  for(const [i,[planName,membership]] of names.args.pairs.entries()){
+    current={name:'plan names '+i,fn:'planNames',args:{usage:{planUsage:{}},planName,summary:{membershipType:membership,billingCycleStart:'2026-11-01T00:00:00Z',billingCycleEnd:'2026-12-01T00:00:00Z'},requestUsage:{'gpt-4':{numRequests:10,maxRequestUsage:100},startOfMonth:'2026-11-01T00:00:00Z'}}};
+    const reading=await refresh();assert.equal(reading.plan??null,names.expected.names[i].label,current.name);
+  }
+
 });
 
 test('a corrupt saved ring cannot panic the resident or invent fresh usage',async t=>{
@@ -3226,10 +3328,14 @@ test('Insights daily totals follow the viewer’s civil day rather than the comp
   write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
   write(path.join(folder,'messages.json'),JSON.stringify([midnight-1,midnight].map((at,i)=>({id:'call_'+i,type:'assistant',time:{created:at-100,completed:at},model,agent:'build',tokens:{input:100,output:50,cache:{read:500,write:2}},content:[]}))));
   const call=box.connect(await box.start().ready());
-  const read=async zone=>{const response=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone='+encodeURIComponent(zone)+'&refresh=1');assert.equal(response.status,200,response.text);return response.json.data;};
+  // Only the summary route's refresh parameter waits for a count. The overview
+  // reads the index as it stands, including during the initial catch-up.
+  const counted=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');
+  assert.equal(counted.status,200,counted.text);assert.equal(counted.json.data.totals.tokens,1304,counted.text);
+  const read=async zone=>{const response=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone='+encodeURIComponent(zone));assert.equal(response.status,200,response.text);return response.json.data;};
   const utc=await read('UTC'),nepal=await read('Asia/Kathmandu');
   const contributing=data=>data.daily.filter(day=>day.tokens>0).map(day=>day.tokens);
-  assert.deepEqual(contributing(utc),[152,152]);assert.deepEqual(contributing(nepal),[304]);
+  assert.deepEqual(contributing(utc),[152,152],JSON.stringify({midnight,utc:utc.daily,totals:utc.totals,coverage:utc.coverage}));assert.deepEqual(contributing(nepal),[304],JSON.stringify({midnight,nepal:nepal.daily,totals:nepal.totals,coverage:nepal.coverage}));
   assert.deepEqual(utc.totals,nepal.totals);
 });
 
@@ -3972,4 +4078,393 @@ test('a Claude account heard only through turns inherits the peer’s earlier wa
   assert.equal(repeated.accounts.find(a=>a.provider==='claude-code').checked,undefined);
   await Promise.all([ar.stop(),br.stop()]);
   await Promise.all([stopFixtureHolders(a.home),stopFixtureHolders(b.home)]);
+});
+
+// Hold the maker's account confirmation, not its spend, so the resident can
+// be stopped at the real durable-before-send boundary.
+test('a stopped reset between its saved sending journal and the maker request resumes once',{timeout:90000},async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native reset journal.');
+  const fs=await import('node:fs');const codex=await scriptedCodex();t.after(()=>codex.close());
+  const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture-send',chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');
+  write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:'fixture-send'}}));
+  const reset=Math.floor(Date.now()/1000)+7200;write(path.join(codex.root,'codex-limits.json'),JSON.stringify({accountId:'fixture-send',rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:1,credits:[{id:'fixture-credit',status:'available',expiresAt:reset+3600}]}}));
+  let listener=await codex.start();const base='kuvo/agents/api/kuvo/limits';
+  assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);
+  const row=await until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'Credit inventory did not arrive');
+  const post=body=>request(listener,'POST',base+'/reset',body);
+  const offer=await post({row:row.id});assert.equal(offer.status,200,offer.text);const confirm=offer.json.data.confirm;
+  const held=path.join(codex.root,'codex-hold-reset-check');write(held,'');
+  const pending=post({row:row.id,confirm}).catch(error=>error);
+  const file=path.join(codex.home,'agents','limits-resets.json');const saved=await until(()=>{
+    if(!fs.existsSync(file)||!codex.sent('account/rateLimits/read').some(m=>m.params?.excludeResetCreditDetails))return;
+    return JSON.parse(fs.readFileSync(file,'utf8')).spends?.find(s=>s.state==='sending'&&s.target);
+  },'The journal was not saved before the maker account check');
+  assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+  // A clean shutdown can finish a request that never reached its maker. Crash
+  // only our fixture resident to exercise the durable unfinished request.
+  await codex.crash();await pending;assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).spends.find(s=>s.id===confirm).state,'sending');
+  fs.unlinkSync(held);listener=await codex.start();
+  await until(async()=> (await request(listener,'GET',base)).json.data.rows.some(r=>r.id===row.id),'The admitted account did not return after restart');
+  const done=await post({row:row.id,confirm});assert.equal(done.status,200,done.text);assert.equal(done.json.data.outcome,'reset',done.text);
+  const asks=codex.sent('account/rateLimitResetCredit/consume');assert.equal(asks.length,1);assert.equal(asks[0].params.idempotencyKey,saved.request);assert.equal(asks[0].params.creditId,saved.target);
+  assert.equal((await post({row:row.id,confirm})).json.data.outcome,'reset');assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,1);
+});
+
+test('a maker turns an expired credit away and a new offer can pick the next credit instead',async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native reset journal.');
+  const codex=await scriptedCodex();t.after(()=>codex.close());
+  const id='fixture-credit-expiry',token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:id,chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:id}}));
+  const reset=Math.floor(Date.now()/1000)+7200,file=path.join(codex.root,'codex-limits.json'),outcome=path.join(codex.root,'codex-reset-answer.json');
+  const credits=names=>write(file,JSON.stringify({accountId:id,rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:names.length,credits:names.map((id,i)=>({id,status:'available',expiresAt:reset+(i+1)*3600}))}}));
+  credits(['soon','late']);const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'Credits did not arrive');};
+  const row=(await refresh()).id,post=body=>request(listener,'POST',base+'/reset',body);
+  const offer=await post({row});assert.equal(offer.status,200,offer.text);
+  write(outcome,JSON.stringify({outcome:'noCredit'}));
+  const rejected=await post({row,confirm:offer.json.data.confirm});assert.equal(rejected.status,200,rejected.text);assert.notEqual(rejected.json.data.outcome,'reset');assert.match(rejected.json.data.message,/nothing was used|no reset/i);
+  assert.equal(codex.sent('account/rateLimitResetCredit/consume')[0].params.creditId,'soon');
+  credits(['late']);await refresh();write(outcome,JSON.stringify({outcome:'reset'}));
+  const next=await post({row});assert.equal(next.status,200,next.text);const done=await post({row,confirm:next.json.data.confirm});assert.equal(done.json.data.outcome,'reset');
+  const asks=codex.sent('account/rateLimitResetCredit/consume');assert.equal(asks.length,2);assert.equal(asks[1].params.creditId,'late');assert.notEqual(asks[1].params.idempotencyKey,asks[0].params.idempotencyKey);
+});
+
+test('Always Allow is revoked when the account in a native slot changes and does not return with the old sign-in',async t=>{
+  if(boxBinary().typescript)return t.skip('Exercises the native account decisions.');
+  const codex=await scriptedCodex();t.after(()=>codex.close());const reset=Math.floor(Date.now()/1000)+7200;
+  const sign=id=>{const token=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:id,chatgpt_user_id:'fixture-member'}})).toString('base64url'),'fixture'].join('.');write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:token,account_id:id}}));write(path.join(codex.root,'codex-limits.json'),JSON.stringify({accountId:id,rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:1,credits:[{id:'fixture-credit',status:'available',expiresAt:reset+3600}]}}));};
+  sign('fixture-first');const listener=await codex.start(),base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await request(listener,'GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'));},'The account did not get credit inventory');};
+  const first=await refresh(),always=await request(listener,'PUT',base+'/reset/always',{row:first.id,always:true});assert.equal(always.status,200,always.text);
+  const offer=async row=>{const r=await request(listener,'POST',base+'/reset',{row});assert.equal(r.status,200,r.text);return r.json.data;};assert.equal((await offer(first.id)).always,true);
+  sign('fixture-second');const second=await refresh();assert.notEqual(first.id,second.id);assert.equal((await offer(second.id)).always,false);
+  sign('fixture-first');const back=await refresh();assert.equal(back.id,first.id);assert.equal((await offer(back.id)).always,false);assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,0);
+});
+
+test('a lost remote reset answer is recovered and two signed-in computers share and revoke the same allowance',{timeout:150000},async t=>{
+  if(boxBinary().typescript)return t.skip('Uses isolated engine account credentials and the resident reset mail.');
+  const http=await import('node:http'),fs=await import('node:fs');const {relayAddress}=await import('./adapter.mjs');
+  const {computer,leases,relay}=await bench(t,{presenceEvents:true});
+  const at=Date.now(),reset=Math.floor(at/1000)+7200,received=[],consumed=new Set();
+  const creditList=[{id:'first',status:'available',expires_at:reset+3600},{id:'next',status:'available',expires_at:reset+7200}];
+  let holder,caller;
+  const maker=http.createServer((req,res)=>{
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/chatgpt'){send(200,{plan_type:'plus',rate_limit:{primary_window:{used_percent:100,limit_window_seconds:18000,reset_at:reset}},rate_limit_reset_credits:{available_count:creditList.length}});return;}
+    if(req.url==='/chatgpt/resets'){send(200,{available_count:creditList.length,credits:creditList});return;}
+    if(req.url==='/chatgpt/resets/consume'){
+      let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+        const used=JSON.parse(body),requestId=used.redeem_request_id;
+        received.push(used);
+        if(consumed.has(requestId)){send(200,{code:'already_redeemed'});return;}
+        consumed.add(requestId);send(200,{code:'reset'});
+      });return;
+    }
+    send(404,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  holder=await computer('ResetSource',undefined,env);caller=await computer('ResetVisitor',undefined,env);
+  const sign=(credential,accountID='fixture-shared-reset')=>[{integrationID:'openai',active:true,value:{type:'oauth',access:credential,expires:at+3600000,metadata:{accountID}}}];
+  holder.engine.credentials=sign('fixture-holder');
+  const base='kuvo/agents/api/kuvo/limits',sourceResident=holder.start(),source=holder.connect(await sourceResident.ready());
+  const read=async call=>(await call('GET',base)).json.data;
+  const refresh=async call=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=await read(call);return !d.refreshPending&&d.rows.find(r=>r.provider==='openai'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'Reset inventory not available');};
+  const row=await refresh(source);
+  const setup=await source('GET','kuvo/setup'),invite=await source('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);await until(()=>leases.leaseFor(setup.json.setup),'Holder lease missing');
+  const joined=await caller.join(invite.json.code);assert.equal(joined.code,0,joined.log);let resident=caller.start(),call=caller.connect(await resident.ready());
+  const ownRow=async connection=>(await read(connection)).rows.find(r=>r.id===row.id);
+  let remoteView;await until(async()=>{remoteView=await read(call);const r=remoteView.rows.find(r=>r.id===row.id);return r?.extras?.some(e=>e.kind==='resets'&&e.usable);},()=> 'Remote inventory did not arrive '+JSON.stringify(remoteView)+'\n'+resident.log()+'\n'+sourceResident.log(),30000,200);
+  const offer=async connection=>{const r=await connection('POST',base+'/reset',{row:row.id});assert.equal(r.status,200,r.text);return r.json.data;};
+  const ticket=await offer(call),address=box=>relayAddress(Buffer.from(JSON.parse(fs.readFileSync(path.join(box.home,'run','link.json'),'utf8')).secret,'base64url'));
+  // The holder's input and maker answer are real; only the outgoing peer mail
+  // is lost. Stop the visitor after the holder has durably recorded success.
+  const drop=relay.intercept(address(holder),address(caller),()=>true);t.after(drop);
+  const pending=call('POST',base+'/reset',{row:row.id,confirm:ticket.confirm},undefined,65000).catch(error=>error);
+  await until(()=>{
+    const file=path.join(holder.home,'agents','limits-resets.json');
+    if(!fs.existsSync(file))return;
+    return JSON.parse(fs.readFileSync(file,'utf8')).spends?.find(s=>s.state==='done'&&s.outcome==='reset');
+  },'The holder did not complete the spend with its maker',30000,100);
+  assert.equal(consumed.size,1);assert.equal(received.length,1);
+  const journal=()=>JSON.parse(fs.readFileSync(path.join(caller.home,'agents','limits-resets.json'),'utf8')).spends;
+  assert.ok(journal().some(s=>s.id===ticket.confirm&&s.state==='sending'));
+  await resident.stop();await pending;drop();resident=caller.start();call=caller.connect(await resident.ready());
+  await until(async()=>{const r=await ownRow(call);return r?.extras?.some(e=>e.kind==='resets'&&e.usable);},'Remote inventory did not return');
+  const retry=await offer(call);assert.notEqual(retry.confirm,ticket.confirm);
+  const done=await call('POST',base+'/reset',{row:row.id,confirm:retry.confirm});assert.equal(done.json.data.outcome,'reset');assert.equal(consumed.size,1);assert.equal(received.length,1);
+  const settled=journal().filter(s=>s.row===row.id);assert.equal(settled.length,1);assert.equal(settled[0].id,ticket.confirm);assert.equal(settled[0].state,'done');assert.ok(settled[0].also.includes(retry.confirm));
+  assert.equal((await call('POST',base+'/reset',{row:row.id,confirm:ticket.confirm})).json.data.outcome,'reset');
+
+  // A second computer signs into the same maker account. Its local choice is
+  // the same row, and a later off or a sign-in change is shared.
+  caller.engine.credentials=sign('fixture-caller');await refresh(call);
+  await until(async()=>{const [a,b]=await Promise.all([ownRow(source),ownRow(call)]);return a?.boxes.length===2&&b?.boxes.length===2;},'Both holders not present',30000,100);
+  const enabled=async connection=>(await ownRow(connection))?.extras?.find(e=>e.kind==='resets')?.agents===true;
+  const toggle=(connection,on)=>connection('PUT',base+'/reset/always',{row:row.id,always:on});
+  assert.equal((await toggle(call,true)).status,200);await until(async()=>await enabled(source)&&await enabled(call),'Allowance did not reach both holders');
+  assert.equal((await toggle(source,false)).status,200);await until(async()=>!await enabled(call)&&!await enabled(source),'Off did not reach both holders');
+  const unasked=await offer(call);assert.equal(unasked.always,false);const refused=await call('POST',base+'/reset',{row:row.id,confirm:unasked.confirm,unasked:true});assert.notEqual(refused.json.data.outcome,'reset');assert.equal(consumed.size,1);
+  assert.equal((await toggle(call,true)).status,200);await until(async()=>await enabled(source),'Second allowance did not arrive');
+  caller.engine.credentials=sign('fixture-new','fixture-other-account');await refresh(call);
+  await until(async()=>!await enabled(source),'Previous account allowance survived the sign-in change',30000,100);
+  caller.engine.credentials=sign('fixture-caller');await refresh(call);
+  assert.equal(await enabled(call),false);assert.equal(await enabled(source),false);
+});
+
+
+test('Antigravity accepts either cloud host, preserves all three pools, and a held plan lookup does not hold its quotas',async t=>{
+  if(boxBinary().typescript)return t.skip('Reads the Rust account’s local fixture credential, not a real provider.');
+  const http=await import('node:http'),fs=await import('node:fs');const {computer}=await bench(t);
+  const at=Date.now();let mode='primary',used=.25;const calls=[];
+  const buckets=(ids,used)=>({groups:ids.map(id=>id==='argon-weekly'?{displayName:'Gemini 4 Argon',buckets:[{bucketId:'argon',window:'weekly',remainingFraction:.1,resetTime:new Date(at+7*86400000).toISOString()}]}:{buckets:[{bucketId:id,remainingFraction:1-used,resetTime:new Date(at+7200000).toISOString()}]})});
+  const normal=['gemini-5h','gemini-weekly','3p-5h','3p-weekly'],all=[...normal,'argon-weekly'];
+  const maker=http.createServer((req,res)=>{
+    calls.push(req.url);assert.equal(req.headers.authorization,'Bearer fixture-ag-host');
+    const send=(status,value,headers={})=>{res.writeHead(status,{'Content-Type':'application/json',...headers});res.end(JSON.stringify(value));};
+    const main=req.url.includes('/main/');
+    if(req.url.includes('loadCodeAssist')){send(mode==='held'||mode==='partial'||mode==='failed'?429:403,{},mode==='held'?{'Retry-After':'3600'}:{});return;}
+    if(mode==='legacy'){
+      if(main&&req.url.endsWith('retrieveUserQuota'))send(200,{buckets:[{modelId:'gemini-3-pro',remainingFraction:1-used,resetTime:new Date(at+7200000).toISOString()}]});
+      else send(404,{});
+      return;
+    }
+    if(!req.url.includes('retrieveUserQuotaSummary')){send(404,{});return;}
+    if(mode==='primary'){send(main?200:403,main?buckets(['gemini-5h'],used):{});return;}
+    if(mode==='secondary'){send(main?403:200,main?{}:buckets(all,used));return;}
+    if(mode==='held'){send(main?200:503,main?buckets(all,used):{});return;}
+    if(mode==='partial'){send(main?200:503,main?buckets(['gemini-5h','gemini-weekly'],used):{});return;}
+    send(503,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const box=await computer('AntigravityCloudRounds',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const token=path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json');
+  write(token,JSON.stringify({access_token:'fixture-ag-host',expires_at:Math.floor(at/1000)+3600}));
+  let resident=box.start(),call=box.connect(await resident.ready());const base='kuvo/agents/api/kuvo/limits';
+  const read=async()=>{const r=await call('GET',base);assert.equal(r.status,200,r.text);return r.json.data;};
+  const refresh=async()=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=await read();return !d.refreshPending&&d.rows.find(r=>r.provider==='antigravity');},'Antigravity read did not settle');};
+  const first=await refresh();assert.deepEqual(first.windows.map(w=>[w.id,w.used]),[['gemini-5h',used]]);assert.equal(first.problem,undefined);
+  mode='secondary';const second=await refresh();assert.equal(second.problem,undefined);assert.deepEqual(new Set(second.windows.map(w=>w.id)),new Set(all));assert.equal(second.rings.long.window,'argon-weekly');assert.equal(second.rings.long.used,.9);assert.equal(second.rings.short,undefined);
+  assert.ok(calls.every(url=>!url.includes('token')));
+  mode='held';used=.37;const full=await refresh();const planCalls=calls.filter(url=>url.includes('loadCodeAssist')).length;assert.equal(full.problem,undefined);assert.deepEqual(new Set(full.windows.map(w=>w.id)),new Set(all));
+  used=.4;const changed=await refresh();assert.equal(changed.windows.find(w=>w.id==='gemini-5h').used,.4);assert.equal(calls.filter(url=>url.includes('loadCodeAssist')).length,planCalls);
+  mode='legacy';used=.41;const legacy=await refresh();assert.equal(legacy.problem,undefined);assert.ok(Math.abs(legacy.windows.find(w=>w.id==='gemini-5h').used-.41)<1e-12);assert.equal(calls.filter(url=>url.includes('loadCodeAssist')).length,planCalls);
+  mode='partial';used=.42;const partial=await refresh();assert.equal(partial.windows.find(w=>w.id==='gemini-5h').used,.42);assert.ok(partial.windows.some(w=>w.id==='3p-5h'),'First partial reading retains previous pool');
+  mode='failed';const failed=await refresh();assert.equal(failed.problem.kind,'failed');assert.deepEqual(failed.windows,partial.windows);
+  const count=calls.length;write(token,'{');const kept=(await read()).rows.find(r=>r.provider==='antigravity');assert.equal(kept.id,failed.id);assert.deepEqual(kept.windows,failed.windows);assert.equal(calls.length,count);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());const reopened=(await read()).rows.find(r=>r.provider==='antigravity');assert.equal(reopened.id,failed.id);assert.deepEqual(reopened.windows,failed.windows);
+});
+
+test('Antigravity renews a refused access once with its own OAuth metadata and reuses the renewed token',async t=>{
+  if(boxBinary().typescript)return t.skip('Uses the Rust account credential fixture.');
+  const http=await import('node:http'),fs=await import('node:fs');const {computer}=await bench(t);
+  const at=Date.now(),calls=[],forms=[];let serial=0;
+  const maker=http.createServer((req,res)=>{
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/antigravity/token'){
+      let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{forms.push(Object.fromEntries(new URLSearchParams(raw)));send(200,{access_token:'fixture-renewed-'+serial,expires_in:3600});});return;
+    }
+    calls.push(req.headers.authorization);
+    if(req.headers.authorization!=='Bearer fixture-renewed-'+serial){send(403,{});return;}
+    if(req.url.includes('loadCodeAssist')){send(200,{paidTier:{id:'g1-pro-tier'}});return;}
+    send(200,{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:.7,resetTime:new Date(at+7200000).toISOString()}))}]});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const corpus=JSON.parse(fs.readFileSync(new URL('../../box/test/fixtures/usage/antigravity-acp-oauth.json',import.meta.url),'utf8'));
+  for(const metadata of [true,false]){
+    ++serial;const box=await computer('AntigravityOAuth'+serial,undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+    const token=path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json');
+    const cred={access_token:'fixture-original-'+serial,refresh_token:'fixture-refresh-'+serial,expires_at:Math.floor(at/1000)+3600};
+    if(metadata){cred.client_id='fixture-client';cred.client_secret='fixture-secret';}
+    write(token,JSON.stringify(cred));const call=box.connect(await box.start().ready());const base='kuvo/agents/api/kuvo/limits';
+    const refresh=async()=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await call('GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='antigravity');},'Renewed quota did not arrive');};
+    const full=await refresh();assert.equal(full.plan,'Pro');assert.equal(full.windows.length,4);assert.equal(forms.length,serial);
+    const form=forms.at(-1);assert.equal(form.refresh_token,cred.refresh_token);assert.equal(form.client_id,metadata?cred.client_id:corpus.defaults.clientID);assert.equal(form.client_secret,metadata?cred.client_secret:corpus.defaults.clientSecret);
+    const before=calls.length;await refresh();assert.equal(forms.length,serial);assert.ok(calls.slice(before).every(token=>token==='Bearer fixture-renewed-'+serial));
+    // The source token file can still contain a lapsed original token while
+    // the renewed access is current; its unchanged sign-in uses that cache.
+    cred.expires_at=Math.floor(at/1000)-60;write(token,JSON.stringify(cred));
+    const after=calls.length;await refresh();assert.equal(forms.length,serial);assert.ok(calls.slice(after).every(token=>token==='Bearer fixture-renewed-'+serial));
+  }
+});
+
+
+test('Antigravity generation stores price the shared expected days and ignore older and unowned profiles',async t=>{
+  const fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const corpus=JSON.parse(fs.readFileSync(new URL('../../box/test/fixtures/usage/antigravity-blobs.json',import.meta.url),'utf8'));
+  const {computer}=await bench(t);const box=await computer('AntigravityBlobHistory',undefined,isolated);
+  const day=86400000,shift=Math.floor(Date.now()/day)*day-2*day-Date.parse('2026-11-12T00:00:00Z');
+  const varint=n=>{const out=[];while(n>=128){out.push((n%128)|128);n=Math.floor(n/128);}out.push(n);return Buffer.from(out);};
+  const shifted=(hex,each,offset)=>{
+    const raw=Buffer.from(hex,'hex'),time=each.expected?.timestampSeconds;if(time===undefined)return raw;
+    const from=varint(time),to=varint(time+offset/1000);assert.equal(from.length,to.length);
+    const index=raw.indexOf(from);if(index<0)return raw;to.copy(raw,index);return raw;
+  };
+  const owned=path.join(box.home,'agents','antigravity','profile','antigravity-acp','conversations');
+  const writeStore=(folder,name,cases,offset)=>{
+    fs.mkdirSync(folder,{recursive:true});const file=path.join(folder,name+'.db'),db=new DatabaseSync(file);
+    db.exec('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB);CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB)');
+    for(const [idx,each] of cases.entries()){
+      db.prepare('INSERT INTO gen_metadata VALUES(?,?)').run(idx,shifted(each.hex,each,offset));
+      if(each.stepHex)db.prepare('INSERT INTO steps VALUES(?,?)').run(idx,shifted(each.stepHex,each,offset));
+    }
+    db.close();return file;
+  };
+  const source=writeStore(owned,'shared',corpus.cases,shift);
+  writeStore(owned,'old',[corpus.cases[0]],shift-40*day);
+  writeStore(path.join(box.env.HOME,'other-profile','antigravity-acp','conversations'),'foreign',[corpus.cases[0]],shift);
+  write(path.join(box.home,'agents','usage','pricing','litellm.json'),JSON.stringify({models:{'gemini-3.6-flash':{i:1,o:4,cw:1,cr:.25,longThreshold:200000}}}));
+  write(path.join(box.home,'agents','usage','pricing','supplement.json'),JSON.stringify({pricing:{},alias_rules:[],updated_at:'2099-01-01'}));
+  const before=fs.statSync(source),bytes=fs.readFileSync(source);
+  const call=box.connect(await box.start().ready()),base='kuvo/agents/api/kuvo/usage';
+  assert.equal((await call('POST',base+'/refresh?zone=UTC',{})).status,200);
+  const days=async()=>{const r=await call('GET',base+'?zone=UTC');assert.equal(r.status,200,r.text);return r.json.data.totals.antigravity?.filter(d=>d.tokens||d.unknown)??[];};
+  const expected=corpus.days.map(d=>({date:new Date(Date.parse(d.date)+shift).toISOString().slice(0,10),tokens:d.tokens,cost:d.cost,models:[d.model],unknown:d.unknown}));
+  const got=await until(async()=>{const rows=await days();return rows.reduce((n,d)=>n+d.tokens,0)===expected.reduce((n,d)=>n+d.tokens,0)&&rows;},'The shared generation days did not arrive');
+  assert.deepEqual(got.map(d=>({date:d.date,tokens:d.tokens,cost:d.cost,models:d.models.map(m=>m.model),unknown:d.unknown})),expected);
+  assert.deepEqual(await days(),got);
+  const after=fs.statSync(source);assert.equal(after.mtimeMs,before.mtimeMs);assert.equal(after.size,before.size);assert.deepEqual(fs.readFileSync(source),bytes);
+});
+
+test('Cursor account-wide history on two computers is one account even without a subscription',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('Uses resident loopback Cursor provider fixture.');
+  const http=await import('node:http'), crypto=await import('node:crypto');
+  const {computer,leases}=await bench(t);
+  const at=Date.now(),day=86400000,today=Math.floor(at/day)*day,user='fixture-wide-user';
+  const access=key=>['e30',Buffer.from(JSON.stringify({sub:'auth0|'+user,exp:Math.floor(at/1000)+3600,key})).toString('base64url'),'fixture'].join('.');
+  const asks=[];
+  const maker=http.createServer((req,res)=>{
+    const send=value=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/cursor/exchange'){const key=req.headers.authorization?.slice(7);assert.ok(['studio-key','lab-key'].includes(key));send({accessToken:access(key)});return;}
+    if(req.url==='/cursor/GetCurrentPeriodUsage'){send({enabled:false});return;}
+    if(req.url==='/cursor/dashboard/get-filtered-usage-events'){
+      const key=['studio-key','lab-key'].find(key=>req.headers.cookie==='WorkosCursorSessionToken='+user+'%3A%3A'+access(key));assert.ok(key);
+      let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+        const start=Number(JSON.parse(body).startDate);asks.push([key,start]);
+        send({totalUsageEventsCount:start===today?1:0,usageEventsDisplay:start===today?[{timestamp:String(today+1000),model:'composer-2',tokenUsage:{inputTokens:100,outputTokens:10,cacheReadTokens:5}}]:[]});
+      });return;
+    }
+    send({});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const config=folder=>({...isolated(folder),KUVO_TEST_CURSOR_HISTORY:'1',KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  const studio=await computer('CursorStudio',undefined,config), lab=await computer('CursorLab',undefined,config);
+  const seed=(box,key)=>write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:key}));
+  seed(studio,'studio-key');
+  const first=studio.start(),main=studio.connect(await first.ready());
+  const setup=await main('GET','kuvo/setup');const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'Cursor Studio did not claim setup');
+  const joined=await lab.join(invite.json.code);assert.equal(joined.code,0,joined.log);seed(lab,'lab-key');
+  const second=lab.start(),other=lab.connect(await second.ready());
+  const route='kuvo/agents/api/kuvo/usage?zone=UTC', limits='kuvo/agents/api/kuvo/limits';
+  const id=crypto.createHash('sha256').update('kuvo-code plan limits account v1\ncursor:'+user).digest('hex').slice(0,16);
+  const read=async call=>{const r=await call('GET',route);assert.equal(r.status,200,r.text);return r.json.data.rows.filter(row=>row.provider==='cursor');};
+  const plan=async call=>{const r=await call('GET',limits);assert.equal(r.status,200,r.text);return r.json.data.rows.find(row=>row.provider==='cursor');};
+  await main('POST',limits+'/refresh',{});await other('POST',limits+'/refresh',{});
+  await until(async()=>{const a=await plan(main),b=await plan(other);return a?.ended&&b?.ended&&a.id==='cursor#'+id&&b.id===a.id;},'No-subscription Cursor account identity did not converge',30000,100);
+  await until(async()=>{const a=await read(main),b=await read(other);return a.length===1&&b.length===1&&a[0].id==='cursor#'+id&&b[0].id===a[0].id&&[a[0],b[0]].every(row=>row.accountWide&&row.days.reduce((n,d)=>n+d.tokens,0)===115);},'Account-wide history did not converge on one counted account',30000,100);
+  assert.ok(asks.length>0);
+  for(const call of [main,other]){const row=await plan(call);assert.deepEqual(row.windows,[]);assert.deepEqual(row.rings,{});}
+});
+
+test('Cursor shares the plan and history exchange, renews a page once and holds both readers off',async t=>{
+  if(boxBinary().typescript)return t.skip('Uses the resident loopback Cursor sign-in fixture.');
+  const {computer}=await bench(t);const http=await import('node:http'),fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const at=Date.now(),day=86400000,today=Math.floor(at/day)*day;let key='fixture-cursor-shared',user='fixture-shared-user',exchange=0,mode='renew-page',pages=0;
+  const calls=[];
+  const access=seq=>['e30',Buffer.from(JSON.stringify({sub:'auth0|'+user,exp:Math.floor(at/1000)+3600,seq})).toString('base64url'),'fixture'].join('.');
+  const maker=http.createServer((req,res)=>{
+    calls.push(req.url);
+    const send=(status,value,headers={})=>{res.writeHead(status,{'Content-Type':'application/json',...headers});res.end(JSON.stringify(value));};
+    if(req.url==='/cursor/exchange'){assert.equal(req.headers.authorization,'Bearer '+key);exchange++;if(mode==='exchange-hold'){send(429,{}, {'Retry-After':'600'});return;}send(200,{accessToken:access(exchange)});return;}
+    if(req.url==='/cursor/GetCurrentPeriodUsage'){if(mode==='no-header'){send(429,{});return;}send(200,{enabled:true,planUsage:{limit:100,totalPercentUsed:20}});return;}
+    if(req.url==='/cursor/GetPlanInfo'){if(mode==='optional-hold'){send(429,{}, {'Retry-After':'600'});return;}send(200,{planInfo:{planName:'pro'}});return;}
+    if(req.url==='/cursor/dashboard/get-filtered-usage-events'){
+      const old=req.headers.cookie==='WorkosCursorSessionToken='+user+'%3A%3A'+access(1);pages++;
+      let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+        if(mode==='renew-page'&&old){send(401,{});return;}
+        if(mode==='page-hold'){send(429,{}, {'Retry-After':'600'});return;}
+        const start=Number(JSON.parse(body).startDate);
+        send(200,{totalUsageEventsCount:start===today?1:0,usageEventsDisplay:start===today?[{timestamp:String(today+1000),model:'composer-2',tokenUsage:{inputTokens:100,outputTokens:10,cacheReadTokens:5}}]:[]});
+      });return;
+    }
+    send(200,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const config=folder=>({...isolated(folder),KUVO_TEST_CURSOR_HISTORY:'1',KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  const box=await computer('CursorShared',undefined,config);const auth=path.join(box.home,'agents','cursor','auth.json');write(auth,JSON.stringify({apiKey:key}));
+  let resident=box.start(),call=box.connect(await resident.ready());
+  const limits='kuvo/agents/api/kuvo/limits',usage='kuvo/agents/api/kuvo/usage';
+  const read=async()=>{const answer=await call('GET',usage+'?zone=UTC');return answer.json.data.rows.find(r=>r.provider==='cursor');};
+  const refresh=async()=>{assert.equal((await call('POST',limits+'/refresh',{})).status,200);return until(async()=>{const data=(await call('GET',limits)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='cursor');},'Cursor plan did not settle',30000,100);};
+  const plan=await refresh();assert.equal(plan.problem,undefined);
+  await until(async()=> (await read())?.days.reduce((n,d)=>n+d.tokens,0)===115,'The renewed page did not reach history',30000,100);
+  assert.equal(exchange,2,'The simultaneous plan/history readers share an initial and one renewed exchange');assert.ok(pages>32&&pages<=36);
+  const beforeMalformed=calls.length;write(auth,'{');
+  const unreadable=await refresh();assert.equal(unreadable.id,plan.id);assert.deepEqual(unreadable.windows,plan.windows);assert.equal(calls.length,beforeMalformed);
+  write(auth,JSON.stringify({apiKey:key}));
+  mode='optional-hold';const before=calls.length;const held=await refresh();assert.equal(held.problem.kind,'rate-limited');assert.deepEqual(held.windows,plan.windows);
+  assert.deepEqual(calls.slice(before),['/cursor/GetCurrentPeriodUsage','/cursor/GetPlanInfo']);
+  assert.equal((await call('POST',usage+'/refresh?zone=UTC',{})).status,200);
+  const sent=calls.length;await refresh();assert.equal(calls.length,sent);
+  await resident.stop();
+  // A different owned key is not held by the previous sign-in. No standalone Cursor app auth is read.
+  fs.unlinkSync(auth);const app=path.join(box.env.HOME,'Library','Application Support','Cursor','User','globalStorage','storage.json');write(app,JSON.stringify({'cursorAuth/accessToken':'fixture-app-token'}));
+  resident=box.start();call=box.connect(await resident.ready());
+  assert.ok(!(await call('GET',limits)).json.data.rows.some(r=>r.provider==='cursor'));await call('POST',limits+'/refresh',{});await until(async()=>!(await read()),'Signed-out history stayed live');assert.equal(calls.length,sent);
+  await resident.stop();key='fixture-no-retry-header';user='fixture-no-header-user';mode='no-header';write(auth,JSON.stringify({apiKey:key}));
+  resident=box.start(undefined,{KUVO_TEST_CURSOR_HISTORY:''});call=box.connect(await resident.ready());
+  const atHold=Date.now();const noHeader=await refresh();assert.equal(noHeader.problem.kind,'rate-limited');assert.ok(noHeader.problem.until>=atHold+3600000-2000&&noHeader.problem.until<=Date.now()+3600000+2000,JSON.stringify(noHeader.problem));
+  await resident.stop();mode='exchange-hold';key='fixture-exchange-held';user='fixture-exchange-held-user';write(auth,JSON.stringify({apiKey:key}));
+  const beforeExchange=exchange;resident=box.start();call=box.connect(await resident.ready());
+  const heldExchange=await refresh();assert.equal(heldExchange.problem.kind,'rate-limited');assert.equal(exchange,beforeExchange+1);
+  const exchangeSent=calls.length;await refresh();await call('POST',usage+'/refresh?zone=UTC',{});assert.equal(calls.length,exchangeSent);
+  await resident.stop();mode='page-hold';key='fixture-pages-held';user='fixture-pages-held-user';write(auth,JSON.stringify({apiKey:key}));
+  const beforePages=pages;resident=box.start();call=box.connect(await resident.ready());
+  await until(()=>pages>beforePages,'No history page was attempted');
+  await until(async()=>{const r=await refresh();return r.problem?.kind==='rate-limited';},'History hold did not reach plan',30000,100);
+  assert.ok(pages-beforePages<=4,'The history asks no new page after its held round');
+  const pageSent=calls.length;await refresh();await call('POST',usage+'/refresh?zone=UTC',{});assert.equal(calls.length,pageSent);
+});
+
+test('Cursor history parses the shared maker pages, prices ordinary context, and names model families',async t=>{
+  if(boxBinary().typescript)return t.skip('Scratch TS disables maker requests.');
+  const fs=await import('node:fs'),http=await import('node:http');const {computer}=await bench(t);
+  const fixture=name=>JSON.parse(fs.readFileSync(new URL('../../box/test/fixtures/usage/'+name,import.meta.url),'utf8'));
+  const expected=fixture('cursor-events-expected.json'),corpus=fixture('cursor-events.json');
+  const day=86400000,today=Math.floor(Date.now()/day)*day,target=today-2*day,shift=target-Date.parse('2026-11-12T00:00:00Z');
+  const shifted=corpus.pages.map(page=>({...page,usageEventsDisplay:page.usageEventsDisplay.map(event=>typeof event.timestamp==='number'||typeof event.timestamp==='string'&&/^\d+$/.test(event.timestamp)?{...event,timestamp:typeof event.timestamp==='number'?event.timestamp+shift:String(Number(event.timestamp)+shift)}:event)}));
+  const at=Date.now(),user='fixture-cursor-corpus',key='fixture-cursor-page-key';const token=['e30',Buffer.from(JSON.stringify({sub:'auth0|'+user,exp:Math.floor(at/1000)+3600})).toString('base64url'),'fixture'].join('.');
+  const requested=[];
+  const maker=http.createServer((req,res)=>{
+    const send=value=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/cursor/exchange'){assert.equal(req.headers.authorization,'Bearer '+key);send({accessToken:token});return;}
+    if(req.url==='/cursor/GetCurrentPeriodUsage'){send({enabled:true,planUsage:{limit:100,totalPercentUsed:10}});return;}
+    if(req.url==='/cursor/GetPlanInfo'){send({planInfo:{planName:'pro'}});return;}
+    if(req.url==='/cursor/dashboard/get-filtered-usage-events'){
+      assert.equal(req.headers.cookie,'WorkosCursorSessionToken='+user+'%3A%3A'+token);
+      let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{const body=JSON.parse(raw),start=Number(body.startDate);requested.push([start,body.page]);
+        if(start===target){send(shifted[body.page-1]);return;}
+        if(start===target-day){send(shifted[2]);return;}
+        if(start===target-2*day){send(shifted[3]);return;}
+        send({totalUsageEventsCount:0,usageEventsDisplay:[]});
+      });return;
+    }
+    send({});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const box=await computer('CursorMakerCorpus',undefined,folder=>({...isolated(folder),KUVO_TEST_CURSOR_HISTORY:'1',KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:key}));
+  const folder=path.join(box.home,'agents','usage','pricing');for(const name of ['litellm','models-dev','supplement']){const data=fixture('pricing-cursor-'+name+'.json');if(name==='supplement')data.updated_at='2099-01-01';write(path.join(folder,name.replace('-','_')+'.json'),JSON.stringify(data));}
+  const call=box.connect(await box.start().ready()),route='kuvo/agents/api/kuvo/usage?zone=UTC';
+  const data=await until(async()=>{const r=await call('GET',route);assert.equal(r.status,200,r.text);return r.json.data.rows.find(r=>r.provider==='cursor')&&r.json.data;},'Cursor maker corpus did not reach history',30000,100);
+  for(const days of [data.rows.find(r=>r.provider==='cursor').days,data.totals.cursor]){
+    assert.deepEqual(days.map(d=>d.date),expected.days.map(d=>new Date(Date.parse(d.date+'T00:00:00Z')+shift).toISOString().slice(0,10)));
+    for(const [index,d] of days.entries()){
+      const want=expected.days[index];assert.equal(d.tokens,want.tokens);assert.ok(Math.abs(d.cost-want.cost)<1e-12);assert.deepEqual(d.unknown,want.unknown);
+      assert.deepEqual(d.models.map(m=>[m.model,m.tokens,m.family??m.model]),want.models.map(m=>[m.model,m.tokens,m.family]));
+      for(const [i,m] of d.models.entries())assert.ok(Math.abs(m.cost-want.models[i].cost)<1e-12);
+    }
+  }
+  assert.deepEqual(requested.filter(([start])=>start===target).map(([,page])=>page),[1,2]);
 });

@@ -271,6 +271,7 @@ pub(super) fn spawn(
     spec: &Spawn,
     recovery_name: Option<&str>,
     resident: bool,
+    console: Option<&crate::pty::Console>,
 ) -> io::Result<ChildGroup> {
     let (program, mut line) = command_line(spec)?;
     let cwd = spec.cwd.as_deref().map(|path| wide(path.as_os_str()));
@@ -309,25 +310,30 @@ pub(super) fn spawn(
         )
     })?;
 
-    let (stdin, input) = match &spec.stdin {
-        Stdio::Pipe => {
-            let (read, write) = io::pipe()?;
-            (Some(write), duplicate(read.as_raw_handle())?)
-        }
-        mode => (None, inherit_or_null(mode, STD_INPUT_HANDLE, true)?),
-    };
-    let (stdout, stdout_handle) = output(&spec.stdout, STD_OUTPUT_HANDLE)?;
-    let (stderr, error) = output(&spec.stderr, STD_ERROR_HANDLE)?;
+    let (mut stdin, mut stdout, mut stderr) = (None, None, None);
+    let mut inherited = Vec::new();
+    if console.is_none() {
+        let input;
+        (stdin, input) = match &spec.stdin {
+            Stdio::Pipe => {
+                let (read, write) = io::pipe()?;
+                (Some(write), duplicate(read.as_raw_handle())?)
+            }
+            mode => (None, inherit_or_null(mode, STD_INPUT_HANDLE, true)?),
+        };
+        let (out, out_handle) = output(&spec.stdout, STD_OUTPUT_HANDLE)?;
+        let (error, error_handle) = output(&spec.stderr, STD_ERROR_HANDLE)?;
+        (stdout, stderr) = (out, error);
+        inherited = vec![input, out_handle, error_handle];
+    }
     let job_list = [job.as_raw_handle()];
-    let handles = [
-        input.as_raw_handle(),
-        stdout_handle.as_raw_handle(),
-        error.as_raw_handle(),
-    ];
+    let handles: Vec<HANDLE> = inherited.iter().map(AsRawHandle::as_raw_handle).collect();
 
     let attributes = Attributes::new()?;
-    // SAFETY: both handle arrays remain alive through attribute deletion. The job is assigned
-    // as part of process creation, and exactly these three standard handles may be inherited.
+    // SAFETY: the job array, the handle array and the pseudoconsole remain alive through
+    // attribute deletion. The job is assigned as part of process creation. A terminal's program
+    // inherits no handle: its console is the pseudoconsole. Any other inherits exactly these
+    // three standard handles.
     unsafe {
         ok(UpdateProcThreadAttribute(
             attributes.list,
@@ -338,23 +344,37 @@ pub(super) fn spawn(
             null_mut(),
             null(),
         ))?;
-        ok(UpdateProcThreadAttribute(
-            attributes.list,
-            0,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-            handles.as_ptr().cast(),
-            size_of::<[HANDLE; 3]>(),
-            null_mut(),
-            null(),
-        ))?;
+        match console {
+            Some(console) => ok(UpdateProcThreadAttribute(
+                attributes.list,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                console.handle() as *const std::ffi::c_void,
+                size_of::<HPCON>(),
+                null_mut(),
+                null(),
+            ))?,
+            None => ok(UpdateProcThreadAttribute(
+                attributes.list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                handles.as_ptr().cast(),
+                size_of::<HANDLE>() * handles.len(),
+                null_mut(),
+                null(),
+            ))?,
+        }
     }
 
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    // (With null handles for a terminal's program, so it can't take this process's own.)
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = handles[0];
-    startup.StartupInfo.hStdOutput = handles[1];
-    startup.StartupInfo.hStdError = handles[2];
+    if let [input, output, error] = handles[..] {
+        startup.StartupInfo.hStdInput = input;
+        startup.StartupInfo.hStdOutput = output;
+        startup.StartupInfo.hStdError = error;
+    }
     startup.lpAttributeList = attributes.list;
     let mut result = PROCESS_INFORMATION::default();
     let priority = if spec.priority == Priority::Background {
@@ -370,8 +390,17 @@ pub(super) fn spawn(
             line.as_mut_ptr(),
             null(),
             null(),
-            1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | priority,
+            i32::from(console.is_none()),
+            // (A pseudoconsole is already windowless; a program told it has no console wouldn't
+            // attach to it.)
+            EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_UNICODE_ENVIRONMENT
+                | priority
+                | if console.is_some() {
+                    0
+                } else {
+                    CREATE_NO_WINDOW
+                },
             env.as_ptr().cast(),
             cwd.as_ref().map_or(null(), |path| path.as_ptr()),
             &startup.StartupInfo,

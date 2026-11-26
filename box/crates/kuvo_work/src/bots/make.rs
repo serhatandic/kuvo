@@ -22,7 +22,7 @@ use super::{
     AGENTS_DOWN, Bots,
     here::{DESCRIPTION, js_string, plain_name_of},
     job::{first_message_of, stamp},
-    kit::{JobText, NO_KIT, runs_with_agents},
+    kit::{JobText, NO_KIT, runs_on_agents},
     reach::{self, BOT_STEP, segment},
     tell::{digest, note_told, permission},
 };
@@ -289,7 +289,7 @@ impl Bots {
             })
         };
         let given_model = given.get("model").and_then(bot_model);
-        let agents = runs_with_agents(given_model.as_ref());
+        let agents = runs_on_agents(given_model.as_ref());
         // (The engine for a model of its own, and for its conversation; the coding agents', which
         // run in this box, for one of theirs.)
         let engine = if agents {

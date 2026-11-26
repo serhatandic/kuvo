@@ -225,7 +225,15 @@ pub async fn run(
         || kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions")),
         |(runtime, _)| runtime.sessions().clone(),
     );
-    agents::sessions::register(sessions.clone(), &mut routes);
+    // OpenCode's conversations from before it was a coding agent here, read from its database.
+    let opencode_history = kuvo_agents::acp::opencode_history::OpenCodeHistory::new(
+        home,
+        kuvo_engine::agent_program(home, std::env::vars_os().collect())
+            .ok()
+            .map(|(executable, env)| kuvo_agents::acp::OpenCodeProgram { executable, env }),
+        sessions.clone(),
+    );
+    agents::sessions::register(sessions.clone(), Some(opencode_history.clone()), &mut routes);
     let agent_background = sessions.background().clone();
     let shell_commands = agent_background.clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {
@@ -269,6 +277,7 @@ pub async fn run(
             running: Some(runs.clone()),
             home: home.to_owned(),
             agents: Some(accounts.clone()),
+            opencode: Some(opencode_history.clone()),
         };
         let rows = kuvo_agents::account_rows::AccountRows::new(
             home.to_owned(),
@@ -292,6 +301,7 @@ pub async fn run(
             running: None,
             home: home.to_owned(),
             agents: None,
+            opencode: Some(opencode_history),
         }))
     };
     if kind == ComputerKind::Machine {
@@ -430,6 +440,7 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
+    kuvo_services::terminals::register(&mut routes, home);
     kuvo_services::programs::register(&mut routes, account.clone());
     kuvo_services::browser::register(&mut routes, home);
     let browser_install = kuvo_services::browser::install::InstallTask::start(home.to_owned(), kind == ComputerKind::Mac)?;

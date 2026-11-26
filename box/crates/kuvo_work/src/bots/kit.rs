@@ -19,7 +19,16 @@ const AGENT_PROVIDERS: &[&str] = &[
     "antigravity",
 ];
 
-/// Whether a model runs with the coding agents.
+/// Whether a bot's conversation on `model` runs with the coding agents: every model's does, one
+/// of OpenCode's providers' on the OpenCode agent. (None chooses its model where it starts.)
+pub fn runs_on_agents(model: Option<&Value>) -> bool {
+    model
+        .and_then(|model| model.get("providerID"))
+        .and_then(Value::as_str)
+        .is_some_and(|provider| !provider.is_empty())
+}
+
+/// Whether a model is one of the coding agents' own (not one of OpenCode's providers).
 pub fn runs_with_agents(model: Option<&Value>) -> bool {
     let provider = model
         .and_then(|model| model.get("providerID"))
@@ -509,6 +518,9 @@ mod tests {
         )));
         assert!(runs_with_agents(Some(&json!({"providerID": "auto"}))));
         assert!(!runs_with_agents(Some(&json!({"providerID": "opencode"}))));
+        // A bot on one of OpenCode's models runs on the OpenCode agent.
+        assert!(runs_on_agents(Some(&json!({"providerID": "opencode", "id": "big-pickle"}))));
+        assert!(!runs_on_agents(None));
         assert!(!runs_with_agents(None));
     }
 }

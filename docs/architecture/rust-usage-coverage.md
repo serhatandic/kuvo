@@ -1062,13 +1062,148 @@ resolution and historical-reader change are platform-independent; the
 four-platform gate above remains the platform proof. Usage modules and
 row-specific additions now total 633,072 non-test characters (0.921× TS).
 
+### Slice 23: reset journal recovery and account permission
+
+The engine ChatGPT reset inventory was incomplete on a second computer even
+though its sign-in holder had a usable credit. The wire decoder accessed an
+absent optional array mutably, creating a JSON null and losing the typed reset
+fact. The decoder now leaves absent expiry/refill arrays absent; an actual
+holder-to-visitor route regressed on the old binary, and the scoped typed
+round trip proves inventory survives the wire.
+
+The native fixture now stops the owned resident abruptly after the sending
+journal and chosen target are saved, before the maker receives its consume
+request. After restart it reuses the same request and credit and a repeated
+confirmation makes no further spend. The initial graceful-stop fixture could
+complete a not-now result during shutdown; the actual crash boundary passes
+three focused repeats and the full gate. Additional scenarios cover a maker
+answer lost after spending, a fresh confirmation retrying the original maker
+ID, a chosen credit that expired before consume, a new credit on the next
+request, and disabling the old account's permission when a slot signs into
+another account and later signs back. A real two-holder engine fixture loses
+the successful relay reply, restarts the visitor, joins a fresh confirmation
+to the saved request, and verifies that permission changes and sign-in changes
+converge without another spend. A scoped actual Resets service verifies that
+an unasked request is denied while the directory is unknown or the holder's
+permission is off, with no journal entry or maker call.
+
+Mac Rust usage 113/113 applicable (one Windows-only skip), TypeScript 40/40,
+scoped reset cases 2/2, holder 12/12, Claude turns 59 passing with prior TODO,
+Codex 100/100, workspace test-target and Bun checks clean. The seeded
+differential matches 12/13 exact answers (actual scan clock only), native
+corpus 2/2; storage-format differences remain documented. Engine sessions
+81/81 on the unchanged full retry. Seen once on the first run: the unrelated
+project-file refiling case reported 2 engine inventory reads rather than its
+baseline 1; its assertion now dumps both counts, fixture requests, and the
+last inventory. Capped Linux (Lokum) 113/113, container and scratch removed.
+Native Windows and WSL both passed the combined slice 23–25 suite (see slice 25).
+Non-test size: 633,118 characters without
+leading indentation (0.921× the 687,546 TS baseline). 13 A1 entries closed;
+71 remain.
+
+### Slice 24: Antigravity owned profiles, quota holds and generation history
+
+The actual account reader now has a fixture matrix for either quota host,
+three independent pools (including Argon), usable local quota during a cloud
+failure, local status and cloud plan holds that do not suppress later quota
+reads, legacy quota fallback, failed and partial responses, and malformed
+credential retention through restart. The access-renewal fixture checks its
+own metadata and the verified defaults, one renewed access and reuse while
+the original source token is lapsed. The Mac process and listening-socket
+selectors use small typed helpers so the actual parsers can be exercised
+with synthetic command records, paths containing spaces and punctuation,
+wrong profiles, listener vs established sockets, and agy without CSRF.
+
+The shared generation SQLite corpus matches expected days, model labels,
+counts and prices on both boxes, excludes a generation outside the history
+window and an unowned profile, and leaves the actual databases unchanged.
+The multi-store route compares source revisions, confirming that an unchanged
+store is not decoded again, only the changed WAL store advances, and an
+unreadable known store keeps its last good events. The scoped actual WAL test
+commits during a snapshot read and checks that the next read sees the new
+stamp and both events; its later cutoff returns no old observations. Machine
+place hashing distinguishes the same canonical folder on different computers.
+
+The first capped Linux run caught a real unnecessary live-WAL rescan:
+115/116 applicable, with the new unchanged-store assertion failing (revision
+4 to 7; the independent store stayed at 2). A focused repeat on the same
+binary showed the WAL inode, write time and size unchanged, but metadata
+change time advanced on every read. The WAL stamp now tracks content-related
+identity, write time and length, not read-touched metadata. The main database
+and authorization-file stamp rules stay unchanged. A focused stamp case and
+the actual WAL commit-during-read case cover both no change and a real write.
+
+Corrected Mac Rust usage 116/116 applicable, engine sessions 81/81, scoped
+four cases (Mac selector, WAL snapshot, place identity and WAL stamp) pass;
+focused new routes 5/5, holder 12/12, Codex 100/100, workspace and Bun checks
+clean. TS 41/41 on the exact full retry; the initial TS run repeated the
+previous Grok restart discrepancy, 0.0044502 to 0.00445 with 1,000,000,003,372
+tokens and unchanged 2,989/869-byte source files (third observation).
+Adjacent Claude turns initial 58 passing plus the prior TODO and one unrelated
+exit-127 instead of exit-1 message fixture; the exact focused retry passes,
+and its assertion now includes the fixture resident log on failure. The seeded
+differential matches 12/13 exact answers (actual scan clock only), native
+corpus 2/2. Corrected capped Linux usage 116/116 applicable, including the
+unchanged-WAL revision assertion; container and scratch removed. Windows
+and WSL both passed the combined 23–25 run (see slice 25).
+Non-test size 633,641 characters without indentation (0.922× the TS baseline);
+19 A1 entries closed, 52 remain.
+
+### Slice 25: Cursor account-wide history and plan admission
+
+The actual signed-in reader now retains a hashed account identity even if the
+subscription has ended or its plan cannot be read. Two admitted computers
+with the same ended subscription converge on one account-wide row rather
+than adding its history twice. The full shared plan mapper corpus includes
+request-based team/enterprise fallback, subscription names, on-demand extras,
+credits and exact hashed identity. Cursor history exposes the model family
+using the same existing pricing catalog without altering token or cost totals.
+
+A shared exchange serves the concurrent plan and history requests; a refused
+access page renews it once. The first plan 429 without a Retry-After now holds
+for one hour and doubles on repeated refusals, while an explicit provider
+hold is respected and a successful read clears the refusal count. Actual
+account-wide history covers changed totals, incomplete or unknown days,
+partial progress at the read deadline, resuming older completed days, civil
+time zone, idle work, repricing, malformed credential writes and sign-out.
+The optional plan, exchange and history-page holds stop subsequent maker
+requests. Reader ownership, newest complete history, empty extra replacement,
+ended-plan projection and held-read retention are checked with fixed-clock
+production components. Cursor's Accounts action itself belongs to row 4.5.
+
+The common provider classifier on main now recognizes legacy native IDs;
+Insights no longer carries a duplicate alias guard. The actual portable
+backfill still counts all 50 tokens and the engine SQLite case excludes its
+portable mirror, on both boxes (focused Rust 7/7, TS 2/2).
+
+Mac Rust usage 119/119 applicable, scoped four cases 4/4, workspace and Bun
+checks clean. TS full retry 41/41 (initial 39/41: known frozen Grok cost
+variation and an overview read that raced initial index catch-up). Engine
+sessions exact full retry 81/81 (initial 80/81, project refile inventory reads
+2 rather than 1). Seeded differential exact 12/13 (actual scan clock only),
+native corpus 2/2. The civil-day test had requested a synchronous recount on
+an overview route, which in both boxes reads the existing index immediately;
+only the summary route waits for refresh=1. It now explicitly awaits the
+summary recount and verifies 1,304 counted tokens before querying the two
+zones, retaining exact daily assertions. Three runs on each box pass. The
+project-file refile test passed the exact engine suite retry and three
+focused repeats; the intermittent extra read is recorded for later (rare).
+On the latest merged base (6.4 browser install and shared provider classifier),
+Mac Rust usage 119/119, TS 41/41, engine sessions 81/81, workspace test targets
+and Bun clean; exact differential 12/13 (scan clock only), native 2/2. The
+combined frozen 23–25 suite also passed native Windows 119/119, WSL 119/119,
+and capped Linux (Lokum) 119/119. All applicable tests pass; each platform
+skips only its other-platform discovery fixture. No test resident/node/bun
+process remains on the PC, its two scratch homes are removed, and the Linux
+container and scratch were removed.
+Non-test size 635,823 characters without indentation (0.925× the 687,546 TS
+baseline). 21 A1 entries closed, 31 remain.
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
-- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
-- Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity busy-store retention and cutoff cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
-- Shared-settings migration from old kept files and preservation of newer parts/fields are now covered; unconverted peer authority is excluded by design.
+- Direct provider limits, reading admission, accepted-window display, notices, reset spending and signed settings: A1 complete. The individually deferred rare cases remain at their original inventory lines. Cursor Accounts action is owned by row 4.5.
+- Native Codex history, engine zero-billed ChatGPT and hosted history, hourly pricing, signed fallback preference propagation and history-peer identity: remaining actual-source and component cases in slice 26.
+- Insights refresh/kept summary, historical lineage and local/peer page/read/filter boundaries: remaining cases in slice 27.
 
 ### Triage after slice 17
 
@@ -1234,20 +1369,20 @@ does not block completion of the row.
 
 ### `box/test/usage/limits-resets.test.ts`
 
-- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — partial — local Codex reset replay conformance; additional exact TS cases open.
-- L265: the box stops after the spend is written down and before its request goes: started again, the same confirmation goes as the same request, and one reset is spent — open.
-- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — partial — Codex fixture reports unknown, resident restarts, then maker replies already redeemed under the same request.
-- L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — open.
-- L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
+- L223: the account's row says what it has; asked, the box offers one with a confirmation; confirmed, one is spent, and asked again with it, nothing more is — covered by local Codex, Claude and engine ChatGPT actual offer/confirmation scenarios (no maker spend before confirmation, exact inventory, repeated confirmation reuses the journal).
+- L265: the box stops after the spend is written down and before its request goes: started again, the same confirmation goes as the same request, and one reset is spent — covered by the actual Codex maker account-check hold: the sending journal exists before any consume call; the resident stops and the same confirmation spends the same target/request once after restart.
+- L293: the box stops after its maker spent it and before the answer came: started again, its maker says it's done, and nothing more is spent — covered by actual native Codex and Claude maker-unknown/restart fixtures: fresh confirmation replays the original request and target; the maker reports already redeemed, original confirmation becomes an idempotent replay.
+- L319: no answer came (its maker failed after spending it): the box says it may have been used, and Retry, with a new confirmation, goes as the same request and uses nothing more — covered by the same native Codex maker-unknown/fresh-confirmation route; reply says it may have been used and exact parameters are reused after restart.
+- L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — covered by actual Codex maker noCredit response on the chosen earliest credit, then new inventory and a distinct confirmation spend the next credit under a new request.
 - L358: an account with no resets left, or none at all, is refused before anything is offered — covered by the actual zero-credit inventory route and empty/unknown account refusal case, no offer or consume call.
 - L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — covered by the two-account native Claude fixture on Mac: exact extra usage, unavailable reset message, and refusal with the same message.
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
-- L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — open.
+- L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — covered by actual Claude file-owned reset grant maker-unknown, restart and fresh confirmation, exact prior grant request and no second spend.
 - L604: two confirmations at once (two apps): one request goes, and both hear it went — covered by concurrent engine ChatGPT credit fixture.
-- L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
-- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — partial — remote caller enables, holder disables, and both observe the decision; both holders signed in variant open.
-- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — partial — remote unknown and caller restart replay same confirmation; new confirmation and lost relay answer variants open.
+- L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — covered by the actual native Codex slot A→B→A fixture: distinct sign-in forces permission off and the old account does not recover its former allowance.
+- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — covered by actual remote engine account route: two signed-in holders see the same on decision, either can turn it off, and both reflect the off.
+- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — covered by actual engine holder success with discarded outgoing peer mail, caller restart, fresh confirmation aliases the original durable request, and the holder replays its recorded success without another provider spend.
 - L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — later (rare) — the sign-in changes precisely between an Always Allow offer and its spend; the normal old-offer refusal and account-switch allowance withdrawal remain required. Existing evidence: stale Codex offer refused and separate local Always Allow on/off case.
 - L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — later (rare) — the holder is away while on/off decisions are both made and the relay delivers the older one last; ordinary cross-computer decision sync remains required.
 - L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — later (rare) — a computer does not yet know the account, receives an off decision, then receives an older on after learning it.
@@ -1256,26 +1391,26 @@ does not block completion of the row.
 - L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — later (rare) — a remote spend loses its answer and the holder signs out before the retry.
 - L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — later (rare) — a second, distinct remote request follows an unresolved spend older than ten minutes; local aged-settlement fixture already passes.
 - L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — later (rare) — two opposite decisions from computers with different clocks within one clock-skew minute.
-- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — partial — local off decision rejects an unasked confirmation; peer behavior open.
+- L888: an agent's reset under Always Allow, with it turned off on the computer with the sign-in: refused there, nothing used — covered by actual Resets peer take_ask against a holder whose local allowance is off (maker choose and consume counters stay zero), and dual-holder route after the shared off decision.
 - L904: two confirmations at once, well after one that never heard back: that one settled first, then one fresh request for both — later (rare) — two concurrent confirmations arrive after a different older unsettled spend.
-- L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — open.
+- L919: the computer with the sign-in can't be reached while a spend is open: it stays open and says an earlier try may have gone, never 'nothing was used' — covered by the actual remote Claude unknown spend followed by a disconnected holder: earlier spend remains sending in the caller journal, reply says earlier try may have gone, and after reconnect/restart the fresh confirmation settles same request.
 - L937: Claude on Linux: the token is another account's than Claude Code's record says: nothing is spent from it — covered by Claude grant profile mismatch fixture.
 - L976: an agent's reset under Always Allow got no answer, then Always Allow is turned off: the user confirming it is theirs, and it goes through as the same request — later (rare) — an agent spend loses its answer, its allowance is turned off, then the user confirms the same unsettled spend.
 - L998: Claude on Linux whose record of the sign-in leaves out its organization: its token's account matches by the account itself, and a reset goes — later (rare) — Claude’s credential record omits the organization while the maker still identifies it.
-- L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — open.
+- L1017: signed in to another account in a slot: Always Allow for the one before goes off here, and on your other computers too — covered by the actual two-signed-in-computer engine route turning permission on, switching the account in one slot, observing the old account permission off on its other holder, and switching back without restoring it.
 - L1044: Claude's token is a newly signed-in account while its record still says the one before: nothing is spent, and the new account's Always Allow stays — later (rare) — a token belongs to a newly signed-in account but the local account record still names the old one, with a separate allowance for the new account.
 - L1070: an agent's reset that never heard back, Always Allow turned off since, and the user's Use a quarter of an hour on: it goes the first time, the agent's settled first — later (rare) — an agent’s unsettled spend, an intervening disabled allowance, and a distinct later explicitly confirmed reset.
 - L1108: signed in to another account while Anthropic is asked who the sign-in is: the reset is spent with the sign-in that was checked, never the new one — later (rare) — the credential changes while the provider profile identity request for a reset is already in flight; ordinary mismatching identity refusal remains required.
 - L1132: Claude's record and its token's account: one account only where the accounts match, and the organizations where both say one — later (rare) — record and token include inconsistent or partly missing organization identities.
 - L1144: a decision a peer told stays while the link only leaves that peer out for a moment — later (rare) — membership listing temporarily omits a decision’s already known peer without that peer actually leaving.
 - L1165: a spend a box began for a Mac that left the setup is answered as it went, never 'nothing was used' for one that went — later (rare) — a member leaves the setup while the holder is deciding its already-sent reset.
-- L1196: before its link has said who your computers are (just started), a box uses no one's resets without asking: its agents are told to ask, and nothing is spent — open.
+- L1196: before its link has said who your computers are (just started), a box uses no one's resets without asking: its agents are told to ask, and nothing is spent — covered by actual Resets admission with a retained allowance and pending directory: unasked use returns Ask the user, no journal spend and no maker call; after known directory and permission it can consume one.
 - L1218: the answer to a reset a Mac passed to its machine still comes through after the machine leaves the peer list: it says how it went, never 'may have been used' — later (rare) — a machine leaves the peer list at the exact time its outstanding reset answer arrives.
 
 ### `box/test/usage/limits-sign-ins.test.ts`
 
-- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — partial — standalone fixture removes real credential file, watcher withdraws retained rows before a client reads; Accounts action route variant open.
-- L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — open.
+- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — completed by 4.5 — Accounts owns Cursor disconnect; actual reader removal withdraws the live plan and history immediately, including after restart.
+- L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — completed by 4.5 — Accounts owns Cursor key admission and refusal; resident reader tests prove refusal and removal withdraw live readings and that a standalone Cursor app sign-in is ignored.
 - L165: a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none — covered by native usage-control fixture and OAuth credential removal; explicit-only process start is deliberate work timing.
 - L186: a newly signed-in Mac Claude publishes its first reading before the next limits round — superseded — the resident admits a locally signed-in Claude account immediately but only an explicit refresh starts a plan-reading CLI, as approved in Deliberate work-timing changes; the two-account fixture proves no passive start and first explicit reading.
 - L209: what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file — duplicate — the standalone sign-out regression removes the retained credential-backed cache while no client reads, and the legacy upgrade route refuses an old reading before a different sign-in can inherit it. Resident admission is direct, not an independent bridge confirmation.
@@ -1320,7 +1455,7 @@ does not block completion of the row.
 - L838: on the route and its event: named accounts and rows, and clients told when a window starts over — covered by actual accepted Claude quota expiry over the open limits feed: named row, short ring starts over and bar changes to long, without another native probe.
 - L872: a box that reads arms a timer for the next window to start over, and stopping clears it — covered by the actual reset deadline event and resident-owned deadline task, which has no periodic wake without a deadline and ends when the resident stops.
 - L894: the agents' plan_limits tool says a window that started over isn't read since — covered by the actual Claude deadline scenario calling the agent plan_limits route after expiry: started over, not read since.
-- L905: a plan that ended is one, whatever another computer kept of it — open.
+- L905: a plan that ended is one, whatever another computer kept of it — covered by fixed-clock production merge of newest ended plan with a previous held window: no old rings, windows or level, and matching agent-tool wording.
 - L915: a newly added provider is read immediately before its first scheduled tick — superseded — the old automatic read-again after adding a native provider is replaced by explicit-only native probes; the newly admitted account gets its own reading on the first manual round, without passive CLI starts.
 
 ### `box/test/usage/native-usage.test.ts`
@@ -1344,60 +1479,60 @@ does not block completion of the row.
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
 - L37: shared blob fixtures decode exactly as Swift, including fallback time and malformed messages — covered by 16-case scoped Rust decoder corpus (normalized current model naming).
-- L42: read-only SQLite batches and pricing match Swift's shared expected days — partial — Antigravity metadata scenario with fixture SQLite; shared expected-day matrix open.
-- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — partial — both-box multi-store fixture includes live WAL-only writes; cutoff-specific case open.
+- L42: read-only SQLite batches and pricing match Swift's shared expected days — covered by the shared actual generation SQLite corpus through both routes, with the expected prices, days, tokens, model labels and byte-identical read-only databases.
+- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — covered by both-box multi-store history, scoped WAL commit/read snapshot and stamp change, and the shared actual older-than-window generation cutoff.
 - L72: legacy databases without steps, then gaining metadata, are re-read — covered by multi-store history scenario on both boxes.
 - L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — duplicate — the both-box multi-store route checks malformed new and oversized stores, other stores’ exact totals, repair and retention of an unreadable known store. The leftover TS diagnostic log-count assertion is not a displayed, retained or wire result.
 - L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — covered by both-box multi-store history scenario (unrelated empty table).
 - L143: a conversations folder that can't be listed is logged once and left out while the others count — later (rare) — a deliberately unlistable conversations path alongside usable stores and exact log-once counting.
 - L158: missing stores are empty and symlinked stores count only once — covered by both-box multi-store history scenario, symlink variant on Unix.
-- L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — open.
+- L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — covered by the shared owned-profile actual route ignores an unowned profile and the multi-store route retains readable totals alongside a broken database; scoped production place hashing distinguishes the same folder on different computer identities.
 - L202: deleted databases leave the total after restart and do not block the remaining stores — covered by both-box multi-store history scenario.
-- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — both-box multi-store fixture proves live WAL changes and retaining last good rows when temporarily unreadable; idle aging and decoded-store counts open.
+- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — covered by the extended actual multi-store route proves unchanged source revisions stay unchanged, only a WAL-changed store gets a new revision, and temporarily unreadable stores retain original counts. The shared cutoff corpus and deletion/restart cover pruning.
 - L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — covered by shared bounded-row corpus, exact count and processed tokens.
 - L284: shared missing/empty profile fixtures contain no history, as Swift — duplicate — the both-box empty-history route asserts the empty Antigravity row, and the multi-store route includes an empty/unrelated schema that cannot contribute tokens. This covers missing and empty stores without a parallel empty-fixture-only decoder test.
 - L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — later (rare) — an unreadable Antigravity database coincides with removal of another provider’s native history.
-- L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — open.
+- L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — covered by the scoped actual read-only WAL database opens a snapshot, commits a second generation from another connection during the callback, sees the first snapshot once and then both on the new stamp; the shared route proves exact prices and cutoff, no invented zero.
 - L367: a busy database read before still moves every round though it's written to during every read, and isn't logged — later (rare) — the same busy database changes during every repeated scan, with exact diagnostic suppression.
 
 ### `box/test/usage/usage-antigravity-plan.test.ts`
 
-- L24: shared legacy and plan-name parity fixtures — partial — scoped Rust checks all legacy and name pairs; OAuth defaults assertion remains open.
+- L24: shared legacy and plan-name parity fixtures — covered by the existing scoped legacy/name corpus plus actual OAuth metadata and verified default form inputs in the shared renewal test.
 - L29: shared Swift parity fixtures — covered by all seven shared summary cases through the production normalizer.
 - L32: exact pools, first usable wins, clamp and Swift rounding — covered by new exact mapper input and shared corpus.
-- L38: all three pools retain independent windows in client rows — open.
+- L38: all three pools retain independent windows in client rows — covered by the actual cloud-host matrix with Gemini, Claude/GPT and Argon named windows and the Argon-only tightest ring.
 - L48: Argon is separate and unambiguous — covered by exact production mapper cases for unique enabled weekly pool, duplicate, disabled/invalid flag and ambiguous standard bucket.
 - L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — covered by exact production mapper case.
-- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — partial — local-only profile fixture; cloud-failure fallback combination not separately exercised.
+- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — covered by extended owned profile TLS route, successful local quotas during cloud outage and later cloud fallback when the local summary has no groups.
 - L115: Linux /proc maps only own profile and owned listening socket inodes — covered by synthetic process/socket and local TLS route fixture.
-- L133: Mac own profile can contain spaces and regex punctuation — open.
-- L140: Mac agy stand-in permits no CSRF and language_server still requires it — open.
+- L133: Mac own profile can contain spaces and regex punctuation — covered by scoped production Mac process-record selector and actual loopback profile fixture with spaces, brackets, parentheses and plus signs.
+- L140: Mac agy stand-in permits no CSRF and language_server still requires it — covered by scoped production Mac socket endpoint selector permits agy without CSRF but not language_server; existing actual loopback TLS route also verifies a CSRF-less agy response.
 - L148: Linux agy own-profile stand-in permits no CSRF — superseded — the old stand-in gave an advertised extension port with no owned listening socket; the current discovery only uses owned listeners. The extended owned-loopback route exercises authless agy, retries after an authless refusal, and no cloud request.
-- L158: Mac ps/lsof stand-ins require own profile — open.
+- L158: Mac ps/lsof stand-ins require own profile — covered by scoped production Mac process and listener parser with own and wrong profile, listening IPv4/IPv6 vs established socket, exact CSRF admission; native Windows and Unix fixtures cover their process seams.
 - L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — covered by local-only profile route fixture.
 - L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — covered by extended owned loopback route fixture.
 - L211: the overview shows heavy use of the tightest available pool without mixing pools — duplicate — the actual Antigravity menu route changes which pool is tightest, checks both rings from the same pool, and matches Helper menu percentages. The fixed-clock ring matrix also verifies one pool per pair.
-- L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
+- L256: one host refusing and optional plan refusing cannot poison usable quotas — covered by the cloud-host matrix asks secondary after main refuses and uses primary when the optional host refuses, while optional plan failure never discards usable quota.
 - L278: legacy project-plan 403 still permits quota retrieval — later (rare) — an old project-plan endpoint responds with a specific legacy 403 while quota remains available.
-- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
+- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — covered by actual renewal test checks either supplied own OAuth metadata or exact verified default form inputs, and the existing refresh-only credential refusal route.
 - L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — later (rare) — deliberately redirected profile/refusal state paths and refusal-state cleanup in the same fixture; normal sign-out still required.
 - L334: agy with no CSRF is retried after an authless endpoint 403 — covered by extended owned loopback route fixture.
 - L347: missing windows without resets survive only one partial round across restart — covered by Antigravity partial-pool restart route.
-- L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
-- L380: malformed and unreadable sign-in retain known identity and windows — open.
+- L360: refused access refreshes once, valid refresh cache survives expired source expiry — covered by actual OAuth renewal test refuses original access, renews exactly once, reuses the renewed access through repeat reads and an expired original source credential.
+- L380: malformed and unreadable sign-in retain known identity and windows — covered by actual cloud-host matrix preserves the last identity and windows when its own token file is malformed, including after resident restart.
 - L404: access refusal persists through failed refresh and restart without resending old bearer — covered by refusal/restart fixture.
 - L423: unwritable or unreadable refusal journal stops further sends — later (rare) — a refusal state journal is unreadable or unwritable just as a maker refuses the existing credential.
 - L443: restart never sends a refused token returned unchanged by refresh — duplicate — the actual refused-bearer/restart route returns the same refused credential from renewal and asserts the new process sends only renewal, never that bearer to a quota host.
 - L459: refused refresh is not retried after access disappears or changes — later (rare) — a refused refresh credential is retained through removal or replacement of its access credential; disappearance/restart already has a fixture. Existing evidence: refusal survives restart; changed access cases open.
 - L477: local CSRF refusal survives restart — covered by extended owned loopback route fixture; the rejected token is not resent.
 - L491: persisted refusal survives restart and metadata-only credential rewrites — later (rare) — same refused credential is rewritten only in its metadata after a restart.
-- L510: holds stop further endpoints; a refusal never resends unchanged credential — open.
-- L531: complete read, partial and unreadable reads keep prior known windows — open.
+- L510: holds stop further endpoints; a refusal never resends unchanged credential — covered by the existing independent held-host scenario verifies an ordinary hold stops that host even on manual refresh, while the actual refused access/refresh journal scenario proves a rejected credential is not sent again across restart.
+- L531: complete read, partial and unreadable reads keep prior known windows — covered by the actual cloud matrix moves through complete, partial and failed answers, retaining the compatible known windows; malformed source after restart keeps counts.
 - L560: only the main host's own refusal of the token's call can refuse the sign-in — later (rare) — the main and optional quota hosts give different token-acceptance results; ordinary independent-host hold and renewal are still required.
 - L583: a token a summary just answered is never refused by a later call, which still tries the daily host — later (rare) — a token is accepted by one quota summary but then refused by a later optional request in the same round before querying another host.
 - L603: a daily host's wait keeps the main host's windows, and only that host waits — covered by independent held-host fixture (other quota remains usable).
-- L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — open.
-- L656: the language server's plan status waiting keeps its windows, and only that call waits — open.
+- L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — covered by actual cloud matrix holds the optional plan lookup, continues reading new summary and legacy quota windows, and never retries the held call. The legacy quota request no longer needs the old project lookup.
+- L656: the language server's plan status waiting keeps its windows, and only that call waits — covered by the extended actual owned profile TLS scenario holds only the language server status request while local summary still updates, then asks the cloud when local summary has no groups.
 - L676: with every host waiting, the read waits for the soonest, and says whether a request left — later (rare) — all quota hosts simultaneously have distinct outstanding waits, so the next deadline must be their minimum.
 - L721: A contradicted Gemini reading keeps the other pool readable until Google counts Gemini — later (rare) — local turn evidence conflicts with one Gemini pool while another remains readable until Google catches up.
 - L765: use before Google's window started, or in another pool, leaves Google's unused windows standing — later (rare) — a contradictory quota observation relates to a use before the provider’s window started or a different pool.
@@ -1426,36 +1561,36 @@ does not block completion of the row.
 
 ### `box/test/usage/usage-cursor.test.ts`
 
-- L51: ${each.fn}: ${each.name} — partial — 15 original plan corpus cases through actual Rust routes (mapUsage, grokBot, mapSummary, request-based usage); independent fallback, append-missing and plan-name variants remain open (see slice 14).
-- L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
+- L51: ${each.fn}: ${each.name} — covered by the complete shared Cursor plan corpus via actual Rust maker routes, including independent fallback, append-missing, request-based team and plan-name variants.
+- L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — covered by shared actual usage-events pages, exact day costs and tokens, model family labels and incomplete event evidence.
 - L109: a page that isn't one, or an event that isn't, as UsageKit takes them — later (rare) — deliberately malformed page envelopes and nonnumeric or missing event fields.
-- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
+- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — covered by the complete Cursor plan corpus through its own key and exact hashed identity, including JWT user case and plan/meters/credits variants.
 - L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — covered by Cursor route renewal and exact request-count fixture.
 - L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — covered by Cursor refusal, persisted 429 hold, sign-out and replacement credential route scenario.
-- L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — open.
-- L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — open.
+- L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — covered by exact uncapped extra plan corpus and production peer merge of the newest extras, including empty successful replacement.
+- L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — covered by actual resident refresh during a malformed in-progress credential write: prior plan windows and account ID remain, no new maker call.
 - L222: a request-based plan: its requests as its total, said once; the summary's on-demand — covered by the Enterprise request-based plan fixture with exact request cap and on-demand dollars.
 - L238: a test's box never asks Cursor itself, whatever sign-in its folder holds — superseded — the old TypeScript scratch-only cursorReachable path has no resident caller. Rust conformance isolates the home and enables only explicit fixture endpoints via KUVO_TEST_USAGE_BASE and KUVO_TEST_PATH_ONLY (see standalone reader construction). The real maker behavior is covered by the Cursor plan and history fixtures.
 - L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — covered by Cursor 32-day initial and two-day restart fixture.
-- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — partial — incomplete second page preserves the previous complete day; changed total and never-known day tests open.
-- L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — open.
+- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — covered by actual history page failure, moved total and unknown-day cases: prior complete days remain and no incomplete row is accepted.
+- L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — covered by actual bounded catch-up deadline with older completed days saved; restart requests the remaining days and retains the saved ones.
 - L351: out of time in the middle of a day of many pages: no page after it is asked — later (rare) — a long day with many pages hits the deadline precisely in the middle of the page walk; ordinary bounded backfill remains required.
-- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — partial — Cursor history route UTC, prior complete data retained, repricing without page reads; non-UTC and idle round scenarios open.
-- L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — open.
-- L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — open.
+- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — covered by actual non-UTC projection, failed page retention, retained source repricing and no new requests on unchanged idle round; shared events family labels.
+- L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — covered by two actual admitted computers with ended subscription and identical hashed account: one account-wide row with maker tokens counted once.
+- L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — covered by resident history route with malformed credential across restart, previous complete account-wide use retained; removal withdraws it.
 - L445: signed out of Cursor here: no Cursor row from this box — duplicate — the standalone maker scenario removes Cursor’s actual credential and waits for its retained row to disappear while no client reads; the next real limits GET has no account or row.
-- L460: a row's extras are its newest reading's: one with none says there are none now, though an older box still has some — open.
-- L471: a row takes its newest box's reading, never a sum — open.
-- L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — open.
-- L515: one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over — open.
+- L460: a row's extras are its newest reading's: one with none says there are none now, though an older box still has some — covered by fixed-clock production fact merging: newest successful extras replace older extras including an empty list; failed read keeps previous extras.
+- L471: a row takes its newest box's reading, never a sum — covered by three-computer production history Book/view; newest complete account-wide answer is selected, not summed, and all holders are named.
+- L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — covered by fixed-clock admitted-reader Book fixture: a recent peer observation suppresses a later holder’s read while distinct accounts remain eligible.
+- L515: one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over — covered by the production Book fixture for selected holder, exact same digest heartbeat, elapsed successful-read timeout and admitted roster removal; actual two-computer no-subscription history converges.
 - L571: a box whose reads keep failing (today's events, while older days are known) doesn't say it read the account, so another of your computers takes over — later (rare) — today’s pages keep failing despite already complete older days at the moment a different computer is eligible for takeover.
-- L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — open.
+- L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — covered by actual no-header provider response and fixed-clock production cache: first wait one hour, next doubles, explicit Retry-After honored, success clears count.
 - L597: an unknown computer does not affect which peer reads Cursor — later (rare) — an unknown computer is inserted into the account-reader directory; normal admitted-reader takeover and unknown history refusal remain required.
-- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — partial — actual plan rejection/429 shared with account-wide history across restart, including explicit refresh; history-only exchange/events hold variants remain open.
+- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — covered by existing rejected-key/restart fixture and actual shared plan/history exchange and page 429 variants; neither reader makes another held request.
 - L647: a token turned away midway whose exchange is then held off (429): no page more is sent with it; nor any once the plan's read is held off meanwhile — later (rare) — a mid-page token refusal followed by an exchange 429 or an independently held plan request.
-- L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — open.
+- L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — covered by actual optional plan 429 stopping later optional requests and history refresh, preserving complete previous windows.
 - L694: a token turned away midway whose key Cursor then turns away too: no page more is sent, and its plan isn't asked again with it — later (rare) — a mid-page token refusal followed by the replacement key also being refused.
-- L709: a token Cursor turns away midway through the history is exchanged again once, and its page asked again; two reads as the box starts share one exchange — open.
+- L709: a token Cursor turns away midway through the history is exchanged again once, and its page asked again; two reads as the box starts share one exchange — covered by actual simultaneous plan/history startup sharing exchange, one refused page renewal and exact exchange count.
 
 ### `box/test/usage/usage-grok-hosted.test.ts`
 
