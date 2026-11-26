@@ -869,8 +869,12 @@ started it by its bare path.
 
 Live runs:
 
-- **Pending: live Antigravity turn (Gemini 4 Hydrogen).** It waits for the user's go-ahead, and
-  uses a sign-in copied read-only while its token is fresh.
+- **Passed (2026-11-26): live Antigravity turn (Gemini 4 Hydrogen).** `agents-antigravity-live` ran
+  through the Rust box on macOS with `agy` 1.5.18 and read-only copies of the fresh sign-in files
+  in a temp home (token untouched, no refresh, temp home deleted after). Gemini 4 Hydrogen replied
+  `"OK"`, streamed `session.created`, `session.inbox.enqueued`, `session.inbox.delivered`,
+  `session.execution.started`, `session.execution.succeeded` and `session.idle` to the app's feed,
+  and ended cleanly in 7.0 s.
 - **Pending: live Grok turn on its cheapest model.** Neither the Mac nor lokum has a sign-in to copy
   (no `auth.json`, no `XAI_API_KEY`).
 
