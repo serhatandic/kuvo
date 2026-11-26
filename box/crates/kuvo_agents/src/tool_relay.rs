@@ -838,6 +838,7 @@ impl Program {
             stdout: Stdio::Pipe,
             // (What it says on stderr isn't kept: a server's own can have its keys in it.)
             stderr: Stdio::Null,
+            priority: kuvo_os::process::Priority::Background,
         };
         let mut group = spawn.spawn()?;
         let mut stdin = group.stdin.take().ok_or_else(|| io::Error::other("no input"))?;

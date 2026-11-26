@@ -461,11 +461,13 @@ async fn run_recorded(
     // (A bare name, `npm`, as your PATH finds it.)
     let executable = kuvo_os::platform::which(program.as_os_str(), &environment, &[])?;
     let mut spawn = Spawn::new(program, environment);
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.executable = executable;
     spawn.args = args.to_vec();
     spawn.cwd = cwd.map(Path::to_path_buf);
     spawn.stdout = Stdio::Pipe;
     spawn.stderr = Stdio::Pipe;
+    kuvo_os::process::wait_for_background_memory().await;
     tokio::task::spawn_blocking(move || {
         let mut child = spawn.spawn().ok()?;
         started(child.identity().pid);
