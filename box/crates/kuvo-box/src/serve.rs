@@ -560,6 +560,11 @@ pub async fn run(
         home,
     )
     .await;
+    let catch_up = limits.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        catch_up.replay_notices(kuvo_services::usage::limits::now());
+    })
+    .await;
     let (verify_service, verify_agents, verify_readers, verify_engine, verify_home) = (
         limits.clone(),
         agent_shutdown.clone(),

@@ -576,19 +576,32 @@ pub fn register(routes: &mut Registry, service: Service) {
 }
 
 impl Service {
+    /// None means the metric is not visible. Some(empty) means it is visible
+    /// but its alerts are off; that must not consume an unannounced crossing.
     pub fn notification_milestones(
         &self,
         service: &str,
         window: &super::readings::Window,
-    ) -> std::collections::BTreeSet<super::readings::Milestone> {
+    ) -> Option<std::collections::BTreeSet<super::readings::Milestone>> {
         use super::readings::Milestone::*;
         let Ok(settings) = self.read(self.shared().as_ref()) else {
             return Default::default();
         };
-        let Some(unit) = settings.units.get("notifications") else {
-            return Default::default();
-        };
+        let spark = service == "codex"
+            && window
+                .model
+                .as_deref()
+                .unwrap_or(&window.id)
+                .to_ascii_lowercase()
+                .contains("spark");
         let metric = match (service, window.id.as_str()) {
+            ("codex", id) if spark => {
+                if id.ends_with("secondary") {
+                    "sparkWeekly"
+                } else {
+                    "spark"
+                }
+            }
             ("claude", "five_hour") | ("codex", "primary") | ("opencode", "rolling") => "session",
             ("claude", "seven_day") | ("codex", "secondary") => "weekly",
             ("claude", "seven_day_fable") => "fable",
@@ -602,6 +615,10 @@ impl Service {
             ("cursor", "total" | "included") => "usage",
             ("cursor", "on_demand") => "onDemand",
             ("cursor", "grok_bot") => "grokBot",
+            ("copilot", "premium_interactions") => "premium",
+            ("openrouter", "key") => "keyLimit",
+            ("zai", "web_search") => "webSearches",
+            ("zai", "window_10080") => "weekly",
             _ => &window.id,
         };
         let enabled = |card: &str| {
@@ -666,13 +683,19 @@ impl Service {
         if !visible {
             return Default::default();
         }
-        [
-            ("underTenPercent", UnderTenPercent),
-            ("healthyToClose", HealthyToClose),
-            ("closeToRunningOut", CloseToRunningOut),
-        ]
-        .into_iter()
-        .filter_map(|(key, m)| (unit.value[key] == true).then_some(m))
-        .collect()
+        let unit = settings.units.get("notifications");
+        Some(
+            [
+                ("underTenPercent", UnderTenPercent),
+                ("healthyToClose", HealthyToClose),
+                ("closeToRunningOut", CloseToRunningOut),
+            ]
+            .into_iter()
+            .filter_map(|(key, m)| {
+                unit.is_some_and(|unit| unit.value[key] == true)
+                    .then_some(m)
+            })
+            .collect(),
+        )
     }
 }

@@ -893,3 +893,351 @@ pub(super) fn merged_facts(members: &[Member]) -> crate::usage::plan_facts::Fact
         partial: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::usage::{
+        limits::Account,
+        plan_facts::{Balance, Facts, Problem, Unit},
+        readings::Trail,
+    };
+    const NOW: u64 = 1_794_916_800_000;
+
+    fn window(id: &str, minutes: u32, used: f64, read: u64, reset: Option<u64>) -> Window {
+        Window {
+            id: id.into(),
+            minutes: Some(minutes),
+            used,
+            read,
+            resets_at: reset,
+            source: Source::Usage,
+            model: None,
+            name: None,
+            amount: None,
+        }
+    }
+    fn member(name: &str, windows: Vec<Window>, facts: Facts) -> Member {
+        let window_order = windows.iter().map(|w| w.id.clone()).collect();
+        let trails = windows
+            .into_iter()
+            .map(|w| (w.id.clone(), Trail::new(w).unwrap()))
+            .collect();
+        Member {
+            name: name.into(),
+            here: name == "Studio",
+            away: false,
+            away_at: None,
+            entry: Entry {
+                account: Account {
+                    provider: "claude-code".into(),
+                    service: Provider::Claude,
+                    account: Some("default".into()),
+                    label: None,
+                    identity: Some("0123456789abcdef".into()),
+                    sign_in: "fixture".into(),
+                },
+                facts,
+                trails,
+                window_order,
+                notices: vec![],
+                partial_missing: BTreeSet::new(),
+                refusals: 0,
+                borrowed_until: None,
+            },
+        }
+    }
+    fn usage(m: &Member, at: u64) -> Value {
+        display(&m.entry, std::slice::from_ref(m), at)
+    }
+
+    #[test]
+    fn usage_names_percentage_meters_and_keeps_their_own_readings() {
+        let mut sonnet = window("sonnet", 10080, 0.95, NOW - MINUTE, Some(NOW + 10 * MINUTE));
+        sonnet.model = Some("Sonnet".into());
+        let mut premium = window(
+            "premium",
+            43200,
+            0.425,
+            NOW - MINUTE,
+            Some(NOW + 10 * MINUTE),
+        );
+        premium.name = Some("Premium requests".into());
+        let m = member(
+            "Studio",
+            vec![
+                window("five", 300, 0.425, NOW - MINUTE, Some(NOW + 10 * MINUTE)),
+                window("weekly", 10080, 0.71, NOW - MINUTE, Some(NOW + 10 * MINUTE)),
+                sonnet,
+                window("monthly", 43200, 0.70, NOW - MINUTE, None),
+                premium,
+            ],
+            Facts::default(),
+        );
+        let data = usage(&m, NOW);
+        assert_eq!(data["computers"], json!([{"name":"Studio","here":true}]));
+        let meters = data["meters"].as_array().unwrap();
+        assert_eq!(
+            meters
+                .iter()
+                .map(|m| (&m["title"], &m["value"], &m["level"]))
+                .collect::<Vec<_>>(),
+            vec![
+                (&json!("5-hour"), &json!("43%"), &json!("calm")),
+                (&json!("Weekly"), &json!("71%"), &json!("near")),
+                (&json!("Sonnet · Weekly"), &json!("95%"), &json!("over")),
+                (&json!("Monthly"), &json!("70%"), &json!("calm")),
+                (&json!("Premium requests"), &json!("43%"), &json!("calm"))
+            ]
+        );
+        assert_eq!(meters[0]["share"], 0.425);
+        assert_eq!(meters[0]["freshForMs"], 10 * MINUTE);
+        assert!(meters.iter().all(|m| m["readAt"] == NOW - MINUTE));
+        assert_eq!(meters[0]["resetsAt"], NOW + 10 * MINUTE);
+        assert!(meters[3].get("resetsAt").is_none());
+    }
+
+    #[test]
+    fn merged_meters_show_only_the_computers_that_read_them() {
+        let studio = member(
+            "Studio",
+            vec![
+                window(
+                    "five",
+                    300,
+                    0.425,
+                    NOW - 3 * MINUTE,
+                    Some(NOW + 10 * MINUTE),
+                ),
+                window(
+                    "weekly",
+                    10080,
+                    0.425,
+                    NOW - MINUTE,
+                    Some(NOW + 10 * MINUTE),
+                ),
+            ],
+            Facts::default(),
+        );
+        let build = member(
+            "Build",
+            vec![
+                window("primary", 300, 0.83, NOW, Some(NOW + 10 * MINUTE)),
+                window(
+                    "secondary",
+                    10080,
+                    0.425,
+                    NOW - 2 * MINUTE,
+                    Some(NOW + 10 * MINUTE),
+                ),
+            ],
+            Facts::default(),
+        );
+        // These are the two winning accepted observations after account merge.
+        let mut merged = studio.entry.clone();
+        merged.trails.remove("five");
+        merged
+            .trails
+            .insert("primary".into(), build.entry.trails["primary"].clone());
+        merged.window_order = vec!["primary".into(), "weekly".into()];
+        let view = display(&merged, &[studio, build], NOW);
+        assert_eq!(
+            view["computers"],
+            json!([{"name":"Build","here":false},{"name":"Studio","here":true}])
+        );
+        assert_eq!(view["meters"][0]["value"], "83%");
+        assert_eq!(view["meters"][0]["readAt"], NOW);
+        assert_eq!(view["meters"][1]["readAt"], NOW - MINUTE);
+        assert_eq!(view["meters"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn overdue_reset_keeps_historical_meter_but_clears_the_sidebar_ring() {
+        let m = member(
+            "Studio",
+            vec![window("five", 300, 0.425, NOW - MINUTE, Some(NOW))],
+            Facts::default(),
+        );
+        assert_eq!(usage(&m, NOW - 1)["meters"][0]["freshForMs"], 1);
+        let meter = &usage(&m, NOW)["meters"][0];
+        assert_eq!(meter["value"], "43%");
+        assert_eq!(meter["freshForMs"], 0);
+        let (_, row) = super::super::project(&m.entry, "fixture", "Studio", NOW);
+        assert_eq!(row["windows"][0]["used"], 0.0);
+        assert_eq!(row["windows"][0]["expired"], true);
+        assert_eq!(row["windows"][0]["title"], "Session");
+        assert_eq!(row["rings"]["short"]["used"], 0.0);
+    }
+
+    #[test]
+    fn stale_away_or_failed_meter_uses_its_own_freshness() {
+        for minutes in [29, 30, 31] {
+            let m = member(
+                "Studio",
+                vec![window("five", 300, 0.425, NOW - minutes * MINUTE, None)],
+                Facts {
+                    checked: Some(NOW),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                usage(&m, NOW)["meters"][0]["freshForMs"],
+                if minutes == 29 { MINUTE } else { 0 }
+            );
+        }
+        let mut m = member(
+            "Build",
+            vec![window("five", 300, 0.425, NOW - MINUTE, None)],
+            Facts::default(),
+        );
+        m.away_at = Some(NOW + MINUTE);
+        assert_eq!(usage(&m, NOW)["meters"][0]["freshForMs"], MINUTE);
+        m.away = true;
+        assert_eq!(usage(&m, NOW)["meters"][0]["freshForMs"], 0);
+        m.away = false;
+        m.entry.facts.problem = Some(Problem::new(ProblemKind::Failed, "PRIVATE_ERROR"));
+        assert_eq!(usage(&m, NOW)["meters"][0]["freshForMs"], 0);
+    }
+
+    #[test]
+    fn display_status_hides_private_maker_errors_and_handles_ended_or_absent_plans() {
+        for (kind, words) in [
+            (
+                ProblemKind::Failed,
+                "Couldn’t read limits. Check the connection, then try again.",
+            ),
+            (
+                ProblemKind::Expired,
+                "Sign-in expired. Sign in again under Accounts.",
+            ),
+            (
+                ProblemKind::Unreadable,
+                "Can’t read limits. Check the sign-in under Accounts.",
+            ),
+            (
+                ProblemKind::RateLimited,
+                "The provider paused readings. Kuvo will try again.",
+            ),
+        ] {
+            let m = member(
+                "Build",
+                vec![],
+                Facts {
+                    problem: Some(Problem::new(kind, "PRIVATE_ERROR")),
+                    ..Default::default()
+                },
+            );
+            let view = usage(&m, NOW);
+            assert_eq!(view["status"], json!({"words":words,"warning":true}));
+            assert_eq!(view["meters"], json!([]));
+            assert!(!view.to_string().contains("PRIVATE_ERROR"));
+        }
+        let waiting = member("Studio", vec![], Facts::default());
+        assert_eq!(
+            usage(&waiting, NOW)["status"]["words"],
+            "Waiting for the first reading."
+        );
+        let checked = member(
+            "Studio",
+            vec![],
+            Facts {
+                checked: Some(NOW),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            usage(&checked, NOW)["status"]["words"],
+            "No limits reported."
+        );
+        let ended = member(
+            "Studio",
+            vec![window("five", 300, 0.425, NOW - MINUTE, None)],
+            Facts {
+                checked: Some(NOW),
+                problem: Some(Problem::new(ProblemKind::Ended, "PRIVATE_ERROR")),
+                ..Default::default()
+            },
+        );
+        let view = usage(&ended, NOW);
+        assert_eq!(
+            view["status"],
+            json!({"words":"Plan ended.","warning":false})
+        );
+        assert_eq!(view["meters"], json!([]));
+        assert_eq!(view["updatedAt"], NOW);
+    }
+
+    #[test]
+    fn capped_credits_and_extras_draw_meters_without_time_windows() {
+        let m = member(
+            "Studio",
+            vec![],
+            Facts {
+                checked: Some(NOW - MINUTE),
+                balance: Some(Balance {
+                    left: 20.,
+                    limit: Some(100.),
+                    unit: Unit::Usd,
+                }),
+                extras: vec![Extra::Capped {
+                    id: "monthly".into(),
+                    name: "Monthly spend".into(),
+                    amount: 45.,
+                    limit: 50.,
+                    unit: Unit::Usd,
+                    resets_at: Some(NOW + 60 * MINUTE),
+                }],
+                ..Default::default()
+            },
+        );
+        let view = usage(&m, NOW);
+        assert!(view.get("status").is_none());
+        assert_eq!(view["updatedAt"], NOW - MINUTE);
+        let meters = view["meters"].as_array().unwrap();
+        assert_eq!(meters.len(), 2);
+        assert_eq!(meters[0]["title"], "Credits");
+        assert_eq!(meters[0]["value"], "80%");
+        assert_eq!(meters[0]["level"], "near");
+        assert_eq!(meters[1]["title"], "Monthly spend");
+        assert_eq!(meters[1]["value"], "90%");
+        assert_eq!(meters[1]["level"], "over");
+        assert_eq!(meters[1]["resetsAt"], NOW + 60 * MINUTE);
+        let (_, row) = super::super::project(&m.entry, "fixture", "Studio", NOW);
+        assert_eq!(row["rings"], json!({}));
+        assert_eq!(row["level"], "over");
+    }
+
+    #[test]
+    fn reset_countdowns_round_up_across_hour_day_and_dst_boundaries() {
+        let hour = 60 * MINUTE;
+        let day = 24 * hour;
+        for (span, words) in [
+            (hour - MINUTE - 1, Some("resets in 59 min")),
+            (hour - 1, Some("resets in 1 h")),
+            (hour, Some("resets in 1 h")),
+            (hour + 1, Some("resets in 2 h")),
+            (2 * hour - MINUTE, Some("resets in 2 h")),
+            (day - 1, Some("resets in 24 h")),
+            (day, None),
+            (day + 1, None),
+        ] {
+            assert_eq!(
+                labels(Some(NOW + span), NOW, NOW)
+                    .first()
+                    .map(|x| x.words.as_str()),
+                words
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(labels(Some(NOW + day), NOW, NOW + 1)).unwrap(),
+            json!([{"at":NOW+1,"words":"resets in 24 h"}])
+        );
+        let at = |s: &str| s.parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
+        let before = at("2026-03-08T01:30:00-05:00");
+        let after = at("2026-03-08T04:29:00-04:00");
+        assert_eq!(
+            serde_json::to_value(labels(Some(after), before, before)).unwrap(),
+            json!([{"at":before,"words":"resets in 2 h"}])
+        );
+    }
+}

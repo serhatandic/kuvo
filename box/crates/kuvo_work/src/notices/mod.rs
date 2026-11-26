@@ -63,7 +63,7 @@ fn kept_still(entry: &Told, now: i64) -> bool {
         NEWS_KEPT
     };
     let expires = entry.notice.data.get("expires").and_then(Value::as_str);
-    now - entry.at < kept
+    now.saturating_sub(entry.at) < kept
         && (entry.notice.category != "usage"
             || expires.is_none_or(|at| at.is_empty() || at.parse::<i64>().is_ok_and(|at| at > now)))
 }
@@ -114,12 +114,28 @@ impl Notices {
         unless: impl FnOnce(&[Told]) -> Option<String>,
     ) -> Option<Result<Told, String>> {
         let now = now();
+        self.keep_at(notice, by_agent, now, unless)
+    }
+
+    /// Usage catch-up carries the maker's original time, not the time a
+    /// resident received the notice. Never extend its visibility on replay.
+    pub fn keep_at(
+        &self,
+        notice: Notice,
+        by_agent: bool,
+        at: i64,
+        unless: impl FnOnce(&[Told]) -> Option<String>,
+    ) -> Option<Result<Told, String>> {
+        let now = now();
         let entry = Told {
             id: new_id(),
-            at: now,
+            at: at.min(now),
             notice: words::short_notice(notice),
             by: by_agent.then(|| "agent".to_owned()),
         };
+        if !kept_still(&entry, now) {
+            return None;
+        }
         kuvo_store::files::create_private_dirs(&self.folder).ok()?;
         let lock = self.folder.join("told.lock");
         let _lock = StaleLock::acquire(

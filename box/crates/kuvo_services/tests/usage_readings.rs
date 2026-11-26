@@ -117,3 +117,75 @@ fn an_off_toggle_does_not_consume_an_unannounced_crossing() {
         Some(vec![Milestone::UnderTenPercent])
     );
 }
+
+#[test]
+fn projected_crossings_only_follow_accepted_samples_in_the_same_window() {
+    let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+    let all = toggles();
+    for (minute, used) in [(130, 0.12), (140, 0.14)] {
+        assert_eq!(
+            trail.observe(reading(START + minute * MIN, used, RESET), &all),
+            Some(vec![])
+        );
+    }
+    assert_eq!(
+        trail.observe(reading(START + 160 * MIN, 0.285, RESET), &all),
+        Some(vec![Milestone::HealthyToClose])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 170 * MIN, 0.4, RESET), &all),
+        Some(vec![Milestone::CloseToRunningOut])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 180 * MIN, 0.5, RESET), &all),
+        Some(vec![])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 181 * MIN, 0.99, RESET - 60 * MIN), &all),
+        None
+    );
+    assert_eq!(trail.occurrence(Milestone::HealthyToClose), 1);
+    assert_eq!(trail.occurrence(Milestone::CloseToRunningOut), 1);
+}
+
+#[test]
+fn hidden_metrics_reprime_after_restart_but_keep_occurrence_ids() {
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    let all = toggles();
+    let almost = Milestone::UnderTenPercent;
+    assert_eq!(
+        trail.observe_visible(reading(START + 161 * MIN, 0.91, RESET), Some(&all)),
+        Some(vec![almost])
+    );
+    // Two consistent recoveries while hidden, then the first visible reading
+    // is a baseline rather than a replay of the old warning.
+    trail.observe_visible(reading(START + 162 * MIN, 0.82, RESET), None);
+    trail.observe_visible(reading(START + 163 * MIN, 0.82, RESET), None);
+    assert!(!trail.notice_state().primed);
+    let mut trail: Trail = serde_json::from_slice(&serde_json::to_vec(&trail).unwrap()).unwrap();
+    assert_eq!(
+        trail.observe_visible(reading(START + 164 * MIN, 0.82, RESET), Some(&all)),
+        Some(vec![])
+    );
+    assert_eq!(trail.occurrence(almost), 1);
+    assert_eq!(
+        trail.observe_visible(reading(START + 165 * MIN, 0.92, RESET), Some(&all)),
+        Some(vec![almost])
+    );
+    assert_eq!(trail.occurrence(almost), 2);
+}
+
+#[test]
+fn cold_start_and_unknown_cadence_do_not_invent_a_projection() {
+    let all = toggles();
+    let mut first = reading(START + 160 * MIN, 0.95, RESET);
+    first.minutes = None;
+    first.resets_at = None;
+    let mut trail = Trail::new(first.clone()).unwrap();
+    assert_eq!(trail.occurrence(Milestone::UnderTenPercent), 0);
+    first.read += MIN;
+    first.used = 0.98;
+    assert_eq!(trail.observe(first, &all), Some(vec![]));
+    assert!(!trail.projected());
+    assert!(!trail.runs_out());
+}

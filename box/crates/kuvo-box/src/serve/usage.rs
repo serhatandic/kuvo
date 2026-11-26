@@ -508,18 +508,25 @@ pub fn notices(service: &Service, notices: Notices) {
             thread: Some(format!("usage:{}", fact.row)),
             data: data.as_object().expect("notice data").clone(),
         };
-        let _ = notices.keep(notice, false, |kept| {
-            kept.iter()
-                .any(|entry| {
-                    entry
-                        .notice
-                        .data
-                        .get("notice")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(id.as_str())
-                })
-                .then(|| "Already told.".into())
-        });
+        notices
+            .keep_at(
+                notice,
+                false,
+                i64::try_from(fact.at).unwrap_or(i64::MAX),
+                |kept| {
+                    kept.iter()
+                        .any(|entry| {
+                            entry
+                                .notice
+                                .data
+                                .get("notice")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(id.as_str())
+                        })
+                        .then(|| "Already told.".into())
+                },
+            )
+            .is_some()
     }));
 }
 
