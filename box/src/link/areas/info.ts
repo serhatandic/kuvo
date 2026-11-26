@@ -27,7 +27,7 @@ import { computerCompatibility, editFeatures } from "./compatibility";
 import { integrationCatalog } from "./integrations";
 
 // Older judges require their entire pre-update feature list in the transient SSH probe.
-const RETIRED_TRIAL_FEATURES = ["goals", "messages.commands", "queue.removed.keyword", "work.goals", "work.goals.apps", "work.goals.projects"];
+const RETIRED_TRIAL_FEATURES = ["autopilot", "goals", "handoff", "messages.commands", "queue.removed.keyword", "reviews", "reviews.parts", "reviews.scopes", "work.goals", "work.goals.apps", "work.goals.projects"];
 
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, info } = context;

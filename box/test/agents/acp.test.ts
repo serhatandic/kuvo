@@ -347,7 +347,7 @@ class TestAntigravity extends AntigravityAgent {
 
 let sent = 0
 
-/** A session on `agent` (with its rules, or its agent: "plan"), and your first message to it. */
+/** A session on `agent` (with its rules), and your first message to it. */
 function start(agent: Agent, options: { permissions?: PermissionRule[]; agent?: string } = {}) {
   sessions?.closeAll()
   sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider === agent.providerID ? agent : undefined) } as unknown as Roster, new Auto(root))
@@ -576,26 +576,26 @@ describe("ACP agents, nothing dropped", () => {
     await started
   })
 
-  test("Antigravity's question turned down by its box with words (Autopilot): its step says them, as it can only hear cancelled", async () => {
+  test("Antigravity's question turned down by its box with words: its step says them, as it can only hear cancelled", async () => {
     sessions = undefined as unknown as Sessions
     const update = { sessionUpdate: "tool_call", toolCallId: "interaction_8", title: "Which roast?", status: "pending" }
     const agent = agentSaying([["s1", update]], [], { method: "session/request_permission", params: { toolCall: { toolCallId: "interaction_8", title: "Which roast?" }, options: [{ optionId: "warm", name: "Warm" }] } })
     const started = run(agent)
     await until(() => Boolean(sessions?.list(root).length && sessions.forms(sessions.list(root)[0].id).length))
     const session = sessions.list(root)[0].id
-    sessions.replyForm(session, sessions.forms(session)[0].id, null, "This is on Autopilot: leave it.")
+    sessions.replyForm(session, sessions.forms(session)[0].id, null, "Leave it for now.")
     await started
     expect(answers()).toEqual([{ outcome: "cancelled" }])
-    expect(tools(session)[0]).toMatchObject({ id: "interaction_8", name: "question", state: { input: { questions: [{ question: "Which roast?" }] }, status: "error", error: { message: "This is on Autopilot: leave it." } } })
+    expect(tools(session)[0]).toMatchObject({ id: "interaction_8", name: "question", state: { input: { questions: [{ question: "Which roast?" }] }, status: "error", error: { message: "Leave it for now." } } })
   })
 
-  test("Grok's question turned down by its box with words (Autopilot): they're the answer it hears", async () => {
+  test("Grok's question turned down by its box with words: they're the answer it hears", async () => {
     const ask = { method: "_x.ai/ask_user_question", params: { toolCallId: "q1", questions: [{ id: "which", question: "Which roast?", options: [{ label: "Warm" }] }] } }
     const id = start(new TestGrok(program(fakeAcp([], [], ask), join(root, "grok")), root))
     await until(() => sessions.forms(id).length === 1)
-    sessions.replyForm(id, sessions.forms(id)[0].id, null, "This is on Autopilot: leave it.")
+    sessions.replyForm(id, sessions.forms(id)[0].id, null, "Leave it for now.")
     await settled(id)
-    expect(received().find((message) => message.id >= 900 && message.id < 1000 && !message.method).result).toEqual({ outcome: "accepted", answers: { "Which roast?": ["This is on Autopilot: leave it."] } })
+    expect(received().find((message) => message.id >= 900 && message.id < 1000 && !message.method).result).toEqual({ outcome: "accepted", answers: { "Which roast?": ["Leave it for now."] } })
   })
 
   test("a form it asks you to fill in", async () => {
@@ -738,48 +738,25 @@ describe("What ACP agents ask", () => {
     }
   })
 
-  test("Plan mode: it's started planning; an edit it asks for is refused without asking you, and, stopped by that, it's told why and carries on to the end", async () => {
-    const asked = watch("permission.asked")
-    try {
-      const file = join(root, "notes.txt")
-      const id = await run(agentSaying([edit("e1", file)], [], asking("e1"), { stopReason: "cancelled", next: [said("Here's the plan instead.")] }), 1, { agent: "plan" })
-      expect(launches().map(([mode]) => JSON.parse(mode))).toEqual([{ approvesAll: false, plan: true }])
-      expect(asked.of(id)).toHaveLength(0)
-      expect(answers()).toEqual([{ outcome: "selected", optionId: "reject-once" }])
-      const [, carryOn] = prompts()
-      expect(carryOn.params.prompt[0].text).toContain(`Kuvo Code didn't allow editing ${file}`)
-      expect(words(id)).toContain("Here's the plan instead.")
-      expect(tools(id)[0]).toMatchObject({ id: "e1", state: { status: "error" } })
-      expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
-    } finally {
-      asked.stop()
-    }
-  })
-
-  test("Grok is started approving all, asking first or planning, as the session is; a change starts it again on its conversation", async () => {
+  test("Grok is started approving all or asking first, as the session is; a change starts it again on its conversation", async () => {
     const grok = new TestGrok(program(fakeAcp([said("Done.")]), join(root, "grok")), root)
     const id = await run(grok)
     sessions.update(id, { permissions: askFirst })
     send(id)
     await settled(id, 2)
-    await settled(another(grok, { agent: "plan" }))
     expect(launches()).toEqual([
       ["agent", "--always-approve", "stdio"],
       ["--permission-mode", "default", "agent", "stdio"],
-      ["--permission-mode", "plan", "agent", "stdio"],
     ])
     expect(received().filter((message) => message.method === "session/load").map((message) => message.params.sessionId)).toEqual(["s1"])
     expect(words(id)).toBe("Done.Done.")
   })
 
-  test("Antigravity is put in its yolo mode for Approve All and its plan mode for Plan; a session to ask first that it can't be made to ask in doesn't start", async () => {
+  test("Antigravity is put in its yolo mode for Approve All; a session to ask first that it can't be made to ask in doesn't start", async () => {
     const modes = { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "default", options: ["default", "yolo", "plan"].map((value) => ({ value, name: value })) }
     const setTo = () => received().filter((message) => message.method === "session/set_config_option" && message.params.configId === "mode").map((message) => message.params.value)
     await run(new TestAntigravity(fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [modes] } }), root))
     expect(setTo()).toEqual(["yolo"])
-    root = mkdtempSync(join(base, "case-"))
-    await run(new TestAntigravity(fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [modes] } }), root), 1, { agent: "plan" })
-    expect(setTo()).toEqual(["plan"])
     // Its conversation left running without asking (an Approve All session's), and it won't change.
     root = mkdtempSync(join(base, "case-"))
     const stuck = fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [{ ...modes, currentValue: "yolo" }] }, refuses: [{ method: "session/set_config_option", params: { configId: "mode", value: "default" } }] })

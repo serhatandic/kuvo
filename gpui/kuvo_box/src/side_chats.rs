@@ -1,4 +1,4 @@
-//! A conversation's side chats (PROTOCOL.md, "Side questions, handoffs and reviews",
+//! A conversation's side chats (PROTOCOL.md, "Side questions",
 //! `btw.threads.events`): questions asked aside, answered from what the conversation knows and kept
 //! out of it, each side thread with its questions, as the box keeps and groups them; asked on the
 //! box the conversation lives on, through its agents bridge.

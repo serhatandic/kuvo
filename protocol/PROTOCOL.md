@@ -500,8 +500,8 @@ changed since it was read.
 - A client draws project sessions under their project, chats under Chats, and subagents under their
   parent. It never sorts, slices or counts a project's list itself (`shown`, `total`, `more`).
   Vectors: `vectors/session-lists.json`.
-- A session marked `kuvo.branchedFrom`, `kuvo.handoffFrom` or `kuvo.startedBy` shows under that
-  conversation when both are in the same list, newest first. A subagent is never grouped this way.
+- A session marked `kuvo.branchedFrom`, `kuvo.startedBy` or, on one from before handoffs went,
+  `kuvo.handoffFrom` shows under that conversation when both are in the same list, newest first. A subagent is never grouped this way.
   A client with a conversation open follows `kuvo.carriedTo` when it's archived: the new
   conversation takes its place, draft and all.
 - **Read state is the box's.** A session is unread while `time.idle` is later than `time.viewed`.
@@ -543,7 +543,7 @@ that waits on you is never counted as at work.
 ### What a typed message means
 
 Kuvo has no typed keywords or commands: what's written goes to the agent as written, "/" and "!"
-included. A client sends a draft through the conversation's box with `POST kuvo/sessions/<id>/draft`
+included (to Claude Code too, which runs none of its own commands on it). A client sends a draft through the conversation's box with `POST kuvo/sessions/<id>/draft`
 (`typed.draft`), once for each `id`. The box checks the model first, then sends. The answer is
 `send` (it went), `restore {text, error, action?}` (put the text back and show why) or `ambiguous`
 (the box can't tell whether it went).
@@ -760,9 +760,6 @@ What a client must know that the routes don't say.
   closed. Auto asks first while the sandbox isn't running, and Full Access comes down to Auto while
   it isn't confirmed. It stays set to what you picked, and comes back to that once it can. In Auto, a
   reviewer on the box judges what's beyond the sandbox's walls.
-- **Autopilot** sits beside approval and is never part of it. Approval says what may run without
-  asking; Autopilot says what may be decided without asking. It's off (Interactive) until you turn
-  it on.
 - **Sandbox.** Each box runs its agents' commands in a sandbox wherever it can, with no switch. The
   way out is one command at a time (`sandbox_ask`): the box itself runs an allowed command outside
   the sandbox. Also Allowed rules belong to a project, at most 8 each; a bot's own folder and the

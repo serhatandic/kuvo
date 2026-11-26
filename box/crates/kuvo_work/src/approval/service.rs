@@ -129,7 +129,7 @@ impl ApprovalService {
         };
         let mut shown = json!({
             "approval": shown_approval, "effective": kept.effective, "stored": kept.stored,
-            "plan": at.data["agent"] == "plan", "options": self.options(),
+            "plan": false, "options": self.options(),
         });
         if let Some(held) = &kept.held {
             shown["held"] = why(held);

@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Removed Autopilot, reviews, handoffs, the shell in conversations and Plan mode, which could only be started with the retired typed commands. Messages that start with "/" now go to Claude Code as you typed them, like every other agent.
+
 - A message from one of your agents reaches a busy conversation right away.
 
 - Kuvo stays responsive while your agents run builds.

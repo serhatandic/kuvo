@@ -19,17 +19,17 @@ const skip = boxBinary().typescript && process.platform === "win32" ? "The refer
  * bridge reads its sessions as it starts): plain ones, and Ask First ones.
  */
 function resident(fixture = {}) {
-  const pool = { plain: [], ask: [], plan: [], slot: [] };
+  const pool = { plain: [], ask: [], slot: [] };
   const box = {};
   before(async () => {
     if (skip) return;
     box.claude = await scriptedClaude(fixture);
-    for (const [kind, permissions, agent] of [["plain", undefined], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
+    for (const [kind, permissions] of [["plain", undefined], ["ask", askFirst]]) {
       for (let index = 1; index <= 12; index++) {
         const id = `ses_claude_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.claude.home, "projects", id);
         fs.mkdirSync(folder, { recursive: true });
-        box.claude.seed(id, { directory: folder, model: "default", permissions, agent });
+        box.claude.seed(id, { directory: folder, model: "default", permissions });
         pool[kind].push({ id, folder });
       }
     }
@@ -47,7 +47,7 @@ function resident(fixture = {}) {
     await box.claude.start();
   });
   after(async () => box.claude?.close());
-  const kind = ({ ask = false, plan = false, slot = false }) => slot ? "slot" : plan ? "plan" : ask ? "ask" : "plain";
+  const kind = ({ ask = false, slot = false }) => slot ? "slot" : ask ? "ask" : "plain";
   box.peek = (options = {}) => pool[kind(options)][0];
   box.next = (options = {}) => {
     const session = pool[kind(options)].shift();
@@ -472,7 +472,19 @@ describe("summarizing when you ask (/compact)", { skip }, () => {
     return answer.json.data;
   };
 
-  test("it's typed as you would, and ends on its first result: the row shows it, the conversation stays as it was", async () => {
+  test("a message of yours that starts with /compact reaches Claude Code as the words you wrote: it's not a command, and nothing is summarized", async () => {
+    const id = await afterATurn(compacts());
+    box.claude.script("/compact please", [...streams("$UUID", [{ type: "text", text: "Sure." }]), result(["$UUID"])]);
+    await box.claude.prompt(id, "/compact please");
+    const rows = await box.claude.idles(id, 2);
+    const typed = heardUser(box.claude, "/compact please").at(-1);
+    assert.equal(typed.message.content.filter(part => part.type === "text").map(part => part.text).join("").split("\n\n<from-phone>")[0], "/compact please");
+    assert.equal(typed.client_composed, true);
+    assert.equal(rows.some(row => row.type === "compaction"), false);
+    assert.deepEqual(users(rows), [`go ${id}`, "/compact please"]);
+  });
+
+  test("Kuvo's own summarizing is typed as you would, and ends on its first result: the row shows it, the conversation stays as it was", async () => {
     const id = await afterATurn(compacts());
     const before = heardUser(box.claude, "/compact").length;
     assert.equal((await compact(id)).state, "compacting");
@@ -480,6 +492,7 @@ describe("summarizing when you ask (/compact)", { skip }, () => {
     assert.equal(heardUser(box.claude, "/compact").length, before + 1);
     const typed = heardUser(box.claude, "/compact").at(-1).message.content;
     assert.equal(typed.filter(part => part.type === "text").map(part => part.text).join(""), "/compact");
+    assert.equal(heardUser(box.claude, "/compact").at(-1).client_composed, undefined);
     assert.equal(idles(rows)[1].outcome, "succeeded");
     assertMatch(rows.find(row => row.type === "compaction"), { status: "completed", reason: "manual" });
     assert.deepEqual(words(rows), []);
@@ -763,37 +776,6 @@ describe("Claude Code's permissions", { skip }, () => {
     }
   });
 
-  test("plan mode is Claude Code's own: it writes its plan to its file even under Ask First, other edits are refused, and Build takes it out", async () => {
-    const session = box.next({ plan: true });
-    const plan = { file_path: path.join(home(), ".claude", "plans", "a-plan.md"), content: "# The plan" };
-    const edit = { file_path: path.join(session.folder, "a.ts"), old_string: "1", new_string: "2" };
-    const { id } = await box.begin([
-      hook("h1", "Write", plan, "toolu_1"), { reply: "h1" },
-      canUse("c2", "Edit", edit, "toolu_2"), { reply: "c2" },
-      canUse("c3", "ExitPlanMode", { plan: "# The plan" }, "toolu_3"), { reply: "c3" },
-      { type: "assistant", message: { id: "plan-said", role: "assistant", content: [{ type: "text", text: "Here's the plan." }] }, parent_tool_use_id: null },
-      result(["$UUID"]),
-    ], {}, session);
-    const taken = await until(() => heardUser(box.claude, `go ${id}`)[0], () => JSON.stringify(box.claude.heard().filter(line => line.type === "user").map(line => [line.pid, line.message.content])));
-    const started = box.claude.heard().find(line => line.argv && line.pid === taken.pid);
-    assert.ok(started.argv.some((arg, index) => arg === "--permission-mode=plan" || (arg === "--permission-mode" && started.argv[index + 1] === "plan")), JSON.stringify(started.argv));
-    assert.equal(decision(await box.claude.answered(id, "h1")), undefined);
-    assertMatch((await box.claude.answered(id, "c2")).response, { behavior: "deny" });
-    // Done planning: told to wait for you, who builds it when you're ready.
-    const exit = (await box.claude.answered(id, "c3")).response;
-    assert.equal(exit.behavior, "deny");
-    assert.match(exit.message, /wait/);
-    await box.claude.idles(id);
-    assert.deepEqual(await box.claude.permissions(id), []);
-    const modes = () => box.claude.heard().filter(line => line.request?.subtype === "set_permission_mode" && line.pid === started.pid).map(line => line.request.mode);
-    const before = modes().length;
-    const answer = await box.claude.selectAgent(id, "build");
-    assert.equal(answer.status, 200, answer.text);
-    await box.claude.prompt(id, `build it ${id}`);
-    await box.claude.idles(id, 2);
-    assert.deepEqual(modes().slice(before), ["default"]);
-  });
-
   test("in Build, a plan mode it went into on its own it leaves when its plan is done, and carries on", async () => {
     const { id } = await box.begin([canUse("c1", "ExitPlanMode", { plan: "# The plan" }, "toolu_1"), { reply: "c1" }, result(["$UUID"])]);
     assertMatch((await box.claude.answered(id, "c1")).response, { behavior: "allow", updatedInput: { plan: "# The plan" } });
@@ -820,8 +802,8 @@ describe("Claude Code's permissions", { skip }, () => {
     assertMatch((await box.claude.answered(id, "q2")).response, { behavior: "deny" });
     // Turned down by its box, with words: those are what it hears.
     const third = await until(async () => (await box.claude.forms(id)).find(each => each.id !== first.id && each.id !== second.id), "No third form.");
-    assert.equal((await box.claude.dismissForm(id, third.id, "This is on Autopilot: leave it.")).status, 200);
-    assertMatch((await box.claude.answered(id, "q3")).response, { behavior: "deny", message: "This is on Autopilot: leave it." });
+    assert.equal((await box.claude.dismissForm(id, third.id, "Leave it for now.")).status, 200);
+    assertMatch((await box.claude.answered(id, "q3")).response, { behavior: "deny", message: "Leave it for now." });
     await box.claude.idles(id);
   });
 });
@@ -900,7 +882,7 @@ describe("Claude Code, instructions that changed as its conversation goes on", {
     assert.equal(lastSent(id), `third ${id}`);
   });
 
-  test("changed while Claude Code runs: a command you type goes as typed, and the next message says what changed", async () => {
+  test("changed while Claude Code runs: a message that starts with / is told what changed too, as ordinary words", async () => {
     const { id } = box.next();
     await answered(id, "first", 1);
     // Its worktree changed: it starts again, going on with the same conversation.
@@ -909,11 +891,12 @@ describe("Claude Code, instructions that changed as its conversation goes on", {
     await box.claude.prompt(id, "/review");
     await box.claude.idles(id, 2);
     const typed = box.claude.heard().filter(line => line.type === "user").at(-1);
-    assert.equal(words(typed.message.content.findLast(part => part.type === "text").text), "/review");
+    const said = words(typed.message.content.findLast(part => part.type === "text").text);
+    assert.ok(said.includes("You work in the worktree at /a/tree."));
+    assert.ok(said.endsWith("\n\n/review"));
     assert.ok(box.claude.heard().find(line => line.argv && line.pid === typed.pid).argv.some(arg => arg.startsWith("--resume")));
     await answered(id, "go on", 3);
-    assert.ok(lastSent(id).includes("You work in the worktree at /a/tree."));
-    assert.ok(lastSent(id).endsWith(`\n\ngo on ${id}`));
+    assert.equal(lastSent(id), `go on ${id}`);
   });
 
   // (Its first half, a message Claude Code never took because it quit, depends on the line
@@ -938,12 +921,12 @@ describe("Claude Code, instructions that changed as its conversation goes on", {
     const { id } = box.next();
     await answered(id, "first", 1);
     await instruct(id, { "kuvo.worktree": "You work in the worktree at /b/tree." });
-    // Your command, as typed, and Claude Code summarizes.
+    // Kuvo summarizes it (its own /compact, typed to Claude Code).
     box.claude.script("/compact", [
       { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 100 }, parent_tool_use_id: null },
       result(["$UUID"]),
     ]);
-    await box.claude.prompt(id, "/compact");
+    assert.equal((await box.claude.compact(id)).status, 200);
     await box.claude.idles(id, 2);
     await answered(id, "after", 3);
     assert.equal(lastSent(id), `after ${id}`);

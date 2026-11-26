@@ -282,16 +282,16 @@ function inMode(session, approval = "acceptEdits") {
 }
 const startedAddress = said => said.text.match(/\(address (ses_\w+)\)/)?.[1];
 
-test("a bot starts a session in a project, on the model, effort and mode it picks, marked as its work, with the session's half of the playbook", async () => {
-  const said = await tool("start_session", { task: "Design the onboarding screens.", title: "Onboarding", project: "Tidepool", model: "anthropic/claude-sonnet-5-5", effort: "high", mode: "plan" }, "ses_pixel");
+test("a bot starts a session in a project, on the model and effort it picks, marked as its work, with the session's half of the playbook", async () => {
+  const said = await tool("start_session", { task: "Design the onboarding screens.", title: "Onboarding", project: "Tidepool", model: "anthropic/claude-sonnet-5-5", effort: "high" }, "ses_pixel");
   assert.equal(said.isError, false, said.text);
   const session = startedAddress(said);
   assert.ok(session, said.text);
   // (Its work is never more than Auto, which asks first here: the sandbox doesn't run.)
-  assert.match(said.text, /^Started "Onboarding" in Tidepool \(address ses_new1\): Claude Sonnet 5\.5 · high · Plan\. It asks before it edits or runs commands\. It's on it now\. You'll be woken when it finishes or asks for something, so don't check on it\.$/);
+  assert.match(said.text, /^Started "Onboarding" in Tidepool \(address ses_new1\): Claude Sonnet 5\.5 · high\. It asks before it edits or runs commands\. It's on it now\. You'll be woken when it finishes or asks for something, so don't check on it\.$/);
   assert.deepEqual(made[0].location, { directory: tidepool });
   assert.deepEqual(made[0].model, { providerID: "anthropic", id: "claude-sonnet-5-5", variant: "high" });
-  assert.equal(made[0].agent, "plan");
+  assert.equal(made[0].agent, undefined);
   const kuvo = sessions.get(session).metadata.kuvo;
   assert.equal(kuvo.startedBy, "ses_pixel");
   assert.deepEqual(kuvo.by, { bot: "bot_pixel00001", name: "Pixel" });
@@ -913,18 +913,6 @@ test("a day's limit counts sessions archived since, and a legacy wait argument k
   const third = await tool("start_session", { task: "Three.", project: "Tidepool" }, "ses_pixel");
   assert.equal(third.isError, true);
   assert.match(third.text, /2 new sessions a day/);
-});
-
-test("a conversation that plans can't start a session that builds", async () => {
-  sessions.get("ses_pixel").agent = "plan";
-  try {
-    const said = await tool("start_session", { task: "Build it.", project: "Tidepool", mode: "build" }, "ses_pixel");
-    assert.equal(said.isError, true);
-    assert.match(said.text, /Plan mode/);
-    assert.equal(made.length, 0);
-  } finally {
-    delete sessions.get("ses_pixel").agent;
-  }
 });
 
 test("a bot's work further back than the latest two hundred sessions is still its", async () => {

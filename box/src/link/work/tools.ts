@@ -5,8 +5,7 @@
 // project made (asking you first, once for a bot if you say Always); list_projects, the projects
 // here. Every box answers them alike, through `POST kuvo/agent-tools`.
 
-import { call, readBridgeFile, readEngineFile } from "../engine/client";
-import { callerOf, untilOnAutopilot } from "../vault/who";
+import { call, readEngineFile } from "../engine/client";
 import { agentsCommandsInSandbox, engineCommandsInSandbox, fenceWhole } from "../fence/state";
 import { holdArchived } from "../areas/wakes";
 import { noteWorkChanged } from "./changes";
@@ -333,25 +332,20 @@ export async function makeProjectTool(caller: Caller, args: Record<string, unkno
     }
   }
   const ask = askWork(asker, action, given);
-  // On Autopilot it doesn't wait for you: it stays asked, for when you're back.
-  const away = (await callerOf(caller.session, readEngineFile, readBridgeFile)).autopilot === true;
-  const { value: answer } = await untilOnAutopilot(away ? undefined : caller.session, signal, stops =>
-    answerOf(ask.id, { wait: away ? 0 : wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal: stops }));
+  const answer = await answerOf(ask.id, { wait: wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal });
   if (!answer) return said(`The user hasn't answered yet: it stays asked on ${HERE}, and you'll hear when they answer. Carry on with what you can meanwhile.`);
   return answer.isError ? refused(answer.text) : said(answer.text);
 }
 
 /**
  * use_limit_reset's card (`plan-reset.ts`): asked of the user in the conversation, and its answer
- * once they give it (the reset used, or why not); on Autopilot it stays asked, for when they're back.
+ * once they give it (the reset used, or why not).
  */
 export async function askReset(caller: Caller, given: ResetGiven, { signal, wait, every }: { signal?: AbortSignal; wait?: number; every?: number } = {}): Promise<ToolAnswer> {
   const bot = botOfConversation(caller.session);
   const asker = { session: caller.session, name: bot?.name ?? caller.name, ...(bot ? { bot: bot.bot } : {}) };
   const ask = askWork(asker, "resetLimits", { name: given.account, reset: given });
-  const away = (await callerOf(caller.session, readEngineFile, readBridgeFile)).autopilot === true;
-  const { value: answer } = await untilOnAutopilot(away ? undefined : caller.session, signal, stops =>
-    answerOf(ask.id, { wait: away ? 0 : wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal: stops }));
+  const answer = await answerOf(ask.id, { wait: wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal });
   if (!answer) return said(`The user hasn't answered yet: it stays asked on ${HERE}, and you'll hear when they answer. Carry on with what you can meanwhile.`);
   return answer.isError ? refused(answer.text) : said(answer.text);
 }

@@ -524,19 +524,6 @@ test("a bot you paused moves paused, as you paused it", { timeout: 60_000 }, asy
   assert.ok(macEngine.sessions.has("ses_rest") && !fs.existsSync(path.join(labBots, "bot_rest")));
 });
 
-test("a chat on Autopilot moves on Autopilot, its agent told there, with the calls it made", { timeout: 60_000 }, async t => {
-  signal = t.signal;
-  macEngine.sessions.set("ses_pilot", { id: "ses_pilot", title: "Cafe", directory: macChats, messages: messages("Build the menu"), metadata: { kuvo: { autopilot: true } } });
-  write(path.join(macHome, "run", "work", "decided.json"), { ses_pilot: [{ id: "frm_pilot", text: "Which roast?", choice: "Warm", options: ["Warm", "Dark"], call: "call_pilot", at: 1 }] });
-  const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_pilot", to: lab.key });
-  assert.equal(moved.status, 200, JSON.stringify(moved.json));
-  assert.ok(labEngine.entries.some(each => each.session === "ses_pilot" && each.key === "kuvo.autopilot" && /Autopilot/.test(each.value)));
-  const there = await askMachine("GET", "kuvo/sessions/ses_pilot/autopilot");
-  assert.equal(there.json.autopilot, true);
-  assert.deepEqual(there.json.decided.map(call => call.id), ["frm_pilot"]);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(macHome, "run", "work", "decided.json"), "utf8")).ses_pilot, undefined, "gone with it from the box it left");
-});
-
 test("a chat you stopped moves stopped, with what waits for it in the same order; nothing of it stays here", { timeout: 60_000 }, async t => {
   signal = t.signal;
   macEngine.sessions.set("ses_stop", { id: "ses_stop", title: "Stopped", directory: macChats, messages: messages("Wait for me.") });

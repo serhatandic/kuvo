@@ -65,7 +65,7 @@ function callerFor(note: string, folder: string): () => Promise<Caller | null> {
   };
   return async () => {
     const bot = listBots().find(each => each.folder && (folder === each.folder || folder.startsWith(each.folder + path.sep)));
-    return { folder, yours: true, ...(bot ? { bot: bot.id, botName: bot.name, ...(bot.session ? { session: bot.session, root: bot.session } : {}) } : {}) };
+    return { folder, ...(bot ? { bot: bot.id, botName: bot.name, ...(bot.session ? { session: bot.session, root: bot.session } : {}) } : {}) };
   };
 }
 
@@ -75,13 +75,11 @@ function sourceFor(caller: () => Promise<Caller | null>) {
   const read = new Map<string, { changed: number; key: AgentKey | null }>();
   const asking = new Map<string, { answer: Promise<boolean>; waiting: number; stop: AbortController }>();
   const refused = new Map<string, number>();
-  const leftUndone = new Map<string, number>();
   // Where any conversation's commands could reach this agent, it's asked as no one: only what you
-  // keep for everyone, never a bot's or a project's. Only whether it's on Autopilot is taken from what
-  // it says it is, as that can only leave a use undone. And that's the conversation to watch meanwhile.
-  const asked = async (): Promise<{ who: Caller | null; watch?: string }> => {
+  // keep for everyone, never a bot's or a project's.
+  const asked = async (): Promise<Caller | null> => {
     const said = await caller();
-    return { who: EVERYONE_ONLY ? (said?.autopilot ? { autopilot: true } : {}) : said, ...(said?.session && !said.yours ? { watch: said.session } : {}) };
+    return EVERYONE_ONLY ? {} : said;
   };
   return {
     keys: async (): Promise<AgentKey[]> => {
@@ -117,13 +115,10 @@ function sourceFor(caller: () => Promise<Caller | null>) {
         const stop = new AbortController();
         const answer = (async () => {
           const item = itemByID(key.id);
-          const { who, watch } = await asked();
+          const who = await asked();
           if (!item || !who || !agentsUseVault()) return false;
-          const allowed = await mayUse(item, who, { program: "ssh", signal: stop.signal, watch, leftUndoneNoted: Date.now() < (leftUndone.get(key.id) ?? 0) });
+          const allowed = await mayUse(item, who, { program: "ssh", signal: stop.signal });
           if (allowed.ok) noteUse(item, who, { program: "ssh" }, allowed.how);
-          // (Left undone on Autopilot isn't your no: turned back, it asks. Noted once a while: a
-          // command signing again and again isn't that many things left.)
-          else if (allowed.leftUndone) leftUndone.set(key.id, Date.now() + REFUSED_FOR);
           else if (!stop.signal.aborted) refused.set(key.id, Date.now() + REFUSED_FOR);
           return allowed.ok;
         })().catch(() => false).finally(() => asking.delete(key.id));

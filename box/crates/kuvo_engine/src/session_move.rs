@@ -149,7 +149,7 @@ pub(crate) fn prompt_target(method: &Method, path: &str) -> Option<String> {
         return None;
     }
     let guarded = match (method, tail.next()?, tail.next()) {
-        (&Method::POST, "prompt" | "command" | "shell" | "compact" | "summarize", None) => true,
+        (&Method::POST, "prompt" | "compact" | "summarize", None) => true,
         (&Method::POST | &Method::DELETE, "permission" | "form", Some(token)) => {
             !token.is_empty()
                 && matches!(tail.next(), None | Some("reply"))

@@ -1,4 +1,4 @@
-//! Bots, wake-ups, Work Queue, group chats and autopilot.
+//! Bots, wake-ups, Work Queue and group chats.
 
 pub mod approval;
 pub mod asks;

@@ -16,7 +16,7 @@ import { EngineLink } from "../../src/agents/engine"
 import { subscribe } from "../../src/agents/events"
 import type { Roster } from "../../src/agents/roster"
 import { handler } from "../../src/agents/server"
-import { Sessions, shellProcesses, timing } from "../../src/agents/sessions"
+import { Sessions, timing } from "../../src/agents/sessions"
 import { Snapshots } from "../../src/agents/snapshots"
 import { Store } from "../../src/agents/store"
 import { transcriptDatabase } from "../../src/agents/transcript"
@@ -157,7 +157,6 @@ afterEach(() => {
   unsubscribe()
   sessions.closeAll()
   timing.stopGrace = 8_000
-  timing.shellGrace = 5_000
 })
 
 async function readSessionRoute<T = unknown>(path: string, method = "GET", body?: unknown): Promise<T> {
@@ -772,14 +771,31 @@ describe("permissions", () => {
     expect(seen).toEqual([false, "reject", "once"])
   })
 
-  test("plan mode refuses changes and doesn't approve all", async () => {
+  test("a conversation stored in Plan mode runs as Build", async () => {
+    const seen: (boolean | string | undefined)[] = []
+    a.script = async (input, _turn, hooks) => {
+      seen.push(input.plan)
+      seen.push(await hooks.permission({ action: "edit", resources: ["/tmp/project/a.ts"] }))
+      return { outcome: "succeeded" }
+    }
+    const id = create()
+    sessions.selectAgent(id, "plan")
+    send(id, "go")
+    await settled(id, 1)
+    expect(seen[0]).toBe(false)
+    expect(seen[1]).not.toBe("reject")
+    expect(sessions.messages(id).some((message) => message.type === "agent-switched")).toBe(true)
+  })
+
+  test("plan mode, which a seat in a group chat is put in, refuses changes and doesn't approve all", async () => {
     const seen: (boolean | string)[] = []
     a.script = async (_input, _turn, hooks) => {
       seen.push(hooks.approvesAll())
       seen.push(await hooks.permission({ action: "edit", resources: ["/tmp/project/a.ts"] }))
       return { outcome: "succeeded" }
     }
-    const id = create()
+    // (Only a bot's seat in a group chat still plans: a conversation stored in Plan mode builds.)
+    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: "/tmp/project" }, metadata: { kuvo: { seat: { group: "grp_a" } } } }).id
     sessions.selectAgent(id, "plan")
     send(id, "go")
     await settled(id, 1)
@@ -1114,20 +1130,6 @@ describe("asks and conversations", () => {
     send(id, "fix it now")
     await settled(id, 4)
     expect(seen).toEqual([false, "reject", true, "once", false, "reject", true, "once"])
-  })
-
-  test("Claude Code's own plan mode isn't refused its plan file by the hook", async () => {
-    let checked: unknown[] = []
-    a.script = async (input, turn, hooks, thread) => {
-      // (Its plan, where Claude Code writes it: its own place, not a folder outside the project.)
-      checked = [hooks.check({ action: "edit", resources: [join(homedir(), ".claude", "plans", "plan.md")] }, true), hooks.check({ action: "edit", resources: ["/tmp/project/a.ts"] })]
-      return replies(input, turn, hooks, thread)
-    }
-    const id = create()
-    sessions.selectAgent(id, "plan")
-    send(id, "plan it")
-    await settled(id, 1)
-    expect(checked).toEqual([undefined, "deny"])
   })
 
   test("reading a .env file asks first, as on the engine; an example of one doesn't", async () => {
@@ -2156,113 +2158,6 @@ describe("undo, carefully", () => {
     expect(readFileSync(join(folder, "app", "a.txt"), "utf8")).toBe("one\n")
     expect(existsSync(join(folder, "app", "node_modules", "pkg", "index.js"))).toBe(true)
   }, 30_000)
-})
-
-describe("commands you run yourself", () => {
-  test("a command's output a job it left running keeps open still comes, and a lot of it is kept to its end", async () => {
-    const folder = mkdtempSync(join(root, "project-"))
-    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-    sessions.runShell(id, "(sleep 30 &) ; echo done-here")
-    sessions.runShell(id, "yes line | head -n 200000")
-    const shells = () => sessions.messages(id).filter((message) => message.type === "shell") as any[]
-    await until(() => shells().every((shell) => shell.status !== "running"), 10_000)
-    expect(shells()[0].output.output).toContain("done-here")
-    expect(shells()[1].output.truncated).toBe(true)
-    expect(shells()[1].output.output.length).toBeLessThanOrEqual(50_000)
-  })
-
-  test("one still running stops with its session, deleted or the bridge closing: a server it left in the background too, and one that won't stop when asked", async () => {
-    timing.shellGrace = 50
-    const running = (pid: number) => {
-      try {
-        process.kill(pid, 0)
-        return true
-      } catch {
-        return false
-      }
-    }
-    for (const end of ["deleted", "closed"] as const) {
-      const folder = mkdtempSync(join(root, "project-"))
-      const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-      // A server you started in the background (the command itself ends at once), and one that
-      // takes no notice of being asked to stop.
-      sessions.runShell(id, "sleep 60 & echo $! > server")
-      sessions.runShell(id, "sh -c 'trap \"\" TERM; exec sleep 60' & echo $! > stubborn")
-      const shells = () => sessions.messages(id).filter((message) => message.type === "shell") as any[]
-      await until(() => shells().length === 2 && shells().every((shell) => shell.status !== "running"), 10_000)
-      const pids = ["server", "stubborn"].map((name) => Number(readFileSync(join(folder, name), "utf8")))
-      expect(pids.every(running)).toBe(true)
-      if (end === "deleted") await sessions.remove(id)
-      else sessions.closeAll()
-      await until(() => !pids.some(running))
-    }
-  })
-
-  test("deleting a session never stops another's: a group of its whose number another command took since is left alone", async () => {
-    // Process group 4242, as the system would give its number: to one session's command, then,
-    // once that's gone, to another session's.
-    const group = 4242
-    const signalled: (NodeJS.Signals | 0)[] = []
-    const { spawn, kill } = shellProcesses
-    shellProcesses.spawn = ((...args: Parameters<typeof spawn>) => Object.defineProperty(spawn(...args), "pid", { value: group })) as typeof spawn
-    shellProcesses.kill = (pid, signal) => {
-      if (pid !== -group) return kill(pid, signal)
-      if (signal !== 0) signalled.push(signal)
-    }
-    try {
-      const folder = mkdtempSync(join(root, "project-"))
-      const first = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-      const second = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-      const ended = (id: string) => (sessions.messages(id).filter((message) => message.type === "shell") as any[]).every((shell) => shell.status !== "running")
-      // Its command left something running in its group…
-      sessions.runShell(first, "true")
-      await until(() => sessions.messages(first).some((message) => message.type === "shell") && ended(first))
-      // …which ended; then another session's command got the same number.
-      sessions.runShell(second, "true")
-      await until(() => sessions.messages(second).some((message) => message.type === "shell") && ended(second))
-      await sessions.remove(first)
-      expect(signalled).toEqual([])
-    } finally {
-      shellProcesses.spawn = spawn
-      shellProcesses.kill = kill
-    }
-  })
-
-  test("one run while the agent works reaches it with your next message", async () => {
-    const folder = mkdtempSync(join(root, "project-"))
-    a.script = works
-    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-    send(id, "first")
-    await until(() => a.runs.length === 1)
-    sessions.runShell(id, "echo while-it-worked")
-    await until(() => (sessions.messages(id).find((message) => message.type === "shell") as any)?.status === "completed")
-    a.script = replies
-    a.threads[0].onStop!()
-    await settled(id, 1)
-    send(id, "second")
-    await settled(id, 2)
-    expect(a.runs.at(-1)!.text).toContain("echo while-it-worked")
-  })
-
-  test("a command run with ! joins the conversation, and the agent gets it with your next message", async () => {
-    const folder = mkdtempSync(join(root, "project-"))
-    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
-    send(id, "hello")
-    await settled(id, 1)
-    sessions.runShell(id, "echo printed-here")
-    const shell = () => sessions.messages(id).find((message) => message.type === "shell") as any
-    await until(() => shell()?.status === "completed")
-    expect(shell().output.output).toBe("printed-here")
-    expect(shell().exit).toBe(0)
-    expect(events.some((event) => event.type === "session.shell.ended")).toBe(true)
-    send(id, "what did it print?")
-    await settled(id, 2)
-    const told = a.runs.at(-1)!.text
-    expect(told).toContain("Since your last reply, the user ran these commands themselves")
-    expect(told).toContain("echo printed-here")
-    expect(told).toContain("printed-here")
-    expect(told.endsWith("User message:\nwhat did it print?")).toBe(true)
-  })
 })
 
 describe("subagents", () => {
@@ -3638,29 +3533,6 @@ describe("what comes in while a turn starts, ends or is stopped, step by step", 
     expect(revert.files?.map((file) => file.file)).toEqual(["a.txt"])
     expect(snapshots.restored).toEqual(["tree1"])
     expect(sessions.get(id).revert?.messageID).toBe(first)
-  })
-})
-
-describe("a command you type with !", () => {
-  test("on a machine, runs with the machine's own folders (where gh and git keep their settings), as in your terminal there", async () => {
-    const folder = mkdtempSync(join(tmpdir(), "kuvo-shell-"))
-    try {
-      const script = join(folder, "run.ts")
-      writeFileSync(script, [
-        `import { takeOwnFolders } from ${JSON.stringify(join(import.meta.dir, "../../src/agents/machine"))}`,
-        `import { runCommand } from ${JSON.stringify(join(import.meta.dir, "../../src/agents/sessions"))}`,
-        "takeOwnFolders()",
-        `const ran = await runCommand('printf "%s|%s" "$XDG_CONFIG_HOME" "\${XDG_DATA_HOME-unset}"', process.cwd())`,
-        "process.stdout.write(ran.output)",
-      ].join("\n"))
-      // As a machine's engine started the bridge: its folders pointed into Kuvo Code's, the machine's own kept aside.
-      const env = { ...process.env, KUVO_HOME: folder, KUVO_AGENTS_REMOTE: "1", XDG_CONFIG_HOME: join(folder, "config"), XDG_DATA_HOME: join(folder, "data"), KUVO_OWN_XDG_CONFIG_HOME: "/home/me/.config", KUVO_OWN_XDG_DATA_HOME: "" }
-      const ran = Bun.spawnSync([process.execPath, script], { cwd: folder, env, stderr: "pipe" })
-      expect(ran.stderr.toString()).toBe("")
-      expect(ran.stdout.toString()).toBe("/home/me/.config|unset")
-    } finally {
-      rmSync(folder, { recursive: true, force: true })
-    }
   })
 })
 

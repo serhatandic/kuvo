@@ -1,7 +1,7 @@
 // Branches ("Branch from here"): a new conversation with another one's words up to a message of
 // yours, to try another way. Its place (the engine, or this bridge for the coding agents) makes
-// the copy; the box marks where it came from (`kuvo.branchedFrom`), as a handoff's conversation
-// is marked (`kuvo.handoffFrom`), so every client shows it under that one (PROTOCOL.md,
+// the copy; the box marks where it came from (`kuvo.branchedFrom`; an older handoff's conversation is
+// marked `kuvo.handoffFrom`, still read), so every client shows it under that one (PROTOCOL.md,
 // "Branches").
 
 import type { SessionPlaces } from "./session-places"

@@ -226,22 +226,16 @@ async fn create_as(
             "Not from a group chat: talk it through here; the work is handed out after the wrap-up.",
         ));
     }
+    // The agent a starter's session carries on (never Plan: a conversation stored in Plan mode
+    // starts Build sessions; `mode` is ignored, so a caller that still sends it isn't refused).
     let parent_agent = match remote {
-        Some(lead) => lead.agent.as_deref(),
+        Some(_) => None,
         None => parent
             .as_ref()
             .and_then(|parent| parent.extra.get("agent"))
-            .and_then(Value::as_str),
+            .and_then(Value::as_str)
+            .filter(|agent| *agent != "plan"),
     };
-    let mode = given.get("mode").filter(|value| !value.is_null());
-    if mode.is_some_and(|mode| !matches!(mode.as_str(), Some("build" | "plan"))) {
-        return Err(bad("mode is build or plan."));
-    }
-    if mode.is_some_and(|mode| mode == "build") && parent_agent == Some("plan") {
-        return Err(bad(
-            "This conversation is in Plan mode, so the sessions it starts plan too. Start it in plan mode, or ask the user to switch to Build.",
-        ));
-    }
 
     let config = if engine.is_mac_box().await {
         "config/opencode/opencode.json"
@@ -577,33 +571,13 @@ async fn create_as(
             notes["limits"] = limits.clone();
         }
     }
-    let autopilot = if let Some(lead) = remote {
-        lead.autopilot
-    } else if parent.is_some() {
-        parent_notes("autopilot") == true
-    } else {
-        flag("autopilot")
-    };
-    if autopilot {
-        if let Some(tree) = &created_tree
-            && let Some(lease) = lease.held()
-        {
-            undo_tree(engine, lease, tree).await;
-        }
-        return Err(Refusal::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Autopilot isn't running on this computer.",
-        ));
-    }
     let mut body = json!({ "location": { "directory": folder }, "metadata": { "kuvo": notes },
         "permissions": permissions(applied, &settings, parent.as_ref(), &brought, project) });
-    let agent = mode.and_then(Value::as_str).or_else(|| {
-        if parent.is_none() {
-            string("agent")
-        } else {
-            parent_agent
-        }
-    });
+    let agent = if parent.is_none() {
+        string("agent")
+    } else {
+        parent_agent
+    };
     if let Some(agent) = agent {
         body["agent"] = json!(agent);
     }
@@ -665,9 +639,6 @@ async fn create_as(
     }
     if let Some(computer) = addressed {
         answer["computer"] = computer;
-    }
-    if mode.is_some_and(|mode| mode == "plan") && remote.is_some() {
-        picked.push("Plan".into());
     }
     if !picked.is_empty() {
         answer["picked"] = json!(picked.join(" · "));
@@ -878,7 +849,7 @@ fn from_approval(value: &Value) -> Option<Approval> {
 /// A lead on another of your computers starting a session here (PROTOCOL.md, "Peers", `call`,
 /// `as.start`), as its own computer knows it, never from the agent's words: its approval as it
 /// comes to there now and the Don't Allows it goes by there (`held`, kept with the session so they
-/// hold here too), its mode and model, whether it's on Autopilot, the bot its work is for (`works`;
+/// hold here too), its model, the bot its work is for (`works`;
 /// `own`, the lead is that bot), the new session's depth and line, and the limits you set for that
 /// bot. `call`: the call's id, marked on the session so it's made once; `computer` and `key`: the
 /// lead's computer, as this one names it.
@@ -891,9 +862,7 @@ pub struct RemoteLead {
     pub key: String,
     pub approval: Value,
     pub held: Vec<Value>,
-    pub agent: Option<String>,
     pub model: Option<Value>,
-    pub autopilot: bool,
     pub works: Option<Value>,
     pub own: bool,
     pub depth: u64,

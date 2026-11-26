@@ -47,10 +47,6 @@ this row. Installed Helper cases still need the released supervision path.
 | [on a box whose agents' commands aren't fenced, agents get none of the vault's tools, but a sign-in you let them make on their own still fills, as before the vault](../../box/bridge-tests/vault.test.js#L853) | Covered | 6.2 conformance |
 | [a conversation can connect to its SSH agent from a long multibyte macOS home](../../box/bridge-tests/vault.test.js#L883) | Partial | 6.2 and 1.4 long home and socket startup |
 | [while the vault asks you about a sign-in, other conversations keep browsing, and the sign-in goes in once you allow it](../../box/bridge-tests/vault-fill-wait.test.js#L211) | Partial | 6.2 |
-| [on Autopilot nothing asks you while it browses: a sign-in, a code, a step or an item from the vault come back at once, left undone, a subagent's too](../../box/bridge-tests/vault-fill-wait.test.js#L229) | Partial | 6.2 |
-| [Auto's run on an engine model is its conversation's: on Autopilot, nothing it does waits either](../../box/bridge-tests/vault-fill-wait.test.js#L244) | Partial | 6.2 |
-| [an item it's only allowed by asking is left undone on Autopilot, with nothing filled, and its line in the vault's activity says so](../../box/bridge-tests/vault-fill-wait.test.js#L254) | Partial | 6.2 |
-| [turned on Autopilot while it waits on you, an ask stops waiting, its card goes, and the agent hears it's left undone](../../box/bridge-tests/vault-fill-wait.test.js#L264) | Partial | 6.2 |
 | [a page that left its site while the vault asked you gets nothing](../../box/bridge-tests/vault-fill-wait.test.js#L285) | Open | 6.4 browser recheck |
 | [a process without the box's socket key gets nothing from the vault's socket, even while a sign-in calls](../../box/bridge-tests/vault-fill-wait.test.js#L300) | Partial | 6.2 |
 | [an item added on this Mac keeps its values in the Keychain, through its app, and nothing of them in the box's folder](../../box/bridge-tests/vault-host.test.js#L75) | Covered | 6.2 conformance |
@@ -67,7 +63,6 @@ this row. Installed Helper cases still need the released supervision path.
 | [its seat in a group chat asks you each time, whatever it may use on its own, and never for good](../../box/bridge-tests/vault-tools.test.js#L197) | Partial | 6.2 |
 | [what its seat asks you for is given once, even given for good](../../box/bridge-tests/vault-tools.test.js#L225) | Partial | 6.2 |
 | [its seat signs in with a sign-in it could use on its own only once you say so, in the chat](../../box/bridge-tests/vault-tools.test.js#L244) | Partial | 6.2 |
-| [on Autopilot a command needing an item it can't use on its own isn't a failed step: it runs nothing, asks nothing and says what's left](../../box/bridge-tests/vault-tools.test.js#L258) | Partial | 6.2 |
 | [a conversation whose root the engine can't say just then asks you, whatever everyone may use](../../box/bridge-tests/vault-tools.test.js#L268) | Partial | 6.2 |
 | [a vault wait finds an arrival even without a filesystem notification](../../box/bridge-tests/vault-waits.test.js#L11) | Open | 6.4 browser waiting |
 | [a machine's vault is described, changed and followed as a settings page, and no value is ever on it](../../box/bridge-tests/settings-vault-live.test.js#L92) | Open | 6.1 settings |
