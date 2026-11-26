@@ -27,7 +27,7 @@ import { antigravityCredential, antigravityGeneration } from "../../usage/antigr
 import { fingerprint } from "../../usage/limits"
 import { placeWhole } from "../../shared/files"
 import { RPC, RPCError } from "../rpc"
-import { catcher, commandSignIn } from "../signin"
+import { commandSignIn } from "../signin"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { agyProgram } from "../../shared/agent-programs"
 import { agentsUpdateThemselves } from "../../shared/agent-updates"
@@ -91,6 +91,37 @@ const harnessName = "localharness_external"
 /** What it says on stdout when it wants you to sign in (not ACP). */
 const signInLine = "Open the following link to authenticate the ACP server:"
 
+/**
+ * `agy`'s own words asking for a sign-in: a line of its own, never a protocol message (one that
+ * only carries the words, as a command's output or a file it shows does, isn't it).
+ */
+export function asksForSignIn(line: string): boolean {
+  return !line.trimStart().startsWith("{") && line.includes(signInLine)
+}
+
+/** Thinking levels a model may have beyond those of the one a session is on. */
+const levels = ["minimal", "low", "medium", "high", "xhigh", "max"]
+
+/**
+ * Each model's thinking levels, as a session lists them: a `<model>-<level>` entry in
+ * `models.availableModels` for each level a model has (`gemini-4-neon-high`), in the order of its
+ * `thought_level` option. Where it lists none, the model it's on has that option's.
+ */
+export function antigravityEfforts(setup: any, models: string[]): Record<string, string[]> {
+  const option = (setup?.configOptions ?? []).find((option: any) => option?.id === "thought_level" || option?.category === "thought_level")
+  const offered: string[] = (option?.options ?? []).map((entry: any) => entry?.value).filter((value: unknown): value is string => typeof value === "string" && value !== "")
+  const known = [...offered, ...levels.filter((level) => !offered.includes(level))]
+  const listed = new Set((setup?.models?.availableModels ?? []).map((info: any) => info?.modelId))
+  const efforts: Record<string, string[]> = {}
+  for (const model of models) {
+    const own = known.filter((level) => listed.has(`${model}-${level}`))
+    if (own.length) efforts[model] = own
+  }
+  const current = (setup?.configOptions ?? []).find((option: any) => option?.id === "model" || option?.category === "model")?.currentValue
+  if (!Object.keys(efforts).length && offered.length && typeof current === "string") efforts[current] = offered
+  return efforts
+}
+
 /** Google's agent stopped while signing in: why, in a line (what it said goes to the log). */
 class AgentStopped extends Error {
   constructor(readonly said: string) {
@@ -108,7 +139,7 @@ class AgentStopped extends Error {
 const scrubbed = [
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_GENAI_USE_VERTEXAI", "GCLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT", "AGY_ACP_CCPA_PROJECT",
-  "AGY_ACP_ENABLE_OAUTH", "GEMINI_HOME", "AGY_ACP_FORCE_FILE_STORAGE", "ANTIGRAVITY_HARNESS_PATH", "BROWSER", "PYTHONUNBUFFERED",
+  "AGY_ACP_ENABLE_OAUTH", "GEMINI_HOME", "AGY_ACP_FORCE_FILE_STORAGE", "ANTIGRAVITY_HARNESS_PATH", "BROWSER", "KUVO_URL_FILE", "PYTHONUNBUFFERED",
   "ELECTRON_RUN_AS_NODE", "AGY_CLI_DISABLE_AUTO_UPDATE", "SSH_CONNECTION", "KUVO_AGY_PROGRAM", "CHROME_CRASHPAD_PIPE_NAME",
 ]
 
@@ -615,9 +646,9 @@ export class AntigravityAgent implements Agent {
     return { homes: [env.GEMINI_HOME, env.TMPDIR].filter((place): place is string => Boolean(place)), state: ["*"], kept: [] }
   }
 
-  /** What it only reads there: its program, and what hands the bridge the pages it opens (`BROWSER`). */
+  /** What it only reads there: its program. */
   reads(env: Record<string, string | undefined>): string[] {
-    return [env.ANTIGRAVITY_HARNESS_PATH ?? env.KUVO_AGY_PROGRAM, env.BROWSER].filter((place): place is string => Boolean(place)).map((place) => dirname(place))
+    return [env.ANTIGRAVITY_HARNESS_PATH ?? env.KUVO_AGY_PROGRAM].filter((place): place is string => Boolean(place)).map((place) => dirname(place))
   }
 
   /**
@@ -626,7 +657,7 @@ export class AntigravityAgent implements Agent {
    * the system keyring (which it shares between every home) when it thinks it runs over SSH, as
    * T3 Code starts it; and doesn't update itself unless you said agents may.
    */
-  private launch(runtime = this.runtime()): { argv: string[]; env: Record<string, string | undefined>; cleanEnv: boolean; onExit: () => void; signInFile: string; temporary: string } {
+  private launch(runtime = this.runtime()): { argv: string[]; env: Record<string, string | undefined>; cleanEnv: boolean; onExit: () => void; temporary: string } {
     mkdirSync(join(this.profile, "antigravity-acp", "tmp"), { recursive: true, mode: 0o700 })
     const settings = join(this.profile, "antigravity-acp", "settings.json")
     if (!existsSync(settings)) writeFileSync(settings, JSON.stringify({ auth: { type: "oauth-personal" } }))
@@ -636,13 +667,15 @@ export class AntigravityAgent implements Agent {
     for (const [key, value] of Object.entries(process.env)) if (!scrubbed.includes(key.toUpperCase())) env[key] = value
     // On a machine, its commands find the machine's own settings (`gh`, git's).
     env = withOwnFolders(env)
-    Object.assign(env, { GEMINI_HOME: this.profile, BROWSER: catcher(this.context.temporary), KUVO_URL_FILE: join(temporary, "url"), TMPDIR: temporary })
+    // (No browser of Kuvo's: its commands open pages as they would anywhere, and only `agy`'s own
+    // words, or its refusing its sign-in, say it wants a new one.)
+    Object.assign(env, { GEMINI_HOME: this.profile, TMPDIR: temporary })
     const onExit = () => rmSync(temporary, { recursive: true, force: true })
     if (runtime === "earlier") {
       Object.assign(env, { AGY_ACP_FORCE_FILE_STORAGE: "1", PYTHONUNBUFFERED: "1", ANTIGRAVITY_HARNESS_PATH: join(this.folder, harnessName) })
       // (Not its start-up syslog, which leaves a marker folder in /tmp, whatever TMPDIR says.)
       const argv = [join(this.folder, executableName), "--nosyslog_on_start", ...(process.platform === "linux" ? ["--uid="] : [])]
-      return { argv, env, cleanEnv: true, onExit, signInFile: join(temporary, "url"), temporary }
+      return { argv, env, cleanEnv: true, onExit, temporary }
     }
     const agy = this.executable()
     if (!agy) {
@@ -654,7 +687,7 @@ export class AntigravityAgent implements Agent {
       real = realpathSync(agy)
     } catch {}
     Object.assign(env, { SSH_CONNECTION: "127.0.0.1 0 127.0.0.1 0", KUVO_AGY_PROGRAM: real, ...(agentsUpdateThemselves() ? {} : { AGY_CLI_DISABLE_AUTO_UPDATE: "1" }) })
-    return { argv: [agy, "acp", "--gemini-dir", this.profile, "--app-data-dir", "antigravity-acp"], env, cleanEnv: true, onExit, signInFile: join(temporary, "url"), temporary }
+    return { argv: [agy, "acp", "--gemini-dir", this.profile, "--app-data-dir", "antigravity-acp"], env, cleanEnv: true, onExit, temporary }
   }
 
   /** Its sign-in page's code is pasted back here, from any device. */
@@ -777,7 +810,9 @@ export class AntigravityAgent implements Agent {
     const listed = flat.length || (Array.isArray(setup?.models?.availableModels) && !setup.models.availableModels.length) ||
       (Array.isArray(option?.options) && !option.options.length)
     if (!listed || flat.some(info => typeof info.value !== "string" || !info.value || typeof info.name !== "string")) return false
-    placeWhole(this.modelsFile, JSON.stringify({ credential, current: option?.currentValue, models: flat }))
+    const efforts = antigravityEfforts(setup, flat.map((info) => info.value))
+    const models = flat.map((info) => (efforts[info.value] ? { ...info, efforts: efforts[info.value] } : info))
+    placeWhole(this.modelsFile, JSON.stringify({ credential, current: option?.currentValue, models }))
     this.listedHere = credential
     return true
   }
@@ -825,7 +860,7 @@ export class AntigravityAgent implements Agent {
       jsonrpc: true,
       firstID: 2 ** 30,
       filter: (line) => {
-        const at = line.indexOf(signInLine)
+        const at = asksForSignIn(line) ? line.indexOf(signInLine) : -1
         if (at >= 0) {
           found(line.slice(at + signInLine.length).trim())
           return false
@@ -851,11 +886,8 @@ export class AntigravityAgent implements Agent {
 
   private async discoverModels() {
     const credential = this.modelCredential()
-    const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill())
-    // This check only uses the existing sign-in. A browser request ends the probe.
-    const watch = setInterval(() => {
-      if (existsSync(launch.signInFile)) rpc.kill()
-    }, 300)
+    // (It only uses the sign-in it has: asking for a new one ends it.)
+    const { rpc, cwd, initialize } = this.modelConnection(() => rpc.kill())
     try {
       await initialize(20_000)
       await rpc.request("authenticate", { methodId: "oauth-personal" }, 20_000)
@@ -863,7 +895,6 @@ export class AntigravityAgent implements Agent {
       if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
       if (!this.saveModels(setup, credential)) throw new Error("Antigravity didn’t list its models.")
     } finally {
-      clearInterval(watch)
       rpc.kill()
     }
   }
@@ -871,11 +902,11 @@ export class AntigravityAgent implements Agent {
   async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
     if (options.refresh && this.canRun()) await this.discoverModels()
     const credential = this.modelCredential()
-    const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { credential?: string; current?: string; models: { value: string; name: string }[] }
+    const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { credential?: string; current?: string; models: { value: string; name: string; efforts?: string[] }[] }
     if (!credential || saved?.credential !== credential || !Array.isArray(saved.models) || saved.models.some(info => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
       throw new Error("Antigravity’s model list couldn’t be read.")
     }
-    return saved.models.map((info, index) => model(this.providerID, info.value, antigravityModelName(info.name), { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
+    return saved.models.map((info, index) => model(this.providerID, info.value, antigravityModelName(info.name), { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000, variants: Array.isArray(info.efforts) ? info.efforts.filter((level) => typeof level === "string") : undefined }))
   }
 
   /** How much each model holds, as Antigravity says in a turn (its models aren't all Gemini's 1M). */
@@ -926,7 +957,7 @@ export class AntigravityAgent implements Agent {
         },
         // Its access lasts an hour, renewed from the sign-in it keeps: one that asks for a new
         // sign-in partway is started again, which renews it.
-        asksSignIn: (line) => line.includes(signInLine),
+        asksSignIn: asksForSignIn,
         // `agy` asked to use a sign-in it no longer has: "Authentication required", or no browser
         // to sign in again with (it thinks it runs over SSH).
         signInRefused: (error) => error instanceof RPCError && (error.code === -32000 || /No browser is available here|Authentication required/i.test(error.message)),
@@ -937,11 +968,18 @@ export class AntigravityAgent implements Agent {
           return /^usage limit reached\.? you have reached your current quota for this period\.?(?: your limit will reset in [^.]{1,80}\.?)?$/.test(plain)
         },
         signInEnded: () => agent.signInEnded(),
-        async selectModel(rpc, sessionId, modelID, setup) {
-          if (setup?.kuvoModel === modelID) return
-          await rpc.request("session/set_config_option", { sessionId, configId: "model", value: modelID }, 30_000)
-          setup.kuvoModel = modelID
-          agent.saveModels(setup, credentials.get(rpc))
+        async selectModel(rpc, sessionId, modelID, setup, variant) {
+          if (setup?.kuvoModel !== modelID) {
+            await rpc.request("session/set_config_option", { sessionId, configId: "model", value: modelID }, 30_000)
+            setup.kuvoModel = modelID
+            agent.saveModels(setup, credentials.get(rpc))
+          }
+          // Its thinking level: the one picked, set once as the conversation starts (set later,
+          // it would drop what it has cached of the conversation).
+          const fresh = setup?.kuvoFresh
+          if (setup) delete setup.kuvoFresh
+          const option = (setup?.configOptions ?? []).find((option: any) => option?.id === "thought_level" || option?.category === "thought_level")
+          if (fresh && variant && option) await rpc.request("session/set_config_option", { sessionId, configId: option.id, value: variant }, 30_000)
         },
         async selectMode(rpc, sessionId, { approvesAll, plan }, setup) {
           const option = (setup?.configOptions ?? []).find((option: any) => option.id === "mode" || option.category === "mode")

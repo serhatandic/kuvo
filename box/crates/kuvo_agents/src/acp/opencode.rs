@@ -197,7 +197,6 @@ impl Flavour for OpenCode {
                 portable_requests: None,
             },
             temporary: None,
-            sign_in_file: None,
             credential: None,
         })
     }

@@ -42,8 +42,6 @@ export interface AcpFlavor {
     cwd?: string
     onOpen?: (rpc: RPC) => void
     onExit?: () => void
-    /** A file the agent writes when it wants you to sign in (its "browser" writes the page down): it can't go on. */
-    signInFile?: string
     /** A folder of the run's own, which `onExit` removes: kept in its holder's record, for a bridge taking the agent up to remove as it ends. */
     temporary?: string
   }>
@@ -404,18 +402,6 @@ export class AcpThread implements Thread {
     this.rpc = rpc
     this.spawnedWith = startedWith
     rpc.start()
-    if (launch.signInFile) {
-      const file = launch.signInFile
-      const watch = setInterval(() => {
-        if (rpc.isClosed) return clearInterval(watch)
-        if (!existsSync(file)) return
-        clearInterval(watch)
-        // (Asking for a sign-in, as its line does.)
-        asksSignIn = true
-        rpc.stderr = `${this.name} needs you to sign in again: Settings › Accounts.`
-        rpc.kill()
-      }, 500)
-    }
     try {
       const init: any = await rpc.request(
         "initialize",
@@ -466,6 +452,8 @@ export class AcpThread implements Thread {
           }
         }
         this.setup = await rpc.request("session/new", { cwd, mcpServers: this.mcpServers(init) }, 120_000)
+        // (A conversation of its own from here: what it is to be on is set once, as it starts.)
+        if (this.setup && typeof this.setup === "object") this.setup.kuvoFresh = true
         this.sessionID = this.setup?.sessionId
         if (previous && previous !== this.sessionID) {
           // In place of one it had: the instructions go again, and what came before is handed over.
