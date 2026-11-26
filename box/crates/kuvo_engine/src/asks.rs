@@ -1109,10 +1109,20 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             // (A coding agent keeps what Always allows itself.)
             if matches!(found.answer, Answer::Permission)
                 && let Some(decision) = body.as_ref().and_then(|body| body["decision"].as_str())
-                && let Target::Engine(lease) = target
             {
-                crate::consent::grant(&here, lease, &found.session, &ask, decision, &headers)
-                    .await?;
+                match &target {
+                    Target::Engine(lease) => {
+                        crate::consent::grant(&here, lease, &found.session, &ask, decision, &headers)
+                            .await?;
+                    }
+                    Target::Agents(..) => {
+                        let route = format!("api/session/{}/permission?live=1", api::segment(&found.session));
+                        let pending = target.call::<Vec<Value>>(&here, &route).await.map_err(|_| {
+                            Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "This computer couldn’t verify the live permission.")
+                        })?;
+                        crate::consent::allowed(&here, &pending, &ask, decision).await?;
+                    }
+                }
                 crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
             }
             target

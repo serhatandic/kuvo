@@ -117,6 +117,20 @@ pub(crate) async fn grant(
                 "This computer couldn’t verify the live permission.",
             )
         })?;
+    allowed(engine, &pending, ask, decision).await
+}
+
+/// Whether this computer's saved permissions still allow `decision` on `ask`, one of the
+/// requests waiting now (`pending`, as the live permission list has them).
+pub(crate) async fn allowed(
+    engine: &Engine,
+    pending: &[Value],
+    ask: &str,
+    decision: &str,
+) -> Result<(), Refusal> {
+    if !matches!(decision, "once" | "always") {
+        return Ok(());
+    }
     let request = pending
         .iter()
         .find(|row| row["id"] == ask)
