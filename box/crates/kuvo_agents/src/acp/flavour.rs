@@ -39,8 +39,6 @@ pub(crate) struct Launch {
     pub start: Start,
     /// A folder of the process's own, removed as it ends.
     pub temporary: Option<std::path::PathBuf>,
-    /// A file the agent writes when it wants a new sign-in (its "browser" notes the page).
-    pub sign_in_file: Option<std::path::PathBuf>,
     /// Who it's signed in as as it starts, for the models it lists to be theirs.
     pub credential: Option<String>,
 }

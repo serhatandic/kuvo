@@ -785,6 +785,18 @@ sessions, under one holder (`kind: grok|antigravity`, `turns` and `sessions` by 
   conversation's `own`, before what waits in line), as `TurnKind::AgentStarted`, shown as
   "Grok carried on by itself." One not taken is turned away: the agent is told to cancel, and
   what it begins after 20 quiet seconds is offered again.
+- **Antigravity's sign-in as it runs (Work Queue #5058).** Only `agy`'s own words asking for a
+  sign-in (a line of its own, never a protocol message carrying them), or its refusing
+  `authenticate`, say it wants one. Both boxes used to stop a turn whose tool output or diff held
+  those words, and any command that called `$BROWSER` or wrote `$TMPDIR/url`, and marked the
+  sign-in ended. No URL catcher is set for its sessions now: a command opens pages as it would
+  anywhere. Its account is read at once (no 30 s keep), so an ended sign-in shows as it ends.
+  agents-antigravity proves both triggers and the real request on both boxes.
+- **Antigravity's thinking levels.** `agy` lists a `<model>-<level>` entry in
+  `models.availableModels` for each level a model has, beside a `thought_level` option for the
+  one it's on (`high` by default). Each model's levels are kept with it in `kuvo-models.json`
+  (`efforts`, left out when it has none) and offered as its efforts. The one picked is set once,
+  as a new conversation starts (`kuvoFresh`), never later: that would drop what it has cached.
 - **Work Queue #992.** For an Antigravity account signed in before `agy` (Google's earlier agent
   and its `acp_token.json` in its home):
   - With `agy` installed, it's signed in only once `agy` takes that sign-in. Until then its row

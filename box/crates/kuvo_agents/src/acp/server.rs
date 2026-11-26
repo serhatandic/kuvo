@@ -390,7 +390,6 @@ impl Shared {
         let Launch {
             mut start,
             temporary,
-            sign_in_file,
             credential,
         } = launch;
         let mut meta = json!({
@@ -434,9 +433,6 @@ impl Shared {
             Map::new(),
             Map::new(),
         );
-        if let Some(file) = sign_in_file {
-            watch_sign_in(&process, file);
-        }
         let said = initialize(
             self.flavour.file_system(),
             self.flavour.initialize_meta(),
@@ -923,30 +919,6 @@ fn unrouted(method: &str) -> Result<Value, RpcError> {
         "elicitation/create" => Ok(json!({"action": "decline"})),
         _ => Err(RpcError::not_found(method)),
     }
-}
-
-/// Watches the file the agent writes when it wants a sign-in: it can't go on.
-fn watch_sign_in(process: &Arc<Process>, file: PathBuf) {
-    let rpc = process.rpc.clone();
-    let process = Arc::downgrade(process);
-    tokio::spawn(async move {
-        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
-        files.set_files(vec![file.clone()]);
-        loop {
-            let Some(here) = process.upgrade() else { return; };
-            if here.closed() { return; }
-            if tokio::fs::try_exists(&file).await.unwrap_or(false) {
-                lock(&here.stopping).asks_sign_in = true;
-                here.rpc.stop().await;
-                return;
-            }
-            drop(here);
-            tokio::select! {
-                _ = files.changed() => {},
-                _ = rpc.wait_ended() => return,
-            }
-        }
-    });
 }
 
 /// The conversation `native` is in `process`, or (unnamed) the one conversation in it.

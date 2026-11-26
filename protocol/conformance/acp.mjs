@@ -16,7 +16,11 @@ export const providers = { grok: "grok-cli", agy: "antigravity" };
  * words contain): each step a session update `{update}`, a notification of its own `{ext: [method,
  * params]}`, a request that waits for its answer `{ask: [method, params]}`, `{until: file}` (waits
  * for a file in its root), `"hang"` (until it's told to cancel), `{end: stopReason}`, `{error:
- * {code, message}}`, or `{own: {until, steps}}` (what it says by itself once its answer went). What it reads it keeps in `acp-heard.jsonl`.
+ * {code, message}}`, `{own: {until, steps}}` (what it says by itself once its answer went),
+ * `{opens: url}` (a command of its own opens a page: through `$BROWSER` where it's set, and
+ * writing it to `$TMPDIR/url`), `{say: line}` (a line of its own on stdout, not ACP) or `{wait:
+ * ms}`. As `agy`, its models have a `<model>-<level>` entry for each thinking level, as agy's do.
+ * What it reads it keeps in `acp-heard.jsonl`.
  */
 const PROGRAM = String.raw`
 const fs = require("node:fs");
@@ -28,6 +32,8 @@ const own = (file) => path.join(root, file);
 const heard = (line) => fs.appendFileSync(own("acp-heard.jsonl"), JSON.stringify({ pid: process.pid, name, ...line }) + "\n");
 const grokHome = process.env.GROK_HOME || path.join(process.env.HOME || process.env.USERPROFILE, ".grok");
 const models = [{ modelId: "acp-test", name: "ACP Test", _meta: { reasoningEfforts: [{ value: "low" }, { value: "high", default: true }] } }, { modelId: "acp-fast", name: "ACP Fast" }];
+const thinking = [{ value: "low", name: "Low" }, { value: "high", name: "High" }, { value: "xhigh", name: "Extra" }];
+const agyModels = [...thinking.map((level) => ({ modelId: "acp-test-" + level.value, name: "ACP Test (" + level.name + ")" })), { modelId: "acp-fast", name: "ACP Fast" }];
 if (args[0] === "--version") { process.stdout.write(name + " 1.0.0\n"); process.exit(0); }
 if (args[0] === "update") { heard({ update: true }); process.exit(0); }
 if (name === "grok" && args[0] === "logout") { fs.rmSync(path.join(grokHome, "auth.json"), { force: true }); heard({ logout: true }); process.exit(0); }
@@ -63,9 +69,10 @@ const running = new Map();
 const wait = (file) => new Promise((resolve) => { const look = () => fs.existsSync(own(file)) ? resolve() : setTimeout(look, 20); look(); });
 const setup = (sessionId) => ({
   sessionId,
-  models: { availableModels: models, currentModelId: "acp-test" },
+  models: name === "agy" ? { availableModels: agyModels, currentModelId: "acp-test-high" } : { availableModels: models, currentModelId: "acp-test" },
   configOptions: name === "agy"
     ? [{ id: "model", category: "model", currentValue: "acp-test", options: models.map((m) => ({ value: m.modelId, name: m.name })) },
+       { id: "thought_level", category: "thought_level", type: "select", currentValue: "high", options: thinking },
        { id: "mode", category: "mode", currentValue: "default", options: [{ value: "default" }, { value: "yolo" }, { value: "plan" }] }]
     : [{ id: "reasoning_effort", category: "thought_level", currentValue: "high", options: [] }],
 });
@@ -80,6 +87,17 @@ async function play(sessionId, id, steps) {
     if (state.cancelled) break;
     if (step === "hang") { await new Promise((resolve) => (state.stop = resolve)); break; }
     if (step.until) { await wait(step.until); continue; }
+    if (step.wait) { await new Promise((resolve) => setTimeout(resolve, step.wait)); continue; }
+    if (step.say) { process.stdout.write(step.say + "\n"); continue; }
+    if (step.opens) {
+      // (As a command it runs would: in a process of its own, with its environment.)
+      const command = 'const fs = require("node:fs"), path = require("node:path"), os = require("node:os"); const url = process.argv[1];' +
+        'if (process.env.BROWSER) { try { require("node:child_process").execFileSync(process.env.BROWSER, [url], { stdio: "ignore", shell: process.platform === "win32" }); } catch {} }' +
+        'fs.writeFileSync(path.join(process.env.TMPDIR || os.tmpdir(), "url"), url + "\\n");';
+      require("node:child_process").spawnSync(process.execPath, ["-e", command, step.opens], { stdio: "ignore", env: process.env });
+      heard({ opened: { browser: Boolean(process.env.BROWSER) } });
+      continue;
+    }
     if (step.end) { stopReason = step.end; break; }
     if (step.error) { running.delete(sessionId); send({ id, error: step.error }); return; }
     if (step.update) { send({ method: "session/update", params: { sessionId: step.session ?? sessionId, update: step.update } }); continue; }
@@ -168,10 +186,10 @@ export function seedAgyAuth(home, { listed = true } = {}) {
   }
 }
 
-export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", permissions, state } = {}) {
+export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state } = {}) {
   write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
     id, title: "ACP fixture", projectID: "fixture", agent: "build", ...(permissions && { permissions }),
-    location: { directory }, model: { providerID: provider, id: model },
+    location: { directory }, model: { providerID: provider, id: model, ...(variant && { variant }) },
     time: { created: 1, updated: 1 }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }));
