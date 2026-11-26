@@ -1546,3 +1546,173 @@ test("Permissions picking what applies with no rule writes none, so Plan mode's 
     do { next=(await frames.next()).value; } while(row(next,"when-webfetch").value!=="deny");
   } finally { events.close(); }
 });
+
+const gitBox=async(t,name,settings="{}")=>{
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  const file=path.join(box.home,"box/opencode.json");
+  write(file,settings);
+  const record=await box.start().ready();
+  const ask=box.connect(record);
+  const page=async()=>{const r=await ask("GET","kuvo/settings/git");assert.equal(r.status,200,r.text);return r.json;};
+  const change=(r,value,was=r.revision)=>ask("PATCH","kuvo/settings/git",{row:r.id,value,was});
+  return {box,record,ask,page,change,file};
+};
+
+test("Git: the prefix in a card of its own, instructions under their own headings, cleaned as they're used, and stale writes refused", async t => {
+  const {ask,page,change}=await gitBox(t,"Git Rows");
+  let shown=await page();
+  assert.deepEqual(shown.groups.flatMap(g=>g.rows.map(r=>[r.id,r.kind,r.title,r.value])),[
+    ["branch-prefix","text","Branch prefix","kuvo/"],["commit-instructions","text","Commit instructions",""],["pull-request-instructions","text","Pull request instructions",""]]);
+  assert.deepEqual(shown.groups.map(g=>[g.id,g.title,g.note,g.rows.length]),[
+    ["branches",undefined,undefined,1],
+    ["commit-messages","Commit Instructions","Added when Suggest a Message in Changes asks the model for one.",1],
+    ["pull-requests","Pull Request Instructions","Added when Create Pull Request writes the title and description.",1]]);
+  assert.deepEqual(shown.groups.flatMap(g=>g.rows.map(r=>[r.title,r.line,r.placeholder,r.lines])),[
+    ["Branch prefix","How a session’s own branch in a worktree starts.","None",undefined],
+    ["Commit instructions",undefined,"For example: Start with the area changed, like “ui: …”, and never mention tickets.",{min:5,max:12}],
+    ["Pull request instructions",undefined,"For example: Add a Testing section, and link the issue if the branch names one.",{min:5,max:12}]]);
+  const prefix=row(shown,"branch-prefix");
+  const answer=await change(prefix,false);
+  assert.deepEqual([answer.status,answer.json.message],[400,"Send text."]);
+  assert.equal((await change(prefix,"feature/")).status,200);
+  assert.equal((await ask("GET","kuvo/config")).json.branch_prefix,"feature/");
+  assert.equal((await change(prefix,"other/")).status,409);
+  assert.equal((await change(row(shown,"commit-instructions"),"Use imperative mood")).status,200);
+  shown=(await change(row(await page(),"branch-prefix"),"")).json;
+  assert.equal((await ask("GET","kuvo/config")).json.branch_prefix,"");
+  shown=(await change(row(shown,"branch-prefix")," /bad prefix../ ")).json;
+  assert.equal(row(shown,"branch-prefix").value,"badprefix./");
+  shown=(await change(row(shown,"commit-instructions"),"  Keep it short\n ")).json;
+  assert.equal(row(shown,"commit-instructions").value,"Keep it short");
+  const config=(await ask("GET","kuvo/config")).json;
+  assert.deepEqual([config.branch_prefix,config.commit_instructions],["badprefix./","Keep it short"]);
+});
+
+test("Git follows the page, kuvo/config and the one-time move, and leaves settings it can't read or change", async t => {
+  const {record,ask,page,change,file}=await gitBox(t,"Git Follow");
+  const events=await openLine(record,"","kuvo/settings/git/events");
+  try {
+    const frames=events.frames();
+    const next=async test=>{let f;do{f=(await frames.next()).value;}while(!test(f));return f;};
+    const first=await next(()=>true);
+    assert.equal((await change(row(first,"branch-prefix"),"session/")).status,200);
+    await next(p=>row(p,"branch-prefix").value==="session/");
+    assert.equal((await ask("PATCH","kuvo/config",{changes:[{path:["pull_request_instructions"],value:"Include testing"}]})).status,200);
+    await next(p=>row(p,"pull-request-instructions").value==="Include testing");
+  } finally { events.close(); }
+  write(file,JSON.stringify({branch_prefix:false}));
+  const before=readFileSync(file,"utf8");
+  const prefix=row(await page(),"branch-prefix");
+  assert.match(prefix.can.why,/other than text/);
+  assert.equal((await change(prefix,"feature/")).status,403);
+  assert.equal(readFileSync(file,"utf8"),before);
+  write(file,"{broken");
+  const shown=await page();
+  assert.deepEqual(shown.groups,[]);
+  assert.equal(shown.notes[0].tone,"warning");
+  assert.match(shown.notes[0].words,/settings/);
+});
+
+test("Git events follow the one-time move of a Mac's settings", async t => {
+  const {record,ask}=await gitBox(t,"Git Move");
+  const events=await openLine(record,"","kuvo/settings/git/events");
+  try {
+    const frames=events.frames();
+    await frames.next();
+    const moved=await ask("POST","kuvo/git/settings/move",{branchPrefix:"moved/",commitInstructions:"Keep it short"});
+    assert.equal(moved.status,200,moved.text);
+    assert.equal(moved.json.moved,true);
+    let next;
+    do { next=(await frames.next()).value; } while(row(next,"branch-prefix").value!=="moved/");
+    assert.equal(row(next,"commit-instructions").value,"Keep it short");
+  } finally { events.close(); }
+});
+
+test("This Computer and the engine's pages read quickly while the engine doesn't answer", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Engine Quiet");
+  const ask=box.connect(await box.start().ready());
+  await box.engine.close();
+  for (const section of ["computer","agents","mcp","skills","worktrees"]) {
+    const started=Date.now();
+    const answer=await ask("GET","kuvo/settings/"+section);
+    assert.equal(answer.status,200,answer.text);
+    assert.ok(Date.now()-started<3000,`${section} took ${Date.now()-started} ms`);
+  }
+});
+
+test("Custom Auto's words, list moves only where they go, its last list kept, edits to a model's effort, and the page followed", async t => {
+  const {computer} = await bench(t);
+  const box=await computer("Model Words");
+  box.engine.providers=[{id:"opencode"}];
+  box.engine.models=[{providerID:"opencode",id:"fast",name:"Fast",variants:[{id:"high"}]},{providerID:"opencode",id:"other",name:"Other",variants:[{id:"low"}]}];
+  box.engine.integrations=[{id:"opencode",name:"OpenCode Zen",connections:[{}]}];
+  const {startClaudeBridge}=await import("./claude.mjs");
+  const bridge=await startClaudeBridge(boxBinary(),box.home,box.env,{engine:box.engine});
+  t.after(async()=>{await bridge?.stop()});
+  const record=await box.start().ready();
+  const ask=box.connect(record);
+  assert.equal((await ask("GET","kuvo/agents/api/kuvo/auto")).status,200);
+  const page=async()=>{const r=await ask("GET","kuvo/settings/custom-auto");assert.equal(r.status,200,r.text);return r.json;};
+  let lists=row(await page(),"lists");
+  assert.equal((await perform(ask,"custom-auto",lists,"add",{name:"Features"})).status,200);
+  // (The list a computer starts with goes; the last one left stays.)
+  for (const each of row(await page(),"lists").items.filter(i=>i.title!=="Features"))
+    assert.equal((await perform(ask,"custom-auto",item(await page(),each.id),"remove")).status,200);
+  const only=row(await page(),"lists").items[0];
+  assert.equal(only.title,"Features");
+  const refused=await perform(ask,"custom-auto",only,"remove");
+  assert.equal(refused.status,403,refused.text);
+  assert.equal(row(await page(),"lists").items.length,1);
+  lists=row(await page(),"lists");
+  const events=await openLine(record,"","kuvo/settings/custom-auto/events");
+  try {
+    const frames=events.frames();
+    await frames.next();
+    assert.equal((await perform(ask,"custom-auto",lists,"add",{name:"Bugs"})).status,200);
+    let next;
+    do { next=(await frames.next()).value; } while(!row(next,"lists").items.some(i=>i.title==="Bugs"));
+  } finally { events.close(); }
+  const shown=await page();
+  assert.equal(shown.title,"Custom Auto");
+  assert.equal(shown.groups[0].note,"A model at its limit is skipped until the limit resets; an account at its limit skips all its models.");
+  const [first,second]=row(shown,"lists").items;
+  assert.deepEqual(row(shown,"lists").items.map(i=>i.title),["Features","Bugs"]);
+  const firstId=first.id.slice("list-".length),secondId=second.id.slice("list-".length);
+  assert.equal(row(shown,"models-"+secondId).empty,"Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.");
+  const name=action(row(shown,"lists"),"add").form.fields[0];
+  assert.deepEqual([name.title,name.line],["Name","Its name, as the model picker shows it"]);
+  assert.deepEqual(first.actions.map(a=>a.title),["Edit…","Move Down","Delete List"]);
+  assert.equal(second.actions.some(a=>a.id==="down"),false);
+  assert.equal(first.actions.some(a=>a.id==="up"),false);
+  const one=await perform(ask,"custom-auto",row(shown,"models-"+firstId),"add-model",{model:JSON.stringify(["opencode","fast"]),variant:"high"});
+  assert.equal(one.status,200,one.text);
+  const entry=item(one.json,`entry-${firstId}-0`);
+  assert.equal(entry.actions.some(a=>["up","down"].includes(a.id)),false);
+  assert.ok(!JSON.stringify(one.json).includes("Already first.")&&!JSON.stringify(one.json).includes("Already last."));
+  const form=action(entry,"edit-model").form;
+  const variant=form.fields.find(f=>f.id==="variant");
+  assert.deepEqual([form.fields.length,variant.kind,variant.value],[2,"text","high"]);
+  const values={model:JSON.stringify(["opencode","other"]),variant:"low"};
+  const checked=await ask("POST",`kuvo/settings/custom-auto/entry-${firstId}-0/edit-model/check`,{values});
+  assert.equal(checked.json.ready,true,checked.text);
+  assert.equal(checked.json.fields.find(f=>f.id==="variant").words,"Supported efforts: low. Leave empty for the default.");
+  assert.equal((await perform(ask,"custom-auto",entry,"edit-model",values)).status,200);
+  const kept=(await ask("GET","kuvo/agents/api/kuvo/auto")).json.data.lists.find(l=>l.id===firstId);
+  assert.deepEqual(kept.entries.map(e=>[e.providerID,e.modelID,e.variant]),[["opencode","other","low"]]);
+});
+
+test("a Settings change body is checked before anything is read or written", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Change Shape");
+  const ask=box.connect(await box.start().ready());
+  const at=row((await ask("GET","kuvo/settings/conversations")).json,"compaction");
+  const change={row:at.id,value:"600000",was:at.revision};
+  for (const body of [{...change,confirmed:"true"},{...change,extra:true},{row:at.id,was:at.revision},{...change,was:1}]) {
+    const answer=await ask("PATCH","kuvo/settings/conversations",body);
+    assert.equal(answer.status,400,JSON.stringify(body)+" "+answer.text);
+  }
+  assert.equal(existsSync(path.join(box.home,"box/conversation-compaction.json")),false);
+  for (const body of [{...change,confirmed:false},change]) assert.equal((await ask("PATCH","kuvo/settings/conversations",{...body,was:row((await ask("GET","kuvo/settings/conversations")).json,"compaction").revision})).status,200);
+});
