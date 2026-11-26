@@ -1412,6 +1412,8 @@ dependencies = [
 name = "kuvo_peers"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
  "flate2",
  "form_urlencoded",
  "futures-util",
