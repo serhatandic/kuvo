@@ -1,7 +1,7 @@
 // The actual settings routes, with a private home and the same stored records on both boxes.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { bench } from "./bench.mjs";
@@ -920,4 +920,126 @@ test("Agents offers Claude Code's agents, and one by a built-in one's name comes
   assert.deepEqual([item(after,"claude-security-auditor").kind,item(after,"claude-security-auditor").value],["status","Imported"]);
   assert.equal(item(after,"claude-plan-claude").title,"plan");
   assert.equal(item(after,"agent-security-auditor").line,"A subagent · Checks for security problems");
+});
+
+// Settings › Skills, with one skill of yours written as the editor writes it.
+const skillText=(name,description,body)=>`---\nname: "${name}"\ndescription: "${description}"\n---\n\n${body}\n`;
+const skillsBox=async(t,name)=>{
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  write(path.join(box.home,"box/opencode.json"),"{}");
+  const record=await box.start().ready();
+  const ask=box.connect(record);
+  const folder=(await ask("GET","kuvo/skills")).json.folder;
+  assert.ok(folder);
+  const skill=(id,text)=>write(path.join(folder,id,"SKILL.md"),text);
+  skill("release",skillText("release","Write releases","Instructions"));
+  const page=async()=>{const r=await ask("GET","kuvo/settings/skills");assert.equal(r.status,200,r.text);return r.json;};
+  const config=(value)=>value===undefined?readFileSync(path.join(box.home,"box/opencode.json"),"utf8"):write(path.join(box.home,"box/opencode.json"),JSON.stringify(value));
+  const change=(r,value,was=r.revision)=>ask("PATCH","kuvo/settings/skills",{row:r.id,value,was});
+  return {box,record,ask,folder,skill,page,config,change};
+};
+
+test("Skills lists editable skills, refuses a name taken in the check's words, and keeps unrelated settings", async t => {
+  const {ask,page,config,change}=await skillsBox(t,"Skills List");
+  const shown=await page();
+  const release=item(shown,"skill-release");
+  assert.equal(release.value,true);
+  assert.deepEqual(release.actions[0].form.fields.map(f=>f.title),["Use it when","Instructions"]);
+  assert.equal(shown.groups[0].title,"Skills the Agent Can Use");
+  assert.equal(shown.groups.find(g=>g.id==="other-places").note,"A catalog is a web address with an index.json listing its skills.");
+  const list=row(shown,"skills");
+  const body={was:list.add.form.revision,values:{name:"release",description:"Test",instructions:"Text"}};
+  const checked=await ask("POST","kuvo/settings/skills/skills/add/check",body);
+  assert.equal(checked.json.ready,false);
+  const refused=await ask("POST","kuvo/settings/skills/skills/add",body);
+  assert.equal(refused.status,400,refused.text);
+  assert.deepEqual(refused.json.fields,checked.json.fields);
+  config({unrelated:true});
+  assert.equal((await change(release,"no")).status,400);
+  const off=await change(release,false);
+  assert.equal(off.status,200,off.text);
+  assert.equal(item(off.json,"skill-release").value,false);
+  assert.equal(JSON.parse(config()).unrelated,true);
+  config({permissions:"handwritten"});
+  const before=config();
+  const held=item(await page(),"skill-release");
+  assert.ok(held.can.why);
+  assert.equal((await change(held,true)).status,403);
+  assert.equal(config(),before);
+});
+
+test("Skills edits keep unknown header lines, go stale only for their own file, and the old route refuses a changed one", async t => {
+  const {ask,folder,skill,page}=await skillsBox(t,"Skills Edit");
+  let at=item(await page(),"skill-release");
+  const form=at.actions[0].form.revision;
+  skill("release",skillText("release","Outside","Instructions"));
+  const stale=await ask("POST","kuvo/settings/skills/skill-release/edit",{was:form,values:{description:"Changed",instructions:"New"}});
+  assert.equal(stale.status,409,stale.text);
+  skill("release","---\nname: release\ndescription: old\nlicense: MIT\n---\nold\n");
+  at=item(await page(),"skill-release");
+  skill("other",skillText("other","Other","Other"));
+  const next=item(await page(),"skill-release");
+  assert.equal(next.actions[0].form.revision,at.actions[0].form.revision);
+  const description='Use "foo" with C:\\scripts and apostrophes';
+  const saved=await ask("POST","kuvo/settings/skills/skill-release/edit",{was:at.actions[0].form.revision,values:{description,instructions:"New instructions"}});
+  assert.equal(saved.status,200,saved.text);
+  const text=readFileSync(path.join(folder,"release","SKILL.md"),"utf8");
+  assert.match(text,/license: MIT/);
+  assert.equal(item(saved.json,"skill-release").line,description);
+  const legacy=await ask("PUT","kuvo/skills/release",{was:"old",text:"new"});
+  assert.equal(legacy.status,409,legacy.text);
+  assert.equal(legacy.json.message,"It changed since you read it.");
+});
+
+test("Skills follows its files and settings, checks install links as it submits, and leaves malformed places alone", async t => {
+  const {record,ask,skill,page,config}=await skillsBox(t,"Skills Follow");
+  const lines=await openLine(record,"","kuvo/settings/skills/events");
+  try {
+    const frames=lines.frames();
+    assert.ok(item((await frames.next()).value,"skill-release"));
+    skill("release",skillText("release","Changed externally","New"));
+    let next;
+    do { next=(await frames.next()).value; } while(item(next,"skill-release").line!=="Changed externally");
+    config({permissions:[{action:"skill",resource:"release",effect:"deny"}],skills:["/example"]});
+    do { next=(await frames.next()).value; } while(item(next,"skill-release").value!==false || !item(next,"place-0"));
+    assert.equal(item(next,"place-0").title,"/example");
+  } finally { lines.close(); }
+  const install=item(await page(),"install");
+  const values={repository:"not-a-repository",path:""};
+  const checked=await ask("POST","kuvo/settings/skills/install/install/check",{values});
+  const refused=await ask("POST","kuvo/settings/skills/install/install",{was:install.actions[0].form.revision,values});
+  assert.equal(refused.status,400,refused.text);
+  assert.deepEqual(refused.json.fields,checked.json.fields);
+  for (const repository of ["https://example.com/acme/skills","https://github.com/acme/skills/tree/reviewed/release"])
+    assert.equal((await ask("POST","kuvo/settings/skills/install/install/check",{values:{repository,path:""}})).json.ready,false,repository);
+  assert.equal((await ask("POST","kuvo/settings/skills/install/install/check",{values:{repository:"https://github.com/acme/skills",path:"skills/release"}})).json.ready,true);
+  config({skills:"handwritten"});
+  const before=config();
+  const shown=await page();
+  assert.deepEqual(shown.groups,[]);
+  assert.equal(shown.notes[0].tone,"warning");
+  assert.equal(config(),before);
+});
+
+test("Skills lists the engine's own with search, deleted ones with theirs, and skips folders it can't read", async t => {
+  const {box,ask,folder,page}=await skillsBox(t,"Skills Found");
+  box.engine.skills=Array.from({length:7},(_,i)=>({id:`found-${i}`,name:`Found ${i}`,description:`Use found ${i}`,path:`/builtin/found-${i}/SKILL.md`}));
+  const shown=await page();
+  const list=row(shown,"skills");
+  assert.equal(list.search.placeholder,"Search skills");
+  const found=item(shown,"skill-found-0");
+  assert.deepEqual([found.title,found.line,found.badge],["Found 0","Use found 0",{words:"Built in",tone:"quiet"}]);
+  for (let i=0;i<7;i++) {
+    const name=`deleted-${i}`;
+    assert.equal((await ask("PUT",`kuvo/skills/${name}`,{text:skillText(name,"For testing","Text"),new:true})).status,200);
+    assert.equal((await ask("DELETE",`kuvo/skills/${name}`)).status,200);
+  }
+  assert.deepEqual(item(await page(),"deleted").search,{placeholder:"Search recently deleted",empty:"No deleted skill matches “{query}”."});
+  for (const name of ["empty","a".repeat(129)]) mkdirSync(path.join(folder,name),{recursive:true});
+  write(path.join(folder,"a".repeat(129),"SKILL.md"),"Long folder");
+  const after=await page();
+  assert.equal(item(after,"skill-release").title,"release");
+  assert.equal(item(after,"skill-empty"),undefined);
+  assert.equal(item(after,`skill-${"a".repeat(129)}`),undefined);
 });
