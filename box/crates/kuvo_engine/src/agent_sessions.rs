@@ -197,6 +197,12 @@ pub trait AgentSessionSource: Send + Sync {
         })
     }
 
+    /// What the box holds in the conversation's line (a Stop held them): none of them starts
+    /// until it's let go.
+    fn hold_line<'a>(&'a self, _id: &'a str, _held: Vec<String>) -> AgentCall<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Take a waiting message back.
     fn take_back<'a>(&'a self, _id: &'a str, _item: &'a str) -> AgentCall<'a, AgentTakeBack> {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
@@ -244,6 +250,7 @@ pub trait AgentSessionSource: Send + Sync {
 impl crate::Engine {
     pub fn with_agent_sessions(mut self, source: Arc<dyn AgentSessionSource>) -> Self {
         let events = source.events();
+        let _ = self.queues.agents.set(source.clone());
         self.agent_sessions = Some(source);
         if let Some(events) = events {
             crate::queue::follow_agents(self.clone(), events);

@@ -47,6 +47,8 @@ mod windows_socket;
 #[derive(Clone)]
 pub(crate) struct QueueStore {
     run: PathBuf,
+    /// The coding agents, whose lines are told what a conversation's queue holds.
+    pub(crate) agents: Arc<std::sync::OnceLock<Arc<dyn crate::AgentSessionSource>>>,
     edits: Arc<Semaphore>,
     changes: watch::Sender<u64>,
     limits: limit::Classifier,
@@ -197,6 +199,7 @@ impl QueueStore {
     pub(crate) fn open(home: &std::path::Path) -> Self {
         Self {
             run: home.join("run"),
+            agents: Arc::default(),
             edits: Arc::new(Semaphore::new(1)),
             changes: watch::channel(0).0,
             limits: limit::Classifier::new(),
@@ -274,6 +277,7 @@ impl QueueStore {
         }
         let path = self.run.join("queues.json");
         let store = self.clone();
+        let held_changed = before.map(|queue| queue.held) != Some(result.held.clone());
         tokio::task::spawn_blocking(move || {
             let _edit = edit_guard;
             disk::write(&path, &index)?;
@@ -281,6 +285,10 @@ impl QueueStore {
             Ok::<_, io::Error>(())
         })
         .await??;
+        // (A coding agent's line keeps what's held, as the engine's inbox does.)
+        if held_changed && let Some(agents) = self.agents.get() {
+            let _ = agents.hold_line(session, result.held.clone()).await;
+        }
         Ok(result)
     }
 
@@ -1194,12 +1202,23 @@ pub(crate) async fn advance(
     };
     let now = how == Advance::Now || !running;
     match target {
-        Target::Agents(source) => match source.advance_line(session, id, how == Advance::Now).await
-        {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(save_failed(error)),
-        },
+        // (Let go first, so its line may start it; with nothing running, what's steered starts
+        // now, as the engine's does.)
+        Target::Agents(source) => {
+            engine
+                .queues
+                .put(session, |queue| {
+                    queue.held.retain(|held| held != id);
+                    queue.came_held.retain(|held| held != id);
+                })
+                .await
+                .map_err(save_failed)?;
+            match source.advance_line(session, id, now).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(save_failed(error)),
+            }
+        }
         Target::Engine(_) if item.delivery == Delivery::Queue => {
             if let Err(error) = set_delivery(engine, target, session, id, Delivery::Steer).await {
                 if error.missing() {

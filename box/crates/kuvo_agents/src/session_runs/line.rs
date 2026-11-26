@@ -914,6 +914,10 @@ impl Service {
         {
             conversation.step_waiting = true;
             self.resume_next(state, session).await;
+        } else if matches!(conversation.doing, Doing::Stopping(_)) {
+            // Steered while its turn stops: it goes once that turn has ended.
+            conversation.step_waiting = true;
+            conversation.go = true;
         } else {
             conversation.step_waiting = true;
             self.wake(state, session).await;
@@ -1115,11 +1119,18 @@ impl Service {
         if let Some(own) = conversation.own.take() {
             return self.start_own(state, session, own).await;
         }
-        let Ok(Some(line)) = self.store.line(session).await else {
+        let Ok(Some((line, held))) = self
+            .store
+            .edit_line(session, |line| ((line.inputs.clone(), line.held.clone()), false))
+            .await
+        else {
             return;
         };
         let conversation = state.conversation(session);
-        let handing = |id: &str| conversation.handing.contains_key(id);
+        // (One the box holds isn't started: it waits until it's steered.)
+        let handing = |id: &str| {
+            conversation.handing.contains_key(id) || held.iter().any(|kept| kept == id)
+        };
         let index = if conversation.continue_after_exit {
             // An uncertain handoff is settled before the next in line goes.
             if line

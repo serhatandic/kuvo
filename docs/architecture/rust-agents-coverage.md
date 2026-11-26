@@ -909,7 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 7/7 | see below |
-| engine-sessions | 46/46 (8 skipped) | 51/54 | see below |
+| engine-sessions | 46/46 (8 skipped) | 52/54 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
@@ -976,9 +976,8 @@ findings:
 - it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
   parts vector, and the agent that takes pictures).
 
-Rust's 3 failures are 4.7d step 5's:
+Rust's 2 failures are 4.7d step 5's:
 
-- a Steer on a stopped queue;
 - draining an unpaused saved queue after a restart;
 - the place Undo puts a message back;
 
@@ -987,7 +986,9 @@ Kept on the engine:
 - "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
   passthrough stays for released 0.7.x Macs.
 
-An agent's turn says on its line what it does as that changes (it reasons, writes, calls a
+A message a Stop held stays in a coding agent's line until it's steered: the box tells the line
+what it holds (`inboxHeld` in `agent.json`), and the line starts none of them meanwhile. One
+steered while its turn stops goes once that turn has ended. An agent's turn says on its line what it does as that changes (it reasons, writes, calls a
 tool), in the engine's words, so a bot's conversation shows it thinking after a stretch of
 reasoning, as the engine's did. An agent's transcript pages are shown as the engine's were: each step in words and its
 summaries titled (`Engine::shown_rows`). The single-row read of the step-words case is left out:
