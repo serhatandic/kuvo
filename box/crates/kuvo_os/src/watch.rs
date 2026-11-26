@@ -281,7 +281,15 @@ impl Worker {
     fn callback(&self, backend: Backend) -> impl FnMut(notify::Result<Event>) + Send + 'static {
         let commands = self.commands.clone();
         move |event| {
-            if event.as_ref().is_ok_and(|event| event.kind.is_access()) {
+            // A reader can see a newly created or truncated record before the
+            // writer finishes. Linux reports the completed write as an access
+            // event; keep that notification, but ignore ordinary reads/opens.
+            if event.as_ref().is_ok_and(|event| {
+                event.kind.is_access()
+                    && !matches!(event.kind,
+                        notify::EventKind::Access(notify::event::AccessKind::Close(
+                            notify::event::AccessMode::Write)))
+            }) {
                 return;
             }
             if let Some(commands) = commands.upgrade() {

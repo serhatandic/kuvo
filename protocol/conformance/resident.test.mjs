@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, request, write } from "./adapter.mjs";
+import { openLine, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { parkedTimers } from "./idle-counter.mjs";
 
@@ -39,8 +39,9 @@ test("followed work and background answer external records and the actual mark e
   const seen = new Map();
   const expect = async (topic, state, matches) => {
     while (!matches(seen.get(topic))) {
-      const { value, done } = await frames.next().catch(error => {
-        throw new Error(`follow timed out waiting for ${topic}: ${state}; last value ${JSON.stringify(seen.get(topic))}`, { cause: error });
+      const { value, done } = await frames.next().catch(async error => {
+        const current = await request(record, "GET", topics[topic].replace(/\/events$/, ""));
+        throw new Error(`follow timed out waiting for ${topic}: ${state}; last value ${JSON.stringify(seen.get(topic))}; current ${current.text}`, { cause: error });
       });
       assert.ok(!done, `follow stopped before ${topic}: ${state}`);
       if (value?.t) seen.set(value.t, value.d);
@@ -50,11 +51,35 @@ test("followed work and background answer external records and the actual mark e
   await expect("marks", "empty", row => row?.marks?.length === 0);
   const work = path.join(here.home, "run/work");
   const background = path.join(work, "background.json");
-  write(background, JSON.stringify({ engine: { sessions: { ses_followed: {
+  // The engine and agent runtime each own their place in this shared file.
+  // Act as another writer, using the same lock and atomic replacement, rather
+  // than racing the resident's initial publication of its engine place.
+  const saveBackground = async place => {
+    fs.mkdirSync(work, { recursive: true });
+    const lock = path.join(work, ".background.lock");
+    await until(() => {
+      try { fs.mkdirSync(lock); return true; }
+      catch (error) { if (error.code !== "EEXIST") throw error; return false; }
+    }, "the background writer lock");
+    try {
+      const places = fs.existsSync(background) ? JSON.parse(fs.readFileSync(background, "utf8")) : {};
+      if (place) places.external = place;
+      else delete places.external;
+      if (Object.keys(places).length) {
+        write(background + ".stage", JSON.stringify(places));
+        fs.renameSync(background + ".stage", background);
+      } else {
+        fs.rmSync(background, { force: true });
+      }
+    } finally {
+      fs.rmdirSync(lock);
+    }
+  };
+  await saveBackground({ sessions: { ses_followed: {
     commands: [{ id: "shl_followed", command: "build", started: Date.now() }],
-  } }, folders: [] } }));
+  } }, folders: [] });
   await expect("background", "added command", row => row?.sessions?.ses_followed?.commands === 1);
-  fs.rmSync(background, { force: true });
+  await saveBackground(null);
   await expect("background", "removed command", row => row?.sessions && !Object.keys(row.sessions).length);
   write(path.join(work, "oversight.json"), JSON.stringify([{
     id: "oversight-followed", bot: "bot_followed", session: "ses_followed", kind: "started", at: Date.now() - 54000,

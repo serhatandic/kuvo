@@ -78,5 +78,18 @@ async fn resident_shares_native_watcher_across_many_roots_and_overlapping_subscr
     fs::write(temp.path().join("139/rearmed"), "four").unwrap();
     changed(&mut subscriptions[139], Path::new("rearmed")).await;
     #[cfg(target_os = "linux")]
-    assert_eq!(inotify_instances(), before + 1);
+    {
+        use std::io::Write;
+        assert_eq!(inotify_instances(), before + 1);
+        // An in-place writer can create a record before its contents are ready.
+        // Once the preceding change is consumed, closing the writer still has to
+        // notify readers so they can read the completed record.
+        let file = temp.path().join("0/record.json");
+        let mut writer = fs::File::create(&file).unwrap();
+        changed(&mut subscriptions[0], Path::new("record.json")).await;
+        writer.write_all(b"{}\n").unwrap();
+        changed(&mut subscriptions[0], Path::new("record.json")).await;
+        drop(writer);
+        changed(&mut subscriptions[0], Path::new("record.json")).await;
+    }
 }
