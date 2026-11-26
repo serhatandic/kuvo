@@ -905,7 +905,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | Area | Reference | Rust | Left out |
 |---|---|---|---|
 | engine-delivery | 4/4 | 5/5 | none |
-| engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
+| engine-search | 4/4 | 4/4 | the engine's read counts; an engine whose list fails |
 | engine-typed | 7/7 | 6/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 5/7 | see below |
@@ -921,6 +921,9 @@ Notes on each area:
 - **engine-search.** The cases seed agent conversations with their rows. The kept text is checked
   in its true order: what was said, the latest last, then the steps. (The old check that it starts
   with the latest sentence held only because the stand-in engine handed rows back newest first.)
+  The Rust box searches the coding agents' conversations as it keeps them, and the engine's only
+  while it runs (it isn't started for a search). One of OpenCode's older conversations is searched
+  once it's been opened: reading its text before then would take it in, which runs OpenCode.
 - **engine-typed.** Added: a conversation kept with an Autopilot mark opens and takes a message as
   any other (Autopilot is gone from the app). Left out:
   - "two retries recover a draft that never reached the engine before restart" and "a retry

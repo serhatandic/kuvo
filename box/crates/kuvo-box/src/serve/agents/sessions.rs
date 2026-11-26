@@ -513,6 +513,16 @@ impl AgentSessionSource for Inventory {
         })
     }
 
+    fn transcript<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async move {
+            let page = self
+                .store
+                .message_page(id, None, u32::MAX, MessageOrder::OldestFirst)
+                .await?;
+            Ok(page.map(|page| page.messages))
+        })
+    }
+
     fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         let mut line = self.running.as_ref()?.events();
         let (words, heard) = broadcast::channel(256);

@@ -218,6 +218,12 @@ pub trait AgentSessionSource: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// The conversation's whole transcript, oldest first, as kept here; `None` when it isn't
+    /// kept here (one of OpenCode's older ones before it's opened: reading never takes it in).
+    fn transcript<'a>(&'a self, _id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// The conversations' line and turn events, in the engine's words.
     fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         None
