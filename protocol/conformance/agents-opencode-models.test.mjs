@@ -31,7 +31,35 @@ function settingsFor(url) {
 }
 
 describe("OpenCode's models", { skip }, () => {
-  let root, home, work, other, model, relay, box, listener, worker;
+  let root, home, work, other, model, relay, box, listener, worker, env;
+
+  /** The box (and, for the reference, its engine) on `home`. */
+  async function serve() {
+    const program = path.join(home, "engine", version, process.platform === "win32" ? "opencode.exe" : "opencode");
+    if (binary.typescript) {
+      const reserve = net.createServer();
+      await new Promise(resolve => reserve.listen(0, "127.0.0.1", resolve));
+      const port = reserve.address().port;
+      await new Promise(resolve => reserve.close(resolve));
+      const password = "scratch-engine";
+      const dirs = Object.fromEntries(["data", "config", "state", "cache"].map(sub => [`XDG_${sub.toUpperCase()}_HOME`, path.join(home, sub)]));
+      for (const folder of [...Object.values(dirs), path.join(home, "workspace")]) fs.mkdirSync(folder, { recursive: true });
+      worker = launch(program, ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
+        { ...env, ...dirs, OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password }, path.join(home, "workspace"));
+      await until(async () => (await request({ port, password }, "GET", "api/session?limit=1").catch(() => null))?.status === 200, "The reference's engine", 30000);
+      write(path.join(home, "run", "engine.json"), JSON.stringify({ port, password, pid: worker.child.pid, version }));
+    }
+    box = startBox({ binary, home, env, relay });
+    listener = await box.ready();
+  }
+
+  async function stop() {
+    await box?.stop();
+    await stopFixtureHolders(home);
+    await worker?.stop?.();
+    worker = null;
+    fs.rmSync(path.join(home, "run", "engine.json"), { force: true });
+  }
 
   before(async () => {
     root = fs.realpathSync(scratch());
@@ -53,23 +81,9 @@ describe("OpenCode's models", { skip }, () => {
     write(path.join(work, "opencode.json"), JSON.stringify({ provider: { workshop: {
       npm: "@ai-sdk/openai-compatible", name: "Workshop", options: { baseURL: model.url, apiKey: "stand-in" }, models: { bench: { name: "Bench" } },
     } } }));
-    const env = { ...isolatedEnv(root), KUVO_SANDBOX: "off", OPENCODE_DISABLE_MODELS_FETCH: "1" };
+    env = { ...isolatedEnv(root), KUVO_SANDBOX: "off", OPENCODE_DISABLE_MODELS_FETCH: "1" };
     relay = await localRelay();
-    if (binary.typescript) {
-      const reserve = net.createServer();
-      await new Promise(resolve => reserve.listen(0, "127.0.0.1", resolve));
-      const port = reserve.address().port;
-      await new Promise(resolve => reserve.close(resolve));
-      const password = "scratch-engine";
-      const dirs = Object.fromEntries(["data", "config", "state", "cache"].map(sub => [`XDG_${sub.toUpperCase()}_HOME`, path.join(home, sub)]));
-      for (const folder of [...Object.values(dirs), path.join(home, "workspace")]) fs.mkdirSync(folder, { recursive: true });
-      worker = launch(program, ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
-        { ...env, ...dirs, OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password }, path.join(home, "workspace"));
-      await until(async () => (await request({ port, password }, "GET", "api/session?limit=1").catch(() => null))?.status === 200, "The reference's engine", 30000);
-      write(path.join(home, "run", "engine.json"), JSON.stringify({ port, password, pid: worker.child.pid, version }));
-    }
-    box = startBox({ binary, home, env, relay });
-    listener = await box.ready();
+    await serve();
     // (Its first conversation is what fills OpenCode's list here.)
     const first = await call("POST", "kuvo/sessions", { folder: other, model: STAND_IN });
     assert.equal(first.status, 200, first.text);
@@ -79,9 +93,7 @@ describe("OpenCode's models", { skip }, () => {
   });
 
   after(async () => {
-    await box?.stop();
-    if (home) await stopFixtureHolders(home);
-    await worker?.stop?.();
+    if (home) await stop();
     await relay?.close();
     await model?.close();
     if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
@@ -187,5 +199,23 @@ describe("OpenCode's models", { skip }, () => {
       "The key's models never reached the picker.", 30000, 250);
     const ready = await readiness({ providerID: "anthropic", id: "claude-opus-4-5" });
     assert.equal(ready.runs, true, JSON.stringify(ready));
+  });
+
+  test("a model gone from OpenCode's list keeps the name it had", { timeout: 120000 }, async () => {
+    const started = await call("POST", "kuvo/sessions", { folder: other, model: { providerID: "freebie", id: "zero" } });
+    assert.equal(started.status, 200, started.text);
+    const id = started.json.info?.id ?? started.json.session;
+    await until(async () => (await call("GET", `kuvo/sessions/models?sessions=${id}`)).json?.sessions?.[id]?.name === "Zero", "Its name was never known.", 20000, 200);
+    await stop();
+    const settings = settingsFor(model.url);
+    settings.provider.freebie.models = { later: { name: "Later" } };
+    write(path.join(home, "config", "opencode", "opencode.json"), JSON.stringify(settings));
+    await serve();
+    const gone = await until(async () => {
+      const answer = await call("GET", `kuvo/sessions/models?sessions=${id}`);
+      return answer.json?.sessions?.[id]?.missing && answer.json.sessions[id];
+    }, "The gone model was never said to be gone.", 60000, 250);
+    assert.equal(gone.refusal, "Zero is no longer among Freebie’s models: choose another model.", JSON.stringify(gone));
+    assert.equal(gone.missing, "gone");
   });
 });
