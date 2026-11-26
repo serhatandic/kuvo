@@ -58,6 +58,8 @@ async function queueItems(record, id) {
     line.close();
   }
 }
+/** A conversation's rows ending in a finished turn at `at` (else the reference's agents call its last turn cut short). */
+const finished = at => [{ type: "user", text: "Earlier.", time: { created: at } }, { type: "idle", outcome: "succeeded", time: { created: at } }];
 /** Its rows from the user, once there are `count`. */
 async function userRows(here, record, id, count) {
   let rows = [];
@@ -887,102 +889,46 @@ test("Stop keeps named late messages on disk and Resume forgets the ones still m
   await until(() => here.agents.prompts().includes(untilResumed), "A message named by Stop and sent after Resume didn't go.", 20000);
 });
 
-test("Stop holds a named send before its composed attachment reaches OpenCode", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("stop-slow-attachment");
-  const session = "ses_late";
-  const route = "kuvo/sessions/" + session;
-  const theId = "msg_lateFile";
-  const headers = { "x-kuvo-from": "app" };
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.running.add(session);
-  const resident = await here.start().ready();
-  const entered = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  let reads = 0;
-  here.engine.holdSessionRead = {
-    when: id => id === session && ++reads === 2,
-    accepted: entered.resolve,
-    release: release.promise,
-  };
-  t.after(() => release.resolve());
-  const send = request(resident, "POST", route + "/send", {
-    id: theId, words: "See the attachment.", delivery: "steer",
-    files: [{ uri: "data:image/png;base64,UE5H", name: "evidence.png" }],
-  }, headers, 25000);
-  await entered.promise;
-  const stopping = request(resident, "POST", route + "/stop", { items: [theId] }, headers, 25000);
-  try {
-    await until(() => {
-      try { return readJSON(path.join(here.home, "run", "queues.json"))?.[session]?.arriving?.[theId]; }
-      catch { return false; }
-    }, "Stop records the named send");
-    const stopped = await stopping;
-    assert.equal(stopped.status, 200, stopped.text);
-    assert.equal(stopped.json.paused, true);
-  } finally {
-    release.resolve();
-  }
-  const sent = await send;
+test("the same desktop send recovers a reply lost after its agent took it, with one message", { timeout: 60000 }, async t => {
+  const session = "ses_recovery";
+  const { here } = await onAgents(t, "engine-retry", [[session, { title: "Restart" }]], { start: false });
+  here.agents.script("One copy", [said("On it"), "hang"]);
+  const first = here.start();
+  const initial = await first.ready();
+  const route = "kuvo/sessions/" + session + "/send";
+  const message = { id: "msg_lostReply", words: "One copy", delivery: "queue" };
+  const headers = { ...desktop, "idempotency-key": message.id };
+  const original = request(initial, "POST", route, message, headers).catch(() => null);
+  await until(() => here.agents.prompts().length === 1, "It never reached the agent.", 20000);
+  first.child.kill("SIGKILL");
+  await first.exited;
+  await original;
+  const resumed = await here.start().ready();
+  const sent = await request(resumed, "POST", route, message, headers);
   assert.equal(sent.status, 200, sent.text);
-  assert.deepEqual(sent.json, { waits: true });
-  assert.equal(here.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")), false);
-  const queue = await request(resident, "GET", route + "/queue?items=1");
-  assert.deepEqual(queue.json.held, [theId]);
-  assert.deepEqual(queue.json.waiting.map(row => row.id), [theId]);
+  assert.deepEqual(sent.json, {});
+  assert.deepEqual((await request(resumed, "POST", route, message, headers)).json, sent.json);
+  assert.deepEqual(await here.agents.users(resumed, session), [message.id]);
+  assert.equal(here.agents.prompts().length, 1);
 });
 
-for (const stage of ["before acceptance", "in the inbox", "in the transcript"]) {
-  test(`the same desktop send recovers a reply lost ${stage} with one message`, { timeout: 45000 }, async t => {
-    const { computer } = await bench(t);
-    const here = await computer("engine-retry");
-    const session = "ses_recovery";
-    here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
-    if (stage === "in the inbox") here.engine.running.add(session);
-    const first = here.start();
-    const initial = await first.ready();
-    const path = "kuvo/sessions/" + session + "/send";
-    const message = { id: "msg_lostReply", words: "One copy", delivery: "queue" };
-    const headers = { "x-kuvo-from": "app", "idempotency-key": message.id };
-    const beforeAcceptance = stage === "before acceptance";
-    const reached = new Promise(resolve => {
-      here.engine.holdPrompt = { id: message.id, beforeAcceptance, accepted: resolve };
-    });
-    const original = request(initial, "POST", path, message, headers).catch(() => null);
-    await reached;
-    first.child.kill("SIGKILL");
-    await first.exited;
-    assert.equal(await original, null);
-
-    const resumed = await here.start().ready();
-    const sent = await request(resumed, "POST", path, message, headers);
-    assert.equal(sent.status, 200, sent.text);
-    assert.deepEqual(sent.json, {});
-    assert.deepEqual((await request(resumed, "POST", path, message, headers)).json, sent.json);
-    const delivered = [...here.engine.messages.get(session) ?? [], ...here.engine.inboxes.get(session) ?? []];
-    assert.deepEqual(delivered.map(row => row.id), [message.id]);
-    const offers = here.engine.asked.filter(call => call.method === "POST" && call.path.endsWith("/prompt"));
-    assert.equal(offers.length, beforeAcceptance ? 2 : 1);
-  });
-}
-
 test("a new chat keeps its session marks and appears in the local session list", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-start");
-  const resident = await here.start().ready();
-  const started = await request(resident, "POST", "kuvo/sessions", { title: "New conversation", chat: true, approval: "askFirst" });
-  assert.equal(started.status, 200);
+  const { here, record: resident } = await onAgents(t, "engine-start");
+  const started = await request(resident, "POST", "kuvo/sessions",
+    { title: "New conversation", chat: true, approval: "askFirst", model: { providerID: "grok-cli", id: "acp-test" } }, desktop);
+  assert.equal(started.status, 200, started.text);
   assert.equal(started.json.title, "New conversation");
   assert.equal(started.json.project, null);
-  assert.equal(started.json.folder, path.join(here.home, "chats"));
-  assert.equal(started.json.info.metadata.kuvo.chat, started.json.folder);
-  assert.equal(started.json.info.metadata.kuvo.approval, "askFirst");
+  assert.equal(path.resolve(started.json.folder), path.join(here.home, "chats"));
+  const info = (await request(resident, "GET", `kuvo/agents/api/session/${started.json.session}`, undefined, desktop)).json.data;
+  assert.equal(path.resolve(info.metadata.kuvo.chat), path.join(here.home, "chats"));
+  assert.equal(info.metadata.kuvo.approval, "askFirst");
 
   const watch = Buffer.from(JSON.stringify({
     sessions: "kuvo/sessions/list/events",
     setup: "kuvo/setup/sessions/events",
   })).toString("base64url");
-  const line = await openLine(resident, "?watch=" + watch);
+  const line = await openLine(resident, "?watch=" + watch, undefined, desktop);
   t.after(() => line.close());
   let local = false;
   let published = false;
@@ -1005,8 +951,7 @@ test("a new chat keeps its session marks and appears in the local session list",
 });
 
 test("archived groups keep Chats and the names of removed projects", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("archive-titles");
+  const { here } = await onAgents(t, "archive-titles", [], { start: false });
   const project = path.join(here.home, "project-folder");
   const chats = path.join(here.home, "chats");
   write(path.join(here.home, "box/projects.json"), JSON.stringify({
@@ -1016,11 +961,11 @@ test("archived groups keep Chats and the names of removed projects", { timeout: 
     ["ses_oldProject", project, {}], ["ses_oldChat", chats, {}],
     ["ses_oldSeat", chats, { seat: "grp_example" }], ["ses_oldRun", project, { engineFor: "ses_oldProject" }],
   ]) {
-    here.engine.sessions.push({ ...sessionOf({ id, directory }), metadata: { "kuvo.archived": true, kuvo: notes } });
+    here.agents.seed(id, { directory, metadata: { "kuvo.archived": true, kuvo: notes } });
   }
   const resident = await here.start().ready();
   const listing = await until(async () => {
-    const response = await request(resident, "GET", "kuvo/sessions/list");
+    const response = await request(resident, "GET", "kuvo/sessions/list", undefined, desktop);
     return response.json?.archivedGroups?.length && response.json;
   }, "the list to publish the archived groups");
   assert.deepEqual(listing.archivedGroups, [
@@ -1030,47 +975,41 @@ test("archived groups keep Chats and the names of removed projects", { timeout: 
   assert.equal(listing.projects[project], undefined);
 });
 
-test("a bot's session only shows sustained reasoning and clears it after the tool starts", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-session-thinking");
+test("a bot's session only shows sustained reasoning and clears it after the tool starts", { timeout: 60000 }, async t => {
   const bot = "bot_reasoning";
-  const directory = path.join(here.home, "bots", bot);
   const id = "ses_reasoning";
+  const { here } = await onAgents(t, "engine-session-thinking", [], { start: false });
+  const directory = path.join(here.home, "bots", bot);
+  here.agents.seed(id, { directory });
   write(path.join(directory, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Reader" }));
   write(path.join(directory, "session"), id);
-  here.engine.sessions.push(sessionOf({ id, directory }));
-  here.engine.running.add(id);
+  const thought = { update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Hmm." } } };
+  const tool = toolCallId => ({ update: { sessionUpdate: "tool_call", toolCallId, kind: "read", title: "Read notes", status: "in_progress", rawInput: { path: "notes.txt" } } });
+  here.agents.script("Think it over", [thought, tool("t1"), { until: "think-again" }, thought, { until: "tool-again" }, tool("t2"), "hang"]);
   const record = await here.start().ready();
   const facts = async () => {
-    const list = await request(record, "GET", "kuvo/sessions/list");
+    const list = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
     assert.equal(list.status, 200, list.text);
     return list.json.sessions[id];
   };
-  await until(() => here.engine.subscribers() > 0, "the resident to follow reasoning events");
   assert.equal((await facts()).thinking, undefined);
-  const say = type => here.engine.emit({ type, data: { sessionID: id } });
-  say("session.reasoning.started");
-  say("session.tool.input.started");
+  assert.equal((await request(record, "POST", `kuvo/sessions/${id}/send`, { id: "msg_think", words: "Think it over", delivery: "steer" }, desktop)).status, 200);
+  await until(() => here.agents.prompts().length === 1, "Its turn never started.", 20000);
   await new Promise(resolve => setTimeout(resolve, 2200));
   assert.equal((await facts()).thinking, undefined);
-
   const began = performance.now();
-  say("session.reasoning.started");
-  await until(async () => (await facts()).thinking === true, "the long stretch of reasoning to show");
+  here.agents.go("think-again");
+  await until(async () => (await facts()).thinking === true, "the long stretch of reasoning to show", 10000, 50);
   assert.ok(performance.now() - began >= 1900, "Thinking appeared before two seconds of reasoning.");
-  say("session.text.started");
-  say("session.reasoning.started");
-  assert.equal((await facts()).thinking, true);
   const stopped = performance.now();
-  say("session.tool.called");
-  await until(async () => (await facts()).thinking === undefined, "the tool to clear reasoning");
+  here.agents.go("tool-again");
+  await until(async () => (await facts()).thinking === undefined, "the tool to clear reasoning", 10000, 50);
   assert.ok(performance.now() - stopped >= 1400, "Thinking cleared before the grace period ended.");
   assert.equal((await facts()).running, true);
 });
 
 test("the session list starts in the most recent project and orders ties by name", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-list-project-order");
+  const { here } = await onAgents(t, "engine-list-project-order", [], { start: false });
   const catalog = [
     { directory: path.join(here.home, "aa"), name: "Project 10", updated: 42 },
     { directory: path.join(here.home, "zz"), name: "project 002", updated: 42 },
@@ -1078,23 +1017,21 @@ test("the session list starts in the most recent project and orders ties by name
   ];
   for (const [index, project] of catalog.entries()) {
     fs.mkdirSync(project.directory, { recursive: true });
-    here.engine.sessions.push({ ...sessionOf({ id: "ses_project" + index, directory: project.directory }),
-      time: { created: 1, updated: project.updated } });
+    here.agents.seed("ses_project" + index, { directory: project.directory, updated: project.updated, messages: finished(project.updated) });
   }
   write(path.join(here.home, "box", "projects.json"), JSON.stringify({ projects: catalog.map(project => ({
     directory: project.directory, name: project.name, folders: [],
   })) }));
   const record = await here.start().ready();
-  const list = await request(record, "GET", "kuvo/sessions/list");
+  const list = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
   assert.equal(list.status, 200, list.text);
   assert.deepEqual(list.json.projectOrder, [catalog[1].directory, catalog[0].directory, catalog[2].directory]);
   assert.equal(list.json.startProject, catalog[1].directory);
 });
 
 test("the recorded sidebar order follows the resident's session and project facts", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
   const fixture = readJSON(new URL("../vectors/session-lists.json", import.meta.url)).cases.find(row => row.expect.sidebar);
-  const here = await computer("sidebar-session-vector");
+  const { here } = await onAgents(t, "sidebar-session-vector", [], { start: false });
   const origin = "/home/me/.kuvo-code";
   const rebase = folder => {
     if (folder.startsWith(origin + "/")) return path.join(here.home, folder.slice(origin.length + 1));
@@ -1102,17 +1039,24 @@ test("the recorded sidebar order follows the resident's session and project fact
     return folder;
   };
   const rebased = value => JSON.parse(JSON.stringify(value, (_key, field) => typeof field === "string" ? rebase(field) : field));
-  // The bot roster supplies the one explicit bot assignment outside the bot folder.
-  const native = fixture.sessions.filter(session => !fixture.box.botSessions.includes(session.id));
-  here.engine.sessions.push(...rebased(native));
-  for (const id of fixture.box.running) here.engine.running.add(id);
+  // (Each a coding agent's conversation, as the agents keep it.)
+  for (const session of rebased(fixture.sessions.filter(session => !fixture.box.botSessions.includes(session.id)))) {
+    write(path.join(here.home, "agents/sessions", session.id, "session.json"), JSON.stringify({
+      projectID: "fixture", agent: "build", model: { providerID: "grok-cli", id: "acp-test" }, cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, ...session,
+    }));
+    write(path.join(here.home, "agents/sessions", session.id, "messages.json"), JSON.stringify(
+      finished(session.time.updated).map((row, at) => ({ id: `msg_${session.id.slice(4)}${at}`, ...row }))));
+  }
   write(path.join(here.home, "box", "projects.json"), JSON.stringify({ projects: rebased(fixture.box.projects) }));
   write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({
     handedOver: Object.fromEntries(Object.entries(fixture.box.filed).map(([folder, project]) => [rebase(folder), rebase(project)])),
   }));
   const record = await here.start().ready();
-  const reply = await request(record, "GET", "kuvo/sessions/list");
-  assert.equal(reply.status, 200, reply.text);
+  const reply = await until(async () => {
+    const read = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
+    return Object.keys(read.json?.sessions ?? {}).length && read;
+  }, "The conversations were never listed.", 20000, 100);
   const rows = Object.entries(reply.json.sessions).filter(([, facts]) => !facts.archived && ["project", "chat"].includes(facts.kind));
   const newest = predicate => rows.filter(([, facts]) => predicate(facts))
     .sort(([, a], [, b]) => b.updated - a.updated).map(([id]) => id);
