@@ -12,8 +12,7 @@
 //! (`kuvo/models/offered`, `kuvo/models/starred`, `kuvo/models/speed`, the approval's `options`):
 //! every client's picker shows the same. What's drawn is worked out once per list ([`Catalog`]),
 //! and only the rows in sight are drawn (`uniform_list`), so it opens at once and scrolls through
-//! hundreds; what's typed is matched off the UI thread, and a newer search drops the one before it
-//! (as Zed's pickers do).
+//! hundreds; what's typed is matched off the UI thread, and a newer search drops the one before it.
 
 use std::{
     ops::Range,

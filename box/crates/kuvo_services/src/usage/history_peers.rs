@@ -583,3 +583,208 @@ impl Snapshot {
         self.with_fresh(json!({"kind":"usage","at":at,"digest":self.digest}))
     }
 }
+
+#[cfg(test)]
+mod account_wide_tests {
+    use super::*;
+    use crate::usage::{history, pricing::Pricing};
+    const AT: i64 = 1_794_916_800_000;
+    const WHO: &str = "aaaaaaaaaaaaaaaa";
+    fn wide(at: i64, tokens: u64) -> Account {
+        let mut slots = Slots::default();
+        slots.add(
+            AT.div_euclid(SLOT) * SLOT,
+            "composer-2".into(),
+            tokens,
+            tokens as f64 / 1000.0,
+        );
+        Account {
+            provider: "cursor".into(),
+            service: "cursor".into(),
+            agent: Some("cursor".into()),
+            account: Some("default".into()),
+            label: None,
+            identity: Some(WHO.into()),
+            scanned: Some(at),
+            places: vec![],
+            billed: false,
+            wide: true,
+            cut: false,
+            slots,
+        }
+    }
+    #[test]
+    fn whole_history_turns_follow_a_fresh_admitted_reader_and_move_when_it_stops() {
+        let mut book = Book::default();
+        book.roster(&BTreeMap::from([
+            ("a".into(), "Studio".into()),
+            ("c".into(), "Other".into()),
+        ]));
+        let first = Snapshot::new(vec![wide(AT, 10)], AT);
+        assert_eq!(
+            book.take("unknown", &first.full(AT, false, false), AT),
+            None
+        );
+        assert!(!book.reads_whole("b", "cursor", WHO, AT));
+        assert_eq!(
+            book.take("a", &first.full(AT, false, false), AT),
+            Some(false)
+        );
+        assert!(book.reads_whole("b", "cursor", WHO, AT));
+        assert!(!book.reads_whole("0", "cursor", WHO, AT));
+        assert!(!book.reads_whole("b", "cursor", "bbbbbbbbbbbbbbbb", AT));
+        let second = Snapshot::new(vec![wide(AT + 20 * 60_000, 10)], AT + 20 * 60_000);
+        assert_eq!(first.digest, second.digest);
+        assert_eq!(
+            book.take("a", &second.heartbeat(AT + 20 * 60_000), AT + 20 * 60_000),
+            Some(false)
+        );
+        assert!(book.reads_whole("b", "cursor", WHO, AT + 30 * 60_000));
+        // A live connection without a successful new read doesn't claim the account.
+        assert_eq!(
+            book.take("a", &second.heartbeat(AT + 44 * 60_000), AT + 44 * 60_000),
+            Some(false)
+        );
+        assert!(!book.reads_whole("b", "cursor", WHO, AT + 46 * 60_000));
+        let third = Snapshot::new(vec![wide(AT + 50 * 60_000, 11)], AT + 50 * 60_000);
+        assert_eq!(
+            book.take(
+                "a",
+                &third.full(AT + 50 * 60_000, false, false),
+                AT + 50 * 60_000
+            ),
+            Some(false)
+        );
+        assert!(book.reads_whole("b", "cursor", WHO, AT + 50 * 60_000));
+        assert!(!book.reads_whole("b", "cursor", WHO, AT + 76 * 60_000));
+        book.roster(&BTreeMap::new());
+        assert!(book.computers(AT + 76 * 60_000).is_empty());
+    }
+    #[test]
+    fn account_wide_rows_use_the_newest_complete_read_not_the_sum() {
+        let now = AT + 60_000;
+        let mut book = Book::default();
+        book.roster(&BTreeMap::from([
+            ("b".into(), "Second".into()),
+            ("c".into(), "Third".into()),
+        ]));
+        for (key, at, tokens) in [("b", AT + 10_000, 30), ("c", AT + 20_000, 50)] {
+            let snapshot = Snapshot::new(vec![wide(at, tokens)], now);
+            assert_eq!(
+                book.take(key, &snapshot.full(now, false, false), now),
+                Some(false)
+            );
+        }
+        let mut computers = vec![Computer {
+            key: "a".into(),
+            name: "First".into(),
+            here: true,
+            away: false,
+            accounts: vec![wide(AT, 10)],
+        }];
+        computers.extend(book.computers(now));
+        let view = history::view(
+            computers,
+            now,
+            jiff::tz::TimeZone::UTC,
+            &Pricing::load(None).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
+        let rows = view["data"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], format!("cursor#{WHO}"));
+        assert_eq!(rows[0]["accountWide"], true);
+        assert_eq!(rows[0]["boxes"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            rows[0]["days"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|d| d["tokens"].as_u64())
+                .sum::<u64>(),
+            50
+        );
+    }
+    #[test]
+    fn a_fallback_flag_changes_the_send_revision_not_the_older_peer_digest() {
+        let mut with = wide(AT, 100);
+        with.provider = "codex-cli".into();
+        with.service = "codex".into();
+        with.agent = Some("codex".into());
+        with.wide = false;
+        let without_fallback = Snapshot::new(vec![with.clone()], AT);
+        let slot = AT.div_euclid(SLOT) * SLOT;
+        with.slots
+            .fallback
+            .entry(slot)
+            .or_default()
+            .insert("gpt-5".into());
+        let with_fallback = Snapshot::new(vec![with], AT);
+        assert_ne!(
+            with_fallback.fallback_revision,
+            without_fallback.fallback_revision
+        );
+        // Older receivers retain the sent model table but omit the new flag.
+        // An independently built snapshot may omit the fallback-only model name.
+        let mut older = with_fallback.accounts.clone();
+        older[0].slots.fallback.clear();
+        assert_eq!(with_fallback.digest, digest(&older));
+        let mut mail = with_fallback.full(AT, false, false);
+        // The old reader keeps no new flags but the hash it computes is still valid.
+        mail["accounts"][0]["slots"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fallback");
+        let mut book = Book::default();
+        book.roster(&BTreeMap::from([("a".into(), "Studio".into())]));
+        assert_eq!(book.take("a", &mail, AT), Some(false));
+        assert_eq!(
+            book.take("a", &with_fallback.heartbeat(AT + 60_000), AT + 60_000),
+            Some(false)
+        );
+    }
+    #[test]
+    fn computers_with_the_same_name_and_path_count_distinct_machine_places() {
+        let path = tempfile::tempdir().unwrap();
+        let now = AT + 60_000;
+        let computers = [("a", 10), ("b", 20)]
+            .into_iter()
+            .map(|(key, count)| {
+                let mut account = wide(AT, count);
+                account.provider = "claude-code".into();
+                account.service = "claude".into();
+                account.agent = Some("claude".into());
+                account.wide = false;
+                account.places = vec![crate::usage::native_index::place_of(key, path.path(), None)];
+                Computer {
+                    key: key.into(),
+                    name: "Pi".into(),
+                    here: key == "a",
+                    away: false,
+                    accounts: vec![account],
+                }
+            })
+            .collect();
+        let view = history::view(
+            computers,
+            now,
+            jiff::tz::TimeZone::UTC,
+            &Pricing::load(None).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
+        let row = &view["data"]["rows"][0];
+        assert_eq!(row["boxes"].as_array().unwrap().len(), 2);
+        assert_eq!(row["days"][0]["tokens"], 30);
+        assert!(
+            row["boxes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|b| b.get("same").is_none())
+        );
+    }
+}

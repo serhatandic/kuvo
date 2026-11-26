@@ -256,6 +256,49 @@ pub(super) fn spawn(
     _resident: bool,
     console: Option<&crate::pty::Console>,
 ) -> io::Result<ChildGroup> {
+    spawn_with_pipe(spec, console, None)
+}
+
+/// Chrome's DevTools transport is the child's descriptor 3 (read) and 4
+/// (write). Hold the original pipe ends through spawn, and use private
+/// duplicates above both destination descriptors to avoid a dup2 collision.
+pub(super) fn spawn_debug_pipe(
+    spec: &Spawn,
+) -> io::Result<(
+    ChildGroup,
+    tokio::net::unix::pipe::Sender,
+    tokio::net::unix::pipe::Receiver,
+)> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let (child_input, parent_output) = io::pipe()?;
+    let (parent_input, child_output) = io::pipe()?;
+    let duplicate = |fd| {
+        // SAFETY: fcntl duplicates a live descriptor without changing its owner.
+        let made = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 5) };
+        if made < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a successful duplicate is a new descriptor owned here.
+        Ok(unsafe { OwnedFd::from_raw_fd(made) })
+    };
+    let extra = (
+        duplicate(child_input.as_raw_fd())?,
+        duplicate(child_output.as_raw_fd())?,
+    );
+    let child = spawn_with_pipe(spec, None, Some(extra))?;
+    drop((child_input, child_output));
+    Ok((
+        child,
+        tokio::net::unix::pipe::Sender::from_owned_fd(parent_output.into())?,
+        tokio::net::unix::pipe::Receiver::from_owned_fd(parent_input.into())?,
+    ))
+}
+
+fn spawn_with_pipe(
+    spec: &Spawn,
+    console: Option<&crate::pty::Console>,
+    extra: Option<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)>,
+) -> io::Result<ChildGroup> {
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
     }
@@ -314,10 +357,16 @@ pub(super) fn spawn(
         .stdin(child_stdin)
         .stdout(child_stdout)
         .stderr(child_stderr);
-    // SAFETY: setsid and the priority syscalls operate only on the new child.
+    // SAFETY: setsid, priority and descriptor setup operate only on the new child.
     unsafe {
         command.pre_exec(move || {
             rustix::process::setsid()?;
+            if let Some((input, output)) = &extra {
+                use std::os::fd::AsRawFd;
+                if libc::dup2(input.as_raw_fd(), 3) < 0 || libc::dup2(output.as_raw_fd(), 4) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             if background {
                 super::priority::lower_child()?;
             }
@@ -336,12 +385,9 @@ fn started(mut command: Command) -> io::Result<ChildGroup> {
         leave_running: false,
     };
     let pid = owner.child.id();
-    // The process may have already exited; its unreaped record still holds the start stamp.
     let identity = ProcessIdentity {
         pid,
-        start_identity: start_record(pid)?
-            .map(|(start, _)| start)
-            .ok_or_else(|| io::Error::other("child start identity is unavailable"))?,
+        start_identity: start_identity(pid, start_record(pid)?, || owner.has_exited())?,
     };
     Ok(ChildGroup {
         owner,
@@ -350,6 +396,22 @@ fn started(mut command: Command) -> io::Result<ChildGroup> {
         stdout: None,
         stderr: None,
     })
+}
+
+/// A child's start identity from its process record. The process may have exited already: Linux
+/// still describes it while it's unreaped, but macOS can stop describing a child that exits at
+/// once (a quick `ssh … true` under load). Unreaped, its PID can't name another process, so it's
+/// known as exited, which no live process ever matches.
+fn start_identity(
+    pid: u32,
+    record: Option<(String, bool)>,
+    exited: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<String> {
+    match record {
+        Some((start, _)) => Ok(start),
+        None if exited()? => Ok(format!("exited:{pid}")),
+        None => Err(io::Error::other("child start identity is unavailable")),
+    }
 }
 
 fn output(mode: &Stdio) -> io::Result<(Option<PipeReader>, ChildStdio)> {
@@ -614,5 +676,21 @@ impl Adopted {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_identity;
+
+    #[test]
+    fn a_child_that_exited_before_its_record_was_read_is_known_as_exited() {
+        assert_eq!(
+            start_identity(41, Some(("1:000002".into(), false)), || Ok(true)).unwrap(),
+            "1:000002"
+        );
+        assert_eq!(start_identity(41, None, || Ok(true)).unwrap(), "exited:41");
+        let running = start_identity(41, None, || Ok(false)).unwrap_err();
+        assert_eq!(running.to_string(), "child start identity is unavailable");
     }
 }

@@ -86,91 +86,13 @@ export async function callOf(target: Target, permission: Pick<PendingPermission,
   return null;
 }
 
-/** A question a session asks (it, or a subagent: `asker`): its one field's key, and what it
- * recommends, where it marked a choice so ("Warm (Recommended)"). */
+/** A question a session asks (it, or a subagent: `asker`): its one field's key. */
 export interface PendingQuestion {
   id: string;
   asker: string;
   key: string | null;
   text: string;
-  recommended?: Recommendation;
-  /** The tool call that asked it, where the form names it. */
-  call?: string;
 }
-
-/** A question a form asks, as it goes ahead: what it asked (`key`, its field), the choice (its label,
- * unmarked; several, joined, where it takes several), why (the choice's description) and the choices
- * there were. */
-export interface RecommendedCall {
-  key: string;
-  text: string;
-  choice: string;
-  why?: string;
-  options?: string[];
-  multiple?: boolean;
-}
-
-/** What a form recommends, as it goes ahead on it: the form's answer (`answer`), and the question
- * each answer is to (a form may ask several). */
-export interface Recommendation {
-  answer: Record<string, unknown>;
-  calls: RecommendedCall[];
-}
-
-/** The most a choice you make on a call can say: several answers are joined in it. */
-export const CHOICE_MOST = 2000;
-
-const RECOMMENDED = /\s*\(recommended\)\s*/i;
-// One short line, as a call is kept and shown: what a question says is the agent's to make any length.
-const short = (words: string, most: number) => words.replace(/\s+/g, " ").trim().slice(0, most);
-const unmarked = (label: string) => short(label.replace(RECOMMENDED, " "), 200);
-
-/** What a question tool's form recommends: in each field it shows, the one choice it marked
- * "(Recommended)" (or those it marked, of several); null when a field it needs has none, for a form
- * that asks for a secret (a field written as a password: only you hand those over), or for a form
- * that isn't the question tool's (an MCP server's, a sign-in's). */
-export function recommendationOf(form: Record<string, unknown>): Recommendation | null {
-  if (!isObject(form.metadata) || form.metadata.kind !== "question") return null;
-  const fields = (Array.isArray(form.fields) ? form.fields : []).filter((field): field is Record<string, unknown> => isObject(field) && !field.hidden && !(Array.isArray(field.when) && field.when.length));
-  if (fields.some(field => field.format === "password")) return null;
-  const answer: Record<string, unknown> = {};
-  const calls: RecommendedCall[] = [];
-  for (const field of fields) {
-    const options = (Array.isArray(field.options) ? field.options : []).filter((option): option is Record<string, unknown> => isObject(option) && typeof option.value === "string" && typeof option.label === "string");
-    const marked = options.filter(option => RECOMMENDED.test(option.label as string));
-    const multiple = field.type === "multiselect";
-    if (typeof field.key === "string" && field.type === "string" && marked.length === 1) answer[field.key] = marked[0].value;
-    else if (typeof field.key === "string" && multiple && marked.length) answer[field.key] = marked.map(option => option.value);
-    else if (field.required === false) continue;
-    else return null;
-    const why = marked.length === 1 && typeof marked[0].description === "string" ? short(marked[0].description, 300) : "";
-    const labels = options.map(option => unmarked(option.label as string)).filter(Boolean);
-    calls.push({
-      key: field.key as string,
-      text: short(String(field.description || field.title || form.title || "A question"), 300),
-      choice: marked.map(option => unmarked(option.label as string)).join(", "),
-      ...(why ? { why } : {}),
-      ...(labels.length ? { options: labels } : {}),
-      ...(multiple ? { multiple } : {}),
-    });
-  }
-  return calls.length ? { answer, calls } : null;
-}
-
-/** What the box tells an agent when you change a call it made. The call's words are the agent's own
- * (a work session's, say), so each is quoted on one line and can't pass for what the box or you say.
- * `again`: you had chosen before. */
-export function decisionChanged(call: { text: string; was: string; yours: string; again?: boolean }): string {
-  const quoted = (words: string, most: number) => JSON.stringify(short(words, most));
-  const picked = `${call.again ? "now picked" : "picked"} ${quoted(call.yours, CHOICE_MOST)}, not ${quoted(call.was, CHOICE_MOST)}${call.again ? "" : " as you decided"}`;
-  return `[Decision changed] For ${quoted(call.text, 300)} the user ${picked}. Go that way from here: redo what depends on it, and say in a line what changes.`;
-}
-
-/** The tool call that asked a form (`metadata.tool.id`, the engine's and the agents bridge's). */
-export const askedBy = (form: Record<string, unknown>): string | null => {
-  const tool = isObject(form.metadata) && isObject(form.metadata.tool) ? form.metadata.tool : null;
-  return typeof tool?.id === "string" && tool.id ? tool.id : null;
-};
 
 /** The running sessions of `folder` with a tool of the MCP server `server` under way: who a form it
  * asks is holding, since the engine files that under no session. As the Mac finds them. */
@@ -232,9 +154,7 @@ export async function asksIn(target: Target, session: string, signal?: AbortSign
       if (!isObject(form) || typeof form.id !== "string") continue;
       const fields = (Array.isArray(form.fields) ? form.fields : []).filter((field: unknown) => isObject(field) && !field.hidden && !(Array.isArray(field.when) && field.when.length));
       const one = fields.length === 1 && fields[0].type === "string" ? fields[0] : null;
-      const recommended = recommendationOf(form);
-      const call = askedBy(form);
-      questions.push({ id: form.id, asker, key: typeof one?.key === "string" ? one.key : null, text: String(one?.description || one?.title || form.title || "a question"), ...(recommended ? { recommended } : {}), ...(call ? { call } : {}) });
+      questions.push({ id: form.id, asker, key: typeof one?.key === "string" ? one.key : null, text: String(one?.description || one?.title || form.title || "a question") });
     }
   }
   return { permissions, questions, whole };

@@ -5,7 +5,7 @@ use http::{Method, StatusCode};
 use kuvo_protocol::{
     json::{Null, Nullable},
     routes::types::{
-        GetKuvoInfoStatus200MacFeaturesItem258 as Kind,
+        GetKuvoInfoStatus200MacFeaturesItem253 as Kind,
         GetKuvoPeerSessionComputerSessionAsksStatus200AsksItemPermissionChoicesItem as Choice,
         GetKuvoPeerSessionComputerSessionAsksStatus200AsksItemPermissionChoicesItemAnswer4 as ChoiceAnswer,
         GetKuvoPeerSessionComputerSessionAsksStatus200AsksItemVaultNeed3 as Need,

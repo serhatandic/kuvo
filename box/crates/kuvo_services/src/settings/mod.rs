@@ -129,7 +129,7 @@ impl Settings {
             Section::Git => vec![],
             Section::Permissions => vec!["box/approval.json", "box/sandbox.json"],
             Section::Agents => vec!["run/engine.json"],
-            Section::Browser => vec!["browser/settings.json"],
+            Section::Browser => vec!["browser/settings.json", "browser/keeps-agent-tabs"],
             Section::Worktrees => vec![
                 "box/work.json",
                 "box/worktrees.json",

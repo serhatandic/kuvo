@@ -46,8 +46,6 @@ export interface Contents {
   /** Its conversations' queues that are paused or have something waiting on the box, by session
    * (`packQueues`): a conversation you stopped stays stopped there, with what waits for it. */
   queues?: Record<string, unknown>;
-  /** The calls its conversations made on Autopilot, by session. */
-  decided?: Record<string, unknown>;
   /** It talks with a coding agent: its conversations are in the bundle's `carry` folder as the agents
    * bridge packed them (`exports` is empty), these. */
   lane?: { sessions: string[]; root: string };

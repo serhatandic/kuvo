@@ -1539,17 +1539,7 @@ impl Driver {
 
     fn check_payloads(&self, row: &Journal) -> io::Result<()> {
         let run = self.run_dir();
-        let decided = read_json(&run.join("work/decided.json"))?;
         for session in &row.sessions {
-            if decided
-                .as_ref()
-                .and_then(|rows| rows[session].as_array())
-                .is_some_and(|entries| !entries.is_empty())
-            {
-                return Err(io::Error::other(
-                    "The move’s Autopilot decisions could not be prepared.",
-                ));
-            }
             if self.work_queue.is_some() {
                 continue;
             }

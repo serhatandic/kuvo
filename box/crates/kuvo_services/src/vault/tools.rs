@@ -10,7 +10,7 @@ use super::{
     Error, How, Item, Kind, Result,
     activity::Action,
     asks::{AskKind, Decision},
-    broker::{LEFT_UNDONE, Where},
+    broker::Where,
     fill::{AGENTS_LATER, NOT_CALLING, text},
     helper::millis,
     identity::Identity,
@@ -229,19 +229,13 @@ impl Resident {
             program: None,
             why: Some(format!("{need}: {why}")),
         };
-        if !caller.autopilot {
-            self.block(|local| local.note_agent(Action::Asked, None, caller, &place, None, None))?;
-        }
+        self.block(|local| local.note_agent(Action::Asked, None, caller, &place, None, None))?;
         let mut question = self.broker.question(AskKind::Item, caller);
         question.need = Some(need.into());
         question.why = Some(why.into());
         question.site = site;
-        let given = self.broker.wait(caller, question, cancel).await?;
+        let given = self.broker.wait(question, cancel).await?;
         self.block(|local| {
-            let Some(given) = given else {
-                local.note_agent(Action::Refused, None, caller, &place, Some("autopilot"), None)?;
-                return Ok(Answer::spoken(LEFT_UNDONE));
-            };
             let item = given.item.as_deref().map(|id| local.vault.item(id)).transpose()?.flatten();
             let Some(item) = item.filter(|_| given.decision != Decision::No) else {
                 return Ok(Answer::spoken("The user didn't give you anything for this. Go on without it, or say what's missing in your report."));

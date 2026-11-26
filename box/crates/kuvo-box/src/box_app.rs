@@ -8,7 +8,9 @@ use std::{
 use http::StatusCode;
 use kuvo_keeper::{fleet, update_status};
 use kuvo_peers::setup_lists::{LocalVersions, ResidentPeers};
-use kuvo_protocol::routes::{get_kuvo_box_app as get, post_kuvo_box_app as post};
+use kuvo_protocol::routes::{
+    get_kuvo_box_app as get, post_kuvo_box_app as post, post_kuvo_box_app_open as open,
+};
 use kuvo_server::{Access, Caller, LocalOrigin, Refusal, Registry, RouteReply, Transport};
 use kuvo_services::{config, mac_app};
 use kuvo_store::{home::Home, release_version};
@@ -21,6 +23,7 @@ struct App {
     own_mac: bool,
     peers: Weak<ResidentPeers>,
     writer: Mutex<()>,
+    opening: Mutex<()>,
 }
 
 impl App {
@@ -87,6 +90,7 @@ pub async fn register(
         is_mac,
         peers: Arc::downgrade(&peers),
         writer: Mutex::new(()),
+        opening: Mutex::new(()),
     });
     app.publish().await?;
     let read = app.clone();
@@ -100,8 +104,9 @@ pub async fn register(
             )))
         }
     });
+    let registration = app.clone();
     routes.register::<post::Spec, _, _>(Access::Any, move |call| {
-        let app = app.clone();
+        let app = registration.clone();
         async move {
             app.own_home()?;
             let origin = match call.request.caller {
@@ -119,6 +124,43 @@ pub async fn register(
                     .await
                     .map_err(internal)??;
                 app.publish().await.map_err(internal)?;
+                Ok(RouteReply::json::<200>(mac_app::status(
+                    &app.home.run(),
+                    now(),
+                )))
+            })
+            .await
+            .map_err(internal)?
+        }
+    });
+    routes.register::<open::Spec, _, _>(Access::Local, move |call| {
+        let app = app.clone();
+        async move {
+            app.own_home()?;
+            if !matches!(
+                call.request.caller,
+                Caller::Local(
+                    Transport::Http {
+                        origin: LocalOrigin::App | LocalOrigin::Mac,
+                        ..
+                    } | Transport::Http { internal: true, .. }
+                        | Transport::Ssh { .. }
+                )
+            ) {
+                return Err(Refusal::new(
+                    StatusCode::FORBIDDEN,
+                    "Only Kuvo Code on this Mac opens its app.",
+                ));
+            }
+            let body: Value = serde_json::from_slice(&call.request.body).unwrap_or_default();
+            if let Some(token) = body["gone"].as_str() {
+                mac_app::forget_tools(&app.home.run(), token, now()).map_err(internal)?;
+            }
+            tokio::spawn(async move {
+                let _opening = app.opening.lock().await;
+                mac_app::open_browser(app.home.root())
+                    .await
+                    .map_err(|message| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, message))?;
                 Ok(RouteReply::json::<200>(mac_app::status(
                     &app.home.run(),
                     now(),

@@ -139,9 +139,16 @@ enum Command {
     Release,
     Control(Control),
     Drain(oneshot::Sender<io::Result<bool>>),
+    ToolServer(serde_json::Value),
 }
 
 impl Engine {
+    /// Install the resident's own tool server before the engine starts. The
+    /// engine's other configuration remains untouched.
+    pub fn set_own_tool_server(&self, server: serde_json::Value) {
+        let _ = self.commands.send(Command::ToolServer(server));
+    }
+
     pub fn new(home: PathBuf, env: Environment, timing: Timing) -> io::Result<Self> {
         crate::notes::clear_stale(&home);
         let account_home = kuvo_os::platform::Account::current()
@@ -371,6 +378,28 @@ struct Supervisor {
 }
 
 impl Supervisor {
+    fn own_tool_server(&mut self, server: serde_json::Value) {
+        let mut config = match self.env.get(std::ffi::OsStr::new("OPENCODE_CONFIG_CONTENT")) {
+            Some(raw) if !raw.is_empty() => match raw.to_str().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok()) {
+                Some(config) => config,
+                None => return,
+            },
+            _ => serde_json::json!({}),
+        };
+        if !config.is_object() {
+            return;
+        }
+        if !config["mcp"].is_object() {
+            config["mcp"] = serde_json::json!({});
+        }
+        if !config["mcp"]["servers"].is_object() {
+            config["mcp"]["servers"] = serde_json::json!({});
+        }
+        config["mcp"]["servers"]["kuvo-browser"] = server;
+        self.env
+            .insert("OPENCODE_CONFIG_CONTENT".into(), config.to_string().into());
+    }
+
     async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Command>) {
         if let Err(error) = self.load().await {
             eprintln!("Reading the engine record: {error}");
@@ -418,6 +447,10 @@ impl Supervisor {
                     }
                     Some(Command::Drain(reply)) => {
                         let _ = reply.send(self.drain().await);
+                        false
+                    }
+                    Some(Command::ToolServer(server)) => {
+                        self.own_tool_server(server);
                         false
                     }
                     Some(Command::Acquire(..)) => false,

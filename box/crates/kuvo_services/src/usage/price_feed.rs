@@ -276,3 +276,79 @@ impl Feeds {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn hourly_feeds_reuse_their_saved_etags_and_do_not_fetch_early() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let received = requests.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut bytes = Vec::new();
+                let mut chunk = [0; 1024];
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                let text = String::from_utf8_lossy(&bytes);
+                let path = text
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .to_owned();
+                let cached = text
+                    .to_ascii_lowercase()
+                    .lines()
+                    .any(|line| line == "if-none-match: fixture-price");
+                received.lock().unwrap().push((path.clone(), cached));
+                let body=match path.as_str() {
+                    "/litellm"=>json!({"fixture":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}}),
+                    "/models_dev"=>json!({"fixture":{"models":{"fixture":{"cost":{"input":1,"output":2}}}}}),
+                    "/supplement"=>json!({"updated_at":"2099-01-01","pricing":{},"alias_rules":[]}),
+                    _=>unreachable!(),
+                }.to_string();
+                let response = if cached {
+                    "HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n".into()
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: fixture-price\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let home = tempfile::tempdir().unwrap();
+        let fixture = Some(url::Url::parse(&format!("http://{address}/")).unwrap());
+        let at = 10 * HOUR;
+        let mut feeds = Feeds::new(home.path().into(), fixture.clone()).unwrap();
+        assert!(feeds.refresh_due(at).await);
+        assert_eq!(requests.lock().unwrap().len(), 3);
+        assert_eq!(feeds.next(), at + HOUR);
+        assert!(!feeds.refresh_due(at + HOUR - 1).await);
+        assert_eq!(requests.lock().unwrap().len(), 3);
+        drop(feeds);
+        let mut reopened = Feeds::new(home.path().into(), fixture).unwrap();
+        assert_eq!(reopened.next(), at + HOUR);
+        assert!(!reopened.refresh_due(at + HOUR).await);
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        assert!(seen[3..].iter().all(|(_, etag)| *etag));
+        drop(seen);
+        assert_eq!(reopened.next(), at + 2 * HOUR);
+        server.abort();
+    }
+}

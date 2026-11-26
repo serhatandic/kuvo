@@ -24,7 +24,6 @@ import { modelsDue, settleDueModels, WORK_ENDS } from "./models";
 import { workWatcher } from "../work/wakes";
 import { isOver, reviewPermission, settleAskReview, settleRunReviews, takeUpWaitingAsks } from "../work/reviewing";
 import { forgetReviews } from "../work/reviewer";
-import { forgetDecided } from "../work/autopilot";
 import { backUpSession } from "../work/backups";
 import { markConversation, noteFullAccess, noteFullAccessAtWork } from "../work/full";
 import { queueWatcher, scanQueues, writtenByYou, type ScanFound } from "./queue";
@@ -410,7 +409,6 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
         if (event.type === "session.deleted" && typeof event.data?.sessionID === "string") {
           letSessionFilesGo(attachmentsLooked, event.data.sessionID);
           forgetReviews(event.data.sessionID);
-          forgetDecided(event.data.sessionID);
         }
         learn(source, LEARN_NOW.has(event.type));
         noteAskEvent(event, work || String(source.port));
@@ -461,7 +459,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
           if (notice) tell(notice);
           continue;
         }
-        // (What it asks, once the box has looked: on Autopilot it may have gone ahead.)
+        // (What it asks, once the box has looked.)
         // (Never one Auto's reviewer took up that's over meanwhile: stopped as it was checked, say.)
         const over = () => event.type === "permission.asked" && isOver(event.data?.id);
         Promise.all([reviewed, event.type === "form.created" ? followed : null])

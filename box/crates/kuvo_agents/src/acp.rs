@@ -179,8 +179,12 @@ impl Agent for Acp {
         self.flavour().models(refresh)
     }
 
+    /// Antigravity's is read from its home's files, at once: as it is the moment its sign-in ends.
     fn keep_account(&self) -> Duration {
-        Duration::from_secs(30)
+        match self.flavour().kind() {
+            AgentKind::Antigravity => Duration::ZERO,
+            _ => Duration::from_secs(30),
+        }
     }
 
     /// Its page's code is pasted back here, or its device code entered, from any device.

@@ -602,6 +602,19 @@ impl Adding {
         self.setup.views.borrow().setup["you"]["role"] == "member"
     }
 
+    /// The addresses Kuvo Code is being uninstalled from now, for the computers list.
+    pub(crate) fn uninstalling(&self) -> std::collections::BTreeSet<String> {
+        self.views
+            .borrow()
+            .iter()
+            .filter(|attempt| {
+                attempt.kind == "uninstall"
+                    && matches!(attempt.state, State::Working | State::Asking | State::Stopping)
+            })
+            .map(|attempt| attempt.destination.clone())
+            .collect()
+    }
+
     async fn follow(&self, action: Action, by: Submitter) -> Result<Response, Refusal> {
         if self.member() {
             self.setup
@@ -1308,6 +1321,25 @@ impl Job {
         let (computer, identity) = remote.enroll(self, account, name, code).await?;
         Ok((computer, identity, invitation))
     }
+}
+
+/// The address this computer set the computer `peer` up at over SSH, while it can still reach it
+/// there: none for one it didn't set up, or whose saved address no longer reads as one.
+pub(crate) fn set_up_at(
+    files: &Files,
+    saved: &[Value],
+    link: &crate::model::Link,
+    peer: &crate::model::Peer,
+) -> Option<String> {
+    saved_ssh_destination(files, saved, link, peer)
+        .ok()
+        .flatten()
+        .filter(|destination| Address::read(destination).is_ok())
+}
+
+/// Whether this computer has a release of its own to give another computer.
+pub(crate) fn can_give_release(files: &Files) -> bool {
+    connect::has_release(files.root())
 }
 
 fn local_name(setup: &SetupHandle) -> String {

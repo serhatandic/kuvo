@@ -124,6 +124,73 @@ describe("Antigravity's account", { skip }, () => {
   });
 });
 
+describe("Antigravity's sign-in as it runs", { skip }, () => {
+  const id = "ses_agy_sign_in";
+  const seeded = (acp) => acp.seed(id, provider, { directory: acp.home });
+  const goesOn = async (acp, steps) => {
+    acp.script("go on", [...steps, { wait: 1500 }, words("Still here.")]);
+    await acp.prompt(id, "go on");
+    const rows = await acp.idles(id);
+    assert.ok(texts(rows).join("").includes("Still here."), JSON.stringify(idles(rows).at(-1)));
+    assert.notEqual(idles(rows).at(-1).outcome, "failed", JSON.stringify(idles(rows).at(-1)));
+    assert.equal(acp.started("agy").length, 1, "agy was started again");
+    const row = await account(acp.listener);
+    assert.equal(row.metadata.signInEnded, false, JSON.stringify(row.metadata));
+  };
+
+  test("a command it runs that opens a page (through $BROWSER, or writing $TMPDIR/url) doesn't sign you out: the turn goes on", { timeout: 60000 }, async () => {
+    await withAgy({}, async (acp) => {
+      await goesOn(acp, [{ opens: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture" }]);
+      assert.ok(acp.heard().some((line) => line.opened), "The command never ran.");
+    }, seeded);
+  });
+
+  test("its sign-in words in what it shows (a command's output, a file it edits, its answer) aren't it asking: the turn goes on", { timeout: 60000 }, async () => {
+    const said = 'const SIGN_IN_LINE: &str = "Open the following link to authenticate the ACP server:";';
+    await withAgy({}, async (acp) => {
+      await goesOn(acp, [
+        { update: { sessionUpdate: "tool_call", toolCallId: "g1", kind: "search", title: "grep SIGN_IN_LINE", status: "pending" } },
+        { update: { sessionUpdate: "tool_call_update", toolCallId: "g1", status: "completed", content: [{ type: "content", content: { type: "text", text: `48: ${said}` } }] } },
+        { update: { sessionUpdate: "tool_call", toolCallId: "e1", kind: "edit", title: "edit_file", status: "completed", content: [{ type: "diff", path: path.join(acp.home, "antigravity.rs"), oldText: `${said}\nconst A: u8 = 1;`, newText: `${said}\nconst A: u8 = 2;` }] } },
+        words(`It says "${said.slice(28, -2)}" when it wants you to sign in.`),
+      ]);
+    }, seeded);
+  });
+
+  test("agy's own words asking for a sign-in as it starts end the turn, saying to sign in again", { timeout: 60000 }, async () => {
+    await withAgy({}, async (acp) => {
+      acp.script("go on", [{ say: "Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture" }, "hang"]);
+      await acp.prompt(id, "go on");
+      const rows = await acp.idles(id);
+      const last = idles(rows).at(-1);
+      assert.equal(last.outcome, "failed", JSON.stringify(last));
+      assert.match(JSON.stringify(last), /sign in again/i);
+      await until(async () => (await account(acp.listener)).metadata.signInEnded === true, "The account never said its sign-in ended.");
+    }, seeded);
+  });
+});
+
+describe("Antigravity's thinking levels", { skip }, () => {
+  test("each model's levels, as agy lists them, are offered and kept with its models; the one picked is set once, as the conversation starts", { timeout: 90000 }, async () => {
+    const id = "ses_agy_levels";
+    await withAgy({}, async (acp) => {
+      for (const turn of ["first", "second"]) {
+        acp.script(turn, [words(`The ${turn}.`)]);
+        await acp.prompt(id, turn);
+        await acp.idles(id, turn === "first" ? 1 : 2);
+      }
+      const levels = acp.sent("session/set_config_option").filter((message) => message.params.configId === "thought_level");
+      assert.deepEqual(levels.map((message) => message.params.value), ["xhigh"], JSON.stringify(acp.sent("session/set_config_option")));
+      const models = await offered(acp.listener);
+      assert.deepEqual(models.find((model) => model.id === "acp-test")?.efforts, ["low", "high", "xhigh"], JSON.stringify(models));
+      assert.deepEqual(models.find((model) => model.id === "acp-fast")?.efforts ?? [], [], JSON.stringify(models));
+      const kept = JSON.parse(fs.readFileSync(path.join(acp.home, "agents", "antigravity", "profile", "kuvo-models.json"), "utf8"));
+      assert.deepEqual(kept.models.find((model) => model.value === "acp-test").efforts, ["low", "high", "xhigh"]);
+      assert.equal("efforts" in kept.models.find((model) => model.value === "acp-fast"), false, "An empty list was written");
+    }, (acp) => acp.seed(id, provider, { directory: acp.home, variant: "xhigh" }));
+  });
+});
+
 describe("Antigravity's turns", { skip }, () => {
   let acp;
   const pool = { plain: [], ask: [] };

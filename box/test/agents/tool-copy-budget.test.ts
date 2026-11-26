@@ -1,7 +1,7 @@
 // What every call of an agent carries of the box's own words (#213): its vault, sandbox and Work Queue
 // tools (and what the Work Queue's tell agents), the
-// sandbox note the engine is given, what a bot is told, Codex's words on asking, and what an agent
-// on Autopilot and a bot's seat in a group chat are told. Each agent kind has a budget, the size these
+// sandbox note the engine is given, what a bot is told, Codex's words on asking, and what a bot's seat
+// in a group chat is told. Each agent kind has a budget, the size these
 // came to once trimmed and a little more, so they can't creep back unnoticed. KuvoCodeTests'
 // ToolCopyBudgetTests holds the app's tools and their instructions to the same. Notes that are mostly
 // a path or a name (a worktree's, a project's other folders, a conversation moved) aren't counted.
@@ -19,7 +19,6 @@ import { botInstructions, wordsHere, type BotKit } from "../../src/link/bots/kit
 import { SANDBOX_TOOLS } from "../../src/link/fence/outside"
 import { agentsNote } from "../../src/link/fence/files"
 import { VAULT_TOOLS } from "../../src/link/vault/tools"
-import { AUTOPILOT_WORDS } from "../../src/link/work/autopilot"
 import { QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../../src/link/work-queue/tools"
 
 const tokens = (text: string) => Math.ceil(Buffer.byteLength(text) / 4)
@@ -57,7 +56,6 @@ const seat = seatInstructions(mira, { name: "Launch", purpose: "Planning the lau
 // What each agent kind carries, on every call.
 const carried = {
   "an engine session": tokens(schemas) + tokens(queueWords) + tokens(sandboxNote),
-  "an engine session on Autopilot": tokens(schemas) + tokens(queueWords) + tokens(sandboxNote) + tokens(AUTOPILOT_WORDS),
   "an engine bot": tokens(schemas) + tokens(queueWords) + tokens(sandboxNote) + tokens(bot),
   "a Claude Code bot": tokens(names) + tokens(queueWords) + tokens(bot),
   "a Codex bot": tokens(schemas) + tokens(queueWords) + tokens(bot) + tokens(ASKING_WORDS),
@@ -74,7 +72,6 @@ const carried = {
 // higher for it; a Claude Code bot carries only the names and the line, and stays.)
 const budget: Record<keyof typeof carried, number> = {
   "an engine session": 3_370,
-  "an engine session on Autopilot": 3_620,
   "an engine bot": 5_820,
   "a Claude Code bot": 2_650,
   "a Codex bot": 5_020,

@@ -10,7 +10,7 @@ case "${1:-}" in
     --if-needed)
         [ "$#" -eq 1 ] || exit 2
         if [ -f "$stamp" ] &&
-            [ -s box/dist/kuvo-link.js ] && [ -s box/dist/kuvo-agents.js ] && [ -s box/dist/kuvo-browser.js ] &&
+            [ -s box/dist/kuvo-link.js ] && [ -s box/dist/kuvo-agents.js ] && [ -s box/dist/kuvo-browser.js ] && [ -s box/dist/browser-config.json ] &&
             [ -s protocol/vectors/routes/features.json ] && [ -s protocol/vectors/routes/shapes/answers.json ] &&
             [ -s protocol/vectors/wire.json ] && [ -s protocol/ROUTES.md ] &&
             [ -z "$(find box/src box/.bun-version box/package.json box/bun.lock catalog \

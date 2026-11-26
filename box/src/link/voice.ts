@@ -1,7 +1,7 @@
 // Words for voice input to listen for: a speech model (Whisper) is prompted with what you're
 // likely to say, and in a conversation that's its project's own names. The box has the
 // conversation's folder, so it picks them, for the engine's sessions and the coding agents' alike
-// (PROTOCOL.md, "Side questions, handoffs and reviews"): the folder's name, the names said in the
+// (PROTOCOL.md, "Side questions"): the folder's name, the names said in the
 // conversation lately, the project's packages, the files changed lately, then the rest of its
 // files and folders. Quick, and never anything that looks like a secret.
 

@@ -847,7 +847,7 @@ async fn cancelled_session_writers() {
             .edit(NoteEdits {
                 kuvo: [
                     ("chat".to_owned(), Some(json!("/chats"))),
-                    ("autopilot".to_owned(), Some(json!(true)))
+                    ("filed".to_owned(), Some(json!("prj_a")))
                 ]
                 .into(),
                 ..Default::default()
@@ -864,7 +864,7 @@ async fn cancelled_session_writers() {
         notes
             .edit(NoteEdits {
                 kuvo: [
-                    ("autopilot".to_owned(), None),
+                    ("filed".to_owned(), None),
                     ("approval".to_owned(), Some(json!("acceptEdits")))
                 ]
                 .into(),

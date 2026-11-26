@@ -84,7 +84,8 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let tools = agents::tools::relay(home, engine.clone())?;
+    let (tools, browser_tools) =
+        agents::tools::relay(home, engine.clone(), kind == ComputerKind::Mac).await?;
     let feed = kuvo_agents::feed::Feed::default();
     let factories = agents::factories(home, &tools, &feed).await;
     let resident_agents = if factories.is_empty() {
@@ -440,11 +441,38 @@ pub async fn run(
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::terminals::register(&mut routes, home);
     kuvo_services::programs::register(&mut routes, account.clone());
+    kuvo_services::browser::register(&mut routes, home);
+    let browser_install = kuvo_services::browser::install::InstallTask::start(home.to_owned(), kind == ComputerKind::Mac)?;
+    browser_install.register(&mut routes);
+    let browser_task = browser_install.browser_task(engine.clone())?;
+    let browser = browser_task.browser();
+    let browser_downloads = {
+        let mut notes = browser.events();
+        let library = library_artifacts.clone();
+        tokio::spawn(async move {
+            loop {
+                match notes.recv().await {
+                    Ok(note) if note["method"] == "Kuvo.downloaded" => {
+                        if let (Some(session),Some(path))=(note["params"]["session"].as_str(),note["params"]["path"].as_str()) {
+                            library.note_download(session,path).await;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                    Err(_) => break,
+                }
+            }
+        })
+    };
+    browser.register_view(&mut routes, kind == ComputerKind::Mac);
+    let browser_sites = kuvo_services::browser::manager::Sites::new(home.to_owned(), browser.clone());
+    browser_sites.register(&mut routes);
+    if let Some(tools) = browser_tools.as_ref() { tools.set_browser(browser.clone()); }
     let integration_keys = kuvo_services::integrations::register(
         &mut routes,
         home,
         kind == ComputerKind::Mac,
         setup.handle(),
+        browser_sites,
     );
     let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
     let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
@@ -464,7 +492,7 @@ pub async fn run(
     wakes.register(&mut routes);
     // (A machine names itself on its asks; a Mac's own aren't named.)
     let asks_machine = (kind != ComputerKind::Mac).then(|| bot_name.clone());
-    kuvo_work::asks::Asks::new(home, asks_machine, engine.clone()).register(&mut routes);
+    kuvo_work::asks::Asks::new(home, asks_machine, engine.clone()).with_browser(browser.asks()).register(&mut routes);
     agents::shells::register(shell_commands, engine.clone(), &mut routes);
     let bots = kuvo_work::bots::Bots::new(
         kuvo_work::bots::Setting {
@@ -755,6 +783,9 @@ pub async fn run(
         }
     });
     let dispatcher = routes.build(LineTiming::default());
+    if let Some(browser_tools) = browser_tools {
+        browser_tools.attach(&dispatcher);
+    }
     peers.dispatch_with(dispatcher.clone()).await;
     // What other computers follow of this one's conversations, answered while they keep it.
     let _conversation_follows = peers.relay_handle().and_then(|relay| {
@@ -877,6 +908,10 @@ pub async fn run(
         }
     }
     tools.shutdown().await;
+    browser_task.stop().await;
+    browser_downloads.abort();
+    let _ = browser_downloads.await;
+    browser_install.stop().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1038,12 +1073,15 @@ fn info(
         found::FEATURE,
     ];
     if !is_mac {
+        features.push("browser");
+        if !cfg!(windows) { features.push("browser.view"); }
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
     features.push(kuvo_peers::owner_read::FEATURE);
+    features.extend_from_slice(&["browser.data", "browser.data.never"]);
     features.extend_from_slice(kuvo_services::files::FEATURES);
     features.extend_from_slice(kuvo_services::git::FEATURES);
     features.extend_from_slice(kuvo_services::artifacts::FEATURES);

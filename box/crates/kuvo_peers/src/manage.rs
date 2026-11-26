@@ -34,6 +34,17 @@ pub struct ManageFacts {
     pub machines: BTreeSet<String>,
     /// This computer can be wiped from here.
     pub wipe_here: bool,
+    /// The computers this one set up over SSH, while it can add computers.
+    pub ssh: Option<SshFacts>,
+}
+
+/// The computers this one set up over SSH, and what's under way with them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SshFacts {
+    /// The address each was set up at, by its key.
+    pub saved: std::collections::BTreeMap<String, String>,
+    /// The addresses Kuvo Code is being uninstalled from now.
+    pub uninstalling: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -169,10 +180,38 @@ impl<'a> Manage<'a> {
                 actions.push(action);
             }
         }
+        self.over_ssh(row, &mut actions);
         actions
             .into_iter()
             .map(|action| serde_json::from_value(action).expect("a computer action fits the route"))
             .collect()
+    }
+
+    /// Unlink and wipe, for a machine this computer set up over SSH.
+    fn over_ssh(&self, row: &Row, actions: &mut Vec<Value>) {
+        let Some(ssh) = &self.facts.ssh else { return };
+        if row.here || row.mac || row.key.is_empty() {
+            return;
+        }
+        let Some(destination) = ssh.saved.get(row.key) else { return };
+        // (Uninstalling over SSH runs as a signed wipe, which needs a checkpointed setup.)
+        if !self.facts.setup.as_ref().is_some_and(|setup| setup.checkpointed) {
+            return;
+        }
+        let name = if row.name.is_empty() { "this machine" } else { row.name };
+        let label = "Unlink and wipe";
+        if ssh.uninstalling.contains(destination) {
+            actions.push(json!({"id":"uninstall","label":label,"why":"Kuvo Code is being uninstalled from it now."}));
+            return;
+        }
+        actions.push(json!({
+            "id":"uninstall","label":label,
+            "confirm":{
+                "title":format!("Unlink and wipe {name}?"),
+                "message":format!("{name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass."),
+                "label":label,
+            },
+        }));
     }
 
     /// Why `row` can't be renamed or removed from here, in words a client shows; `None` when it can.

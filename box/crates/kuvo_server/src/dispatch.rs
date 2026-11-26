@@ -428,6 +428,7 @@ pub struct Registry {
     /// `api/…` subtrees the box answers itself, ahead of the engine.
     own_api: Vec<(&'static str, Fallback)>,
     socket: Option<SocketHandler>,
+    named_sockets: Vec<(&'static str, SocketHandler)>,
     activity: Option<Activity>,
     client_activity: Option<tokio::sync::watch::Sender<usize>>,
     retired: Vec<Retired>,
@@ -569,6 +570,19 @@ impl Registry {
         }));
     }
 
+    /// A named socket has its own handler, leaving the engine's PTY fallback alone.
+    pub fn sockets_for<F, Fut>(&mut self, path: &'static str, handle: F)
+    where
+        F: Fn(DispatchRequest, CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = SocketResult> + Send + 'static,
+    {
+        assert!(!self.named_sockets.iter().any(|(name, _)| *name == path));
+        self.named_sockets.push((
+            path,
+            Box::new(move |request, cancel| Box::pin(handle(request, cancel))),
+        ));
+    }
+
     /// Start with a line hub owned by this dispatcher. No process-global routes or lines.
     pub fn build(mut self, timing: LineTiming) -> Dispatcher {
         // The line looks through a weak dispatcher so its topic tasks cannot keep the server alive.
@@ -696,7 +710,15 @@ impl Dispatcher {
             activity(&request.caller).await;
         }
         request.path = path::canonical(&request.path).ok_or_else(unavailable_path)?;
-        let handler = self.0.socket.as_ref().ok_or_else(unavailable_path)?;
+        let route = request.path.split('?').next().unwrap_or_default();
+        let handler = self
+            .0
+            .named_sockets
+            .iter()
+            .find(|(path, _)| *path == route)
+            .map(|(_, handler)| handler)
+            .or(self.0.socket.as_ref())
+            .ok_or_else(unavailable_path)?;
         handler(request, cancel).await
     }
 

@@ -19,8 +19,6 @@ import { emit, feed, subscribe } from "./events"
 import type { SessionPlaces } from "./session-places"
 import { sideQuestionRoutes, type SideQuestions } from "./btw"
 import { branchRoutes } from "./branch"
-import { handoffRoutes, type Handoffs } from "./handoff"
-import { reviewRoutes, type Reviews } from "./reviews"
 import { isOutdated, type Maintenance } from "./maintenance"
 import { UpdateNotices, updateNoticesFile } from "./update-notices"
 import { agentsUpdateThemselves } from "../shared/agent-updates"
@@ -57,12 +55,10 @@ export interface Context {
   peers?: PeerParts
   /** Restarts the agents' processes started before the box's sandbox was on, as you said to (main.ts). */
   restartOutside?: () => void
-  /** Side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
+  /** Side questions (btw.ts). */
   sideQuestions?: SideQuestions
-  handoffs?: Handoffs
   /** Where conversations are, for branching one (branch.ts). */
   places?: SessionPlaces
-  reviews?: Reviews
   /** Conversations on their way to and from your other computers (carry.ts). */
   carrying?: Carrying
   boxServices?: BoxServicesClient
@@ -246,12 +242,10 @@ const BRIDGE_EXTENSIONS = {
   carry: "moves.agents",
   engine: "agents",
   groups: "agents",
-  handoff: "handoff",
   insights: "usage.insights",
   limits: "limits",
   link: "agents",
   peers: "agents",
-  reviews: "reviews",
   sandbox: "sandbox",
   tools: "agents",
   updates: "agents.updates",
@@ -558,10 +552,6 @@ export function handler(context: Context, transferring?: () => boolean) {
               return json({})
             }
             break
-          case "shell":
-            if (method !== "POST") break
-            sessions.runShell(id, String((await body()).command ?? ""))
-            return json({})
           case "synthetic": {
             const input = await body()
             sessions.synthetic(id, String(input.text ?? ""), typeof input.description === "string" ? input.description : undefined)
@@ -702,9 +692,7 @@ export function handler(context: Context, transferring?: () => boolean) {
       }
       if (extension === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
       if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body, request.signal)
-      if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
       if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
-      if (extension === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
       if (extension === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
       // The same, as a client reads and changes them (`kuvo/groups`, which the box's link passes on).
       if (extension === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)

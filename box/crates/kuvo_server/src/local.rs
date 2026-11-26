@@ -230,6 +230,8 @@ async fn upgrade_socket(
     };
     let accept = derive_accept_key(key.as_bytes());
     let guard = cancel.clone().drop_guard();
+    let browser =
+        request.path.trim_start_matches('/').split('?').next() == Some("kuvo/browser/view");
     let socket = match dispatcher.open_socket(request, cancel.clone()).await {
         Ok(socket) => socket,
         Err(error) => {
@@ -258,8 +260,16 @@ async fn upgrade_socket(
     tokio::spawn(async move {
         let _guard = guard;
         if let Ok(stream) = upgrade.await {
-            let websocket =
-                WebSocketStream::from_raw_socket(TokioIo::new(stream), Role::Server, None).await;
+            let websocket = WebSocketStream::from_raw_socket(
+                TokioIo::new(stream),
+                Role::Server,
+                browser.then(|| {
+                    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                        .max_message_size(Some(72 * 1024 * 1024))
+                        .max_frame_size(Some(72 * 1024 * 1024))
+                }),
+            )
+            .await;
             let _ = socket.bridge(websocket, cancel).await;
         }
     });

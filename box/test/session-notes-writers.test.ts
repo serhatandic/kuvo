@@ -70,7 +70,7 @@ beforeAll(async () => {
         if (holdReads) await new Promise<void>(resolve => held.push(resolve))
         return Response.json({ data: now })
       }
-      // Its instructions (Autopilot's), and anything else: taken.
+      // Its instructions, and anything else: taken.
       if (route.startsWith("/api/experimental/session/")) return Response.json({})
       return Response.json({ message: "Not here." }, { status: 404 })
     },
@@ -91,8 +91,9 @@ beforeEach(() => {
   session = { id: ses, title: "Plan the launch", location: { directory: chats }, permissions: [], metadata: { "kuvo.pinned": true }, time: { created: Date.now(), updated: Date.now() } }
 })
 
-test("the box's writers of one session at once (Autopilot, an answer, its approval, the chat mark) all land", async () => {
-  const { setAutopilot } = await import("../src/link/work/autopilot")
+test("the box's writers of one session at once (a note, an answer, its approval, the chat mark) all land", async () => {
+  const { rewriteOn } = await import("../src/link/engine/notes")
+  const { withNotes } = await import("../src/shared/session-notes")
   const { keepAnswer } = await import("../src/link/work/answers")
   const { setApproval } = await import("../src/link/areas/approval")
   const { markChat } = await import("../src/link/engine/chats")
@@ -100,7 +101,7 @@ test("the box's writers of one session at once (Autopilot, an answer, its approv
   holdReads = true
   let finished = 0
   const writers = [
-    setAutopilot(target(), read, true),
+    rewriteOn(target(), read.id, now => ({ metadata: withNotes(now.metadata, { filed: "prj_a" }) })),
     keepAnswer(target(), ses, answer),
     setApproval(ses, "acceptEdits", target(), null),
     markChat(target(), ses),
@@ -112,17 +113,17 @@ test("the box's writers of one session at once (Autopilot, an answer, its approv
   }
   await Promise.all(writers)
   expect(session.metadata["kuvo.pinned"]).toBe(true)
-  expect(session.metadata.kuvo).toMatchObject({ autopilot: true, approval: "acceptEdits", applied: "acceptEdits", chat: chats })
+  expect(session.metadata.kuvo).toMatchObject({ filed: "prj_a", approval: "acceptEdits", applied: "acceptEdits", chat: chats })
   expect(session.metadata.kuvo.answers.map((each: { ask: string }) => each.ask)).toEqual(["per_1"])
 })
 
 test("a client's change made after the box read the session, before its turn, stays", async () => {
-  const { setAutopilot } = await import("../src/link/work/autopilot")
-  // Read by the route before it turns Autopilot on; a client archives it meanwhile.
-  const read = structuredClone(session)
+  const { rewriteOn } = await import("../src/link/engine/notes")
+  const { withNotes } = await import("../src/shared/session-notes")
+  // A client archives it after the box read it, before its turn.
   session.metadata = { ...session.metadata, "kuvo.archived": true }
-  expect(await setAutopilot(target(), read, true)).toBe(true)
-  expect(session.metadata).toEqual({ "kuvo.pinned": true, "kuvo.archived": true, kuvo: { autopilot: true } })
+  expect(await rewriteOn(target(), ses, now => ({ metadata: withNotes(now.metadata, { filed: "prj_a" }) }))).toMatchObject({ written: true })
+  expect(session.metadata).toEqual({ "kuvo.pinned": true, "kuvo.archived": true, kuvo: { filed: "prj_a" } })
 })
 
 test("a phone's change forwarded while a box writer is between its read and its write isn't written over by it", async () => {
@@ -173,7 +174,7 @@ test("a session's turn held by another process: its writer here reads nothing un
   const lock = notesLock(NOTES_LOCKS, ses)
   mkdirSync(lock, { recursive: true })
   let done = false
-  const writing = rewriteOn(target(), ses, now => ({ metadata: withNotes(now.metadata, { autopilot: true }) })).finally(() => { done = true })
+  const writing = rewriteOn(target(), ses, now => ({ metadata: withNotes(now.metadata, { filed: "prj_a" }) })).finally(() => { done = true })
   try {
     // In its turn here, it waits for the folder; and still does, everything else let run a while.
     await until(() => waitingAcross(NOTES_LOCKS, ses) === 1)
@@ -185,7 +186,7 @@ test("a session's turn held by another process: its writer here reads nothing un
     rmdirSync(lock)
   }
   expect(await writing).toMatchObject({ written: true })
-  expect(session.metadata.kuvo).toEqual({ autopilot: true })
+  expect(session.metadata.kuvo).toEqual({ filed: "prj_a" })
   expect(existsSync(lock)).toBe(false)
 })
 
@@ -197,7 +198,7 @@ test("a box from before's one lock, held, is waited for", async () => {
   const { waitingAcross, withNotes } = await import("../src/shared/session-notes")
   const old = join(RUN, "work", ".notes.lock")
   mkdirSync(old, { recursive: true })
-  const writing = rewriteOn(target(), ses, now => ({ metadata: withNotes(now.metadata, { autopilot: true }) }))
+  const writing = rewriteOn(target(), ses, now => ({ metadata: withNotes(now.metadata, { filed: "prj_a" }) }))
   try {
     await until(() => waitingAcross(NOTES_LOCKS, ses) === 1)
     for (let round = 0; round < 50; round++) await new Promise(resolve => setImmediate(resolve))

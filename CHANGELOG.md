@@ -6,6 +6,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Antigravity no longer asks you to sign in again when a command it runs opens a link, or when its sign-in message shows up in a file or a command's output.
+
+- You can choose Antigravity's thinking level (Low to Extra, where a model has them) in the model picker. A conversation keeps the level it started with.
+- Removed Autopilot, reviews, handoffs, the shell in conversations and Plan mode, which could only be started with the retired typed commands. Messages that start with "/" now go to Claude Code as you typed them, like every other agent.
+
 - A message from one of your agents reaches a busy conversation right away.
 
 - Kuvo stays responsive while your agents run builds.

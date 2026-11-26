@@ -171,9 +171,16 @@ process.stdin.on("data", (chunk) => {
     }
     else if (method === "initialized") {}
     else if (method === "account/rateLimits/read") {
-      const own = path.join(home, "codex-limits.json");
-      if (fs.existsSync(path.join(home, "codex-limits-refused"))) refuse(-32000, "Fixture maker unavailable");
-      else answer(fs.existsSync(own) ? JSON.parse(fs.readFileSync(own,"utf8")) : read("codex-limits.json", {}));
+      const reply = () => {
+        if (params.excludeResetCreditDetails && fs.existsSync(path.join(root,"codex-hold-reset-check"))) {
+          setTimeout(reply,20);
+          return;
+        }
+        const own = path.join(home, "codex-limits.json");
+        if (fs.existsSync(path.join(home, "codex-limits-refused"))) refuse(-32000, "Fixture maker unavailable");
+        else answer(fs.existsSync(own) ? JSON.parse(fs.readFileSync(own,"utf8")) : read("codex-limits.json", {}));
+      };
+      reply();
     }
     else if (method === "account/rateLimitResetCredit/consume") {
       const journal=read("../box/agents/limits-resets.json", {});
@@ -407,6 +414,12 @@ export async function scriptedCodex(fixture = {}) {
     },
     async stop() {
       await resident?.stop();
+      await bridge?.stop();
+      resident = bridge = undefined;
+    },
+    async crash() {
+      resident.child.kill("SIGKILL");
+      await resident.exited;
       await bridge?.stop();
       resident = bridge = undefined;
     },

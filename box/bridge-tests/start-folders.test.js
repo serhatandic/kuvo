@@ -1,6 +1,5 @@
 // A project's other folders, on the box (PROTOCOL.md, "Projects" and "Agents' tools"): a client's
-// new session, started with no task (`POST kuvo/sessions`), is made with them, its Autopilot and
-// its approval; a chat moved into a project (`POST kuvo/sessions/<id>/move`) gets them, as does
+// new session, started with no task (`POST kuvo/sessions`), is made with them and its approval; a chat moved into a project (`POST kuvo/sessions/<id>/move`) gets them, as does
 // one a client opens (`POST kuvo/sessions/<id>/folders`); a change to them (`PUT kuvo/projects`)
 // writes no session at rest. The real box script, as a client asks it; only the engine is a stand-in.
 //
@@ -41,8 +40,6 @@ let prompts = [];
 let told = new Map();
 let moves = [];
 let deleted = [];
-// (Autopilot's words not taken, for a start asked to be on Autopilot.)
-let refusesAutopilot = false;
 const engine = http.createServer((request, response) => {
   let body = "";
   request.on("data", chunk => { body += chunk; });
@@ -61,7 +58,6 @@ const engine = http.createServer((request, response) => {
       return reply({ data: { id } });
     }
     if (url.pathname === "/api/session/active") return reply({ data: {} });
-    if (refusesAutopilot && request.url.endsWith("/instructions/entries/kuvo.autopilot")) return reply({ message: "Not now." }, 500);
     if (request.url.includes("/instructions/entries/")) {
       const key = request.url.match(/session\/([^/]+)\//)[1] + " " + request.url.split("/").pop();
       if (request.method === "DELETE") told.set(key, null);
@@ -114,7 +110,6 @@ beforeEach(() => {
   told = new Map();
   moves = [];
   deleted = [];
-  refusesAutopilot = false;
   write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: shop, folders: [docs] }, { directory: blog, folders: [] }] }));
   write(path.join(home, "box", "worktrees.json"), JSON.stringify({ worktrees: [{ project: shop, root: tree, folder: tree, branch: "kuvo/brave-otter" }] }));
 });
@@ -136,8 +131,9 @@ function route(method, pathname, body) {
 
 const allows = (id, rule) => sessions.get(id).permissions.some(each => each.action === rule.action && each.resource === rule.resource && each.effect === rule.effect);
 
-test("a client's new session, with no task, is made in its project with that project's other folders, its mode, model, approval and Autopilot, and nothing is sent to it", async () => {
+test("a client's new session, with no task, is made in its project with that project's other folders, its agent, model and approval, and nothing is sent to it", async () => {
   const started = await route("POST", "kuvo/sessions", { folder: shop, agent: "review", model: { providerID: "openai", id: "gpt-5", variant: "high" }, approval: "acceptEdits", autopilot: true });
+  // (Autopilot is gone: asked for, it's no more than a field nothing reads.)
   assert.equal(started.status, 200, JSON.stringify(started.body));
   assert.equal(started.body.session, "ses_new1");
   assert.equal(started.body.project, "shop");
@@ -149,18 +145,9 @@ test("a client's new session, with no task, is made in its project with that pro
   assert.deepEqual(given.model, { providerID: "openai", id: "gpt-5", variant: "high" });
   assert.ok(given.permissions.some(rule => rule.action === docsRule.action && rule.resource === docsRule.resource && rule.effect === "allow"), "its project's other folder is allowed to it");
   assert.equal(given.metadata.kuvo.approval, "acceptEdits");
-  assert.equal(given.metadata.kuvo.autopilot, true);
+  assert.equal(given.metadata.kuvo.autopilot, undefined);
   assert.match(told.get("ses_new1 kuvo.project-folders") ?? "", new RegExp(`- docs: ${docs}`));
   assert.deepEqual(prompts, [], "it waits for the user's own first message");
-});
-
-test("a new session asked to start on Autopilot whose agent can't be told how isn't left asking you instead: it goes, and the client hears why", async () => {
-  refusesAutopilot = true;
-  const started = await route("POST", "kuvo/sessions", { folder: shop, autopilot: true });
-  assert.equal(started.status, 502, JSON.stringify(started.body));
-  assert.match(started.body.message, /on Autopilot/);
-  assert.deepEqual(deleted, ["ses_new1"]);
-  assert.equal(sessions.has("ses_new1"), false);
 });
 
 test("a new session in a worktree of the project gets its folders; one in the project's other folder works there alone", async () => {

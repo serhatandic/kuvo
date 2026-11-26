@@ -175,9 +175,6 @@ impl Groups {
                         if text.is_empty() {
                             return Some((400, json!({ "message": "Write something to send." }), None));
                         }
-                        if text.starts_with("/compact") {
-                            return Some((400, json!({ "message": "A group chat has no one conversation to compact." }), None));
-                        }
                         let chat = &mut self.chats[at];
                         let message_id = format!("gm_new{}", self.next);
                         self.next += 1;

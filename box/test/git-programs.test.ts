@@ -15,14 +15,12 @@ let box: string
 let changes: typeof import("../src/link/areas/changes")
 let folders: typeof import("../src/link/areas/folders")
 let backups: typeof import("../src/link/work/backups")
-let reviews: typeof import("../src/agents/reviews")
 let snapshots: typeof import("../src/agents/snapshots")
 beforeAll(async () => {
   box = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-git-programs-")))
   changes = await import("../src/link/areas/changes")
   folders = await import("../src/link/areas/folders")
   backups = await import("../src/link/work/backups")
-  reviews = await import("../src/agents/reviews")
   snapshots = await import("../src/agents/snapshots")
 })
 afterAll(() => rmSync(box, { recursive: true, force: true }))
@@ -122,13 +120,6 @@ test("switching branches runs its hooks, as your terminal would, but no fsmonito
   expect(ran()).toEqual(expect.arrayContaining(["hooks-post-checkout"]))
   expect(ran()).not.toContain("fsmonitor")
   expect(ran()).not.toContain("pager")
-})
-
-test("a review reads its changes without starting any of them", async () => {
-  const { top, ran } = planted()
-  const read = await reviews.readScope(top, { kind: "uncommitted" })
-  expect(JSON.stringify(read)).toContain("two, longer")
-  expect(ran()).toEqual([])
 })
 
 test("Undo keeps its files and puts them back without starting any of them", async () => {

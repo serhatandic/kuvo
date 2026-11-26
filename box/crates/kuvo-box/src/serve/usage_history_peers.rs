@@ -102,7 +102,7 @@ pub async fn follow(
     limits: limits::Service,
     mut directory: Reader,
     relay: RelayHandle,
-    setup: SetupHandle,
+    mut setup: SetupHandle,
 ) {
     let Some(mut inbox) = relay.subscribe() else {
         return;
@@ -111,6 +111,9 @@ pub async fn follow(
     let mut manual = service.subscribe_manual();
     let mut limit_updates = limits.subscribe();
     let mut rosters = setup.rosters();
+    let mut usage_settings = setup.usage_setup();
+    let worker = service.clone();
+    let mut fallback = blocking(move || Ok(worker.fallback())).await;
     let mut parts = SeatParts::default();
     let mut told = BTreeMap::<String, Sent>::new();
     let mut pulled = BTreeMap::<String, i64>::new();
@@ -262,6 +265,16 @@ pub async fn follow(
         tokio::select! {
             changed=directory.changed()=>{if changed.is_err(){break;}},
             changed=rosters.changed()=>{if changed.is_err(){break;}},
+            changed=setup.changed()=>{
+                if !changed {break;}
+                let next=setup.usage_setup();
+                if next!=usage_settings {
+                    usage_settings=next;
+                    let worker=service.clone();
+                    let next=blocking(move||Ok(worker.fallback())).await;
+                    if next!=fallback {fallback=next;dirty=true;}
+                }
+            },
             changed=updates.changed()=>{if changed.is_err(){break;}dirty=true;tell_pages=true;},
             changed=limit_updates.changed()=>{if changed.is_err(){break;}},
             request=manual.recv()=>{if request.is_ok(){force=true;dirty=true;tell_pages=true;}},

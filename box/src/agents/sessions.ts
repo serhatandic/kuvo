@@ -10,7 +10,6 @@
 import { programInstallation } from "./maintenance"
 import { pause } from "../shared/wait"
 import { createHash } from "node:crypto"
-import { spawn as spawnProcess } from "node:child_process"
 import { readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -32,7 +31,7 @@ import { runningShells, stopShell } from "./shells"
 import { skillFolders, within } from "./skills"
 import type { Record_, Store } from "./store"
 import { NOTICE, Turn, type Outcome } from "./turn"
-import type { AssistantMessage, Attachment, CompactionMessage, Decision, FormAnswer, FormRequest, Message, Model, ModelRef, PermissionRequest, PermissionRule, Session, ShellMessage, FileDiff, StructuredError } from "./wire"
+import type { AssistantMessage, Attachment, CompactionMessage, Decision, FormAnswer, FormRequest, Message, Model, ModelRef, PermissionRequest, PermissionRule, Session, FileDiff, StructuredError } from "./wire"
 import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
@@ -181,7 +180,7 @@ function lostWorkOf(input: Input): { at: number; work: LostWork[]; restarted: bo
   return typeof kept?.lostWork === "number" ? { at: kept.lostWork, work: Array.isArray(kept.work) ? (kept.work as LostWork[]) : [], restarted: kept.restarted === true } : undefined
 }
 
-/** A group chat's seat: its bot's part in a chat (groups/seat.ts). */
+/** A group chat's seat: its bot's part in a chat (groups/seat.ts). Only a seat on Cursor still runs in Plan mode (groups/seat.ts); a conversation of anyone's stored in Plan mode before it went runs as Build. */
 function isSeat(session: Session): boolean {
   const kuvo = session.metadata?.kuvo as Record<string, unknown> | undefined
   return Boolean(kuvo && typeof kuvo === "object" && kuvo.seat)
@@ -223,93 +222,11 @@ const legacyKeys = ["claudeSession", "claudeStarted", "codexThread", "acpSession
 /** What an agent that has your message already is told when it's to go on with it on another of its models. */
 const carryOn = "Carry on with my last message from where you left off: you're on another model now."
 
-/** How long an agent gets to stop when you press Stop, before its conversation is closed; how long a session's agents keep running with nothing to do (the next message starts them again, in the same conversation); how lately a turn the bridge quit in must have last written for what changed since to count as its own; how long your `!` commands get to stop once their session goes, before they're made to; how soon the bridge must be back for background work that ended as it stopped to wake its session (a restart or an update, not a quit for the night). */
-export const timing = { stopGrace: 8_000, idleClose: 15 * 60_000, cutShort: 2 * 60_000, shellGrace: 5_000, lostWorkWake: 10 * 60_000 }
+/** How long an agent gets to stop when you press Stop, before its conversation is closed; how long a session's agents keep running with nothing to do (the next message starts them again, in the same conversation); how lately a turn the bridge quit in must have last written for what changed since to count as its own; how soon the bridge must be back for background work that ended as it stopped to wake its session (a restart or an update, not a quit for the night). */
+export const timing = { stopGrace: 8_000, idleClose: 15 * 60_000, cutShort: 2 * 60_000, lostWorkWake: 10 * 60_000 }
 
 /** In plan mode, what changes files: refused, whatever your rules say. */
 const changes = new Set(["edit", "write", "patch"])
-
-/** How your `!` commands are started and signalled (a test's stand-ins instead). */
-export const shellProcesses = { spawn: spawnProcess, kill: (pid: number, signal: NodeJS.Signals | 0) => void process.kill(pid, signal) }
-
-/** Whether anything still runs in process group `group`. */
-function groupRuns(group: number): boolean {
-  try {
-    shellProcesses.kill(-group, 0)
-    return true
-  } catch (error: any) {
-    return error?.code === "EPERM"
-  }
-}
-
-function signalGroup(group: number, signal: NodeJS.Signals) {
-  try {
-    shellProcesses.kill(-group, signal)
-  } catch {}
-}
-
-/** How long a command you run with "!" may take, and how much of what it printed is kept. */
-const shellTimeout = 10 * 60_000
-const shellOutputLimit = 50_000
-
-/**
- * A command you typed with "!", run through your shell in its own process group: what it printed
- * (its end, when there's a lot), kept as it comes; stopped whole when it runs too long. Its output
- * stops being waited for a moment after it ends (a job it left running may keep it open).
- */
-export function runCommand(command: string, directory: string, started: (group: number) => void = () => {}): Promise<{ code: number; output: string; truncated: boolean; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    let output = ""
-    let truncated = false
-    let timedOut = false
-    let done = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const take = (chunk: Buffer) => {
-      output += chunk.toString("utf8")
-      if (output.length > shellOutputLimit * 2) {
-        output = output.slice(-shellOutputLimit)
-        truncated = true
-      }
-    }
-    const finish = (code: number) => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      const text = plain(output).trimEnd()
-      resolve({ code, output: text.length > shellOutputLimit ? text.slice(-shellOutputLimit) : text, truncated: truncated || text.length > shellOutputLimit, timedOut })
-    }
-    let child: ReturnType<typeof shellProcesses.spawn>
-    try {
-      // As in your terminal: on a machine, with its own folders, not Kuvo Code's (where gh and git
-      // keep their settings).
-      const env: Record<string, string | undefined> = { ...process.env, ...ownEnvironment() }
-      for (const name of Object.keys(env)) if (env[name] === undefined) delete env[name]
-      const shell = process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh")
-      child = shellProcesses.spawn(shell, ["-c", command], { cwd: directory, detached: true, env, stdio: ["ignore", "pipe", "pipe"] })
-    } catch (error: any) {
-      output = String(error?.message ?? error)
-      return finish(1)
-    }
-    const group = (signal: NodeJS.Signals) => {
-      try {
-        if (child.pid) process.kill(-child.pid, signal)
-      } catch {}
-    }
-    timer = setTimeout(() => {
-      timedOut = true
-      group("SIGTERM")
-      setTimeout(() => group("SIGKILL"), 5_000)
-    }, shellTimeout)
-    if (child.pid) started(child.pid)
-    child.stdout?.on("data", take)
-    child.stderr?.on("data", take)
-    child.on("error", (error) => {
-      output += String(error?.message ?? error)
-      finish(1)
-    })
-    child.on("exit", (code, signal) => setTimeout(() => finish(code ?? (signal ? 128 + 15 : 1)), 500))
-  })
-}
 
 /** What's kept of the project's files around one of your messages, for Undo. */
 interface SnapshotNote {
@@ -942,14 +859,6 @@ export class Sessions {
    * was made to mark shown, as it does a file a reply shows now.
    */
   readonly cited: { path: string; at: number }[] = []
-  /** Your `!` commands' process groups, by session, while anything in them runs (a server one left
-   * in the background too): each stops with its session. A group's number the system gives
-   * another command once it's gone is that command's: it leaves the others' (`ownShell`), and
-   * gone groups are let go of every few seconds (`pruneShells`). */
-  private shells = new Map<string, Set<number>>()
-  /** Groups asked to stop, by the token their making them stop waits with. */
-  private stopping = new Map<number, symbol>()
-  private pruning?: ReturnType<typeof setInterval>
 
   constructor(
     private readonly store: Store,
@@ -1418,7 +1327,6 @@ export class Sessions {
       for (const child of this.list(undefined, id)) if (!this.shownElsewhere(child.id, id)) await this.remove(child.id)
       for (const thread of live.threads.values()) thread.close()
       for (const [provider, slot] of Object.entries(this.slots(record))) await this.agent(provider)?.forgetConversation?.(slot.state).catch(() => {})
-      this.stopShells(id)
       this.store.remove(id)
       this.live.delete(id)
       emit("session.deleted", { sessionID: id }, record.session.location.directory)
@@ -1448,7 +1356,7 @@ export class Sessions {
 
   /** Pending edits and live turns may still hold mutable messages. */
   pruneTranscripts() {
-    if (this.commands || this.sending || this.removing) return
+    if (this.sending || this.removing) return
     const working = new Set(this.active())
     this.store.prune(id => working.has(id) || this.resuming.has(id))
   }
@@ -1488,45 +1396,6 @@ export class Sessions {
     await this.stopSubagents(id)
     for (const job of runningShells(id)) await stopShell(job.id)
     for (const thread of live?.threads.values() ?? []) await thread.stopBackgroundTasks?.().catch(() => {})
-  }
-
-  /**
-   * A command you typed with "!", run in the session's folder as you, right away, without waking
-   * the agent: it and what it printed join the conversation, and the agent gets them with your
-   * next message.
-   */
-  runShell(id: string, command: string) {
-    const record = this.record(id)
-    if (record.session.parentID) throw new BadRequest("This subagent works for the conversation that started it: run it there.")
-    const text = command.trim()
-    if (!text) throw new BadRequest("Type a command after the !.")
-    const directory = record.session.location.directory
-    const shellID = newID("shl")
-    // Named after its event, as the app names it from the event.
-    const event = emit("session.shell.started", { sessionID: id, shell: { id: shellID, command: text, status: "running" } }, directory)
-    const message: ShellMessage = { type: "shell", id: messageID(event.id), time: { created: event.created }, shellID, command: text, status: "running" }
-    record.messages.push(message)
-    record.session.time.updated = Date.now()
-    // Run while an agent works: it hasn't seen it when its turn ends, and gets it with your next message.
-    if (this.atWork(id)) record.agent.lateShells = [...((record.agent.lateShells as string[] | undefined) ?? []), message.id]
-    this.store.save(id, true)
-    let group: number | undefined
-    this.commands++
-    void runCommand(text, directory, (started) => {
-      group = started
-      this.ownShell(id, started)
-    }).then((ran) => {
-      const groups = this.shells.get(id)
-      // Kept while what it started runs on in its group.
-      if (group !== undefined && !groupRuns(group)) groups?.delete(group)
-      message.status = ran.code === 0 && !ran.timedOut ? "completed" : "failed"
-      message.exit = ran.code
-      message.output = { output: ran.timedOut ? `${ran.output}\n(Stopped: it ran past ${shellTimeout / 60_000} minutes.)`.trim() : ran.output, truncated: ran.truncated }
-      message.time.completed = Date.now()
-      if (!this.store.get(id)) return
-      this.store.save(id, true)
-      emit("session.shell.ended", { sessionID: id, shell: { id: shellID, command: text, status: message.status, exit: ran.code }, output: message.output }, directory)
-    }).finally(() => this.commands--)
   }
 
   // MARK: Undo
@@ -2406,7 +2275,7 @@ export class Sessions {
     try {
       // A text file you attached goes in the message, as the engine puts it (the agent reads the rest).
       const attached = withTextFiles(input.text, input.files.map(promptFile))
-      const message: RunInput = { text: attached.text, files: attached.files, model, plan: session.agent === "plan" }
+      const message: RunInput = { text: attached.text, files: attached.files, model, plan: session.agent === "plan" && isSeat(session) }
       // Subagents an earlier turn sent off in the background, still at work: this turn's end
       // leaves them be.
       earlier = new Set(live.subagents.keys())
@@ -2469,7 +2338,7 @@ export class Sessions {
     live.agentPrompt = own ? info?.system : undefined
     let result: RunResult
     try {
-      result = await this.runOn(id, record, live, run, model, { text: "", files: [], model, plan: session.agent === "plan", held }, input.id)
+      result = await this.runOn(id, record, live, run, model, { text: "", files: [], model, plan: session.agent === "plan" && isSeat(session), held }, input.id)
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
@@ -2558,7 +2427,7 @@ export class Sessions {
       const why = this.whyNotCompact(record, false)
       const model = this.holdingModel(record)
       if (why || !model) result = { outcome: "failed", error: { type: "agent", message: why ?? "There's nothing to summarize yet." } }
-      else result = await this.runOn(id, record, live, run, model, { text: "/compact", files: [], model, plan: session.agent === "plan", compact: true }, input.id)
+      else result = await this.runOn(id, record, live, run, model, { text: "/compact", files: [], model, plan: session.agent === "plan" && isSeat(session), compact: true }, input.id)
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
@@ -2748,14 +2617,11 @@ export class Sessions {
       // It has your message already (Auto went on with another of its models): it carries on from
       // what it hasn't seen since, rather than getting the message again.
       const hasMessage = at >= 0 && seenAt >= at
-      // Commands you ran while it (or another) worked come along, though it was there for them.
-      const late = new Set((record.agent.lateShells as string[] | undefined) ?? [])
       const seenSteers = new Set(slot.seenSteers)
       const before = hasMessage ? [] : record.messages.slice(0, at < 0 ? undefined : at).filter((message, index) =>
-        !seenSteers.has(message.id) && (index > seenAt || late.has(message.id)))
+        !seenSteers.has(message.id) && index > seenAt)
       // (A turn it began on its own is told nothing: what it missed waits for its next message.)
-      const missed = Boolean(input.adopt && (before.length || late.size))
-      if (!hasMessage && late.size && !input.adopt) delete record.agent.lateShells
+      const missed = Boolean(input.adopt && before.length)
       const partway = at < 0 ? [] : record.messages.slice(Math.max(at, seenAt) + 1).filter(message => !seenSteers.has(message.id))
       const handed = handover(before, partway, await this.stepNames([...before, ...partway]))
       const text = withHandover(hasMessage ? carryOn : input.text, handed)
@@ -3568,61 +3434,13 @@ export class Sessions {
     emit(answer ? "form.replied" : "form.cancelled", { id: formID, sessionID: id }, this.record(id).session.location.directory)
   }
 
-  /** A `!` command's group, just made: the session's, and no other's (its number may be one a
-   * gone group had). */
-  private ownShell(id: string, group: number) {
-    for (const groups of this.shells.values()) groups.delete(group)
-    this.stopping.delete(group)
-    const groups = this.shells.get(id) ?? new Set<number>()
-    groups.add(group)
-    this.shells.set(id, groups)
-    this.pruning ??= setInterval(() => this.pruneShells(), 3_000)
-    ;(this.pruning as any).unref?.()
-  }
-
-  /** Groups gone let go of, so a number the system gives out again is never taken for one. */
-  private pruneShells() {
-    for (const [id, groups] of this.shells) {
-      for (const group of groups) if (!groupRuns(group)) groups.delete(group)
-      if (!groups.size) this.shells.delete(id)
-    }
-    if (!this.shells.size) {
-      clearInterval(this.pruning)
-      this.pruning = undefined
-    }
-  }
-
-  /** A session's `!` commands still running, asked to stop, and made to a moment later unless
-   * another command has its group's number by then (`now`: at once, as the bridge goes and won't
-   * be there to). */
-  private stopShells(id: string, now = false) {
-    for (const group of this.shells.get(id) ?? []) {
-      signalGroup(group, "SIGTERM")
-      if (now) {
-        signalGroup(group, "SIGKILL")
-        continue
-      }
-      const token = Symbol(group)
-      this.stopping.set(group, token)
-      setTimeout(() => {
-        if (this.stopping.get(group) !== token) return
-        this.stopping.delete(group)
-        signalGroup(group, "SIGKILL")
-      }, timing.shellGrace)
-    }
-    this.shells.delete(id)
-  }
-
   /** The bridge is stopping: every turn ends as stopped, every agent's conversation closes, and
-   * your `!` commands still running stop. What an agent left going in the background between turns
+   * What an agent left going in the background between turns
    * ends with it: the session hears so once the bridge is back (`wakeLost`), as that work's end
    * would have woken it. */
   closeAll(held?: ReadonlySet<string>) {
     for (const timer of this.steerChecks.values()) clearTimeout(timer)
     this.steerChecks.clear()
-    for (const id of [...this.shells.keys()]) this.stopShells(id, true)
-    clearInterval(this.pruning)
-    this.pruning = undefined
     for (const [id, live] of this.live) {
       if (held?.has(id)) continue
       const lost = live.doing.kind === "idle" || onFiles(live.doing) ? [...live.threads].flatMap(([provider, thread]) => (thread.wakingWork ?? []).map((work) => ({ provider, work }))) : []
@@ -3851,8 +3669,7 @@ export class Sessions {
   }
 
   private holding = false
-  /** Your `!` commands running now, and your messages on their way to a subagent. */
-  private commands = 0
+  /** Your messages on their way to a subagent. */
   private sending = 0
   /** Sessions being deleted now. */
   private removing = 0
@@ -3870,7 +3687,7 @@ export class Sessions {
 
   /** Snapshot only turns our replay path can rebuild without starting a new prompt. */
   transfer(providers: ReadonlyMap<string, string>): Record<string, TransferSession> | undefined {
-    if (this.commands || this.sending || this.removing || Object.keys(this.background()).length) return undefined
+    if (this.sending || this.removing || Object.keys(this.background()).length) return undefined
     const sessions: Record<string, TransferSession> = {}
     for (const [id, live] of this.live) {
       if (live.own || live.steering.size || live.waiting.length || live.forms.size || live.subagents.size) return undefined
@@ -3890,11 +3707,11 @@ export class Sessions {
   }
 
   /** What's under way, for a newer bridge to wait for: turns (a subagent's too, a message being
-   * handed to one, the files kept after one), your `!` commands, a session being deleted, which it
+   * handed to one, the files kept after one), a session being deleted, which it
    * never cuts; and what agents left running in the background. */
   work(): { turns: boolean; other: boolean } {
     const handing = [...this.live.values()].some((live) => live.steering.size > 0)
-    return { turns: this.active().length > 0 || this.commands > 0 || this.sending > 0 || this.removing > 0 || handing, other: Object.keys(this.background()).length > 0 }
+    return { turns: this.active().length > 0 || this.sending > 0 || this.removing > 0 || handing, other: Object.keys(this.background()).length > 0 }
   }
 
   wakeLost(now = Date.now()) {

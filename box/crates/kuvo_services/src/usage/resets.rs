@@ -1325,3 +1325,167 @@ pub fn register(routes: &mut Registry, resets: Resets) {
         }
     });
 }
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::usage::{
+        limits::Provider,
+        plan_facts::{Extra, Facts},
+        readings::{Source, Window},
+        settings,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Maker {
+        chose: AtomicUsize,
+        used: AtomicUsize,
+    }
+    impl Port for Maker {
+        fn choose<'a>(
+            &'a self,
+            _: &'a Account,
+        ) -> futures_util::future::BoxFuture<'a, Result<String, Outcome>> {
+            Box::pin(async move {
+                self.chose.fetch_add(1, Ordering::SeqCst);
+                Ok("fixture-credit".into())
+            })
+        }
+        fn consume<'a>(
+            &'a self,
+            _: &'a Account,
+            _: &'a str,
+            _: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Completion> {
+            Box::pin(async move {
+                self.used.fetch_add(1, Ordering::SeqCst);
+                Completion::maker(Outcome::Reset)
+            })
+        }
+        fn refresh<'a>(&'a self, _: &'a str) -> futures_util::future::BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+    }
+    #[derive(Default)]
+    struct Directory(AtomicBool);
+    impl PeerTransport for Directory {
+        fn known(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+        fn member(&self, key: &str) -> bool {
+            self.known() && key == "fixture-peer"
+        }
+        fn reachable(&self, key: &str) -> bool {
+            self.member(key)
+        }
+        fn send<'a>(
+            &'a self,
+            _: &'a str,
+            _: ResetMail,
+        ) -> futures_util::future::BoxFuture<'a, bool> {
+            Box::pin(async { false })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kept_allowance_cannot_spend_before_the_directory_is_known_or_after_the_holder_turns_it_off()
+     {
+        let home = tempfile::tempdir().unwrap();
+        let setup = kuvo_setup::SetupRuntime::prepare(home.path(), "Fixture".into(), false, None)
+            .await
+            .unwrap()
+            .start(None)
+            .unwrap();
+        let prefs = settings::Service::new(home.path().to_owned(), setup.handle());
+        let limits = Service::new(
+            home.path().to_owned(),
+            prefs,
+            Default::default(),
+            "Fixture".into(),
+            "fixture-local".into(),
+        );
+        let account = Account {
+            provider: "codex-cli".into(),
+            service: Provider::Codex,
+            account: Some("default".into()),
+            label: None,
+            identity: Some("0123456789abcdef".into()),
+            sign_in: "fixture".into(),
+            notice_card: None,
+        };
+        let row = account.row("fixture-local");
+        let at = now();
+        limits
+            .observe_facts(
+                account,
+                vec![Window {
+                    id: "primary".into(),
+                    used: 1.0,
+                    minutes: Some(300),
+                    resets_at: Some(at + 3600000),
+                    model: None,
+                    name: None,
+                    amount: None,
+                    read: at,
+                    source: Source::Usage,
+                }],
+                Some(Facts {
+                    checked: Some(at),
+                    extras: vec![Extra::Resets {
+                        id: "resets".into(),
+                        name: "Rate Limit Resets".into(),
+                        count: 1,
+                        expiries: vec![at + 3600000],
+                        refills: vec!["primary".into()],
+                        usable: true,
+                    }],
+                    ..Default::default()
+                }),
+                at,
+            )
+            .unwrap();
+        let maker = Arc::new(Maker::default());
+        let directory = Arc::new(Directory::default());
+        let resets = Resets::new(home.path(), limits, maker.clone()).with_peers(directory.clone());
+        assert!(resets.always(Some(&row), None, true).await.is_ok());
+        let refused = resets.spend_for(&row, "fixture-agent", false, true).await;
+        assert!(refused.1);
+        assert!(refused.0.contains("Ask the user"), "{:?}", refused);
+        assert_eq!(maker.chose.load(Ordering::SeqCst), 0);
+        assert_eq!(maker.used.load(Ordering::SeqCst), 0);
+        let saved = std::fs::read(home.path().join("agents/limits-resets.json")).unwrap();
+        assert!(
+            serde_json::from_slice::<Journal>(&saved)
+                .unwrap()
+                .spends
+                .is_empty()
+        );
+        directory.0.store(true, Ordering::SeqCst);
+        assert!(resets.always(Some(&row), None, false).await.is_ok());
+        let answer = resets
+            .take_ask(
+                "fixture-peer",
+                RemoteAsk {
+                    id: "fixture-ask".into(),
+                    row: row.clone(),
+                    by: Some("fixture-agent".into()),
+                    unasked: true,
+                },
+            )
+            .await;
+        assert_eq!(answer.outcome, Outcome::Failed);
+        assert!(
+            answer
+                .message
+                .unwrap_or_default()
+                .contains("Always Allow is off")
+        );
+        assert_eq!(maker.chose.load(Ordering::SeqCst), 0);
+        assert_eq!(maker.used.load(Ordering::SeqCst), 0);
+        assert!(resets.always(Some(&row), None, true).await.is_ok());
+        let done = resets.spend_for(&row, "fixture-agent", false, true).await;
+        assert!(!done.1, "{:?}", done);
+        assert_eq!(maker.used.load(Ordering::SeqCst), 1);
+    }
+}

@@ -1,9 +1,9 @@
 //! Insights' portable transcript index. The SQLite schema is the same as the old service;
 //! only changed transcripts are decoded, on demand, never in an idle background process.
-use kuvo_os::timer_fires::{self, Timer};
 use super::{native_index, pricing::Pricing};
 use http::StatusCode;
 use jiff::{Span, Timestamp, tz::TimeZone};
+use kuvo_os::timer_fires::{self, Timer};
 use kuvo_protocol::{
     JsonStatus, Route, RouteSpec,
     shape::{Primitive, Shape},
@@ -245,7 +245,10 @@ impl Service {
                 if clients.wait_for(|n| *n > 0).await.is_err() {
                     break;
                 }
-                let mut delay = timer_fires::interval(Timer::UsageInsightsRefresh, std::time::Duration::from_secs(300));
+                let mut delay = timer_fires::interval(
+                    Timer::UsageInsightsRefresh,
+                    std::time::Duration::from_secs(300),
+                );
                 delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
@@ -256,7 +259,7 @@ impl Service {
             }
         }))
     }
-    fn fallback(&self) -> (Option<String>, bool) {
+    pub fn fallback(&self) -> (Option<String>, bool) {
         self.history
             .as_ref()
             .map(|history| history.settings.codex_fallback())
@@ -439,18 +442,11 @@ impl Service {
             if changed.is_some_and(|selected| !selected.contains(id)) {
                 continue;
             }
-            // OpenCode conversations are counted from its own database. Older portable
-            // transcripts used these native-agent names before their provider IDs were
-            // standardized; model routing must not reinterpret saved history as OpenCode.
-            let provider = session["model"]["providerID"].as_str();
-            let legacy_native = provider.is_some_and(|id| {
-                matches!(id.split('@').next(), Some("claude" | "codex" | "grok"))
-            });
-            let agent = provider.and_then(kuvo_agents::accounts::Provider::of_model);
-            if !legacy_native
-                && agent
-                    .is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode)
-            {
+            // OpenCode conversations are counted from its own database, not its portable mirror.
+            let agent = session["model"]["providerID"]
+                .as_str()
+                .and_then(kuvo_agents::accounts::Provider::of_model);
+            if agent.is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode) {
                 continue;
             }
             let stamp = hash(&json!(
@@ -1005,9 +1001,12 @@ impl Service {
                         eprintln!("Couldn't update usage prices: {result:?}");
                     }
                 }
-                timer_fires::sleep(Timer::UsagePriceFeed, std::time::Duration::from_millis(
-                    feeds.next().saturating_sub(super::limits::now()).max(1000),
-                ))
+                timer_fires::sleep(
+                    Timer::UsagePriceFeed,
+                    std::time::Duration::from_millis(
+                        feeds.next().saturating_sub(super::limits::now()).max(1000),
+                    ),
+                )
                 .await;
             }
         }))
@@ -2396,5 +2395,201 @@ mod lineage_repair_tests {
             hex::encode(Sha256::digest(maker.as_os_str().as_encoded_bytes()))
         );
         assert_eq!(get(&db, &format!("{key}/decoded")).unwrap(), Some(json!(0)));
+    }
+}
+
+#[cfg(test)]
+mod more_coverage {
+    use super::*;
+    use crate::usage::insight_mail::{Cursor, Mail, Record, Scope};
+    use std::sync::atomic::Ordering::Release;
+    fn ready(service: &Service) {
+        service.caught_up.store(true, Release);
+        service.native_ready.store(true, Release);
+        service.engine_ready.store(true, Release);
+    }
+    fn query() -> BTreeMap<String, String> {
+        BTreeMap::from([("period".into(), "7".into()), ("zone".into(), "UTC".into())])
+    }
+    fn record(at: i64, session: &str, call: &str, computer: &str, attributed: bool) -> Record {
+        serde_json::from_value(json!({"key":hash(&json!([session,call])),"at":at,"session":session,"call":call,"computer":computer,"provider":"claude-code","model":"fixture-peer-price","bot":"bot_demo","botName":"Demo","attributed":attributed,"tokens":{"input":100,"output":50,"cacheRead":500,"cacheWrite5m":2,"cacheWrite1h":0}})).unwrap()
+    }
+    #[test]
+    fn incoming_pages_wait_for_a_complete_peer_copy_and_price_locally_without_reassigning_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::new(
+            temp.path().into(),
+            "Studio".into(),
+            "first".into(),
+            "fixture",
+        );
+        let at = Timestamp::now().as_millisecond() - 1000;
+        let folder = temp.path().join("agents/usage/pricing");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("litellm.json"),
+            br#"{"models":{"fixture-peer-price":{"i":1,"o":2,"cw":1,"cr":0.1}}}"#,
+        )
+        .unwrap();
+        ready(&service);
+        let db = service.open().unwrap();
+        let mut seq = 0;
+        let local = record(at, "session", "before", "first", true);
+        save_event(
+            &db,
+            &mut seq,
+            at,
+            serde_json::to_value(&local).unwrap(),
+            Some(0.000252),
+            Some(152),
+            Some(652),
+            Some(100),
+            Some(500),
+            Some(2),
+            Some(50),
+        )
+        .unwrap();
+        set(&db, "sequence", &json!(seq)).unwrap();
+        set(&db, "rust-local-scan", &json!(at)).unwrap();
+        drop(db);
+        let mut scope = Scope {
+            setup: Some("fixture-setup".into()),
+            own: Some("first".into()),
+            peers: BTreeMap::from([("second".into(), "Lab".into())]),
+            connected: BTreeSet::from(["second".into()]),
+            ..Default::default()
+        };
+        service.peer_roster(scope.clone()).unwrap();
+        let loading = service.summary(query()).unwrap();
+        assert_eq!(loading["data"]["state"], "loading");
+        assert_eq!(
+            loading["data"]["pendingComputers"],
+            json!([{"id":"second","name":"Lab"}])
+        );
+        let kept = temp.path().join("agents/usage/insights-kept-rust.json");
+        assert!(
+            !kept.exists(),
+            "A loading summary must not become a retained complete answer"
+        );
+        let page = |after, next, more, records| Mail::Page {
+            after,
+            next,
+            more,
+            epoch: "fixture-epoch".into(),
+            reset: false,
+            scanned: Some(at),
+            issues: vec![],
+            records,
+        };
+        let duplicate = record(at, "session", "before", "second", false);
+        let later = record(at, "session", "after", "second", true);
+        let vouched = record(at, "foreign", "not-admitted", "unknown", true);
+        assert_eq!(
+            service
+                .take_page("second", page(0, 2, true, vec![duplicate, later.clone()]))
+                .unwrap(),
+            Some(Cursor {
+                after: 2,
+                epoch: Some("fixture-epoch".into())
+            })
+        );
+        assert_eq!(
+            service.summary(query()).unwrap()["data"]["state"],
+            "loading"
+        );
+        assert!(!kept.exists());
+        assert!(
+            service
+                .take_page("unknown", page(0, 1, false, vec![vouched.clone()]))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            service
+                .take_page("second", page(0, 1, false, vec![vouched.clone()]))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service
+                .take_page("second", page(2, 3, false, vec![vouched]))
+                .unwrap()
+                .unwrap()
+                .after,
+            3
+        );
+        let ready = service.summary(query()).unwrap();
+        assert_eq!(ready["data"]["state"], "ready");
+        assert_eq!(ready["data"]["totals"]["tokens"], 1304);
+        let db = service.open().unwrap();
+        let (origin, cost): (String, f64) = db
+            .query_row(
+                "SELECT computer,cost FROM event WHERE key=?",
+                [&local.key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(origin, "first");
+        assert_eq!(cost, 0.000252);
+        let price: f64 = db
+            .query_row("SELECT cost FROM event WHERE key=?", [&later.key], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((price - 0.000252).abs() < 1e-12);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM event", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            2
+        );
+        drop(db);
+        scope.connected.clear();
+        service.peer_roster(scope).unwrap();
+        assert_eq!(
+            service.summary(query()).unwrap()["data"]["totals"]["tokens"],
+            1304
+        );
+        // Filter after merging copies; the resumed session is once, and the old bot's call stays on Studio.
+        for who in ["first", "second"] {
+            let mut params = query();
+            params.insert("computer".into(), who.into());
+            params.insert("bot".into(), "bot_demo".into());
+            assert_eq!(
+                service.summary(params).unwrap()["data"]["totals"]["tokens"],
+                652
+            );
+        }
+    }
+    #[test]
+    fn learning_own_peer_key_keeps_the_unchanged_transcript_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::new(temp.path().into(), "Studio".into(), "".into(), "fixture");
+        let at = Timestamp::now().as_millisecond() - 1000;
+        let folder = temp.path().join("agents/sessions/ses_local");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("session.json"),
+            json!({"id":"ses_local","title":"Local","time":{"created":at-1000,"updated":at}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("messages.json"),
+            json!([{"type":"user","id":"prompt","text":"fixture","time":{"created":at}}])
+                .to_string(),
+        )
+        .unwrap();
+        let mut db = service.open().unwrap();
+        service.scan(&mut db, at + 1000).unwrap();
+        let key = "scan/rust-transcript-v1/ses_local";
+        let before = get(&db, key).unwrap().unwrap();
+        drop(db);
+        let mut scope = service.scope();
+        scope.own = Some("own-peer-key".into());
+        scope.setup = Some("new-setup".into());
+        service.peer_roster(scope).unwrap();
+        let mut db = service.open().unwrap();
+        service.scan(&mut db, at + 2000).unwrap();
+        assert_eq!(get(&db, key).unwrap(), Some(before));
     }
 }

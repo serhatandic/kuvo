@@ -264,7 +264,7 @@ fn began_with(message: &Value) -> Began {
         _ => None,
     };
     match from {
-        Some("Your answer" | "Autopilot") => Began::You,
+        Some("Your answer") => Began::You,
         Some("Its sessions") => Began::Follow,
         Some(_) => Began::Own,
         None if written_by_you(message) => Began::You,
@@ -478,23 +478,6 @@ impl News<'_> {
         (data, false)
     }
 
-    /// Whether the engine still lists `form` as asked: when it can't say, it's taken as asked.
-    async fn still_asked(&self, form: &Value, folder: Option<&str>) -> bool {
-        let session = form["sessionID"].as_str().unwrap_or_default();
-        let path = format!(
-            "api/session/{}/form",
-            percent_encoding::utf8_percent_encode(session, percent_encoding::NON_ALPHANUMERIC)
-        );
-        let asked = match folder {
-            Some(folder) => self.engine.call_in(Method::GET, &path, folder, WAIT).await,
-            None => self.engine.call(Method::GET, &path, None, WAIT).await,
-        };
-        match asked {
-            Ok(Value::Array(forms)) => forms.iter().any(|each| each["id"] == form["id"]),
-            _ => true,
-        }
-    }
-
     /// The notice for an event, or none for one that isn't news.
     pub async fn notice_for(&self, kind: &str, data: &Value, location: &Value) -> Option<Notice> {
         let request_session = |shown: &Value, asker: &str| {
@@ -545,12 +528,6 @@ impl News<'_> {
                 };
                 let shown = self.shown(&asker).await?;
                 if hidden_run(&shown) {
-                    return None;
-                }
-                // On Autopilot nothing waits for you, unless it's still asked once the box has looked.
-                if shown["metadata"]["kuvo"]["autopilot"] == true
-                    && !self.still_asked(form, folder).await
-                {
                     return None;
                 }
                 let body = short_words(&describe_form(form), SENTENCE_LONGEST);

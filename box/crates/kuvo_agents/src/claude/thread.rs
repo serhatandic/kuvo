@@ -813,17 +813,15 @@ impl Actor {
             self.configured = Some((model.clone(), plan));
         }
         // A conversation it goes on with keeps the instructions it started with (until it's
-        // summarized): what changed since is said ahead of the message, once. Not ahead of a
-        // command (its /compact, a skill's), which goes as typed: the next message says it.
+        // summarized): what changed since is said ahead of the message, once. Not ahead of
+        // Kuvo's own /compact, which goes as typed: the next message says it.
         let mut told = None;
         let message = match prompt {
             Some(mut prompt) => {
-                if !prompt.text.trim_start().starts_with('/')
-                    && let Some(said) = instructions_note(
-                        self.state.get("claudeTold").and_then(Value::as_str),
-                        &input.instructions,
-                    )
-                {
+                if let Some(said) = instructions_note(
+                    self.state.get("claudeTold").and_then(Value::as_str),
+                    &input.instructions,
+                ) {
                     prompt.text = format!("{said}\n\n{}", prompt.text);
                     told = Some(input.instructions.clone());
                 }
@@ -1733,8 +1731,15 @@ fn prompt_id(session: &str, id: String) -> String {
 
 async fn message(session: &str, mut prompt: Prompt, next: bool) -> io::Result<Value> {
     let id = prompt_id(session, std::mem::take(&mut prompt.id));
+    // Words of the user's that start with "/" are delivered as written (`client_composed`): Claude
+    // Code runs no command of its own (its /compact, a skill's) on them.
+    let typed_slash = prompt.text.trim_start().starts_with('/');
     let content = tokio::task::spawn_blocking(move || prompt_content(prompt)).await?;
-    Ok(user_frame(id, content, next))
+    let mut frame = user_frame(id, content, next);
+    if typed_slash {
+        frame["client_composed"] = true.into();
+    }
+    Ok(frame)
 }
 
 fn prompt_content(prompt: Prompt) -> Vec<Value> {

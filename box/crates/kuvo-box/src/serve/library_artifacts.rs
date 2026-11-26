@@ -57,6 +57,8 @@ pub(super) struct ResidentLibraryArtifacts {
     library: LibraryHandle,
     folders: Option<BotFolders>,
     tasks: Vec<JoinHandle<()>>,
+    recorder: Recorder,
+    run: PathBuf,
 }
 
 impl ResidentLibraryArtifacts {
@@ -112,7 +114,7 @@ impl ResidentLibraryArtifacts {
             let hub = WatchHub::default();
             folders.start(Some(&hub)).await;
         }
-        tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), engine.events(), recorder)));
+        tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), engine.events(), recorder.clone())));
         let artifact_handle = ArtifactHandle::Ready(store);
 
         let (peer_tx, peer_rx) = watch::channel(0u64);
@@ -121,10 +123,14 @@ impl ResidentLibraryArtifacts {
                 run_dir.clone(), peers.clone(), relay, artifact_handle.clone(), library_handle.clone(), peer_tx,
             )));
         }
-        let adapter = Arc::new(PeerAdapter { run: run_dir, peers, reads, changes: peer_rx });
+        let adapter = Arc::new(PeerAdapter { run: run_dir.clone(), peers, reads, changes: peer_rx });
         kuvo_services::artifacts::register(routes, artifact_handle, Some(adapter.clone()));
         kuvo_services::library::register(routes, library_handle.clone(), Some(adapter));
-        Self { library: library_handle, folders, tasks }
+        Self { library: library_handle, folders, tasks, recorder, run: run_dir }
+    }
+
+    pub(super) async fn note_download(&self, session: &str, path: &str) {
+        self.recorder.noted(&[Arc::new(LoopbackEngineSource { run: self.run.clone() })], session, path, "download").await;
     }
 
     pub(super) async fn answer_library_read(&self, read: Read) -> Answer {
