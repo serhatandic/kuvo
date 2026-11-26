@@ -300,20 +300,28 @@ impl LocalSessions {
                     },
                     changed = project_changes(&mut edits) => match changed {
                         None => { edits = None; continue; },
-                        Some(true) => { read_again = true; continue; },
-                        Some(false) => {},
+                        Some(()) => {},
                     },
                     changed = background_changes(&mut background_edits) => match changed {
                         None => { background_edits = None; continue; },
-                        Some(true) => { read_again = true; continue; },
-                        Some(false) => {},
+                        Some(()) => {},
                     },
                     changed = agent_changes(&mut agent_edits) => {
-                        if changed {
-                            agent_revision.send_modify(|revision| *revision += 1);
-                            read_again = true;
-                        } else {
-                            agent_edits = None;
+                        match changed {
+                            Some(rescan) => {
+                                // A shared FSEvents stream is reconfigured when another
+                                // service adds or removes a root. Recheck the on-disk
+                                // agent rows, but don't invalidate the OpenCode inventory
+                                // when these rows are unchanged.
+                                if rescan && let Some((_, kept, _)) = &inventory
+                                    && kept.same_agents(&engine).await
+                                {
+                                    continue;
+                                }
+                                agent_revision.send_modify(|revision| *revision += 1);
+                                read_again = true;
+                            }
+                            None => agent_edits = None,
                         }
                         continue;
                     },
@@ -928,6 +936,7 @@ async fn read_projects(home: &Path) -> Vec<Project> {
         .map_or_else(Vec::new, |file| file.projects)
 }
 
+#[derive(PartialEq)]
 pub(crate) struct Observed {
     pub(crate) session: Session,
     pub(crate) running: bool,
@@ -972,6 +981,25 @@ impl Inventory {
             engine_known,
             bridge_known,
         })
+    }
+
+    async fn same_agents(&self, engine: &Engine) -> bool {
+        match (self.bridge_known, agent_rows(engine).await) {
+            (Some(true), Some(rows)) => {
+                let kept: BTreeMap<_, _> = self
+                    .rows
+                    .iter()
+                    .filter(|row| self.agent_ids.contains(&row.session.id))
+                    .map(|row| (&row.session.id, row))
+                    .collect();
+                rows.len() == kept.len()
+                    && rows
+                        .iter()
+                        .all(|row| kept.get(&row.session.id) == Some(&row))
+            }
+            (None | Some(false), None) => true,
+            _ => false,
+        }
     }
 
     fn pending(&self) -> Vec<String> {
@@ -1052,20 +1080,20 @@ pub(crate) async fn read_inventory(
         .collect())
 }
 
-async fn project_changes(edits: &mut Option<Subscription>) -> Option<bool> {
+async fn project_changes(edits: &mut Option<Subscription>) -> Option<()> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
     while let Some(notice) = edits.recv().await {
         match notice {
-            Notice::Rescan | Notice::Failed(_) => return Some(true),
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
             Notice::Changed { paths }
                 if paths.iter().any(|path| {
                     path == Path::new("projects.json")
                         || path == Path::new(crate::worktree_notes::FILE)
                 }) =>
             {
-                return Some(false);
+                return Some(());
             }
             _ => {}
         }
@@ -1073,7 +1101,27 @@ async fn project_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     None
 }
 
-async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
+async fn background_changes(edits: &mut Option<Subscription>) -> Option<()> {
+    let Some(edits) = edits else {
+        return std::future::pending().await;
+    };
+    while let Some(notice) = edits.recv().await {
+        match notice {
+            Notice::Rescan | Notice::Failed(_) => return Some(()),
+            Notice::Changed { paths }
+                if paths
+                    .iter()
+                    .any(|path| path == Path::new("background.json")) =>
+            {
+                return Some(());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+async fn agent_changes(edits: &mut Option<Subscription>) -> Option<bool> {
     let Some(edits) = edits else {
         return std::future::pending().await;
     };
@@ -1081,9 +1129,10 @@ async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
         match notice {
             Notice::Rescan | Notice::Failed(_) => return Some(true),
             Notice::Changed { paths }
-                if paths
-                    .iter()
-                    .any(|path| path == Path::new("background.json")) =>
+                if paths.iter().any(|path| {
+                    path.file_name().is_some_and(|name| name == "session.json")
+                        || path.components().count() == 1
+                }) =>
             {
                 return Some(false);
             }
@@ -1091,27 +1140,6 @@ async fn background_changes(edits: &mut Option<Subscription>) -> Option<bool> {
         }
     }
     None
-}
-
-async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
-    let Some(edits) = edits else {
-        return std::future::pending().await;
-    };
-    while let Some(notice) = edits.recv().await {
-        match notice {
-            Notice::Rescan | Notice::Failed(_) => return true,
-            Notice::Changed { paths }
-                if paths.iter().any(|path| {
-                    path.file_name().is_some_and(|name| name == "session.json")
-                        || path.components().count() == 1
-                }) =>
-            {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 struct Filing<'a> {
