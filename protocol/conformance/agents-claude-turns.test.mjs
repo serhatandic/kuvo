@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import {
-  askFirst, assertMatch, canUse, hook, idles, result, scriptedClaude, steps, streams, texts,
+  answerSessionAsk, askFirst, assertCommandCard, assertMatch, canUse, sessionAsks, hook, idles, result, scriptedClaude, steps, streams, texts,
   toolCalls, toolResult,
 } from "./claude.mjs";
 import { boxBinary, until, write } from "./adapter.mjs";
@@ -574,6 +574,28 @@ describe("Claude Code's permissions", { skip }, () => {
     assert.deepEqual((await box.claude.answered(id, "c1")).response, { behavior: "allow", updatedInput: { command: "npm test" }, toolUseID: "toolu_1" });
     const rows = await box.claude.idles(id);
     assertMatch(toolCalls(rows)[0], { name: "shell", state: { status: "completed", content: [{ type: "text", text: "3 passed" }] } });
+  });
+
+  test("the app's cards: its command and its question are the conversation's asks, and the answers given there reach it", async () => {
+    const questions = [{ question: "Which size?", header: "Size", options: [{ label: "Small" }, { label: "Large" }], multiSelect: false }];
+    const { id } = await box.begin([
+      ...streams("$UUID", [{ type: "tool_use", id: "toolu_9", name: "Bash", input: { command: "make" } }]),
+      hook("h9", "Bash", { command: "make" }, "toolu_9"), { reply: "h9" },
+      canUse("c9", "Bash", { command: "make" }, "toolu_9"), { reply: "c9" },
+      toolResult("toolu_9", "built"),
+      canUse("q9", "AskUserQuestion", { questions }, "toolu_10"), { reply: "q9" },
+      result(["$UUID"]),
+    ], { ask: true });
+    const card = await until(async () => (await sessionAsks(box.claude.listener, id)).find(ask => ask.kind === "permission"), "No card for the command.");
+    assertCommandCard(card, "make");
+    await answerSessionAsk(box.claude.listener, id, card.id, { answer: "once" });
+    assertMatch((await box.claude.answered(id, "c9")).response, { behavior: "allow" });
+    const question = await until(async () => (await sessionAsks(box.claude.listener, id)).find(ask => ask.kind === "question"), "No card for the question.");
+    assertMatch(question.questions[0], { question: "Which size?", options: [{ value: "Small" }, { value: "Large" }] });
+    await answerSessionAsk(box.claude.listener, id, question.id, { answers: { [question.questions[0].key]: "Large" } });
+    assertMatch((await box.claude.answered(id, "q9")).response, { behavior: "allow", updatedInput: { questions, answers: { "Which size?": "Large" } } });
+    await box.claude.idles(id);
+    assert.deepEqual(await sessionAsks(box.claude.listener, id), []);
   });
 
   test("Allow Always: Claude Code keeps it for this session only, and the same command isn't asked about again; one more in the line is", async () => {
