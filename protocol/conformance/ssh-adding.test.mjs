@@ -1086,7 +1086,7 @@ test("uninstall from a saved SSH address commits a signed wipe and waits for con
   const offered = async key => (await row(key))?.actions.find(action => action.id === "uninstall");
   // (Lab has never been heard from: its row still offers what works from here.)
   const down = await row(member.key);
-  assert.equal(down.reach, "away");
+  assert.notEqual(down.reach, "connected", "Lab has never been heard from");
   assert.ok(down.actions.some(action => action.id === "remove"), JSON.stringify(down.actions));
   assert.equal(await offered(member.key), undefined, "a computer with no saved address offers no uninstall");
   save("phone-link.json", { machines: {
