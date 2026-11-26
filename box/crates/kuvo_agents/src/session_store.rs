@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+mod handover;
 mod line;
 mod metadata;
 mod pictures;
@@ -17,6 +18,7 @@ mod projection;
 mod repair;
 
 pub use line::Line;
+pub use projection::legacy_insight;
 pub use repair::OpenTurn;
 pub(crate) use repair::close_rows;
 
@@ -185,7 +187,22 @@ impl SessionStore {
                     format!("The saved session {id} has no working directory."),
                 )
             })?;
-            let state = slot_state(&folder, &header, &read_agent(&folder)?, &provider)?;
+            let mut agent = read_agent(&folder)?;
+            if !agent.get("threads").is_some_and(truthy) && !legacy_state(&agent).is_empty() {
+                // Migrate before the new message is recorded: the old agent has seen the
+                // whole conversation as it stood, not the message about to be sent.
+                let lock = folder.with_file_name(format!(".{id}.lock"));
+                let _guard = OwnedLock::acquire(&lock, Duration::from_secs(1))?;
+                let Some(header) = read_header(&folder, &id)? else {
+                    return Ok(None);
+                };
+                agent = read_agent(&folder)?;
+                if !agent.get("threads").is_some_and(truthy) {
+                    slots(&folder, &header, &mut agent)?;
+                    files::write_atomic(&folder.join("agent.json"), &serde_json::to_vec(&agent)?)?;
+                }
+            }
+            let state = slot_state(&folder, &header, &agent, &provider)?;
             Ok(Some(SessionContext {
                 session_id: id,
                 directory: PathBuf::from(directory),
@@ -239,6 +256,27 @@ impl SessionStore {
         provider: &str,
         state: VendorState,
     ) -> io::Result<bool> {
+        self.save_vendor_state(id, provider, state, false).await
+    }
+
+    /// Import a native conversation together with its transcript: the native
+    /// agent already knows every imported message.
+    pub(crate) async fn save_imported_state(
+        &self,
+        id: &str,
+        provider: &str,
+        state: VendorState,
+    ) -> io::Result<bool> {
+        self.save_vendor_state(id, provider, state, true).await
+    }
+
+    async fn save_vendor_state(
+        &self,
+        id: &str,
+        provider: &str,
+        state: VendorState,
+        imported: bool,
+    ) -> io::Result<bool> {
         let session = id.to_owned();
         let provider = crate::accounts::Provider::slot(provider);
         self.mutate_existing(id, move |folder| {
@@ -253,6 +291,9 @@ impl SessionStore {
             }
             if let Some(slot) = slot.as_object_mut() {
                 slot.insert("state".into(), Value::Object(state));
+                if imported && let Some(last) = last_message_id(folder)? {
+                    slot.insert("seen".into(), last.into());
+                }
             }
             files::write_atomic(&folder.join("agent.json"), &serde_json::to_vec(&agent)?)
         })
@@ -455,7 +496,11 @@ fn slots<'a>(
         if !legacy.is_empty()
             && let Some(owner) = legacy_owner(folder, header)?
         {
-            threads.insert(owner, serde_json::json!({ "state": legacy }));
+            let mut slot = serde_json::json!({ "state": legacy });
+            if let Some(last) = last_message_id(folder)? {
+                slot["seen"] = last.into();
+            }
+            threads.insert(crate::accounts::Provider::slot(&owner), slot);
         }
         for key in LEGACY {
             agent.shift_remove(key);
@@ -495,6 +540,31 @@ fn legacy_owner(folder: &Path, header: &SessionHeader) -> io::Result<Option<Stri
             .map(str::to_owned)
     });
     Ok(owner.filter(|owner| !owner.is_empty() && owner != "auto"))
+}
+
+fn last_message_id(folder: &Path) -> io::Result<Option<String>> {
+    let db = folder.join(TRANSCRIPT);
+    if db.try_exists()? {
+        use rusqlite::OptionalExtension;
+        let db = sqlite::open_index(&db, Duration::from_secs(1)).map_err(io::Error::other)?;
+        return db
+            .query_row(
+                "SELECT id FROM message ORDER BY position DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|row: Option<Option<String>>| row.flatten())
+            .map_err(io::Error::other);
+    }
+    let Some(raw) = files::read(&folder.join("messages.json"))? else {
+        return Ok(None);
+    };
+    let rows: Vec<Value> = serde_json::from_slice(&raw)?;
+    Ok(rows
+        .last()
+        .and_then(|row| row["id"].as_str())
+        .map(str::to_owned))
 }
 
 fn last_assistant_provider(folder: &Path) -> io::Result<Option<String>> {
@@ -701,25 +771,79 @@ fn legacy_page(
     limit: u32,
     order: MessageOrder,
 ) -> io::Result<Vec<Value>> {
-    let Some(body) = files::read(&folder.join("messages.json"))? else {
-        return Ok(Vec::new());
-    };
-    let mut messages: Vec<Value> = serde_json::from_slice(&body)?;
-    if matches!(order, MessageOrder::NewestFirst) {
-        messages.reverse();
+    use serde::de::{IgnoredAny, SeqAccess, Visitor};
+    use std::{collections::VecDeque, fmt};
+
+    struct Page<'a> {
+        after: Option<&'a str>,
+        limit: usize,
+        order: MessageOrder,
     }
-    let start = match after {
-        Some(id) => match messages.iter().position(|row| row["id"] == id) {
-            Some(position) => position + 1,
-            None => return Ok(Vec::new()),
-        },
-        None => 0,
+
+    impl<'de> Visitor<'de> for Page<'_> {
+        type Value = Vec<Value>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a saved conversation array")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut rows: A) -> Result<Self::Value, A::Error> {
+            if matches!(self.order, MessageOrder::OldestFirst) {
+                let mut found = self.after.is_none();
+                let mut page = Vec::new();
+                while let Some(row) = rows.next_element::<Value>()? {
+                    if found {
+                        page.push(row);
+                        if page.len() == self.limit {
+                            while rows.next_element::<IgnoredAny>()?.is_some() {}
+                            break;
+                        }
+                    } else if row["id"].as_str() == self.after {
+                        found = true;
+                    }
+                }
+                return Ok(page);
+            }
+            // A newest-first page retains only its bounded window, not the transcript.
+            // If an old array repeats an ID, the newest occurrence is the cursor.
+            let mut window = VecDeque::new();
+            let mut page = None;
+            while let Some(row) = rows.next_element::<Value>()? {
+                if self.after.is_some() && row["id"].as_str() == self.after {
+                    page = Some(window.clone());
+                }
+                if window.len() == self.limit {
+                    window.pop_front();
+                }
+                window.push_back(row);
+            }
+            Ok(if self.after.is_none() {
+                window
+            } else {
+                page.unwrap_or_default()
+            }
+            .into_iter()
+            .rev()
+            .collect())
+        }
+    }
+
+    let file = match fs::File::open(folder.join("messages.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    Ok(messages
-        .into_iter()
-        .skip(start)
-        .take((limit as usize).saturating_add(1))
-        .collect())
+    let mut reader = serde_json::Deserializer::from_reader(io::BufReader::new(file));
+    let page = serde::de::Deserializer::deserialize_seq(
+        &mut reader,
+        Page {
+            after,
+            limit: (limit as usize).saturating_add(1),
+            order,
+        },
+    )?;
+    reader.end()?;
+    Ok(page)
 }
 
 fn valid_id(id: &str) -> bool {

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { boxBinary, boxCommand, isolatedEnv, openLine, request, scratch, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
@@ -330,6 +331,35 @@ test("library backfill runs once from saved sessions", async t => {
   const listed = await ask("GET", "kuvo/library");
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(listed.json.items.map(i => [i.name, i.how, i.session]), [["deck.pdf", "shown", "ses_old"]]);
+});
+
+test("library backfill reads the current transcript database, not its old JSON copy", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("Backfill SQLite");
+  const project = path.join(realpathSync(box.home), "project");
+  const saved = path.join(box.home, "agents", "sessions", "ses_sqlite");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(saved, { recursive: true });
+  writeFileSync(path.join(project, "deck.pdf"), "%PDF-1.4");
+  writeFileSync(path.join(saved, "session.json"), JSON.stringify({
+    id: "ses_sqlite", title: "Current", location: { directory: project }, time: { created: 1, updated: 2 },
+  }));
+  writeFileSync(path.join(saved, "messages.json"), "[]");
+  const row = JSON.stringify({
+    id: "msg_a", type: "assistant", time: { created: 2000, completed: 3000 },
+    content: [{ type: "tool", id: "t1", name: "kuvo-browser_show_file", state: { status: "completed", input: { path: "deck.pdf" }, content: [] } }],
+  });
+  const db = new DatabaseSync(path.join(saved, "messages-v1.sqlite"));
+  try {
+    db.exec("CREATE TABLE message(position INTEGER PRIMARY KEY, id TEXT, body TEXT NOT NULL, insight TEXT, artifacts TEXT)");
+    db.prepare("INSERT INTO message(position,id,body,artifacts) VALUES(?,?,?,?)").run(0, "msg_a", row, row);
+  } finally {
+    db.close();
+  }
+  const ask = box.connect(await box.start().ready());
+  const listed = await ask("GET", "kuvo/library");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.json.items.map(i => [i.name, i.how, i.session]), [["deck.pdf", "shown", "ses_sqlite"]]);
 });
 
 test("artifact version binary bytes come back whole over route command", async t => {

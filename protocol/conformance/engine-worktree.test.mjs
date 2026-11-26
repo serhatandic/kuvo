@@ -65,7 +65,7 @@ test("a session started by a subagent is filed under the project of its linked w
     assert.equal(accepted.json.project, "Fixture");
     const made = await header(accepted.json.session);
     assert.equal(fs.realpathSync(made.location.directory), fs.realpathSync(folder));
-    assert.equal(made.agent, "plan");
+    assert.equal(made.agent, "build", "a session started by a Plan conversation still starts in Build");
     assert.equal(made.metadata.kuvo.startedBy, "ses_lead");
     assert.deepEqual(made.metadata.kuvo.filed, { folder: made.location.directory, project });
     assert.match(await heard(task, "Its task never reached its agent."), /ses_lead/);
@@ -216,4 +216,69 @@ test("session Delete and Delete All confirm which worktrees and saved changes go
   assert.equal(extra.status, 200, extra.text);
   await until(async () => (await confirm("ses_live")).message === "This can’t be undone.",
     "the still-open conversation to keep its worktree");
+});
+
+// OpenCode still owns its create reply; keep the cancellation boundary covered
+// in addition to the coding-agent conversations above.
+test("an interrupted start removes an unused worktree and keeps the one an OpenCode session took", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const { home, engine, start } = await computer("failed-session-worktree");
+  const project = path.join(home, "project");
+  const env = isolatedEnv(path.dirname(home));
+  write(path.join(project, "file"), "Fixture\n");
+  git(env, project, "init", "-q");
+  git(env, project, "add", "file");
+  git(env, project, "commit", "-qm", "Fixture");
+  write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: project, name: "Fixture" }] }));
+  const record = await start().ready();
+  const given = { project: "Fixture", worktree: true, title: "Interrupted start" };
+
+  engine.failStart = "before";
+  const refused = await request(record, "POST", "kuvo/sessions", given);
+  assert.equal(refused.status, 502, refused.text);
+  assert.equal(git(env, project, "branch", "--list", "kuvo/*"), "");
+  const stored = () => JSON.parse(fs.readFileSync(path.join(home, "box/worktrees.json"), "utf8"));
+  assert.deepEqual(stored().worktrees, []);
+  assert.deepEqual(stored().restorable, []);
+
+  engine.failStart = "after";
+  const lost = await request(record, "POST", "kuvo/sessions", given);
+  assert.equal(lost.status, 502, lost.text);
+  assert.equal(engine.sessions.length, 1);
+  const folder = engine.sessions[0].location.directory;
+  assert.equal(fs.readFileSync(path.join(folder, "file"), "utf8"), "Fixture\n");
+  assert.equal(stored().worktrees[0].folder, folder);
+});
+
+test("a cancelled client leaves a worktree only if OpenCode created its conversation", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const { home, engine, start } = await computer("cancelled-worktree-start");
+  const project = path.join(home, "project");
+  const env = isolatedEnv(path.dirname(home));
+  write(path.join(project, "file"), "Fixture\n");
+  git(env, project, "init", "-q");
+  git(env, project, "add", "file");
+  git(env, project, "commit", "-qm", "Fixture");
+  write(path.join(home, "box/projects.json"), JSON.stringify({ projects: [{ directory: project, name: "Fixture" }] }));
+  const record = await start().ready();
+  const given = { project: "Fixture", worktree: true, title: "Cancelled start" };
+  const stored = path.join(home, "box", "worktrees.json");
+  const make = async failure => {
+    const client = new AbortController();
+    engine.failStart = failure;
+    engine.startCutShort = () => client.abort();
+    await assert.rejects(request(record, "POST", "kuvo/sessions", given, {}, AbortSignal.any([
+      client.signal, AbortSignal.timeout(10000),
+    ])), { name: "AbortError" });
+    engine.startCutShort = null;
+  };
+  await make("before");
+  await until(() => fs.existsSync(stored) && readJSON(stored).worktrees.length === 0, "the unused worktree record to be removed");
+  assert.equal(fs.existsSync(path.join(path.dirname(home), "worktrees", "brave-otter-1")), false);
+  assert.equal(git(env, project, "branch", "--list", "kuvo/*"), "");
+  await make("after");
+  const [made] = engine.sessions;
+  const folder = made.location.directory;
+  await until(() => readJSON(stored).worktrees.some(tree => tree.folder === folder), "the worktree with a conversation to be retained");
+  assert.equal(fs.readFileSync(path.join(folder, "file"), "utf8"), "Fixture\n");
 });

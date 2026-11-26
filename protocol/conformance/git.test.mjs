@@ -517,6 +517,7 @@ test("a touched file stored by the installed git-lfs filter is still unchanged i
 });
 
 test("Mac commits reuse a recent login environment and keep private box variables out of hooks", {
+  timeout: 160000,
   skip: process.platform !== "darwin" ? "Only Mac user-requested commands refresh the login environment." : false,
 }, async t => {
   const repo = await repository(t, "LoginCache", folder => ({
@@ -538,4 +539,52 @@ test("Mac commits reuse a recent login environment and keep private box variable
   assert.equal(await commit("one"), "first|");
   write(profile, "export GPG_TTY=second\n");
   assert.equal(await commit("two"), "first|");
+  // Exercise the real one-minute cache, with a bounded startup read rather than a
+  // test-only route or a fake clock. A slow refresh must not hold up Commit.
+  await new Promise(resolve => setTimeout(resolve, 61000));
+  const refreshed = path.join(path.dirname(profile), "refreshed");
+  write(profile, `sleep 3\nexport GPG_TTY=second\ntouch "${refreshed}"\n`);
+  assert.equal(await commit("slow refresh"), "first|");
+  await until(() => existsSync(refreshed), "the delayed login shell to finish");
+  let attempts = 0;
+  await until(async () => (await commit("Refreshed " + ++attempts)) === "second|", "the successful login refresh to reach a later hook");
+  // The next refresh cannot read a login environment at all; the last good one
+  // still reaches both the commit that asks and the following commit.
+  await new Promise(resolve => setTimeout(resolve, 61000));
+  const failed = path.join(path.dirname(profile), "failed");
+  write(profile, `echo failed >> "${failed}"\nexit 1\n`);
+  assert.equal(await commit("failed refresh"), "second|");
+  await until(() => existsSync(failed) && readFileSync(failed, "utf8").trim().split("\n").length >= 2, "both login shell attempts to fail");
+  assert.equal(await commit("after failed refresh"), "second|");
+});
+
+test("Changes displays file lines, not a repository's configured diff conversion", async t => {
+  const repo = await repository(t, "DiffConversion");
+  const { root, git } = repo;
+  // A legitimate custom diff driver represents each file by its object name.
+  // The Changes panel must instead describe the actual text the user is editing.
+  writeFileSync(path.join(root, ".gitattributes"), "app/a.txt diff=object-name\n");
+  writeFileSync(path.join(root, "app/a.txt"), "first\n\nlast\n");
+  git(root, "add", ".gitattributes", "app/a.txt");
+  git(root, "commit", "-qm", "Use an object-name diff");
+  git(root, "config", "diff.object-name.textconv", "git hash-object");
+  writeFileSync(path.join(root, "app/a.txt"), "first\n\nchanged\n");
+  const { action, listed } = await repo.start();
+  const changed = await action("changes", { path: "app/a.txt" });
+  assert.equal(changed.status, 200, changed.text);
+  assert.match(changed.json.patch, /\+changed/);
+  const file = (await listed()).json.files.find(row => row.path === "app/a.txt");
+  assert.equal(file.additions, 1);
+  assert.equal(file.deletions, 1);
+  const branches = await action("branches");
+  assert.equal(branches.status, 200, branches.text);
+  assert.equal(branches.json.current, "main");
+  // Switching is an explicit request. A normal post-checkout hook is still run,
+  // and the work in progress comes with the new branch.
+  write(path.join(root, ".git/hooks/post-checkout"), "#!/bin/sh\nprintf switched > .git/switch-notice\n", { mode: 0o755 });
+  assert.equal(existsSync(path.join(root, ".git/switch-notice")), false);
+  const switched = await action("switch", { branch: "draft", create: true });
+  assert.equal(switched.status, 200, switched.text);
+  assert.equal(readFileSync(path.join(root, ".git/switch-notice"), "utf8"), "switched");
+  assert.equal(readFileSync(path.join(root, "app/a.txt"), "utf8"), "first\n\nchanged\n");
 });

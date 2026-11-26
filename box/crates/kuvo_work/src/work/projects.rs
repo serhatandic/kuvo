@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use kuvo_services::git::safe;
+use kuvo_services::git::{first_commit, safe};
 use serde_json::{Map, Value, json};
 use tokio::{process::Command, task::spawn_blocking};
 
@@ -138,46 +138,6 @@ pub(crate) async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> O
     let output = safe::run(folder, args, safe::Intent::Own, env, Duration::from_secs(60)).await.ok()?;
     let said = String::from_utf8_lossy(&output.stdout);
     output.status.success().then(|| said.trim().to_owned())
-}
-
-const BY_KUVO: &[(&str, &str)] = &[
-    ("GIT_AUTHOR_NAME", "Kuvo Code"),
-    ("GIT_AUTHOR_EMAIL", "kuvo-code@localhost"),
-    ("GIT_COMMITTER_NAME", "Kuvo Code"),
-    ("GIT_COMMITTER_EMAIL", "kuvo-code@localhost"),
-];
-
-/// A repository with no commits yet given an empty first one, so its sessions can each start in a
-/// worktree at once: by whoever commits there, else by Kuvo Code. Only one with nothing in it.
-async fn first_commit(folder: &Path) -> bool {
-    let has = async || git(folder, &["rev-parse", "--verify", "--quiet", "HEAD"], &[]).await;
-    if has().await.is_some() {
-        return true;
-    }
-    let none = git(folder, &["for-each-ref", "--count=1", "--format=x"], &[]).await;
-    let empty = git(folder, &["mktree"], &[]).await;
-    let Some(empty) = empty.filter(|tree| !tree.is_empty() && none.as_deref() == Some("")) else {
-        return false;
-    };
-    let message = ["-m", "Initial commit"];
-    let tree = [
-        &["-c", "user.useConfigOnly=true", "commit-tree", &empty][..],
-        &message,
-    ]
-    .concat();
-    let commit = match git(folder, &tree, &[]).await {
-        None => git(folder, &tree, BY_KUVO).await,
-        made => made,
-    };
-    // (Another may have made one meanwhile: then it has one.)
-    if let Some(commit) = commit {
-        let reason = ["-m", "commit (initial): Initial commit"];
-        let update = [&["update-ref"][..], &reason, &["HEAD", &commit, ""]].concat();
-        if git(folder, &update, &[]).await.is_some() {
-            return true;
-        }
-    }
-    has().await.is_some()
 }
 
 /// git clone, for as long as a big repository takes (ten minutes at most), never asking anything:

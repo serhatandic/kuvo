@@ -47,6 +47,8 @@ const areas = new Map([
   ["engine-models", "./engine-models.test.mjs"],
   ["engine-live", "./engine-live.test.mjs"],
   ["engine-worktree", "./engine-worktree.test.mjs"],
+  ["worktrees", "./worktrees.test.mjs"],
+  ["worktree-live", "./worktree-live.test.mjs"],
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
   ["work-queue", "./work-queue.test.mjs"],

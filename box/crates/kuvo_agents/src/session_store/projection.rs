@@ -140,3 +140,128 @@ fn fields(value: &Value, keys: &[&str]) -> Map<String, Value> {
         .filter_map(|key| Some(((*key).to_owned(), value.get(*key)?.clone())))
         .collect()
 }
+
+/// The narrow legacy array reader for Insights. Serde skips unknown map fields
+/// without allocating their strings, so a tool's large output or a user's
+/// inline picture never becomes a conversation-sized JSON value.
+pub fn legacy_insight(file: &std::path::Path) -> std::io::Result<Vec<Value>> {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct Message {
+        #[serde(rename = "type")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        time: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Metadata>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tokens: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<Part>>,
+    }
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct Metadata {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    }
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct Part {
+        #[serde(rename = "type")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<State>,
+    }
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct State {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "input_map"
+        )]
+        input: Option<Input>,
+    }
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct Input {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skill: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_path: Option<Value>,
+        #[serde(rename = "filePath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        camel_path: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<Value>,
+    }
+
+    // A streaming tool's input is a string, and other tools may use arrays or
+    // scalars. None of these can name a skill through object fields.
+    fn input_map<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Input>, D::Error> {
+        use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
+        struct OnlyMap;
+        impl<'de> Visitor<'de> for OnlyMap {
+            type Value = Option<Input>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a tool input")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                Input::deserialize(MapAccessDeserializer::new(map)).map(Some)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(None)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+        }
+        d.deserialize_any(OnlyMap)
+    }
+
+    let file = match std::fs::File::open(file) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let rows: Vec<Message> = serde_json::from_reader(std::io::BufReader::new(file))?;
+    rows.into_iter()
+        .map(|row| serde_json::to_value(row).map(|value| project(&value, View::Insight)))
+        .filter_map(|row| row.transpose())
+        .collect::<serde_json::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
