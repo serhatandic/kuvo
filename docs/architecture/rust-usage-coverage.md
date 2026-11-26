@@ -746,12 +746,50 @@ Cumulative non-test size: 570,538 new-module characters plus 40,355 added
 existing production characters (610,893 total, 0.889× the 687,546 TS
 characters).
 
+## Fifteenth slice: maker fixture parity and retained history reconciliation
+
+The shared Antigravity legacy/name, summary, generation and blob-bound corpora
+exercise the production normalizers and bounded decoder. The route fixture
+also covers absent tokens with no running profile, rejected local CSRF followed
+by cloud fallback, restart without resending that CSRF, and an authless local
+403 which must not permanently refuse the profile. The engine plan fixture
+checks exact account identities (including case-insensitive Copilot login),
+a changed GitHub account, and recovery from an API-key refusal that is not an
+expired OAuth sign-in.
+
+Ordinary accepted turns still update the in-memory limits, rings and notice
+projection on each observation. They need not rewrite the retained limits
+journal within 30 seconds; new account/windows, visibility baseline changes
+and new warning facts persist immediately. The focused actual turn scenario
+failed on the older resident and passes on the new one. The common timed
+sample does not clone the whole persisted state.
+
+A complete native-store inventory now reconciles deleted files after lost
+watch events or a restart. A truncated or inaccessible directory listing
+cannot establish absence, so it retains known files; broken databases remain
+in the inventory and do not evict their last good records. Only file names
+and metadata are enumerated in explicit refresh/startup/recovery, with
+unchanged transcript bodies still skipped. The both-box Antigravity store
+fixture exercises a live WAL, legacy step timing, malformed/oversized stores,
+Unix symlink deduplication, repair, last-good rows of a temporarily unreadable
+known database, and deletion during operation and while stopped. TS passes;
+the previous Rust resident repeatedly retained 255 tokens when the true total
+was 145. The corrected route passes on Mac.
+
+Mac verification: Rust usage 75/75 applicable, TS 25/25 applicable, engine
+sessions 81/81, the four scoped shared fixture tests, workspace test check
+and Bun check. The exact expanded seeded differential has only the actual
+`coverage[0].scanned` time difference (12/13); both native corpus answers
+match exactly. Musl/Windows binaries built, cross-platform runs pending.
+Cumulative non-test size: 573,825 new-module characters plus 40,355 added
+existing production characters (614,180 total, 0.893× the 687,546 TS characters).
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
 - Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
 - Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity busy-store retention and cutoff cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -769,9 +807,9 @@ characters).
 - L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — covered by the malformed SuperGrok route case (last accepted ring remains).
 - L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — covered by the read-only engine database alias/no-plan fixture.
 - L208: a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early — partial — dated maker hold kept across restart (engine process absent; actual local credential DB); exact unavailable legacy engine startup case open.
-- L241: an API key turned away is tried again later, not held to that key as a lapsed sign-in — open.
-- L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — open.
-- L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — open.
+- L241: an API key turned away is tried again later, not held to that key as a lapsed sign-in — covered by extended engine plan route with rejected OpenRouter key and successful retry.
+- L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — covered by exact domain-separated identity assertions in extended engine plan route (cross-computer grouping tested separately).
+- L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — covered by extended engine plan route (same login with changed case and credential, then different login).
 - L320: an account's mark in Accounts is the service its limits are read as — open.
 - L326: OpenCode Go's 30-day window shows a forecast after frequent refreshes — open.
 
@@ -984,18 +1022,18 @@ characters).
 
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
-- L37: shared blob fixtures decode exactly as Swift, including fallback time and malformed messages — open.
+- L37: shared blob fixtures decode exactly as Swift, including fallback time and malformed messages — covered by 16-case scoped Rust decoder corpus (normalized current model naming).
 - L42: read-only SQLite batches and pricing match Swift's shared expected days — partial — Antigravity metadata scenario with fixture SQLite; shared expected-day matrix open.
-- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — partial — engine open-WAL and Antigravity database mutation scenarios; Antigravity WAL-only and cutoff-specific case open.
-- L72: legacy databases without steps, then gaining metadata, are re-read — open.
-- L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — open.
-- L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — partial — native Antigravity ACP generation scenario; empty store case open.
+- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — partial — both-box multi-store fixture includes live WAL-only writes; cutoff-specific case open.
+- L72: legacy databases without steps, then gaining metadata, are re-read — covered by multi-store history scenario on both boxes.
+- L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — partial — both-box multi-store fixture checks oversized row, broken store and repair; diagnostic count open.
+- L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — covered by both-box multi-store history scenario (unrelated empty table).
 - L143: a conversations folder that can't be listed is logged once and left out while the others count — open.
-- L158: missing stores are empty and symlinked stores count only once — open.
+- L158: missing stores are empty and symlinked stores count only once — covered by both-box multi-store history scenario, symlink variant on Unix.
 - L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — open.
-- L202: deleted databases leave the total after restart and do not block the remaining stores — open.
-- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — per-database revision and live generation append; retention/failure matrix open.
-- L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — open.
+- L202: deleted databases leave the total after restart and do not block the remaining stores — covered by both-box multi-store history scenario.
+- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — both-box multi-store fixture proves live WAL changes and retaining last good rows when temporarily unreadable; idle aging and decoded-store counts open.
+- L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — covered by shared bounded-row corpus, exact count and processed tokens.
 - L284: shared missing/empty profile fixtures contain no history, as Swift — open.
 - L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — open.
 - L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — open.
@@ -1003,9 +1041,9 @@ characters).
 
 ### `box/test/usage/usage-antigravity-plan.test.ts`
 
-- L24: shared legacy and plan-name parity fixtures — open.
-- L29: shared Swift parity fixtures — open.
-- L32: exact pools, first usable wins, clamp and Swift rounding — partial — named Antigravity pool reader and fake-refill scenario; complete shared fixtures open.
+- L24: shared legacy and plan-name parity fixtures — partial — scoped Rust checks all legacy and name pairs; OAuth defaults assertion remains open.
+- L29: shared Swift parity fixtures — covered by all seven shared summary cases through the production normalizer.
+- L32: exact pools, first usable wins, clamp and Swift rounding — partial — named Antigravity pool reader and fake-refill scenario, plus shared summary corpus; exact standalone input variant open.
 - L38: all three pools retain independent windows in client rows — open.
 - L48: Argon is separate and unambiguous — open.
 - L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — open.
@@ -1016,13 +1054,13 @@ characters).
 - L148: Linux agy own-profile stand-in permits no CSRF — open.
 - L158: Mac ps/lsof stand-ins require own profile — open.
 - L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — covered by local-only profile route fixture.
-- L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — open.
+- L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — covered by extended owned loopback route fixture.
 - L211: the overview shows heavy use of the tightest available pool without mixing pools — open.
 - L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
 - L278: legacy project-plan 403 still permits quota retrieval — open.
 - L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
 - L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — open.
-- L334: agy with no CSRF is retried after an authless endpoint 403 — open.
+- L334: agy with no CSRF is retried after an authless endpoint 403 — covered by extended owned loopback route fixture.
 - L347: missing windows without resets survive only one partial round across restart — covered by Antigravity partial-pool restart route.
 - L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
 - L380: malformed and unreadable sign-in retain known identity and windows — open.
@@ -1030,7 +1068,7 @@ characters).
 - L423: unwritable or unreadable refusal journal stops further sends — open.
 - L443: restart never sends a refused token returned unchanged by refresh — open.
 - L459: refused refresh is not retried after access disappears or changes — partial — refusal survives restart; changed access cases open.
-- L477: local CSRF refusal survives restart — open.
+- L477: local CSRF refusal survives restart — covered by extended owned loopback route fixture; the rejected token is not resent.
 - L491: persisted refusal survives restart and metadata-only credential rewrites — open.
 - L510: holds stop further endpoints; a refusal never resends unchanged credential — open.
 - L531: complete read, partial and unreadable reads keep prior known windows — open.
@@ -1045,7 +1083,7 @@ characters).
 
 ### `box/test/usage/usage-antigravity-tls.test.ts`
 
-- L9: own loopback language server accepts its self-signed HTTPS certificate and CSRF — partial — self-signed local TLS fixture; CSRF retry variant open.
+- L9: own loopback language server accepts its self-signed HTTPS certificate and CSRF — covered by extended local TLS route fixture (including CSRF refusal and restart).
 
 ### `box/test/usage/usage-codex.test.ts`
 
@@ -1156,7 +1194,7 @@ characters).
 - L185: catch-up is short and warnings disappear when their reset passes — covered by retained current/old/expired warning catch-up route scenario.
 - L198: without layout settings only default meters can decide notices — open.
 - L208: a decision waits for the directory and pins a forwarder only once — open.
-- L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — open.
+- L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — covered by actual turn/cache/notice scenario, old Rust failed and patched Rust focused check passed.
 - L239: unsupported Devin notice facts from older peers cannot trigger native alerts — open.
 - L244: notice wording carries the same named account and window as the panel — open.
 - L256: learning the setup immediately shares pending facts despite a recent unscoped limits mail — open.

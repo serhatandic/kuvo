@@ -1097,6 +1097,10 @@ test('Antigravity history reads only usable generation stores, follows WAL chang
   await refresh();await settle(240);
   fs.rmSync(path.join(folder,'broken.db'));store('broken',[generation(5)]).close();
   await refresh();await settle(255);
+  // A temporarily unreadable known store must not lose its last good rows,
+  // even when a complete inventory reconciles another deletion.
+  write(path.join(folder,'broken.db'),'temporarily unreadable');
+  await refresh();await settle(255);
   fs.rmSync(path.join(folder,'first.db'));
   if(process.platform!=='win32')fs.rmSync(path.join(folder,'same.db'));
   await refresh();await settle(145);
