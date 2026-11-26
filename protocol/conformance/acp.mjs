@@ -196,13 +196,27 @@ export function seedAgyAuth(home, { listed = true } = {}) {
   }
 }
 
-export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state } = {}) {
-  write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "ACP fixture", projectID: "fixture", agent: "build", ...(permissions && { permissions }),
+/**
+ * A conversation on `provider`'s agent, as the box keeps it: its header and, with `messages`, its
+ * rows (`{ type: "user", text }`, `{ type: "assistant", content }`; IDs are given where missing).
+ */
+export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state, title = "ACP fixture", parent, metadata, updated = 1, messages } = {}) {
+  const folder = path.join(home, "agents/sessions", id);
+  write(path.join(folder, "session.json"), JSON.stringify({
+    id, title, projectID: "fixture", agent: "build", ...(permissions && { permissions }),
+    ...(parent && { parentID: parent }), ...(metadata && { metadata }),
     location: { directory }, model: { providerID: provider, id: model, ...(variant && { variant }) },
-    time: { created: 1, updated: 1 }, cost: 0,
+    time: { created: 1, updated }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }));
+  if (messages) {
+    // (An agent's reply names the model and agent it ran on.)
+    const rows = messages.map((row, at) => ({
+      id: `msg_${id.replace(/^ses_/, "")}${String(at).padStart(4, "0")}`, time: { created: at + 1 },
+      ...(row.type === "assistant" && { agent: "build", model: { providerID: provider, id: model } }), ...row,
+    }));
+    write(path.join(folder, "messages.json"), JSON.stringify(rows));
+  }
   if (state) write(path.join(home, "agents/sessions", id, "agent.json"), JSON.stringify({ threads: { [provider]: { state } } }));
 }
 
