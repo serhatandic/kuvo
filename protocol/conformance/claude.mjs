@@ -378,3 +378,23 @@ export const steps = rows => rows.filter(row => row.type === "assistant");
 export const texts = rows => steps(rows).flatMap(row => row.content.flatMap(part => part.type === "text" ? [part.text] : []));
 export const toolCalls = rows => steps(rows).flatMap(row => row.content.filter(part => part.type === "tool"));
 export const idles = rows => rows.filter(row => row.type === "idle");
+
+/** What a conversation waits on you for, as the app reads it from its box (`kuvo/sessions/:id/asks`). */
+export async function sessionAsks(listener, id) {
+  const answer = await request(listener, "GET", `kuvo/sessions/${id}/asks`, undefined, headers, 20000);
+  assert.equal(answer.status, 200, answer.text);
+  return answer.json.asks;
+}
+
+/** One of them answered as the app answers it. */
+export async function answerSessionAsk(listener, id, ask, body) {
+  const answer = await request(listener, "POST", `kuvo/sessions/${id}/asks/${encodeURIComponent(ask)}`, body, headers, 20000);
+  assert.ok(answer.status < 300, answer.text);
+}
+
+/** The app's card for a command it asks to run, with Always for this conversation. */
+export function assertCommandCard(card, command) {
+  assertMatch(card, { kind: "permission", title: "Allow running this command?", resources: [command] });
+  assert.deepEqual(card.choices.map(choice => choice.answer), ["once", "always", "reject", "instead"]);
+  assert.match(card.choices[1].help, /in this conversation$/, JSON.stringify(card.choices[1]));
+}

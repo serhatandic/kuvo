@@ -3,8 +3,8 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import path from "node:path";
-import { boxBinary, request, until, write } from "./adapter.mjs";
-import { askFirst, assertMatch, headers, idles, texts, toolCalls } from "./claude.mjs";
+import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
+import { answerSessionAsk, askFirst, assertCommandCard, assertMatch, headers, idles, sessionAsks, texts, toolCalls } from "./claude.mjs";
 import { providers, scriptedAcp } from "./acp.mjs";
 
 const provider = providers.grok;
@@ -108,6 +108,35 @@ describe("Grok", { skip }, () => {
     const answer = await acp.answered("_x.ai/ask_user_question");
     assert.deepEqual(answer.result, { outcome: "accepted", answers: { "Which color?": ["Blue"] } });
     await acp.idles(id);
+  });
+
+  test("the app's cards: its command and its question are the conversation's asks, and the answers given there reach it", { timeout: 60000 }, async () => {
+    const id = await begin([
+      { update: { sessionUpdate: "tool_call", toolCallId: "t7", kind: "execute", title: "Run `make`", status: "pending", rawInput: { command: "make" } } },
+      { ask: ["session/request_permission", { toolCall: { toolCallId: "t7" }, options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "always", kind: "allow_always", name: "Always" }, { optionId: "no", kind: "reject_once", name: "No" }] }] },
+      { ask: ["_x.ai/ask_user_question", { toolCallId: "q2", questions: [{ id: "size", question: "Which size?", options: [{ label: "Small" }, { label: "Large" }] }] }] },
+      words("Done."),
+    ], { ask: true });
+    const card = await until(async () => (await sessionAsks(acp.listener, id)).find((ask) => ask.kind === "permission"), "No card for the command.");
+    assertCommandCard(card, "make");
+    // Followed, as the app follows them: the card, then the card gone once answered.
+    const line = await openLine(acp.listener, "", `kuvo/sessions/${id}/asks/events`, headers, 30000);
+    assert.equal(line.status, 200);
+    const frames = line.frames();
+    assert.ok((await frames.next()).value.asks.some((ask) => ask.id === card.id));
+    await answerSessionAsk(acp.listener, id, card.id, { answer: "once" });
+    for (;;) {
+      const { value } = await frames.next();
+      if (!value.asks.some((ask) => ask.id === card.id)) break;
+    }
+    line.close();
+    assert.deepEqual((await acp.answered("session/request_permission")).result, { outcome: { outcome: "selected", optionId: "yes" } });
+    const question = await until(async () => (await sessionAsks(acp.listener, id)).find((ask) => ask.kind === "question"), "No card for the question.");
+    assertMatch(question.questions[0], { question: "Which size?", options: [{ value: "Small" }, { value: "Large" }] });
+    await answerSessionAsk(acp.listener, id, question.id, { answers: { [question.questions[0].key]: "Large" } });
+    assert.deepEqual((await acp.answered("_x.ai/ask_user_question")).result, { outcome: "accepted", answers: { "Which size?": ["Large"] } });
+    await acp.idles(id);
+    assert.deepEqual(await sessionAsks(acp.listener, id), []);
   });
 
   test("Stop: Grok is told to cancel, the turn ends stopped, and the next message starts Grok again", { timeout: 60000 }, async () => {

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { boxBinary, request, until, write } from "./adapter.mjs";
-import { askFirst, assertMatch, headers, idles, texts, toolCalls } from "./claude.mjs";
+import { answerSessionAsk, askFirst, assertCommandCard, assertMatch, headers, idles, sessionAsks, texts, toolCalls } from "./claude.mjs";
 import { providers, scriptedAcp } from "./acp.mjs";
 
 const provider = providers.agy;
@@ -156,6 +156,20 @@ describe("Antigravity's turns", { skip }, () => {
     const rows = await acp.idles(id);
     assert.ok(texts(rows).join("").includes("Hello from Antigravity."));
     assert.ok(acp.sent("session/set_config_option").some((message) => message.params.configId === "mode" && message.params.value === "yolo"), JSON.stringify(acp.sent("session/set_config_option")));
+  });
+
+  test("the app's card: its command is the conversation's ask, and Allow Once given there reaches it", { timeout: 60000 }, async () => {
+    const { id } = await begin([
+      { update: { sessionUpdate: "tool_call", toolCallId: "t7", kind: "execute", title: "Run `make`", status: "pending", rawInput: { command: "make" } } },
+      { ask: ["session/request_permission", { toolCall: { toolCallId: "t7" }, options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "always", kind: "allow_always", name: "Always" }, { optionId: "no", kind: "reject_once", name: "No" }] }] },
+      words("Done."),
+    ], { ask: true });
+    const card = await until(async () => (await sessionAsks(acp.listener, id)).find((ask) => ask.kind === "permission"), "No card for the command.");
+    assertCommandCard(card, "make");
+    await answerSessionAsk(acp.listener, id, card.id, { answer: "once" });
+    assert.deepEqual((await acp.answered("session/request_permission")).result, { outcome: { outcome: "selected", optionId: "yes" } });
+    await acp.idles(id);
+    assert.deepEqual(await sessionAsks(acp.listener, id), []);
   });
 
   test("a file it has Kuvo read comes back to it", { timeout: 60000 }, async () => {
