@@ -57,4 +57,13 @@ try {
 } finally {
   fs.rmSync(temporary, { force: true });
 }
+// The native resident uses the same tool definitions and page scripts, without running this program.
+const native = path.join(root, "box/dist/browser-config.json");
+const nativeTemporary = `${native}.${process.pid}.tmp`;
+try {
+  fs.writeFileSync(nativeTemporary, config);
+  fs.renameSync(nativeTemporary, native);
+} finally {
+  fs.rmSync(nativeTemporary, { force: true });
+}
 console.log(`Built ${OUT}`);
