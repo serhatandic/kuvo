@@ -3,6 +3,7 @@
 //! whether Update All updates it, and its ways in. The box's to say, so every client shows the
 //! same. Its program's update notices are decided as its program is read.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -291,7 +292,7 @@ impl AccountRows {
         let rows = Arc::downgrade(&self.0);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+                timer_fires::sleep(Timer::AgentProgramCheck, Duration::from_secs(24 * 60 * 60)).await;
                 let Some(inner) = rows.upgrade() else { return };
                 let rows = AccountRows(inner);
                 let mut programs: Vec<Entry> = Vec::new();

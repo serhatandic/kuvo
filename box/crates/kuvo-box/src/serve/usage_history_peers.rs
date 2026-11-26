@@ -1,6 +1,7 @@
 //! Seat history and Insight pages use the same authenticated relay as limits.
 //! No work is scheduled for an isolated computer, and heartbeats don't re-read
 //! or price the source logs.
+use kuvo_os::timer_fires::Timer;
 use kuvo_peers::{
     SeatParts,
     relay::{RelayEvent, RelayHandle},
@@ -264,7 +265,7 @@ pub async fn follow(
             changed=updates.changed()=>{if changed.is_err(){break;}dirty=true;tell_pages=true;},
             changed=limit_updates.changed()=>{if changed.is_err(){break;}},
             request=manual.recv()=>{if request.is_ok(){force=true;dirty=true;tell_pages=true;}},
-            _=super::usage_peers::at_deadline(deadline.and_then(|at|u64::try_from(at).ok()))=>{},
+            _=super::usage_peers::at_deadline(Timer::UsageHistoryDeadline, deadline.and_then(|at|u64::try_from(at).ok()))=>{},
             event=inbox.recv()=>match event{
                 Ok(event)=>if let RelayEvent::Mail{key,envelope,..}=event.as_ref(){
                     let id=encode(key);

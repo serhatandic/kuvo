@@ -2,6 +2,7 @@
 //! its turns prompted, what the agent says made the turn's events, and what it asks put to you.
 //! One task owns it; what its process says comes to it as events.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -401,7 +402,7 @@ impl Actor {
             let deadline = self.next_deadline();
             let timer = async {
                 match deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AcpTurnDeadline, at).await,
                     None => std::future::pending().await,
                 }
             };
@@ -426,6 +427,7 @@ impl Actor {
             }
         }
         self.shared.routes().remove(&self.session);
+        if let Some(process) = &self.process { process.touch(); } else { self.shared.note_activity(); }
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -444,10 +446,10 @@ impl Actor {
     }
 
     fn set_busy(&self) {
-        self.busy.store(
-            self.active.is_some() || !self.tasks.is_empty(),
-            Ordering::Relaxed,
-        );
+        let busy = self.active.is_some() || !self.tasks.is_empty();
+        if self.busy.swap(busy, Ordering::Relaxed) != busy {
+            if let Some(process) = &self.process { process.touch(); } else { self.shared.note_activity(); }
+        }
     }
 
     async fn command(&mut self, command: Command) -> io::Result<()> {

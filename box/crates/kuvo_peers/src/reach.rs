@@ -124,6 +124,18 @@ impl Reach {
         self.away.contains_key(key) || heard.is_some_and(|at| now.saturating_sub(at) > HEARD_FOR)
     }
 
+    /// Activity uses the last heard fact, not the ordinary list copy's shorter quiet age.
+    pub(crate) fn activity_away_at(&self, key: &str, heard: Millis, release: Option<ReleaseState>, now: Millis) -> Option<Millis> {
+        if self.standing_of(key, self.peer_is_away(key, Some(heard), now), Some(heard), release, now).away() {
+            return None;
+        }
+        let quiet = self.away_since(key).map_or(heard.saturating_add(HEARD_FOR + 1), |_| now);
+        let since = heard.max(self.away_since(key).unwrap_or_default());
+        let grace = if matches!(release, Some(ReleaseState::Ready | ReleaseState::Updating)) { SWITCH_GRACE } else { LIVE_FOR };
+        let due = quiet.max(since.saturating_add(grace));
+        (due > now).then_some(due)
+    }
+
     pub(crate) fn update_presence(
         &self,
         key: &str,
@@ -138,6 +150,33 @@ impl Reach {
                 })
         });
         UpdatePresence { away_for, heard }
+    }
+
+    /// The next instant at which kept reach facts can change a displayed
+    /// standing without another relay event. Healthy copies renew before this.
+    pub(crate) fn next_standing_change(
+        &self, key: &str, seen: Option<Millis>, heard: Option<Millis>,
+        release: Option<ReleaseState>, now: Millis,
+    ) -> Option<Millis> {
+        let away = self.away_since(key);
+        let mut next = None;
+        let mut add = |at: Millis| {
+            if at > now { next = Some(next.map_or(at, |before: Millis| before.min(at))); }
+        };
+        if away.is_none() {
+            if let Some(at) = seen { add(at.saturating_add(COPY_QUIET_AFTER).saturating_add(1)); }
+            if let Some(at) = heard { add(at.saturating_add(HEARD_FOR).saturating_add(1)); }
+        }
+        if away.is_some() || seen.is_some_and(|at| now.saturating_sub(at) > COPY_QUIET_AFTER) {
+            let since = seen.unwrap_or_default().max(away.unwrap_or_default());
+            if since != 0 {
+                let grace = if matches!(release, Some(ReleaseState::Ready | ReleaseState::Updating)) {
+                    SWITCH_GRACE
+                } else { LIVE_FOR };
+                add(since.saturating_add(grace));
+            }
+        }
+        next
     }
 
     pub fn copy_standing(
@@ -204,6 +243,36 @@ fn read_times(path: &Path) -> BTreeMap<String, Number> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_standing_deadline_exists_only_until_kept_facts_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reach = Reach::default();
+        let seen = 1_000_000;
+        assert_eq!(reach.next_standing_change("peer", None, None, None, seen), None);
+        let quiet = seen + COPY_QUIET_AFTER + 1;
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, None, seen), Some(quiet));
+        assert_eq!(reach.copy_standing("peer", Some(seen), None, quiet - 1), Standing::Live);
+        assert!(reach.copy_standing("peer", Some(seen), None, quiet).away());
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, None, quiet), None);
+        let away = seen + 10_000;
+        reach.unreachable(dir.path(), "peer", away).unwrap();
+        assert_eq!(reach.next_standing_change("peer", Some(seen), None, Some(ReleaseState::Updating), away), Some(away + SWITCH_GRACE));
+    }
+
+    #[test]
+    fn activity_standing_uses_the_actual_heard_or_reach_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reach = Reach::default();
+        let heard = 1_000_000;
+        assert_eq!(reach.activity_away_at("peer", heard, None, heard), Some(heard + HEARD_FOR + 1));
+        assert_eq!(reach.activity_away_at("peer", heard, None, heard + HEARD_FOR + 1), None);
+        let dropped = heard + 10_000;
+        reach.unreachable(dir.path(), "peer", dropped).unwrap();
+        assert_eq!(reach.activity_away_at("peer", heard, None, dropped), Some(dropped + LIVE_FOR));
+        assert_eq!(reach.activity_away_at("peer", heard, Some(ReleaseState::Updating), dropped), Some(dropped + SWITCH_GRACE));
+        assert_eq!(reach.activity_away_at("peer", heard, None, dropped + LIVE_FOR), None);
+    }
 
     #[test]
     fn brief_unreachable_drop_stays_live_and_clears_on_hearing_back() {

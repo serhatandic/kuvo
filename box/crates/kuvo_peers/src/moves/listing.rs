@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, io, path::Path, time::Duration};
+use std::{collections::BTreeSet, io, path::Path};
 
 use http::StatusCode;
 use kuvo_protocol::routes::{
@@ -472,6 +472,9 @@ pub(crate) fn register_start(
                 let move_view = show(&row, &peers.view()).ok_or_else(result_unavailable)?;
                 return Ok(RouteReply::json::<202>(route_shape(json!({"move":move_view}))?));
             }
+            let mut peers = peers;
+            let mut journals = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            journals.set_targets(Vec::new(), vec![(peers.run.join("moves"), false)]);
             loop {
                 match report(&peers.view(), &peers.run, &row.id)? {
                     Report::Done(shown, note) => {
@@ -480,7 +483,11 @@ pub(crate) fn register_start(
                         return Ok(RouteReply::json::<200>(route_shape(reply)?));
                     }
                     Report::Failed(status, message) => return Err(Refusal::new(status, message)),
-                    Report::Moving(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                    Report::Moving(_) => tokio::select! {
+                        _ = journals.changed() => {},
+                        changed = peers.changed() => if changed.is_err() { return Err(result_unavailable()); },
+                        _ = call.cancel.cancelled() => return Err(result_unavailable()),
+                    },
                 }
             }
         }

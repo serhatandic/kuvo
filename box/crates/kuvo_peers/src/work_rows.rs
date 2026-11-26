@@ -28,7 +28,7 @@ const LEADS: usize = 50;
 const SPACING: Millis = 15_000;
 const RETRY: Millis = 60_000;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkState {
     Working,
@@ -39,7 +39,7 @@ pub enum WorkState {
     Idle,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
     pub session: String,
@@ -68,7 +68,7 @@ pub struct Row {
     pub cost: Option<f64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Model {
     pub id: String,
     #[serde(rename = "providerID")]
@@ -298,12 +298,12 @@ impl Snapshots {
         view: &View,
         now: Millis,
         home: impl Fn(&str) -> calls::Home,
-    ) -> io::Result<Vec<(ComputerKey, Envelope)>> {
+    ) -> io::Result<calls::MailRound> {
         let Some(latest) = &self.latest else {
-            return Ok(vec![]);
+            return Ok((vec![], None));
         };
         if !view.relay_connected {
-            return Ok(vec![]);
+            return Ok((vec![], None));
         }
         let mut by_key = BTreeMap::<_, BTreeMap<_, _>>::new();
         for (lead, rows) in latest {
@@ -312,6 +312,8 @@ impl Snapshots {
             }
         }
         let mut mail = vec![];
+        let mut next = None;
+        let mut deadline = |at: Millis| next = Some(next.map_or(at, |before: Millis| before.min(at)));
         for peer in &view.roster.members {
             let key = encode(&peer.key);
             if peer.host().is_none()
@@ -332,11 +334,13 @@ impl Snapshots {
             let bytes = serde_json::to_vec(&leads)?;
             let digest = encode(&Sha256::digest(bytes));
             let id = Id::try_from(format!("rws_{}", &digest[..22])).map_err(io::Error::other)?;
-            if before.is_some_and(|before| {
-                let since = now.saturating_sub(before.sent);
-                since < SPACING || (before.id == id && (before.done || since < RETRY))
-            }) {
-                continue;
+            if let Some(before) = before {
+                if before.id == id && before.done { continue; }
+                let due = before.sent.saturating_add(if before.id == id { RETRY } else { SPACING });
+                if now < due {
+                    deadline(due);
+                    continue;
+                }
             }
             for limit in [ROWS_EACH, 20, 10, 4] {
                 let fitted: BTreeMap<_, _> = leads
@@ -357,10 +361,11 @@ impl Snapshots {
                     );
                     kept::write(&self.run.join("work/pushed.json"), &self.sent)?;
                     mail.push((peer.key, envelope));
+                    deadline(now.saturating_add(RETRY));
                     break;
                 }
             }
         }
-        Ok(mail)
+        Ok((mail, next))
     }
 }

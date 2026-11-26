@@ -125,8 +125,12 @@ pub fn register(
     registry.register::<post_kuvo_computers_key_connect::Spec, _, _>(
         Access::DesktopOrPaired,
         move |call| {
-            let key = call.param("key").unwrap_or_default();
-            std::future::ready(connect(&state.view(), state.now(), key, reach_again.reach_again()))
+            let state = state.clone();
+            let reach_again = reach_again.reach_again().clone();
+            async move {
+                let key = call.param("key").unwrap_or_default();
+                connect(&state.view(), state.now(), key, &reach_again).await
+            }
         },
     );
     read::<get_kuvo_computers::Spec>(registry, &peers, move |view, now| {
@@ -465,7 +469,7 @@ fn peer_reach(
 }
 
 /// Connect: reach a computer that's away again now.
-fn connect(
+async fn connect(
     view: &View,
     now: Millis,
     key: &str,
@@ -493,7 +497,7 @@ fn connect(
             "{here} isn't connected to your other computers now, so it can't reach {name}. Try again in a moment."
         )));
     }
-    if !reach_again.ask(peer.key) {
+    if !reach_again.ask_and_wait(peer.key).await {
         return Err(unavailable(format!("{here} couldn't try now. Try again in a moment.")));
     }
     Ok(RouteReply::json::<202>(

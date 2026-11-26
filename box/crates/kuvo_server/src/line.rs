@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::pending,
@@ -566,7 +567,7 @@ fn stream(
                 biased;
                 () = cancel.cancelled() => return,
                 () = replaced.cancelled() => return,
-                () = time::sleep_until(deadline) => {
+                () = timer_fires::sleep_until(Timer::WireLine, deadline) => {
                     if once { return; }
                     yield LineFrame::new(get::Status200::Object5(Heartbeat { beat: n.into() }));
                 }
@@ -583,7 +584,7 @@ fn stream(
 
 async fn wait_until(deadline: Option<Instant>) {
     match deadline {
-        Some(deadline) => time::sleep_until(deadline).await,
+        Some(deadline) => timer_fires::sleep_until(Timer::LineRetention, deadline).await,
         None => pending().await,
     }
 }

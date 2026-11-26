@@ -9,12 +9,17 @@ import test from "node:test";
 import { boxBinary, readJSON, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
+import { parkedTimers } from "./idle-counter.mjs";
 
 const leadFile = process.env.KUVO_LEAD_BIN || new URL("../../box/dist/kuvo-link.js", import.meta.url).pathname;
 const lead = fs.existsSync(leadFile) ? boxBinary(leadFile) : null;
 // (The TypeScript box doesn't run on native Windows: a lead there is the Rust box's, once it has
 // its tools.)
 const skip = !lead ? "no lead box (KUVO_LEAD_BIN)" : lead.typescript && process.platform === "win32" ? "the TypeScript box doesn't run on native Windows" : false;
+
+test("remote work waits with no calls or remote leads", { timeout: 30000 }, async t => {
+  await parkedTimers(t, ["remote-work.round", "remote-work.rows"], 6500);
+});
 
 // Studio (the lead's computer, KUVO_LEAD_BIN) and Lab (the box under test) joined through the
 // relay; `seed` gives each its engine's sessions and Lab's files before Lab starts.

@@ -8,12 +8,13 @@
 //! request IDs, pending answers, acknowledgements and the stderr tail have a
 //! single owner. Adapters hold cheap [`Rpc`] handles.
 
+use kuvo_os::timer_fires::{self, Timer};
 use crate::hold::{Controller, Metadata, Output};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fmt, io, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot, watch},
-    time::{Instant, sleep_until},
+    time::Instant,
 };
 
 /// Whether each message carries `"jsonrpc": "2.0"`.
@@ -380,6 +381,12 @@ impl Rpc {
             .is_ok_and(|gone| gone.is_ok())
     }
 
+    /// Wait for the holder to report exit, with no periodic polling or timeout.
+    pub(crate) async fn wait_ended(&self) {
+        let mut gone = self.gone.clone();
+        let _ = gone.wait_for(|gone| *gone).await;
+    }
+
     /// Whether the agent is gone (or handed to another resident).
     pub fn is_closed(&self) -> bool {
         *self.gone.borrow()
@@ -455,7 +462,7 @@ impl Connection {
                         }
                     }
                 },
-                () = async { sleep_until(ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
+                () = async { timer_fires::sleep_until(Timer::AgentAck, ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
                     ack_at = None;
                     self.acknowledge().await;
                 }

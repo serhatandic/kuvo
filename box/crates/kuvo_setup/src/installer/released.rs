@@ -242,7 +242,7 @@ fn inventory_matches(
     physical: &str,
     logical: Option<&str>,
 ) -> io::Result<bool> {
-    for index in [Index::Left, Index::Stamped] {
+    for index in [Index::Left, Index::EmptyStore, Index::Stamped] {
         let before = inventory(files, omit_usage, index)?;
         if before.physical == physical {
             return Ok(true);
@@ -260,11 +260,13 @@ fn inventory_matches(
 }
 
 /// The artifact index is disposable and rewritten while its store is open, so
-/// baselines leave it out. Those kept before that still stamp it.
+/// baselines leave it out. Those kept before that still stamp it. A lazy
+/// resident can also have no key until the first storage read after unlink.
 #[derive(Clone, Copy, PartialEq)]
 enum Index {
     Left,
     Stamped,
+    EmptyStore,
 }
 
 struct Inventory {
@@ -309,7 +311,7 @@ fn inventory(files: &Files, omit_usage: bool, index: Index) -> io::Result<Invent
     }
     let skip = Skip {
         bots: files.path("bots"),
-        artifacts: (index == Index::Left).then(|| files.path("artifacts")),
+        artifacts: (index != Index::Stamped).then(|| files.path("artifacts")),
     };
     let mut hash = Sha256::new();
     // Same traversal order as existing-work.ts. Headers and usage scope files
@@ -334,6 +336,13 @@ fn inventory(files: &Files, omit_usage: bool, index: Index) -> io::Result<Invent
         "run/work-queue/files",
         "run/work/notes",
     ] {
+        if index == Index::EmptyStore && name == "artifacts"
+            && !super::join::artifacts_kept(files).map_err(io::Error::other)?
+        {
+            // A first read can make only empty infrastructure. Never omit a
+            // key when there are actual artifact records, copies or settings.
+            continue;
+        }
         if !omit_usage || name != "agents/usage/settings.json" {
             stamp(&files.path(name), &skip, &mut hash)?;
         }

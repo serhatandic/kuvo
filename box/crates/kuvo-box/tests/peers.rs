@@ -1894,7 +1894,9 @@ mod work {
 
     #[tokio::test]
     async fn peers_announce_changes_answer_refreshes_and_repeat_after_ten_minutes() {
-        time::timeout(Duration::from_secs(18), async {
+        // The resident now runs the copy heartbeat once per elapsed minute.
+        // Two explicit 60-second advances leave the original 18-second I/O budget.
+        time::timeout(Duration::from_secs(138), async {
             let listener = relay_socket().await;
             let url = relay_url(&listener);
             let _relay = run_relay(listener);
@@ -1916,6 +1918,9 @@ mod work {
                 }
             }
             now.store(NOW + 60_001, Ordering::Relaxed);
+            time::pause();
+            time::advance(Duration::from_secs(60)).await;
+            time::resume();
             loop {
                 if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
                     && sender == key(1)
@@ -1926,6 +1931,9 @@ mod work {
             }
 
             now.store(NOW + 601_000, Ordering::Relaxed);
+            time::pause();
+            time::advance(Duration::from_secs(60)).await;
+            time::resume();
             loop {
                 if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
                     && sender == key(1)
@@ -1948,7 +1956,7 @@ mod work {
                     && sender == key(1)
                     && let Some(agents) = envelope.0.get("agents")
                     && agents["list"][0]["session"] == LEAD {
-                    assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session"}]));
+                    assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session","project":"Chats"}]));
                     assert_eq!(envelope.0.get("at"), Some(&json!(NOW + 601_000)));
                     break;
                 }
@@ -2252,20 +2260,28 @@ mod work {
             }
             Outgoing::Failed(_) => panic!("retry unexpectedly failed"),
         };
-        let one = send(&mut outbox, NOW + 1, PeerState::Away);
+        let (one, retry) = send(&mut outbox, NOW + 1, PeerState::Away);
         assert_eq!(one.len(), 1);
         assert_eq!(id(&one[0]), first.as_str());
-        assert!(send(&mut outbox, NOW + 2000, PeerState::Away).is_empty());
+        assert_eq!(retry, Some(NOW + 60_001));
+        let (waiting, retry) = send(&mut outbox, NOW + 2000, PeerState::Away);
+        assert!(waiting.is_empty());
+        assert_eq!(retry, Some(NOW + 60_001));
         assert_eq!(
-            id(&send(&mut outbox, NOW + 60_001, PeerState::Away)[0]),
+            id(&send(&mut outbox, NOW + 60_001, PeerState::Away).0[0]),
             first.as_str()
         );
         outbox.heard(key(2), NOW + 60_002);
-        let back = send(&mut outbox, NOW + 60_002, PeerState::Online);
+        let (back, _) = send(&mut outbox, NOW + 60_002, PeerState::Online);
         assert_eq!(
             back.iter().map(id).collect::<Vec<_>>(),
             [first.as_str(), second.as_str()]
         );
+        outbox.finish(&first).unwrap();
+        outbox.finish(&second).unwrap();
+        let (empty, retry) = send(&mut outbox, NOW + 60_003, PeerState::Online);
+        assert!(empty.is_empty());
+        assert_eq!(retry, None);
     }
 
     #[tokio::test]

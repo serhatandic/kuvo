@@ -252,6 +252,16 @@ impl Flight {
         self.first_missing == self.count
     }
 
+    /// The next missing part is due at the oldest outstanding send's retry,
+    /// or a short retry when a real available window could not be sent.
+    pub(super) fn next_due(&self, now: Instant) -> Option<Instant> {
+        if self.complete() { return None; }
+        let retry = self.flying.values().map(|sent| *sent + PART_AGAIN).min();
+        let spare = self.flying.len() < self.window
+            && self.got.len() + self.flying.len() < self.count as usize;
+        [retry, spare.then(|| now + Duration::from_secs(1))].into_iter().flatten().min()
+    }
+
     pub(super) fn acknowledged(&self) -> usize {
         self.got.len()
     }
@@ -356,4 +366,24 @@ impl IncomingBundle {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_parts_have_a_retry_deadline() {
+        let size = BundleSize::new(PART_BYTES + 1, &encode(&[0; 32])).unwrap();
+        let mut flight = Flight::new(&size);
+        let now = Instant::now();
+        let parts = flight.due(now).collect::<Vec<_>>();
+        assert_eq!(parts, vec![0, 1]);
+        for part in parts { flight.sent(part, now); }
+        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
+        assert!(flight.acknowledge(0));
+        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
+        assert!(flight.acknowledge(1));
+        assert_eq!(flight.next_due(now), None);
+    }
 }

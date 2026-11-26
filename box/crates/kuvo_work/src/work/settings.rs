@@ -3,6 +3,7 @@
 //! a Mac's box keeps its Mac from falling asleep by itself while agents work there, as its setting
 //! says (`keepsAwake`, on unless you turn it off).
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -79,6 +80,14 @@ impl WorkSettings {
             .iter()
             .map(|name| self.account.join(name))
             .find(|folder| is_folder(folder))
+    }
+
+    pub(super) fn follow_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.file.clone()];
+        if let Some(path) = self.kept().get("projectsFolder").and_then(Value::as_str).map(PathBuf::from)
+            && path.is_absolute() { paths.push(path); }
+        paths.extend(["Developer", "Projects", "projects", "dev", "code"].map(|name| self.account.join(name)));
+        paths
     }
 
     /// `given` (written with `~` or in full) as a projects folder, or why it can't be one.
@@ -216,11 +225,10 @@ impl WorkSettings {
         running(&said["by"]) && running(&said["hold"])
     }
 
-    /// Looked at every ten seconds while the box runs: held while the setting's on and agents work
-    /// here (`busy`), let go otherwise. Only on a Mac.
+    /// Held while the setting is on and the local session list reports work. Only on a Mac.
     pub fn keep_awake(
         &self,
-        busy: impl Fn() -> bool + Send + 'static,
+        mut sessions: kuvo_engine::LocalSessions,
     ) -> Option<tokio::task::JoinHandle<()>> {
         if !self.keeps_mac_awake {
             return None;
@@ -229,13 +237,15 @@ impl WorkSettings {
         Some(tokio::spawn(async move {
             let mut held: Option<tokio::process::Child> = None;
             let mut noted = String::new();
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            files.set_files(vec![settings.file.clone()]);
             loop {
                 if let Some(child) = held.as_mut()
                     && child.try_wait().ok().flatten().is_some()
                 {
                     held = None;
                 }
-                let wanted = settings.keeps_awake() && busy();
+                let wanted = settings.keeps_awake() && !sessions.activity().is_empty();
                 if wanted && held.is_none() {
                     held = tokio::process::Command::new("/usr/bin/caffeinate")
                         .args(["-i", "-w", &std::process::id().to_string()])
@@ -254,7 +264,16 @@ impl WorkSettings {
                 {
                     noted = now;
                 }
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                let retry = wanted && held.is_none();
+                tokio::select! {
+                    changed = sessions.changed() => if !changed { return; },
+                    _ = files.changed() => {},
+                    _ = async { match &mut held {
+                        Some(child) => { let _ = child.wait().await; },
+                        None => std::future::pending().await,
+                    } } => { held = None; },
+                    _ = timer_fires::sleep(Timer::WorkKeepAwake, Duration::from_secs(10)), if retry => {},
+                }
             }
         }))
     }

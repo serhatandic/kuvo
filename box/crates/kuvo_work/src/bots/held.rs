@@ -9,6 +9,7 @@
 //! Bot or Delete Bot… would there, once for each edit, and answers; what it refuses is let go, and
 //! said, in plain words, to every client that follows this box's bots.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -16,7 +17,9 @@ use std::{
     time::Duration,
 };
 
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
+use tokio::{sync::Notify, time::Instant};
 use kuvo_peers::{
     directory::{Member, RecordScope},
     ownership::{self, PairingState},
@@ -199,15 +202,39 @@ fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
 /// bot isn't there, the edits being taken now; and how it reaches your other computers.
 #[derive(Default)]
 pub(super) struct State {
-    sent: Mutex<HashMap<String, (String, i64)>>,
+    sent: Mutex<HashMap<String, (String, Instant)>>,
     not_there: Mutex<HashMap<String, u32>>,
     taking: Mutex<HashSet<String>>,
     reach: OnceLock<Reach>,
+    nudge: Notify,
 }
 
 struct Reach {
     owners: ownership::Handle,
     relay: RelayHandle,
+}
+
+fn bot_recipients_changed(before: &View, after: &View) -> bool {
+    let listed = |view: &View| view.roster.members.iter().filter_map(|member| {
+        let key = encode(&member.key);
+        let told = view.announcement(&key)?;
+        let ids = told.list.iter().filter(|row| row.kind == kuvo_peers::directory::AgentKind::Bot)
+            .filter_map(|row| row.id.clone()).collect::<Vec<_>>();
+        Some((key, ids))
+    }).collect::<std::collections::BTreeMap<_, _>>();
+    kuvo_peers::remote_work::routing_changed(before, after) || listed(before) != listed(after)
+}
+
+fn sooner(next: &mut Option<Instant>, delay: Duration) {
+    let at = Instant::now() + delay;
+    *next = Some(next.map_or(at, |old| old.min(at)));
+}
+
+async fn wait_retry(next: Option<Instant>) {
+    match next {
+        Some(at) => timer_fires::sleep_until(Timer::BotsHeld, at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A held change or delete, as a route or a computer's mail gives it.
@@ -668,38 +695,57 @@ impl Bots {
     }
 
     fn send_held_soon(&self) {
-        let bots = self.clone();
-        tokio::spawn(async move { bots.send_held(now_ms()).await });
+        self.state().nudge.notify_one();
     }
 
-    /// How this box reaches your other computers with what it holds, and hears what they hold for
-    /// it: what's held goes each round (a minute), at once as it's held and as its computer is
-    /// back; their mail is taken as it comes.
+    /// Recover once, then react to edits, their recipients and answers. Only an
+    /// actually transmitted edit waiting for an answer has a resend deadline.
     pub fn follow_held(
         &self,
         owners: ownership::Handle,
         relay: RelayHandle,
     ) -> tokio::task::JoinHandle<()> {
         let events = relay.subscribe();
+        let changes = owners.changes();
         let _ = self.state().reach.set(Reach { owners, relay });
         let bots = self.clone();
         tokio::spawn(async move {
-            let Some(mut events) = events else {
-                return;
-            };
-            let mut round = tokio::time::interval(Duration::from_secs(15));
+            let Some(mut events) = events else { return; };
+            let mut changes = std::pin::pin!(changes);
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            files.set_targets(vec![bots.inner.run.join("link.json")], vec![(bots.held_dir(), false)]);
+            let mut readers = bots.inner.peers.clone();
+            let mut view = readers.view();
+            let (mut pending, mut next) = bots.send_held(now_ms()).await;
             loop {
-                tokio::select! {
-                    _ = round.tick() => bots.send_held(now_ms()).await,
+                let reconsider = tokio::select! {
+                    _ = wait_retry(next) => true,
+                    _ = files.changed() => true,
+                    _ = bots.state().nudge.notified() => true,
+                    change = changes.next() => if change.is_none() { return; } else { pending },
+                    result = readers.changed() => {
+                        if result.is_err() { return; }
+                        let current = readers.view();
+                        let relevant = pending && bot_recipients_changed(&view, &current);
+                        view = current;
+                        relevant
+                    }
                     event = events.recv() => match event {
                         Ok(event) => match event.as_ref() {
-                            RelayEvent::Connected(_) => bots.send_held(now_ms()).await,
-                            RelayEvent::Mail { key, envelope, .. } => bots.take_mail(encode(key.as_slice()), &envelope.0).await,
-                            _ => {}
+                            RelayEvent::Connected(_) => pending,
+                            RelayEvent::Mail { key, envelope, .. } => {
+                                bots.take_mail(encode(key.as_slice()), &envelope.0).await;
+                                // Answers can change the outstanding resend deadline even without a file write.
+                                pending && envelope.0.contains_key("botEdited")
+                            }
+                            _ => false
                         },
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => pending,
                         Err(_) => return,
                     },
+                };
+                if reconsider {
+                    (pending, next) = bots.send_held(now_ms()).await;
                 }
             }
         })
@@ -743,16 +789,19 @@ impl Bots {
     /// What's held here, sent to each computer it's for: again each minute until it answers (a
     /// scoped one each few seconds), at once when it's back. One whose bot another of your computers
     /// lists now goes there instead. Only to a computer that takes it.
-    async fn send_held(&self, now: i64) {
+    async fn send_held(&self, now: i64) -> (bool, Option<Instant>) {
         if self.state().reach.get().is_none() {
-            return;
+            return (false, None);
         }
+        let mut next = None;
+        let mut pending = false;
         let link = self.link();
         let view = self.inner.peers.view();
         for mut held in self.all_held(&link) {
             if Self::stopped_why(&held, &link).is_some() {
                 continue;
             }
+            pending = true;
             let authority = held
                 .scope
                 .as_ref()
@@ -780,6 +829,7 @@ impl Bots {
                 .map(|peer| encode(&peer.key));
             if let Some(keeper) = keeper.filter(|keeper| *keeper != held.to) {
                 let Some(_lock) = self.held_lock().await else {
+                    sooner(&mut next, Duration::from_secs(5));
                     continue;
                 };
                 if self
@@ -794,34 +844,39 @@ impl Bots {
                     ..held.clone()
                 };
                 let Some(moved) = self.write_held(moved, &link) else {
+                    sooner(&mut next, Duration::from_secs(5));
                     continue;
                 };
                 held = moved;
                 self.state().sent.lock().expect("sent").remove(&held.bot);
                 self.changed();
             }
-            let again = if held.scope.is_some() {
-                SCOPED_AGAIN_AFTER
-            } else {
-                AGAIN_AFTER
-            };
-            let last = self
-                .state()
-                .sent
-                .lock()
-                .expect("sent")
-                .get(&held.bot)
-                .cloned();
-            if last.is_some_and(|(id, at)| id == held.id && now - at < again) {
-                continue;
-            }
+            let peer = view.roster.members.iter().find(|peer| encode(&peer.key) == held.to);
             let features = Self::features_of(&view, &held.to);
             let takes = |feature: &str| features.iter().any(|each| each == feature);
+            if !view.relay_connected || peer.and_then(Member::host).is_none()
+                || peer.is_some_and(|peer| view.away(&peer.key))
+            {
+                // Forget only this recipient's throttle while it is actually away;
+                // the next reach event sends it immediately, not every agents heartbeat.
+                self.state().sent.lock().expect("sent").remove(&held.bot);
+                continue;
+            }
             if !takes(HELD_FEATURE)
                 || missing_feature(held.change.as_ref(), &features).is_some()
                 || (held.scope.is_some() && !takes(SUBMITTER_FEATURE))
             {
+                // A held edit for an away computer is not a periodic mail job.
                 continue;
+            }
+            let again = Duration::from_millis(if held.scope.is_some() { SCOPED_AGAIN_AFTER } else { AGAIN_AFTER } as u64);
+            let last = self.state().sent.lock().expect("sent").get(&held.bot).cloned();
+            if let Some((_, at)) = last.filter(|(id, _)| *id == held.id) {
+                let left = again.saturating_sub(at.elapsed());
+                if !left.is_zero() {
+                    sooner(&mut next, left);
+                    continue;
+                }
             }
             let mut edit = json!({ "id": held.id, "bot": held.bot });
             if held.deletes() {
@@ -855,8 +910,10 @@ impl Bots {
                 .sent
                 .lock()
                 .expect("sent")
-                .insert(held.bot.clone(), (held.id.clone(), now));
+                .insert(held.bot.clone(), (held.id.clone(), Instant::now()));
+            sooner(&mut next, again);
         }
+        (pending, next)
     }
 
     async fn take_mail(&self, sender: String, payload: &Map<String, Value>) {
@@ -868,23 +925,6 @@ impl Bots {
             .any(|peer| encode(&peer.key) == sender)
         {
             return;
-        }
-        // (Back, telling its agents: what's held for it goes now, not at its next minute.)
-        if payload.get("agents").is_some_and(Value::is_object) {
-            let ids: HashSet<String> = self
-                .all_held(&self.link())
-                .into_iter()
-                .filter(|held| held.to == sender)
-                .map(|held| held.id)
-                .collect();
-            if !ids.is_empty() {
-                self.state()
-                    .sent
-                    .lock()
-                    .expect("sent")
-                    .retain(|_, (id, _)| !ids.contains(id));
-                self.send_held_soon();
-            }
         }
         let scoped = payload.get("scopedBotEdit").filter(|edit| edit.is_object());
         if let Some(edit) =
@@ -932,7 +972,7 @@ impl Bots {
                 .sent
                 .lock()
                 .expect("sent")
-                .insert(bot.into(), (held.id, now));
+                .insert(bot.into(), (held.id, Instant::now()));
             return;
         }
         let view = self.inner.peers.view();
@@ -970,7 +1010,7 @@ impl Bots {
                     .sent
                     .lock()
                     .expect("sent")
-                    .insert(bot.into(), (held.id, now));
+                    .insert(bot.into(), (held.id, Instant::now()));
                 return;
             }
         }

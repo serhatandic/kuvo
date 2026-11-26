@@ -37,6 +37,9 @@ fn owner(row: PeerOwner) -> SessionOwner {
 }
 
 impl SessionOwnership for OwnerPort {
+    fn changes(&self) -> Option<std::pin::Pin<Box<dyn futures_core::Stream<Item = ()> + Send>>> {
+        Some(Box::pin(self.0.changes()))
+    }
     fn scope(&self, session: &str, issuer: Option<ComputerKey>) -> Result<OwnerScope, Refusal> {
         let scope = self.0.scope(session, issuer).map_err(refusal)?;
         Ok(OwnerScope {

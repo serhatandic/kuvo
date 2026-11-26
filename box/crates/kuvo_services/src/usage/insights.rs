@@ -1,5 +1,6 @@
 //! Insights' portable transcript index. The SQLite schema is the same as the old service;
 //! only changed transcripts are decoded, on demand, never in an idle background process.
+use kuvo_os::timer_fires::{self, Timer};
 use super::{native_index, pricing::Pricing};
 use http::StatusCode;
 use jiff::{Span, Timestamp, tz::TimeZone};
@@ -244,7 +245,7 @@ impl Service {
                 if clients.wait_for(|n| *n > 0).await.is_err() {
                     break;
                 }
-                let mut delay = tokio::time::interval(std::time::Duration::from_secs(300));
+                let mut delay = timer_fires::interval(Timer::UsageInsightsRefresh, std::time::Duration::from_secs(300));
                 delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
@@ -995,7 +996,7 @@ impl Service {
                         eprintln!("Couldn't update usage prices: {result:?}");
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(
+                timer_fires::sleep(Timer::UsagePriceFeed, std::time::Duration::from_millis(
                     feeds.next().saturating_sub(super::limits::now()).max(1000),
                 ))
                 .await;

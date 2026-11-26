@@ -61,25 +61,31 @@ impl Watcher {
         });
         let late = self.clone();
         tokio::spawn(async move {
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let run = late.work().home.join("run");
+            files.set_targets(vec![run.join("work/asks.json")], vec![(run.join("moves"), false)]);
+            let mut states = late.work().list.engine().states();
             loop {
-                late.tell_late_answers().await;
-                tokio::time::sleep(LATE_AGAIN).await;
-                if late.inner.over() {
-                    return;
+                if late.inner.over() { return; }
+                let pending = late.tell_late_answers().await;
+                tokio::select! {
+                    _ = late.inner.stopped.cancelled() => return,
+                    _ = files.changed() => {},
+                    changed = states.changed() => if changed.is_err() { return; },
+                    _ = kuvo_os::timer_fires::sleep(kuvo_os::timer_fires::Timer::WorkLateAnswer, LATE_AGAIN), if pending => {},
                 }
             }
         });
     }
 
     /// Answered after their tool stopped waiting, and not told yet: told now.
-    async fn tell_late_answers(&self) {
+    async fn tell_late_answers(&self) -> bool {
+        let untold = |each: &Value| each["answered"].is_object() && each["late"] == true && each["toldLate"] != true;
         let asks = self.work().kept_asks();
-        let untold = asks.iter().filter(|each| {
-            each["answered"].is_object() && each["late"] == true && each["toldLate"] != true
-        });
-        for ask in untold.filter_map(|ask| ask["id"].as_str()) {
+        for ask in asks.iter().filter(|each| untold(each)).filter_map(|ask| ask["id"].as_str()) {
             self.work().tell_late(ask).await;
         }
+        self.work().kept_asks().iter().any(untold)
     }
 
     /// One look; whether it's done (nothing left to look at again).

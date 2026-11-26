@@ -4,6 +4,7 @@
 //! program, a stop it can't go on from) takes no new sessions and stops once nothing uses it; one
 //! nothing has used for a while stops.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io,
@@ -73,6 +74,7 @@ pub(super) struct Process {
     temporary: Option<PathBuf>,
     started: Instant,
     last_use: Plain<Instant>,
+    idle_changes: watch::Sender<u64>,
     /// Takes no new sessions, and stops once nothing uses it.
     outdated: AtomicBool,
     stopping: Arc<Plain<Stopping>>,
@@ -104,6 +106,7 @@ impl Process {
     /// Used now: it isn't idle.
     pub fn touch(&self) {
         *lock(&self.last_use) = Instant::now();
+        self.idle_changes.send_modify(|change| *change = change.wrapping_add(1));
     }
 
     pub fn outdated(&self) -> bool {
@@ -113,6 +116,7 @@ impl Process {
     /// Takes no new sessions; stops once nothing uses it.
     pub fn retire(&self) {
         self.outdated.store(true, Ordering::Relaxed);
+        self.idle_changes.send_modify(|change| *change = change.wrapping_add(1));
     }
 
     /// Keeps `session`'s turn (none: it ended) in its holder's record, for a resident taking it up.
@@ -239,6 +243,7 @@ pub(super) struct Shared {
     /// Shut down (or let go of) this many times: a start under way then fails, and stops its own.
     shutdowns: watch::Sender<u64>,
     idle_check: AtomicBool,
+    idle_changes: watch::Sender<u64>,
 }
 
 impl Shared {
@@ -259,6 +264,7 @@ impl Shared {
             next: AtomicU64::new(0),
             shutdowns: watch::Sender::new(0),
             idle_check: AtomicBool::new(false),
+            idle_changes: watch::Sender::new(0),
         })
     }
 
@@ -269,6 +275,8 @@ impl Shared {
     pub fn routes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Route>> {
         lock(&self.routes)
     }
+
+    pub(super) fn note_activity(&self) { self.idle_changes.send_modify(|change| *change = change.wrapping_add(1)); }
 
     /// Whether a turn or kept work uses `process`.
     fn busy(&self, process: u64) -> bool {
@@ -310,6 +318,7 @@ impl Shared {
         }
         drop(staging);
         drop(routes);
+        process.touch();
         if keep { taken } else { Vec::new() }
     }
 
@@ -349,6 +358,7 @@ impl Shared {
             return Err(stopped(self.name()));
         }
         slots.processes.push(process.clone());
+        process.touch();
         Ok(process)
     }
 
@@ -543,6 +553,7 @@ impl Shared {
         );
         self.slots.lock().await.processes.push(process.clone());
         self.watch_idle();
+        self.note_activity();
         Ok(process)
     }
 
@@ -615,6 +626,7 @@ impl Shared {
             temporary,
             started: Instant::now(),
             last_use: Plain::new(Instant::now()),
+            idle_changes: self.idle_changes.clone(),
             outdated: AtomicBool::new(false),
             stopping,
             turns: Plain::new(turns),
@@ -750,6 +762,7 @@ impl Shared {
                     .await
                     .processes
                     .retain(|running| running.id != process.id);
+                self.note_activity();
                 let stopping = lock(&process.stopping);
                 let stderr = process.rpc.stderr();
                 let lines: Vec<_> = stderr.trim().lines().collect();
@@ -782,20 +795,28 @@ impl Shared {
         }
     }
 
-    /// Stops processes nothing uses: outdated ones at once, others once idle; checked every
-    /// minute.
+    /// Stop idle and outdated processes at their real deadlines or on a route/turn change.
     fn watch_idle(self: &Arc<Self>) {
-        if self.idle_check.swap(true, Ordering::Relaxed) {
-            return;
-        }
+        if self.idle_check.swap(true, Ordering::Relaxed) { return; }
         let shared = Arc::downgrade(self);
+        let mut changes = self.idle_changes.subscribe();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                let Some(shared) = shared.upgrade() else {
-                    return;
+                let Some(here) = shared.upgrade() else { return; };
+                here.stop_quiet(false).await;
+                let next = {
+                    let slots = here.slots.lock().await;
+                    slots.processes.iter().filter(|process| !here.busy(process.id))
+                        .map(|process| if process.outdated() { Instant::now() } else { *lock(&process.last_use) + IDLE }).min()
                 };
-                shared.stop_quiet(false).await;
+                drop(here);
+                tokio::select! {
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep_until(Timer::AcpServerExpiry, at).await,
+                        None => std::future::pending().await,
+                    } } => {},
+                }
             }
         });
     }
@@ -807,7 +828,7 @@ impl Shared {
         let mut stopping = Vec::new();
         for process in &slots.processes {
             if self.busy(process.id) {
-                process.touch();
+                *lock(&process.last_use) = Instant::now();
             } else if process.outdated() || idle || lock(&process.last_use).elapsed() >= IDLE {
                 stopping.push(process.clone());
             }
@@ -848,6 +869,7 @@ impl Shared {
         self.halt();
         let _ = tokio::time::timeout(ENDS, self.starting.lock()).await;
         let processes = std::mem::take(&mut self.slots.lock().await.processes);
+        self.note_activity();
         for process in processes {
             eprintln!("Stopping {}: shutdown", self.name());
             process.rpc.stop().await;
@@ -859,6 +881,7 @@ impl Shared {
     pub async fn detach(&self) {
         self.halt();
         self.slots.lock().await.processes.clear();
+        self.note_activity();
     }
 
     /// A turn taken up that no conversation here goes on with: cancelled in the agent, and the
@@ -892,20 +915,23 @@ fn unrouted(method: &str) -> Result<Value, RpcError> {
 
 /// Watches the file the agent writes when it wants a sign-in: it can't go on.
 fn watch_sign_in(process: &Arc<Process>, file: PathBuf) {
+    let rpc = process.rpc.clone();
     let process = Arc::downgrade(process);
     tokio::spawn(async move {
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        files.set_files(vec![file.clone()]);
         loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let Some(process) = process.upgrade() else {
-                return;
-            };
-            if process.closed() {
+            let Some(here) = process.upgrade() else { return; };
+            if here.closed() { return; }
+            if tokio::fs::try_exists(&file).await.unwrap_or(false) {
+                lock(&here.stopping).asks_sign_in = true;
+                here.rpc.stop().await;
                 return;
             }
-            if tokio::fs::try_exists(&file).await.unwrap_or(false) {
-                lock(&process.stopping).asks_sign_in = true;
-                process.rpc.stop().await;
-                return;
+            drop(here);
+            tokio::select! {
+                _ = files.changed() => {},
+                _ = rpc.wait_ended() => return,
             }
         }
     });

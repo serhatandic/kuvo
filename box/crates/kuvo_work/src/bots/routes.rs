@@ -1,5 +1,6 @@
 //! `kuvo/bots` and its events: this box's bots, each with what it's doing now.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::time::Duration;
 
 use http::StatusCode;
@@ -14,8 +15,6 @@ use serde_json::Value;
 
 use super::{Bots, held};
 
-/// How often the list is looked at again with nothing said to change (another process's writes).
-const EVERY: Duration = Duration::from_secs(3);
 /// A run's end and what follows it a moment after are one change.
 const SETTLES: Duration = Duration::from_millis(250);
 
@@ -191,23 +190,40 @@ pub(super) fn register(bots: Bots, routes: &mut Registry) {
                 let mut wakes = bots.inner.wakes.changes();
                 let mut sessions = bots.inner.sessions.clone();
                 let mut peers = bots.inner.peers.clone();
+                let hub = kuvo_os::watch::WatchHub::default();
+                let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+                files.set_targets(vec![bots.inner.run.join("bots-seen/seen.json"), bots.inner.run.join("link.json")],
+                    vec![(bots.inner.run.join("bots-held"), false), (bots.inner.run.join("moves"), false)]);
+                let mut bot_files = kuvo_os::watch::FileSet::new(hub);
+                bot_files.set_child_files(bots.inner.bots.clone(), ["bot.json", "session", "job.json", "MEMORY.md", "paused", "wakes", "watches", "summaries"]);
                 let mut previous: Option<Value> = None;
                 loop {
                     let (value, turns) = said(&bots).await.map_err(|_| std::io::Error::other("The bots couldn't be read."))?;
+                    let now = jiff::Timestamp::now().as_millisecond();
+                    let peer_now = peers.now();
+                    let view = peers.view();
+                    let peer = view.next_standing_change(peer_now).into_iter().chain(view.next_activity_change(peer_now)).min()
+                        .map(|at| now.saturating_add(at.saturating_sub(peer_now)));
+                    let refused = value["refused"].as_array().into_iter().flatten().filter_map(|row| row["at"].as_f64())
+                        .map(|at| (at.ceil() as i64).saturating_add(86_400_000)).min();
+                    let deadline = [turns, peer, refused].into_iter().flatten().min();
                     if previous.as_ref() != Some(&value) {
                         let line = JsonLine::new(serde_json::from_value(value.clone())?)?;
                         previous = Some(value);
                         yield line;
                     }
-                    let now = jiff::Timestamp::now().as_millisecond();
-                    let turning = turns.map_or(EVERY, |at| Duration::from_millis(u64::try_from(at - now + 1).unwrap_or(0)).min(EVERY));
                     tokio::select! {
                         () = call.cancel.cancelled() => break,
-                        _ = mine.changed() => {}
-                        _ = wakes.changed() => {}
-                        changed = sessions.changed() => tokio::time::sleep(if changed { SETTLES } else { EVERY }).await,
-                        changed = peers.changed() => if changed.is_err() { tokio::time::sleep(EVERY).await },
-                        () = tokio::time::sleep(turning) => {}
+                        changed = mine.changed() => if changed.is_err() { break; },
+                        changed = wakes.changed() => if changed.is_err() { break; },
+                        _ = bot_files.changed() => {},
+                        _ = files.changed() => {},
+                        changed = sessions.changed() => if changed { timer_fires::sleep(Timer::BotsFollow, SETTLES).await; } else { break; },
+                        changed = peers.changed() => if changed.is_err() { break; },
+                        () = async { match deadline {
+                            Some(at) => timer_fires::sleep(Timer::BotsFollow, Duration::from_millis(at.saturating_sub(jiff::Timestamp::now().as_millisecond()).max(1) as u64)).await,
+                            None => std::future::pending().await,
+                        } } => {},
                     }
                 }
             }))

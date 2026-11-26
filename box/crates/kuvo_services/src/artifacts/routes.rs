@@ -1,6 +1,7 @@
 //! HTTP and line routes for artifacts (`kuvo/artifacts…`) and merged setup outputs
 //! (`kuvo/setup/outputs…`), matching `box/src/link/artifacts/routes.ts` and `areas/setup-outputs.ts`.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
@@ -118,6 +119,7 @@ pub type OutputsFuture<'a> = Pin<Box<dyn Future<Output = Option<OutputsSnapshot>
 pub trait OutputsPeers: Send + Sync {
     fn snapshot(&self) -> OutputsFuture<'_>;
     fn changes(&self) -> watch::Receiver<u64>;
+    fn next_change(&self) -> Option<Duration> { None }
 }
 
 #[derive(Clone)]
@@ -130,13 +132,21 @@ pub enum ArtifactHandle {
 impl ArtifactHandle {
     fn store(&self) -> Result<&ArtifactStore, Refusal> {
         match self {
-            Self::Ready(store) => Ok(store),
+            Self::Ready(store) => { store.ensure_open().map_err(open_refusal)?; Ok(store) },
             Self::UnsupportedFormat(msg) => Err(unsupported_refusal(msg.clone())),
             Self::Unavailable => Err(Refusal::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "This computer's record of what its agents made isn't running. Try again in a moment.",
             )),
         }
+    }
+}
+
+fn open_refusal(error: StoreError) -> Refusal {
+    match error {
+        StoreError::UnsupportedFormat(message) => unsupported_refusal(message),
+        _ => Refusal::new(StatusCode::SERVICE_UNAVAILABLE,
+            "This computer's record of what its agents made isn't running. Try again in a moment."),
     }
 }
 
@@ -190,6 +200,8 @@ pub(crate) fn merged_ndjson<R, T, F, Fut>(
     peer_rx: Option<watch::Receiver<u64>>,
     cancel: CancellationToken,
     read: F,
+    deadline: impl Fn() -> Option<Duration> + Send + 'static,
+    source_paths: impl Fn(&Value) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) + Send + 'static,
 ) -> RouteReply<R>
 where
     R: JsonStatus<200>,
@@ -198,30 +210,33 @@ where
     F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Option<Value>> + Send,
 {
+    let sources = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
     let stream = stream::unfold(
-        (read, local_rx, peer_rx, cancel, None::<String>, true),
-        |(read, mut local_rx, mut peer_rx, cancel, mut last, mut first)| async move {
+        (read, deadline, source_paths, sources, local_rx, peer_rx, cancel, None::<String>, true),
+        |(read, deadline, source_paths, mut sources, mut local_rx, mut peer_rx, cancel, mut last, mut first)| async move {
             loop {
                 if cancel.is_cancelled() { return None; }
                 if !first {
-                    let sleep = tokio::time::sleep(Duration::from_secs(3));
-                    tokio::pin!(sleep);
+                    let due = deadline();
                     tokio::select! {
                         () = cancel.cancelled() => return None,
-                        () = &mut sleep => {}
+                        _ = async { match due { Some(delay) => timer_fires::sleep(Timer::ArtifactsFollow, delay).await, None => std::future::pending().await } } => {},
+                        _ = sources.changed() => {},
                         _ = recv_broadcast_opt(&mut local_rx) => {}
                         _ = watch_opt(&mut peer_rx) => {}
                     }
                 }
                 first = false;
                 if let Some(state) = read().await {
+                    let (paths, roots) = source_paths(&state);
+                    sources.set_files_at_roots(paths, roots);
                     let line = serde_json::to_string(&state).unwrap_or_default();
                     if last.as_deref() != Some(line.as_str()) {
                         last = Some(line);
                         let item = serde_json::from_value(state)
                             .map_err(std::io::Error::other)
                             .and_then(JsonLine::<R, 200>::new);
-                        return Some((item, (read, local_rx, peer_rx, cancel, last, false)));
+                        return Some((item, (read, deadline, source_paths, sources, local_rx, peer_rx, cancel, last, false)));
                     }
                 }
             }
@@ -298,7 +313,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
         async move {
             let store = h.store()?;
             store.settled().await;
-            Ok(RouteReply::json_as_kept::<200>(json!(store.storage())))
+            Ok(RouteReply::json_as_kept::<200>(json!(store.storage().map_err(open_refusal)?)))
         }
     });
 
@@ -311,7 +326,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
             let given = parse_json_body(&raw);
             let budget = given.get("budget").and_then(Value::as_f64).filter(|b| b.is_finite() && *b >= 0.0)
                 .ok_or_else(|| Refusal::new(StatusCode::BAD_REQUEST, "Say the budget for older versions, in bytes (budget)."))?;
-            let current = store.storage();
+            let current = store.storage().map_err(open_refusal)?;
             if given.get("was").is_some_and(|w| w.as_f64() != Some(current.budget as f64))
                 || given.get("wasOlder").is_some_and(|w| w.as_f64() != Some(current.older as f64))
             {
@@ -320,7 +335,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
             let confirmed = given.get("confirmed").and_then(Value::as_bool) == Some(true);
             match store.set_budget(budget.floor() as u64, confirmed) {
                 Ok(Some(msg)) => Err(Refusal::new(StatusCode::BAD_REQUEST, msg)),
-                Ok(None) => Ok(RouteReply::json_as_kept::<200>(json!(store.storage()))),
+                Ok(None) => Ok(RouteReply::json_as_kept::<200>(json!(store.storage().map_err(open_refusal)?))),
                 Err(StoreError::UnsupportedFormat(msg)) => Err(unsupported_refusal(msg)),
                 Err(err) => Err(Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
             }
@@ -334,7 +349,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
             let store = h.store()?;
             store.settled().await;
             let given = parse_json_body(&raw);
-            let current = store.storage();
+            let current = store.storage().map_err(open_refusal)?;
             if given.get("was").is_some_and(|w| w.as_f64() != Some(current.older as f64)) {
                 return Err(Refusal::new(StatusCode::CONFLICT, "It changed since you read it."));
             }
@@ -342,7 +357,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
                 .and_then(|s| jiff::Timestamp::from_millisecond((s * 1000.0) as i64).ok())
                 .map(super::store::stamp);
             let cleared = store.clear_older(before_iso.as_deref());
-            let mut obj = serde_json::to_value(store.storage()).unwrap();
+            let mut obj = serde_json::to_value(store.storage().map_err(open_refusal)?).unwrap();
             obj.as_object_mut().unwrap().insert("cleared".into(), json!(cleared));
             Ok(RouteReply::json_as_kept::<200>(obj))
         }
@@ -487,6 +502,7 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
             let before = parse_outputs_before(query.get("before").map(String::as_str));
             let local_rx = match &h { ArtifactHandle::Ready(store) => Some(store.subscribe()), _ => None };
             let peer_rx = p.as_ref().map(|peers| peers.changes());
+            let deadlines = p.clone();
             Ok(merged_ndjson::<get_kuvo_setup_outputs_events::Spec, _, _, _>(
                 local_rx,
                 peer_rx,
@@ -495,6 +511,8 @@ pub fn register(registry: &mut Registry, handle: ArtifactHandle, peers: Option<A
                     let (h, p, session, before) = (h.clone(), p.clone(), session.clone(), before.clone());
                     async move { build_setup_outputs(&h, p.as_deref(), &session, before.as_ref()).await }
                 },
+                move || deadlines.as_deref().and_then(OutputsPeers::next_change),
+                |_| (Vec::new(), Vec::new()),
             ))
         }
     });
@@ -521,7 +539,7 @@ where
                     }
                     tokio::select! {
                         () = cancel.cancelled() => return None,
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        () = timer_fires::sleep(Timer::ArtifactsFollow, Duration::from_millis(100)) => {}
                     }
                     while rx.try_recv().is_ok() {}
                 }
@@ -598,7 +616,7 @@ async fn build_setup_outputs(
         }
     }
     let session_list: Vec<String> = sessions.iter().cloned().collect();
-    let here_rows = match handle { ArtifactHandle::Ready(store) => Some(local_output_copy(store, Some(&session_list))), _ => None };
+    let here_rows = match handle { ArtifactHandle::Ready(store) if store.ensure_history().is_ok() => Some(local_output_copy(store, Some(&session_list))), _ => None };
     let peer_copies = snap.as_ref().map_or(&[][..], |s| s.peers.as_slice());
     let pending = snap.as_ref().map_or(&[][..], |s| s.pending.as_slice());
     if here_rows.is_none() && peer_copies.is_empty() && pending.is_empty() { return None; }

@@ -1,9 +1,10 @@
 //! Work calls share the resident relay. The engine supplies local work facts and owns effects.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::Duration,
 };
 
@@ -12,9 +13,9 @@ use kuvo_wire::{
     mail::Envelope,
 };
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, Notify},
     task::JoinHandle,
-    time::{Instant, MissedTickBehavior},
+    time::Instant,
 };
 
 use crate::{
@@ -28,7 +29,7 @@ use crate::{
 };
 
 const WAIT: Duration = Duration::from_secs(20);
-const ROUND: Duration = Duration::from_millis(500);
+const RETRY_FAILED: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub enum Outcome {
@@ -53,6 +54,7 @@ struct Offer {
     keep: bool,
     quiet: bool,
     reply: oneshot::Sender<io::Result<Outcome>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 enum Command {
@@ -66,11 +68,21 @@ struct Waiting {
     until: Instant,
     keep: bool,
     reply: oneshot::Sender<io::Result<Outcome>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 pub struct WorkHandle {
     send: mpsc::Sender<Command>,
+    closed: Arc<Notify>,
+}
+
+struct CallDropped { cancelled: Arc<AtomicBool>, closed: Arc<Notify> }
+impl Drop for CallDropped {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.closed.notify_one();
+    }
 }
 
 impl WorkHandle {
@@ -85,6 +97,9 @@ impl WorkHandle {
         quiet: bool,
     ) -> io::Result<Outcome> {
         let (reply, wait) = oneshot::channel();
+        // A dropped tool request wakes its owner without checking every waiter on a timer.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _closed = CallDropped { cancelled: cancelled.clone(), closed: self.closed.clone() };
         self.send
             .send(Command::Call(Box::new(Offer {
                 key,
@@ -93,6 +108,7 @@ impl WorkHandle {
                 keep,
                 quiet,
                 reply,
+                cancelled,
             })))
             .await
             .map_err(|_| stopped())?;
@@ -120,6 +136,7 @@ pub(crate) fn start(
 ) -> io::Result<(WorkHandle, JoinHandle<()>)> {
     let events = relay.subscribe().ok_or_else(stopped)?;
     let (send, offers) = mpsc::channel(16);
+    let closed = Arc::new(Notify::new());
     let calls = Calls::open(reader.run.as_ref());
     let snapshots = Snapshots::open(reader.run.as_ref());
     let owner = Owner {
@@ -131,7 +148,7 @@ pub(crate) fn start(
         waiting: BTreeMap::new(),
         away: BTreeSet::new(),
     };
-    Ok((WorkHandle { send }, tokio::spawn(owner.run(events, offers))))
+    Ok((WorkHandle { send, closed: closed.clone() }, tokio::spawn(owner.run(events, offers, closed))))
 }
 
 struct Owner {
@@ -149,29 +166,85 @@ impl Owner {
         mut self,
         mut events: broadcast::Receiver<Arc<RelayEvent>>,
         mut offers: mpsc::Receiver<Command>,
+        closed: Arc<Notify>,
     ) {
-        let mut timer = tokio::time::interval(ROUND);
-        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut records = kuvo_os::watch::FileSet::new(hub);
+        let run = self.reader.run.as_ref();
+        files.set_targets(
+            vec![run.join("work/homes.json"), run.join("moves/moved.json"), run.join("test-setup-clock.json")],
+            vec![(run.join("outbox/sending"), false)],
+        );
+        records.set_targets(Vec::new(), vec![(run.join("work/call-results"), false), (run.join("work/call-answers"), false)]);
+        let mut view = self.reader.view();
+        let mut next = self.recover().await;
         loop {
-            let result = tokio::select! {
-                Some(offer) = offers.recv() => match offer {
-                    Command::Call(offer) => self.offer(&self.reader.view(), self.reader.now(), *offer),
-                    Command::Rows(rows) => { self.snapshots.update(rows); Ok(()) }
+            let relevant = tokio::select! {
+                offer = offers.recv() => match offer {
+                    Some(Command::Call(offer)) => {
+                        if let Err(error) = self.offer(&self.reader.view(), self.reader.now(), *offer) {
+                            eprintln!("Remote work: {error}");
+                        }
+                        true
+                    }
+                    Some(Command::Rows(rows)) => { self.snapshots.update(rows); true }
+                    None => return,
                 },
                 event = events.recv() => match event {
-                    Ok(event) => self.event(&self.reader.view(), self.reader.now(), &event).await,
-                    Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
+                    Ok(event) => {
+                        let relevant = self.relevant(&event);
+                        if relevant && let Err(error) = self.event(&self.reader.view(), self.reader.now(), &event).await {
+                            eprintln!("Remote work: {error}");
+                        }
+                        relevant
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => { self.calls.invalidate_results(); true },
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
-                _ = timer.tick() => self.round(&self.reader.view(), self.reader.now()).await,
+                change = self.reader.changed() => {
+                    if change.is_err() { return; }
+                    let current = self.reader.view();
+                    let relevant = routing_changed(&view, &current);
+                    view = current;
+                    relevant
+                }
+                _ = files.changed() => true,
+                _ = records.changed() => { self.calls.invalidate_results(); true }
+                _ = closed.notified() => true,
+                _ = wait_round(next) => true,
             };
-            if let Err(error) = result {
+            if relevant {
+                next = self.recover().await;
+            }
+        }
+    }
+
+    fn relevant(&self, event: &RelayEvent) -> bool {
+        match event {
+            RelayEvent::Connected(_) | RelayEvent::Disconnected(_) | RelayEvent::Unreachable(_) | RelayEvent::Gone { .. } => true,
+            RelayEvent::Mail { key, envelope, .. } => self.away.contains(key)
+                || ["call", "rows", "delivered", "letter"].iter().any(|field| envelope.0.contains_key(*field)),
+            _ => false,
+        }
+    }
+
+    async fn recover(&mut self) -> Option<Instant> {
+        let now = self.reader.now();
+        match self.round(&self.reader.view(), now).await {
+            Ok(next) => {
+                let from_disk = next.map(|at| Instant::now() + Duration::from_millis(at.saturating_sub(now).max(1) as u64));
+                self.waiting.values().map(|call| call.until).chain(from_disk).min()
+            }
+            Err(error) => {
                 eprintln!("Remote work: {error}");
+                Some(Instant::now() + RETRY_FAILED)
             }
         }
     }
 
     fn offer(&mut self, view: &View, now: Millis, offer: Offer) -> io::Result<()> {
+        if offer.cancelled.load(Ordering::Acquire) { return Ok(()); }
         let name = encode(&offer.key);
         let supported = view
             .announced
@@ -216,6 +289,7 @@ impl Owner {
                     until: Instant::now() + WAIT,
                     keep,
                     reply: offer.reply,
+                    cancelled: offer.cancelled,
                 },
             );
         } else {
@@ -226,47 +300,47 @@ impl Owner {
         Ok(())
     }
 
-    async fn round(&mut self, view: &View, now: Millis) -> io::Result<()> {
+    async fn round(&mut self, view: &View, now: Millis) -> io::Result<Option<Millis>> {
         let expired: Vec<_> = self
             .waiting
             .values()
-            .filter(|call| call.reply.is_closed() || Instant::now() >= call.until)
+            .filter(|call| call.cancelled.load(Ordering::Acquire) || call.reply.is_closed() || Instant::now() >= call.until)
             .map(|call| call.id.clone())
             .collect();
         for id in expired {
             self.stop_waiting(&id, now, false)?;
         }
-        let sends = self.calls.round(
+        let (sends, call_at) = self.calls.round(
             now,
             view.relay_connected,
             // (One mid-handover of the coding agents' bridge, or this one on a trial, waits.)
             |key| admitted_state(view, key),
             |session| home(view, &self.reader, session, now),
         )?;
+        let mut retry = None;
         for send in sends {
             if let Err(error) = self.send(view, send).await {
                 eprintln!("Delivering remote work: {error}");
+                retry = Some(now.saturating_add(RETRY_FAILED.as_millis() as i64));
             }
         }
-        for (key, envelope) in self
+        let (rows, rows_at) = self
             .snapshots
-            .round(view, now, |session| home(view, &self.reader, session, now))?
-        {
+            .round(view, now, |session| home(view, &self.reader, session, now))?;
+        for (key, envelope) in rows {
             self.mail(view, key, envelope).await;
         }
-        for (key, envelope) in
-            self.calls
-                .retry_answers(now, view.relay_connected, &view.roster.name)?
-        {
+        let (answers, answer_at) = self.calls.retry_answers(now, view.relay_connected, &view.roster.name)?;
+        for (key, envelope) in answers {
             self.mail(view, key, envelope).await;
         }
-        Ok(())
+        Ok([call_at, rows_at, answer_at, retry].into_iter().flatten().min())
     }
 
     fn stop_waiting(&mut self, id: &Id, now: Millis, unreachable: bool) -> io::Result<()> {
         if let Some(waiting) = self.waiting.remove(id.as_str()) {
             let sent = self.calls.sent(id);
-            let kept = waiting.keep && !waiting.reply.is_closed();
+            let kept = waiting.keep && !waiting.cancelled.load(Ordering::Acquire) && !waiting.reply.is_closed();
             self.calls.cancel_wait(id, kept, now)?;
             let _ = waiting.reply.send(Ok(Outcome::Away {
                 kept,
@@ -414,6 +488,33 @@ impl Owner {
             let _ = self.relay.sender.mail(host, envelope).await;
         }
     }
+}
+
+async fn wait_round(at: Option<Instant>) {
+    match at {
+        Some(at) => timer_fires::sleep_until(Timer::RemoteWorkRound, at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Routing facts change independently of a peer's heartbeat, activity or update progress.
+pub fn routing_changed(before: &View, after: &View) -> bool {
+    let members = |view: &View| view.roster.members.iter().map(|peer| {
+        let announced = view.announced.get(&encode(&peer.key));
+        let features = announced.and_then(|a| a.features.clone());
+        let moved = announced.into_iter().flat_map(|a| &a.moved)
+            .map(|hint| (hint.session.clone(), hint.key.clone(), hint.at)).collect::<Vec<_>>();
+        (peer.key, peer.address, peer.name.clone(), admitted_state(view, peer.key), features, moved)
+    }).collect::<Vec<_>>();
+    let held = |view: &View| view.local.list.iter().flat_map(|list| &list.sessions)
+        .filter(|(_, row)| row.facts.away != Some(true)).map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    before.relay_connected != after.relay_connected
+        || before.roster.here != after.roster.here
+        || before.roster.name != after.roster.name
+        || members(before) != members(after)
+        || before.local.created.keys().ne(after.local.created.keys())
+        || held(before) != held(after)
+        || !before.same_ownership_routes(after)
 }
 
 fn decode<T: serde::de::DeserializeOwned>(envelope: &Envelope, field: &str) -> Option<T> {
