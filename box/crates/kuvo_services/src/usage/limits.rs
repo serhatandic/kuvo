@@ -907,13 +907,21 @@ impl Service {
             if !only_resets && facts.problem.is_none() {
                 entry.borrowed_until = None;
             }
-            if entry.account.account.is_none() && !only_resets {
+            if (entry.account.account.is_none() || entry.account.service == Provider::Cursor)
+                && !only_resets
+            {
                 if let Some(problem) = facts.problem.as_mut() {
                     if problem.kind == ProblemKind::RateLimited {
                         entry.refusals = entry.refusals.saturating_add(1);
                         let wait = problem
                             .until
-                            .map(|until| until.max(now + 10 * 60_000))
+                            .map(|until| {
+                                if entry.account.service == Provider::Cursor {
+                                    until
+                                } else {
+                                    until.max(now + 10 * 60_000)
+                                }
+                            })
                             .unwrap_or_else(|| {
                                 now + (60
                                     * 60_000
@@ -2771,5 +2779,68 @@ mod notice_and_peer_tests {
             kept.groups["account"][&key].card_prediction(now),
             Some(CardPrediction::Lasts)
         );
+    }
+    #[tokio::test]
+    async fn cursor_no_header_hold_doubles_and_an_answer_clears_it() {
+        use crate::usage::plan_facts::{Facts, Problem, ProblemKind};
+        let home = tempfile::tempdir().unwrap();
+        let setup = kuvo_setup::SetupRuntime::prepare(home.path(), "Fixture".into(), false, None)
+            .await
+            .unwrap()
+            .start(None)
+            .unwrap();
+        let service = Service::new(
+            home.path().to_owned(),
+            settings::Service::new(home.path().to_owned(), setup.handle()),
+            Default::default(),
+            "Fixture".into(),
+            "fixture-local".into(),
+        );
+        let mut given = account();
+        given.provider = "cursor".into();
+        given.service = Provider::Cursor;
+        let at = now();
+        let hold = |at: u64, until: Option<u64>| {
+            let facts = Facts {
+                checked: Some(at),
+                problem: Some(Problem {
+                    kind: ProblemKind::RateLimited,
+                    message: "Held".into(),
+                    until,
+                    unknown: false,
+                }),
+                ..Default::default()
+            };
+            service.confirm_standalone_accounts(
+                std::slice::from_ref(&given),
+                &Default::default(),
+                at,
+            );
+            service
+                .observe_confirmed_facts(given.clone(), vec![], facts, at, at)
+                .unwrap();
+            service.answer(at)["data"]["rows"][0]["problem"]["until"]
+                .as_u64()
+                .unwrap()
+        };
+        let first = hold(at, None);
+        assert_eq!(first, at + 60 * MIN);
+        let second = hold(first + 1, None);
+        assert_eq!(second, first + 1 + 120 * MIN);
+        let told = second + 61_000;
+        assert_eq!(hold(second + 1, Some(told)), told);
+        service
+            .observe_confirmed_facts(
+                given.clone(),
+                vec![],
+                Facts {
+                    checked: Some(told + 1),
+                    ..Default::default()
+                },
+                told + 1,
+                told + 1,
+            )
+            .unwrap();
+        assert_eq!(hold(told + 2, None), told + 2 + 60 * MIN);
     }
 }

@@ -977,7 +977,12 @@ describe("what Claude Code says as it stops", { skip }, () => {
       ["Invalid token sk-ant-oat01-abcdefghijklmnop", "Invalid token sk-ant-…"],
     ]) {
       const ended = await stopsAsItStarts(id, `${line}\n`);
-      assertMatch(ended, { outcome: "failed", error: { message: `${plain}: ${told}` } });
+      try {
+        assertMatch(ended, { outcome: "failed", error: { message: `${plain}: ${told}` } });
+      } catch (error) {
+        error.message += `\nFixture resident log:\n${box.claude.log()}`;
+        throw error;
+      }
     }
     // Its stack, and the runtime's banner, aren't why.
     assert.equal(await said(id, "Error: out of memory\n    at run (cli.js:1:1)\n\nBun v1.3.14 (macOS arm64)\n"), `${plain}: Error: out of memory`);

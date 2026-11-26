@@ -584,6 +584,26 @@ impl Readers {
                     (windows, facts)
                 }
                 Err(problem) => {
+                    if source.account.service == Provider::Cursor {
+                        let sign = self
+                            .cursor
+                            .lock()
+                            .await
+                            .get(&source.account.provider)
+                            .cloned();
+                        if let Some(sign) = sign {
+                            let sign = sign.lock().await;
+                            if sign.mark == source.account.sign_in {
+                                source.account.identity =
+                                    sign.access.as_deref().and_then(jwt_subject).map(|subject| {
+                                        identity(
+                                            "cursor",
+                                            subject.split('|').nth(1).unwrap_or(&subject),
+                                        )
+                                    });
+                            }
+                        }
+                    }
                     failed |= problem.kind == ProblemKind::Failed;
                     (
                         vec![],
@@ -690,7 +710,7 @@ impl Readers {
         Problem {
             kind: ProblemKind::RateLimited,
             message: "Cursor is turning reads away for now.".into(),
-            until: Some(state.held),
+            until: retry.map(|_| state.held),
             unknown: false,
         }
     }
@@ -834,9 +854,16 @@ impl Readers {
             .await?;
         let name = str_at(&info["planInfo"]["planName"]);
         if usage["enabled"] == false {
-            return Err(problem(
-                ProblemKind::Ended,
-                "Its Cursor plan isn't active now.",
+            return Ok((
+                vec![],
+                Facts {
+                    problem: Some(problem(
+                        ProblemKind::Ended,
+                        "Its Cursor plan isn't active now.",
+                    )),
+                    ..Default::default()
+                },
+                who,
             ));
         }
         let mut facts = Facts {
@@ -855,19 +882,23 @@ impl Readers {
             .zip(api)
             .is_some_and(|(a, b)| a >= 0.0 && b >= 0.0 && (a > 0.0 || b > 0.0 || spent == 0.0));
         let extra = &usage["spendLimitUsage"];
-        let team = name.is_some_and(|s| s.eq_ignore_ascii_case("team"))
-            || extra["limitType"]
-                .as_str()
-                .is_some_and(|s| s.eq_ignore_ascii_case("team"))
+        let team_by_shape = extra["limitType"]
+            .as_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("team"))
             || positive(&extra["pooledLimit"]).is_some();
+        let team = name.is_some_and(|s| s.eq_ignore_ascii_case("team")) || team_by_shape;
         let (minutes, reset) = cycle(
             number(&usage["billingCycleStart"]).map(|n| n as u64),
             number(&usage["billingCycleEnd"]).map(|n| n as u64),
             30 * 1440,
         );
         let mut windows = vec![];
-        let fallback = !p.is_object() || (limit.is_none() && total.is_none() && !pools);
-        if fallback {
+        let missing_usage = !p.is_object() || (limit.is_none() && total.is_none() && !pools);
+        // A team-shaped answer without a limit or model pools cannot be interpreted
+        // as a percentage of a personal plan, even if it contains a total percent.
+        let request_based_team = team_by_shape && p.is_object() && limit.is_none() && !pools;
+        if missing_usage || request_based_team {
+            let unavailable = cursor_request_words(name, missing_usage);
             if let Some(user) = user.as_deref() {
                 let summary = self
                     .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
@@ -875,12 +906,9 @@ impl Readers {
                 let requests = self
                     .cursor_website(&mut state, "/api/usage", user, &access, at, true)
                     .await?;
-                windows = cursor_summary(&summary, &requests, at, &mut facts)?;
+                windows = cursor_summary(&summary, &requests, at, &mut facts, unavailable)?;
             } else {
-                return Err(problem(
-                    ProblemKind::Failed,
-                    "Cursor request-based usage data unavailable. Try again later.",
-                ));
+                return Err(problem(ProblemKind::Failed, unavailable));
             }
         } else {
             if team && pools {
@@ -974,14 +1002,21 @@ impl Readers {
                 credit += number(&stripe["customerBalance"])
                     .filter(|n| *n < 0.0)
                     .map_or(0.0, f64::abs);
-                if team && !windows.iter().any(|w| w.id == "on_demand") && facts.extras.is_empty() {
+                if team_by_shape {
                     let summary = self
                         .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
                         .await?;
-                    summary_on_demand(&summary, &mut windows, &mut facts, minutes, reset, at);
-                    if facts.plan.is_none() {
-                        facts.plan = title(&summary["membershipType"]);
+                    if !windows.iter().any(|w| w.id == "on_demand") && facts.extras.is_empty() {
+                        let start = iso(&summary["billingCycleStart"]);
+                        let end = iso(&summary["billingCycleEnd"]);
+                        let (period, until) = if start.zip(end).is_some_and(|(s, e)| e > s) {
+                            cycle(start, end, 30 * 1440)
+                        } else {
+                            (minutes, reset)
+                        };
+                        summary_on_demand(&summary, &mut windows, &mut facts, period, until, at);
                     }
+                    facts.plan = cursor_plan_label(name, str_at(&summary["membershipType"]));
                 }
             }
             if credit > 0.0 {
@@ -1669,11 +1704,34 @@ fn summary_on_demand(
         }
     }
 }
+fn cursor_request_words(name: Option<&str>, missing: bool) -> &'static str {
+    match name.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("enterprise") if missing => "Enterprise usage data unavailable. Try again later.",
+        Some("team") if missing => "Team request-based usage data unavailable. Try again later.",
+        _ => "Cursor request-based usage data unavailable. Try again later.",
+    }
+}
+fn cursor_plan_label(info: Option<&str>, membership: Option<&str>) -> Option<String> {
+    let info = info.map(str::trim).filter(|s| !s.is_empty());
+    let membership = membership
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let member = membership.as_deref();
+    let generic =
+        info.is_none_or(|s| s.eq_ignore_ascii_case("pro") || s.eq_ignore_ascii_case("pro plan"));
+    let label = if generic && matches!(member, Some("enterprise" | "team")) {
+        member
+    } else {
+        info.or(member)
+    };
+    label.and_then(|s| title(&json!(s)))
+}
 fn cursor_summary(
     summary: &Value,
     requests: &Value,
     at: u64,
     facts: &mut Facts,
+    unavailable: &'static str,
 ) -> Result<Vec<Window>, Problem> {
     let start = iso(&summary["billingCycleStart"]);
     let end = iso(&summary["billingCycleEnd"]);
@@ -1740,14 +1798,9 @@ fn cursor_summary(
         }
     }
     summary_on_demand(summary, &mut windows, facts, minutes, reset, at);
-    if facts.plan.is_none() {
-        facts.plan = title(&summary["membershipType"]);
-    }
+    facts.plan = cursor_plan_label(facts.plan.as_deref(), str_at(&summary["membershipType"]));
     if windows.is_empty() && facts.extras.is_empty() {
-        return Err(problem(
-            ProblemKind::Failed,
-            "Cursor request-based usage data unavailable. Try again later.",
-        ));
+        return Err(problem(ProblemKind::Failed, unavailable));
     }
     Ok(windows)
 }

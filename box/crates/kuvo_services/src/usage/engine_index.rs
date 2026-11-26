@@ -25,6 +25,14 @@ fn signature(stamp: &FileStamp) -> String {
         stamp.device, stamp.file, stamp.created_ns, stamp.modified_ns, stamp.changed_ns, stamp.size
     )
 }
+fn wal_signature(stamp: &FileStamp) -> String {
+    // SQLite can touch a live WAL's metadata while opening a read transaction.
+    // Its write time, length and file identity detect actual WAL changes.
+    format!(
+        "{}:{}:{:?}:{}:{}",
+        stamp.device, stamp.file, stamp.created_ns, stamp.modified_ns, stamp.size
+    )
+}
 pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
     let Some(main) = kuvo_store::files::file_stamp(path)? else {
         return Ok(None);
@@ -36,7 +44,7 @@ pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
         revision: format!(
             "{}:{}",
             signature(&main),
-            wal.as_ref().map(signature).unwrap_or_default()
+            wal.as_ref().map(wal_signature).unwrap_or_default()
         ),
     }))
 }
@@ -626,4 +634,25 @@ pub fn credentials(root: &Path) -> Result<Option<Value>> {
         .map(|(id, value)| serde_json::json!({"integrationID":id,"active":true,"value":value}))
         .collect();
     Ok(Some(Value::Array(result)))
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+
+    #[test]
+    fn wal_read_metadata_does_not_change_its_content_signature() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("opencode.db-wal");
+        std::fs::write(&path, b"fixture").unwrap();
+        let original = kuvo_store::files::file_stamp(&path).unwrap().unwrap();
+        let mut changed = original.clone();
+        changed.changed_ns += 1;
+        assert_eq!(wal_signature(&original), wal_signature(&changed));
+        changed.modified_ns += 1;
+        assert_ne!(wal_signature(&original), wal_signature(&changed));
+        changed = original.clone();
+        changed.size += 1;
+        assert_ne!(wal_signature(&original), wal_signature(&changed));
+    }
 }

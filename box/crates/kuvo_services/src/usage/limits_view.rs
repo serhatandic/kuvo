@@ -1420,4 +1420,88 @@ mod tests {
             assert_eq!(row["windows"][0]["title"], window_name);
         }
     }
+    #[test]
+    fn cursor_extras_are_from_the_newest_successful_read_and_ended_plan_hides_old_rings() {
+        let cursor = |name: &str, facts: Facts, windows: Vec<Window>| {
+            let mut given = member(name, windows, facts);
+            given.entry.account.provider = "cursor".into();
+            given.entry.account.service = Provider::Cursor;
+            given
+        };
+        let extra = Extra::Spent {
+            id: "on_demand".into(),
+            name: "On-demand".into(),
+            amount: 43.0,
+            unit: Unit::Usd,
+            resets_at: None,
+        };
+        let kept = cursor(
+            "Studio",
+            Facts {
+                checked: Some(NOW - MINUTE),
+                extras: vec![extra.clone()],
+                ..Default::default()
+            },
+            vec![],
+        );
+        let empty = cursor(
+            "Build",
+            Facts {
+                checked: Some(NOW),
+                ..Default::default()
+            },
+            vec![],
+        );
+        assert!(
+            merged_facts(&[kept.clone(), empty.clone()])
+                .extras
+                .is_empty()
+        );
+        let mut latest = empty.clone();
+        latest.entry.facts.extras = vec![extra.clone()];
+        assert_eq!(
+            merged_facts(&[kept.clone(), latest]).extras,
+            vec![extra.clone()]
+        );
+        let mut failed = empty.clone();
+        failed.entry.facts.problem = Some(Problem::new(ProblemKind::Failed, "Unavailable"));
+        assert_eq!(merged_facts(&[kept, failed]).extras, vec![extra]);
+        let mut old = cursor(
+            "Studio",
+            Facts {
+                checked: Some(NOW - MINUTE),
+                problem: Some(Problem::new(ProblemKind::RateLimited, "Held")),
+                ..Default::default()
+            },
+            vec![window(
+                "total",
+                43200,
+                0.3,
+                NOW - MINUTE,
+                Some(NOW + MINUTE),
+            )],
+        );
+        let ended = cursor(
+            "Build",
+            Facts {
+                checked: Some(NOW),
+                problem: Some(Problem::new(
+                    ProblemKind::Ended,
+                    "Its Cursor plan isn't active now.",
+                )),
+                ..Default::default()
+            },
+            vec![],
+        );
+        old.entry.facts = merged_facts(&[old.clone(), ended]);
+        let (_, row) = super::super::project(&old.entry, "studio", "Studio", NOW);
+        assert_eq!(row["ended"], true);
+        assert_eq!(row["windows"], json!([]));
+        assert_eq!(row["rings"], json!({}));
+        assert!(row.get("level").is_none());
+        assert!(
+            crate::usage::plan_tool_words::describe("Studio", &json!([row]), NOW, None)
+                .contains("its plan has ended")
+        );
+    }
 }
