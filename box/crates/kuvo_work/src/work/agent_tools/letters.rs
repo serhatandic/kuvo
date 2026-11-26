@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use http::Method;
-use kuvo_engine::{BotEngine, LetterDelivery, LetterPrompt, LetterText, TranscriptScope, folded};
+use kuvo_engine::{
+    BotEngine, LetterDelivery, LetterPrompt, LetterText, LetterTiming, TranscriptScope, folded,
+};
 use kuvo_peers::{
     calls::plain,
     directory::{AgentKind, Member},
@@ -16,7 +18,7 @@ use serde_json::{Map, Value, json};
 use super::{Caller, Said, calls::name_of, refused, said, session_id};
 use crate::work::{
     Work,
-    watch::{encoded, is_archived, tools::under},
+    watch::{is_archived, tools::under},
 };
 
 /// How long a read by mail is waited for, and how much of it is taken.
@@ -87,7 +89,8 @@ impl Work {
                 .ok(),
             None => None,
         };
-        let fresh = page.is_some();
+        let fresh =
+            page.is_some() || engine.is_some_and(|engine| !engine.running() && engine.reachable());
         let mut sessions: Vec<Value> = page
             .map(|page| {
                 page["data"]
@@ -96,6 +99,13 @@ impl Work {
                     .unwrap_or_else(|| page.as_array().cloned().unwrap_or_default())
             })
             .unwrap_or_default();
+        if let Some(engine) = engine {
+            let agents = engine.agent_sessions().await;
+            // The engine's page is bounded; compare only that page, not every
+            // newly added agent conversation against the entire growing list.
+            sessions.retain(|row| !agents.iter().any(|(header, _)| header["id"] == row["id"]));
+            sessions.extend(agents.into_iter().map(|(header, _)| header));
+        }
         let frozen = self.peers.view().local.ownership.frozen.clone();
         sessions.retain(|data| {
             let id = data["id"].as_str().unwrap_or_default();
@@ -309,12 +319,7 @@ impl Work {
         }
         let data = match engine {
             Some(engine) => engine
-                .call(
-                    Method::GET,
-                    &format!("api/session/{}", encoded(&session)),
-                    None,
-                    Duration::from_secs(10),
-                )
+                .session_data(&session)
                 .await
                 .ok()
                 .filter(|data| data["id"] == session.as_str()),
@@ -431,6 +436,16 @@ impl Work {
         let Some(words) = text("text") else {
             return Ok(refused("Say what to write (text)."));
         };
+        let timing = match args.get("delivery") {
+            None => Some(LetterTiming::Now),
+            Some(Value::String(value)) => LetterTiming::parse(Some(value)),
+            _ => None,
+        };
+        let Some(timing) = timing else {
+            return Ok(refused(
+                "Choose delivery: now, steer (at its next step), or queue (after the turn).",
+            ));
+        };
         let all = self.everyone(engine).await;
         let (target, place) = match self
             .find_agent(
@@ -468,6 +483,7 @@ impl Work {
         };
         let from = caller.map_or("unknown", |caller| caller.session.as_str());
         let sender = self.sender_name(caller);
+        let mut delivery = None;
         let answer = match place {
             Place::Here(data) => {
                 let hint = if from == "unknown" {
@@ -479,11 +495,11 @@ impl Work {
                 let parts = kuvo_engine::parts_metadata(&letter);
                 let id = match got["message"].as_str().filter(|_| again) {
                     Some(id) => Some(id.to_owned()),
-                    None => self.new_message_id().await,
+                    None => self.list.engine().letter_id().ok(),
                 };
-                let (Some(id), Ok(mover)) = (id, self.list.engine().session_move().await) else {
+                let Some(id) = id else {
                     return failed(format!(
-                        "Delivery to {} couldn't be confirmed: the engine isn't running.",
+                        "Delivery to {} couldn't be confirmed: this computer couldn't make a message ID.",
                         target.name
                     ));
                 };
@@ -499,9 +515,14 @@ impl Work {
                     when_queued: None,
                     from: sender.clone(),
                     words: words.to_owned(),
-                    steer: true,
+                    timing,
                 };
-                let went = match mover.deliver_letter(&target.session, prompt).await {
+                let went = match self
+                    .list
+                    .engine()
+                    .deliver_letter(&target.session, prompt)
+                    .await
+                {
                     Ok(went) => went,
                     // (Its operation's to be sent again, and goes under the same id.)
                     Err(_) if operation.is_some() => {
@@ -523,8 +544,16 @@ impl Work {
                     data["id"] = json!(target.session);
                     self.note_told(&caller.session, &data);
                 }
+                delivery = match &went {
+                    LetterDelivery::Steered => Some("steered"),
+                    LetterDelivery::Started => Some("started a turn"),
+                    LetterDelivery::Queued(_) if timing != LetterTiming::Now => Some("queued"),
+                    _ => None,
+                };
                 match went {
-                    LetterDelivery::Accepted => format!(
+                    LetterDelivery::Accepted
+                    | LetterDelivery::Steered
+                    | LetterDelivery::Started => format!(
                         "Sent to {}. Its answer, if it writes one, comes to you as a message.",
                         target.name
                     ),
@@ -532,7 +561,10 @@ impl Work {
                 }
             }
             Place::Away(peer) => {
-                let letter = json!({ "from": caller.map(|caller| caller.session.clone()), "to": target.session, "text": cut(words, LETTER_TEXT), "peer": kuvo_wire::keys::encode(&peer.key), "wait": false });
+                let mut letter = json!({ "to": target.session, "text": cut(words, LETTER_TEXT), "peer": kuvo_wire::keys::encode(&peer.key), "wait": false, "delivery": timing.as_str() });
+                if let Some(caller) = caller {
+                    letter["from"] = json!(caller.session);
+                }
                 if !(again && got["left"] == true) && self.leave_letter(letter).is_err() {
                     return failed(format!("It didn't reach {}.", target.name));
                 }
@@ -560,7 +592,10 @@ impl Work {
         if let Some(caller) = caller {
             self.note_sent(&caller.session, &target.session, words);
         }
-        Ok(said(answer))
+        Ok(Said {
+            delivery,
+            ..said(answer)
+        })
     }
 
     /// read_conversation: the conversation of the agent `args.of` names, as you'd read it (a long
@@ -708,15 +743,6 @@ impl Work {
         }
         let _ = std::fs::remove_file(&alive);
         answer
-    }
-
-    async fn new_message_id(&self) -> Option<String> {
-        self.list
-            .engine()
-            .wake_engine(false)
-            .await?
-            .message_id()
-            .ok()
     }
 
     /// A bot's conversation telling or reading one of its sessions, for clients to show it

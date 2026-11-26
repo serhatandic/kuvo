@@ -17,6 +17,9 @@ mod sys;
 #[path = "process/windows.rs"]
 mod sys;
 
+mod priority;
+pub use priority::{wait_for_background_memory, wait_for_background_memory_or_cancel};
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
@@ -167,6 +170,14 @@ pub enum Stdio {
     File(std::fs::File),
 }
 
+/// Lower a command and everything it starts, without lowering its owner.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Priority {
+    #[default]
+    Inherit,
+    Background,
+}
+
 pub struct Spawn {
     pub executable: Executable,
     pub args: Vec<OsString>,
@@ -175,6 +186,7 @@ pub struct Spawn {
     pub stdin: Stdio,
     pub stdout: Stdio,
     pub stderr: Stdio,
+    pub priority: Priority,
 }
 
 impl Spawn {
@@ -187,11 +199,12 @@ impl Spawn {
             stdin: Stdio::Null,
             stdout: Stdio::Null,
             stderr: Stdio::Null,
+            priority: Priority::Inherit,
         }
     }
 
     pub fn spawn(&self) -> io::Result<ChildGroup> {
-        self.launch(None, false)
+        self.launch(None, false, None)
     }
 
     /// Supervise this resident while leaving nested workers to their own owners.
@@ -217,10 +230,15 @@ impl Spawn {
                 "invalid recovery name",
             ));
         }
-        self.launch(Some(recovery_name), resident)
+        self.launch(Some(recovery_name), resident, None)
     }
 
-    fn launch(&self, recovery_name: Option<&str>, resident: bool) -> io::Result<ChildGroup> {
+    pub(crate) fn launch(
+        &self,
+        recovery_name: Option<&str>,
+        resident: bool,
+        console: Option<&crate::pty::Console>,
+    ) -> io::Result<ChildGroup> {
         let valid = |value: &OsStr| !value.as_encoded_bytes().contains(&0);
         if !self.executable.path().is_absolute()
             || self.cwd.as_deref().is_some_and(|path| !path.is_absolute())
@@ -237,7 +255,7 @@ impl Spawn {
                 "process requires an absolute executable and valid arguments, directory and environment",
             ));
         }
-        sys::spawn(self, recovery_name, resident)
+        sys::spawn(self, recovery_name, resident, console)
     }
 }
 

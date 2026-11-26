@@ -127,7 +127,7 @@ pub(crate) struct Prompt {
 
 #[derive(Deserialize)]
 pub(crate) struct Inbox {
-    id: String,
+    pub(crate) id: String,
     delivery: Delivery,
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -831,7 +831,7 @@ async fn transcript_has(
     target.has_message(engine, session, id).await
 }
 
-async fn command_target(engine: &Engine, session: &str) -> Result<Place, Refusal> {
+pub(crate) async fn command_target(engine: &Engine, session: &str) -> Result<Place, Refusal> {
     if let Some(place) = Place::agents(engine, session).await? {
         return Ok(place);
     }
@@ -1165,9 +1165,19 @@ pub(crate) async fn advance(
                 .map_err(save_failed)?;
         }
         if running {
-            interrupt(engine, target, session, true)
-                .await
-                .map_err(queue_failed)?;
+            match target {
+                Target::Agents(source) if how == Advance::Now => {
+                    match source.advance_line(session, id, true).await {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(save_failed(error)),
+                    }
+                }
+                Target::Agents(_) => {}
+                Target::Engine(_) => interrupt(engine, target, session, true)
+                    .await
+                    .map_err(queue_failed)?,
+            }
         }
         return Ok(true);
     }
@@ -1183,13 +1193,22 @@ pub(crate) async fn advance(
         return Ok(false);
     };
     let now = how == Advance::Now || !running;
-    if item.delivery == Delivery::Queue
-        && let Err(error) = set_delivery(engine, target, session, id, Delivery::Steer).await
-    {
-        if error.missing() {
-            return Ok(false);
+    match target {
+        Target::Agents(source) => match source.advance_line(session, id, how == Advance::Now).await
+        {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(save_failed(error)),
+        },
+        Target::Engine(_) if item.delivery == Delivery::Queue => {
+            if let Err(error) = set_delivery(engine, target, session, id, Delivery::Steer).await {
+                if error.missing() {
+                    return Ok(false);
+                }
+                return Err(queue_failed(error));
+            }
         }
-        return Err(queue_failed(error));
+        Target::Engine(_) => {}
     }
     engine
         .queues
@@ -1203,7 +1222,7 @@ pub(crate) async fn advance(
         })
         .await
         .map_err(save_failed)?;
-    if now && (running || item.delivery == Delivery::Steer) {
+    if matches!(target, Target::Engine(_)) && now && (running || item.delivery == Delivery::Steer) {
         interrupt(engine, target, session, true)
             .await
             .map_err(queue_failed)?;

@@ -41,9 +41,10 @@ binary. It is a thin layer over OpenCode's own server and events, so everything 
 comes through, given three client capabilities the box sends in `initialize`:
 `_meta["opencode/child-session-updates"]`, `elicitation.form` and `session.compaction`. The one
 difference is steering: a second `session/prompt` while one runs is refused ("Session already has an
-active ACP prompt"), so a message sent mid-turn waits for the turn's end, as it does for Grok and
-Antigravity. The engine path steers it into the running turn. That is not something the app draws
-differently (the message shows as waiting, then sent), so it doesn't justify the HTTP path.
+active ACP prompt"). As of 4.11, Kuvo uses Send Now's cancel-and-resume for messages sent now,
+and does the same at the next reported tool completion or step boundary for next-step messages.
+Grok and Antigravity share this path. The engine path takes a native steer. This difference
+doesn't justify the HTTP path.
 
 | 3.2 behaviour | Over ACP |
 |---|---|
@@ -55,7 +56,7 @@ differently (the message shows as waiting, then sent), so it doesn't justify the
 | Model variants | Config options `model` and `effort` (the model's variants plus `default`), set with `session/set_config_option` |
 | Images | `promptCapabilities.image`; embedded context too |
 | Stop | `session/cancel` interrupts OpenCode's session; the prompt ends `cancelled` |
-| Steering | Not mid-turn: waits for the turn's end (above) |
+| Steering | No second active ACP prompt: cancel and resume now or at the next step (above) |
 | Modes | Config option `mode` lists OpenCode's primary agents; the box never offers `plan` |
 | Sign-in | Not over ACP: 2.2.6 answers only `authenticate` (its terminal login). API keys, OAuth providers and OpenCode Go connect through OpenCode's own server, started for that sign-in only |
 | Sessions | `session/load`, `resume`, `list`, `fork`, `close`, `delete`; HTTP MCP servers only |

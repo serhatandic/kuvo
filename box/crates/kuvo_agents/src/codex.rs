@@ -173,38 +173,53 @@ impl Agent for Codex {
             let Some((_, identity)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
-            let server = if explicit {
-                self.shared.server().await?
-            } else if let Some(server) = self.shared.current().await {
+            let answer: io::Result<Option<Value>> = async {
+                let server = if explicit {
+                    self.shared.server().await?
+                } else if let Some(server) = self.shared.current().await {
+                    server
+                } else {
+                    return Ok(None);
+                };
+                if server
+                    .signed_in_as
+                    .lock()
+                    .ok()
+                    .and_then(|id| id.clone())
+                    .as_deref()
+                    != Some(identity.as_str())
+                {
+                    return Ok(None);
+                }
                 server
-            } else {
-                return Ok(None);
-            };
-            if server
-                .signed_in_as
-                .lock()
-                .ok()
-                .and_then(|id| id.clone())
-                .as_deref()
-                != Some(identity.as_str())
-            {
+                    .rpc
+                    .request(
+                        "account/rateLimits/read",
+                        Some(serde_json::json!({})),
+                        Some(Duration::from_secs(20)),
+                    )
+                    .await
+                    .map(Some)
+                    .map_err(io::Error::other)
+            }
+            .await;
+            if matches!(&answer, Ok(None)) {
                 return Ok(None);
             }
-            let value = server
-                .rpc
-                .request(
-                    "account/rateLimits/read",
-                    Some(serde_json::json!({})),
-                    Some(Duration::from_secs(20)),
-                )
-                .await
-                .map_err(io::Error::other)?;
             let Some((mark, current)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
             if current != identity {
                 return Ok(None);
             }
+            let value = match answer {
+                Ok(Some(value)) => value,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    eprintln!("Could not refresh Codex limits: {error}");
+                    return Ok(Some(crate::session::DirectPlanReading::failed(mark)));
+                }
+            };
             let mut windows = vec![];
             if let Some(by_id) = value["rateLimitsByLimitId"].as_object() {
                 for (id, snapshot) in by_id {
@@ -432,6 +447,8 @@ impl Agent for Codex {
     /// lines from where the earliest began.
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            // Withdraw a not-yet-started app-server before handing over the existing ones.
+            self.shared.halt();
             if let Some(server) = self.shared.current().await
                 && let Some(from) = server.earliest_turn()
                 && !server.rpc.prepare(from).await

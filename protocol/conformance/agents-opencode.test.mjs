@@ -232,6 +232,43 @@ describe("OpenCode conversations", { skip }, () => {
     await answered(id, "Heard both.");
   });
 
+  test("a letter to OpenCode interrupts the active prompt and reaches its conversation now", {
+    timeout: 90000, skip: binary.typescript && "The Rust box now uses Send Now for letters.",
+  }, async () => {
+    script.push({ hang: true }, messages => ({
+      text: JSON.stringify(messages).includes("A letter now.") ? "Heard letter." : "Missing letter.",
+    }));
+    const lead = await begin({ title: "Lead" });
+    const id = await begin({ title: "Target" });
+    const stopped = model.stopped;
+    await send(id, "Stay working.");
+    await until(() => lastTurn() && words(lastUser(lastTurn())).includes("Stay working."), "It never asked the model.", 60000);
+    const letter = await call("POST", "kuvo/agent-tools", { name: "send_message", session: lead, arguments: { to: id, text: "A letter now." } });
+    assert.equal(letter.status, 200, letter.text);
+    assert.equal(letter.json.delivery, "steered", letter.text);
+    await answered(id, "Heard letter.");
+    assert.equal(model.stopped, stopped + 1);
+  });
+
+  test("a next-step steer to OpenCode is delivered when its tool finishes, not at the end of its turn", {
+    timeout: 90000, skip: binary.typescript && "The Rust box now handles the ACP tool boundary.",
+  }, async () => {
+    const afterTool = messages => JSON.stringify(messages).includes("Next step message.")
+      ? { text: "Heard next step." } : { hang: true };
+    script.push({ wait: "tool-step", tools: [{ name: "shell", args: { command: "echo done", description: "Print done" } }] }, afterTool, afterTool);
+    const id = await begin({ approval: "askFirst" });
+    await send(id, "Run first tool.");
+    await until(() => lastTurn() && words(lastUser(lastTurn())).includes("Run first tool."), "It never asked the model.", 60000);
+    await send(id, "Next step message.");
+    assert.ok(!model.requests.some(asked => JSON.stringify(asked.messages).includes("Next step message.")), "Sent before the boundary");
+    model.open("tool-step");
+    const ask = await until(async () => (await call("GET", `kuvo/sessions/${id}/asks`)).json?.asks?.find(each => each.kind === "permission"), "No tool permission ask");
+    const allow = await call("POST", `kuvo/sessions/${id}/asks/${encodeURIComponent(ask.id)}`, { answer: "once" });
+    assert.ok(allow.status < 300, allow.text);
+    await until(async () => tools(await messages(id)).some(part => part.state?.status === "completed"), "The tool didn't finish.");
+    await answered(id, "Heard next step.");
+  });
+
   test("another model picked goes with its next turn, with its effort", { timeout: 90000 }, async () => {
     script.push({ text: "On the first." }, { text: "On the other." });
     const id = await begin();

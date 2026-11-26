@@ -212,6 +212,7 @@ impl Catalog {
 
 /// The account's models, and how much each holds as Claude Code said.
 async fn load(program: Program) -> io::Result<(Models, HashMap<String, u64>)> {
+    kuvo_os::process::wait_for_background_memory().await;
     let (list, windows) = tokio::task::spawn_blocking(move || probe(program)).await??;
     let models = Models {
         complete: true,
@@ -230,6 +231,7 @@ fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
 
 /// A plan read asks Claude itself; it never extracts the Mac's OAuth token.
 pub(super) async fn usage(program: Program) -> io::Result<Value> {
+    kuvo_os::process::wait_for_background_memory().await;
     tokio::task::spawn_blocking(move || {
         ask_native(program, false, |asking| {
             if !matches!(
@@ -273,6 +275,7 @@ fn ask_native<T>(
     let settings = program.scratch().join("claude/catalog-settings.json");
     kuvo_store::files::write_atomic(&settings, br#"{"disableAllHooks":true}"#)?;
     let mut spawn = Spawn::new(executable.path(), env);
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.executable = executable;
     spawn.cwd = Some(program.home.run());
     spawn.stdin = Stdio::Pipe;

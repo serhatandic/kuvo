@@ -20,6 +20,7 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     background::{Helper, WorkOrder},
@@ -184,7 +185,7 @@ impl Thread for Conversation {
         })
     }
 
-    /// A message waits for the turn's end: ACP has no way into a prompt under way.
+    /// ACP has no way into a prompt under way: the resident cancels and resumes.
     fn takes_steers(&self) -> bool {
         false
     }
@@ -207,6 +208,7 @@ impl ActiveTurn for Turn {
 /// A turn under way.
 struct Active {
     id: String,
+    start_cancel: CancellationToken,
     sink: Arc<dyn TurnSink>,
     projection: Projection,
     process: Arc<Process>,
@@ -247,6 +249,7 @@ impl Active {
     ) -> Self {
         Self {
             id: input.id.clone(),
+            start_cancel: input.start_cancel.clone(),
             sink,
             projection,
             process,
@@ -594,7 +597,12 @@ impl Actor {
     /// Its session open in a process its launch now shares: the one it's in, or (that one
     /// outdated, stale, or started another way) another, its conversation taken up there.
     /// Whether it started over (its conversation couldn't be taken up).
-    async fn ensure_open(&mut self, model: &str, mode: &Mode) -> io::Result<bool> {
+    async fn ensure_open(
+        &mut self,
+        model: &str,
+        mode: &Mode,
+        cancel: &CancellationToken,
+    ) -> io::Result<bool> {
         let flavour = self.shared.flavour.clone();
         let key = {
             let (flavour, mode, directory, model) = (
@@ -621,7 +629,7 @@ impl Actor {
                     model.to_owned(),
                 );
                 self.shared
-                    .process(&key, move || flavour.launch(&mode, &directory, &model))
+                    .process(&key, move || flavour.launch(&mode, &directory, &model), cancel)
                     .await?
             }
         };
@@ -755,7 +763,10 @@ impl Actor {
         self.own = None;
         let mode = Self::mode(&input);
         let model = (self.shared.flavour).model_value(&input.model.provider, &input.model.id);
-        if let Err(error) = self.ensure_open(&model, &mode).await {
+        if let Err(error) = self.ensure_open(&model, &mode, &input.start_cancel).await {
+            if input.start_cancel.is_cancelled() {
+                return Err(error);
+            }
             return unsent(sink.as_ref(), error).await;
         }
         let process = self
@@ -1750,14 +1761,16 @@ impl Actor {
         let Some(active) = &self.active else {
             return Ok(());
         };
-        let (model, variant, mode, compact) = (
+        let (model, variant, mode, compact, cancel) = (
             active.model.clone(),
             active.variant.clone(),
             active.mode.clone(),
             active.compact,
+            active.start_cancel.clone(),
         );
         let name = self.shared.name();
-        match self.ensure_open(&model, &mode).await {
+        match self.ensure_open(&model, &mode, &cancel).await {
+            Err(_) if cancel.is_cancelled() => return self.end(Outcome::Interrupted).await,
             Err(error) => return self.end(Outcome::Failed(failure(error.to_string()))).await,
             Ok(true) => return self.end(Outcome::Failed(failure(format!("{name} started again and couldn't take up this conversation. Send your message again.")))).await,
             Ok(false) => {}

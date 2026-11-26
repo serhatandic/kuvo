@@ -12,65 +12,8 @@ import { addSshStandIn } from "../../box/bridge-tests/add-ssh-stand-in.js";
 import { boxBinary, boxCommand, holdWindowsFile, isolatedEnv, launch, privateHome, readJSON, relayAddress, request, scratch, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
+import { loadWire, relayDesktop, wireFixture } from "./paired.mjs";
 
-const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
-
-async function loadWire(home, env) {
-  const fixtureEnv = { ...env, KUVO_HOME: home };
-  const previous = Object.fromEntries(Object.keys(fixtureEnv).map(key => [key, process.env[key]]));
-  Object.assign(process.env, fixtureEnv);
-  try {
-    return await import(pathToFileURL(wireFixture).href);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-}
-
-async function relayDesktop(t, relay, computer, ask, secret, session, name) {
-  const wire = await loadWire(computer.home, computer.env);
-  const key = wire.publicOf(secret).toString("base64url");
-  const paired = await ask("POST", "kuvo/devices/pair", { key, kind: "desktop", name }, { "x-kuvo-from": "app" });
-  assert.equal(paired.status, 200, paired.text);
-  const link = readJSON(path.join(computer.home, "run", "link.json"));
-  const address = relayAddress(Buffer.from(link.secret, "base64url"));
-  const target = Buffer.from((await ask("GET", "kuvo/setup")).json.you.key, "base64url");
-  const device = relay.device();
-  t.after(() => device.leave());
-  const send = (kind, body) => device.send(address, wire.frame(kind, session, body));
-  const receive = async kind => {
-    const message = wire.readRelay(await device.next());
-    assert.equal(message.kind, "deliver");
-    const frame = wire.readFrame(message.payload);
-    assert.equal(frame.session, session);
-    assert.equal(frame.kind, kind);
-    return frame.body;
-  };
-  const initiator = new wire.IKInitiator(secret, target, wire.PROLOGUE);
-  const hello = { v: 1, app: "1.0.0", client: "desktop", pairing: paired.json.pairing };
-  send(wire.Frame.handshake1, initiator.writeMessage1(Buffer.from(JSON.stringify(hello))));
-  const { transport } = initiator.readMessage2(await receive(wire.Frame.handshake2));
-  let requestId = 0;
-  const post = async (route, body, headers = {}) => {
-    const id = ++requestId;
-    const head = { t: "req", id, m: "POST", p: route, h: { "content-type": "application/json", ...headers } };
-    for (const part of wire.pieces(head, Buffer.from(JSON.stringify(body)), true)) {
-      send(wire.Frame.transport, transport.seal(part));
-    }
-    const chunks = [];
-    let status;
-    for (;;) {
-      const answer = wire.decodeMessage(transport.open(await receive(wire.Frame.transport)));
-      assert.equal(answer.head.id, id);
-      status ??= answer.head.s;
-      chunks.push(answer.body);
-      if (answer.head.end === true) return { status, json: JSON.parse(Buffer.concat(chunks)) };
-    }
-  };
-  return { key, post };
-}
 
 test("a transient addressed SSH Add refuses start, answer and cancel after authenticating", {
   skip: process.platform !== "darwin" || !fs.existsSync(wireFixture) && "Build the reference Noise fixture",
@@ -1139,9 +1082,21 @@ test("uninstall from a saved SSH address commits a signed wipe and waits for con
   const route = `kuvo/computers/${member.key}/uninstall`;
   const missing = await primary("POST", route, {}, headers);
   assert.equal(missing.status, 404, missing.text);
+  const row = async key => (await primary("GET", "kuvo/computers")).json.computers.find(each => each.key === key);
+  const offered = async key => (await row(key))?.actions.find(action => action.id === "uninstall");
+  // (Lab has never been heard from: its row still offers what works from here.)
+  const down = await row(member.key);
+  assert.notEqual(down.reach, "connected", "Lab has never been heard from");
+  assert.ok(down.actions.some(action => action.id === "remove"), JSON.stringify(down.actions));
+  assert.equal(await offered(member.key), undefined, "a computer with no saved address offers no uninstall");
   save("phone-link.json", { machines: {
     "test-lab": { key: member.key, name: member.name, address: member.address },
     "test-spare": { key: spare.key, name: spare.name, address: spare.address },
+  } });
+  assert.deepEqual(await offered(member.key), { id: "uninstall", label: "Unlink and wipe", confirm: {
+    title: `Unlink and wipe ${member.name}?`,
+    message: `${member.name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`,
+    label: "Unlink and wipe",
   } });
   const result = await primary("POST", route, {}, headers);
   assert.equal(result.status, 202, result.text);

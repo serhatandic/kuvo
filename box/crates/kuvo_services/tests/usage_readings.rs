@@ -298,3 +298,72 @@ fn a_missing_or_invalid_read_preserves_the_previous_notice_signal() {
         Some(vec![Milestone::UnderTenPercent])
     );
 }
+
+#[test]
+fn weekly_forecasts_keep_dense_samples_through_restart_and_reset_jitter() {
+    use kuvo_services::usage::readings::CardPrediction;
+    let week = 7 * 24 * 60 * MIN;
+    let weekly = |at, used, reset| Window {
+        id: "secondary".into(),
+        minutes: Some(10080),
+        ..reading(at, used, reset)
+    };
+    let reset = START + week;
+    let mut trail = Trail::new(weekly(START, 0.42, reset)).unwrap();
+    assert_eq!(trail.card_prediction(START), None);
+    for minute in 1..=480 {
+        assert!(
+            trail
+                .observe(weekly(START + minute * MIN, 0.42, reset), &toggles())
+                .is_some()
+        );
+    }
+    let now = START + 480 * MIN;
+    assert_eq!(trail.card_prediction(now), Some(CardPrediction::Lasts));
+    let saved = serde_json::to_vec(&trail).unwrap();
+    // Dense observations are folded by time bucket, not an ever-growing log.
+    assert!(saved.len() < 10_000);
+    let mut restarted: Trail = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(restarted.card_prediction(now), Some(CardPrediction::Lasts));
+    // A six-minute forward jump is not a new quota period without a refill.
+    // Reject it without discarding the established forecast.
+    assert!(
+        restarted
+            .observe(weekly(now + MIN, 0.42, reset + 6 * MIN), &toggles())
+            .is_none()
+    );
+    assert_eq!(
+        restarted.card_prediction(now + MIN),
+        Some(CardPrediction::Lasts)
+    );
+    assert_eq!(restarted.current.resets_at, Some(reset));
+    assert!(
+        restarted
+            .observe(weekly(now + 2 * MIN, 0.42, reset), &toggles())
+            .is_some()
+    );
+    assert_eq!(
+        restarted.card_prediction(now + 2 * MIN),
+        Some(CardPrediction::Lasts)
+    );
+    assert!(
+        restarted
+            .observe(weekly(reset + MIN, 0.03, reset + week), &toggles())
+            .is_some()
+    );
+    assert_eq!(restarted.card_prediction(reset + MIN), None);
+    for hour in [2, 4, 7] {
+        assert!(
+            restarted
+                .observe(
+                    weekly(reset + hour * 60 * MIN, 0.03, reset + week),
+                    &toggles()
+                )
+                .is_some()
+        );
+    }
+    assert_eq!(
+        restarted.card_prediction(reset + 7 * 60 * MIN),
+        Some(CardPrediction::Lasts)
+    );
+}

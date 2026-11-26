@@ -33,6 +33,7 @@ pub struct Options {
 }
 
 pub async fn start(options: Options) -> io::Result<Arc<dyn Attempt>> {
+    kuvo_os::process::wait_for_background_memory().await;
     let initial = page(&options, "", options.printed_page, "");
     let (status_tx, mut status_rx) = watch::channel(Status::Pending { page: initial });
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -172,6 +173,7 @@ fn run(
     ready: oneshot::Sender<io::Result<()>>,
 ) -> io::Result<()> {
     let catcher = Catcher::install(&options.temporary, &mut options.spawn)?;
+    options.spawn.priority = kuvo_os::process::Priority::Background;
     options.spawn.stdin = Stdio::Pipe;
     options.spawn.stdout = Stdio::Pipe;
     options.spawn.stderr = Stdio::Pipe;

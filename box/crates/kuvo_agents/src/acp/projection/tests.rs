@@ -135,6 +135,7 @@ fn words_after_a_tool_begin_a_new_step_and_a_call_merges_its_updates() {
             [
                 TurnEvent::StepEnded { .. },
                 TurnEvent::StepStarted { .. },
+                TurnEvent::StepBoundary,
                 TurnEvent::TextDelta { .. }
             ]
         ),

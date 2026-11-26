@@ -58,7 +58,7 @@ export type SessionAction = Infer<typeof SESSION_ACTION>;
 export type SessionActions = Infer<typeof SESSION_ACTIONS>;
 
 /** What an agent's tool says back to it: its words, and whether it didn't do what was asked. */
-export const TOOL_ANSWER = object({ text: string, isError: bool });
+export const TOOL_ANSWER = object({ text: string, isError: bool, "delivery?": words("steered", "started a turn", "queued") });
 
 const REFUSED = object({ message: string });
 

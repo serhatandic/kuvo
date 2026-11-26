@@ -2777,7 +2777,10 @@ async function mail(name, args, from, operation, cancelled = () => false) {
   try {
     said = JSON.parse(answer?.body || "null");
   } catch {}
-  if (answer?.status === 200 && typeof said?.text === "string") return text(said.text, said.isError === true);
+  if (answer?.status === 200 && typeof said?.text === "string") {
+    const delivery = name === "send_message" && typeof said.delivery === "string" ? `\nDelivery: ${said.delivery}.` : "";
+    return text(said.text + delivery, said.isError === true);
+  }
   return text(said?.message || "Kuvo Code on this machine didn't answer. Try again in a moment.", true);
 }
 

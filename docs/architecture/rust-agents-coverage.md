@@ -882,6 +882,120 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## OpenCode's older conversations and bots (4.7d, in progress)
+
+Conversations made on the engine before OpenCode was a coding agent here, and bots on OpenCode's
+models, move to the OpenCode agent. Removing the engine's place (`Place::Engine`, its start
+triggers and the `api/…` passthrough) is still to come.
+
+- **Listed without OpenCode.** `acp/opencode_history.rs` reads OpenCode's database read-only
+  (`session_v2`) into the agents' inventory, each row as OpenCode's server gave it
+  (`Session.Info`), marked as the OpenCode agent's. A row the engine also lists shows once.
+- **Read on first open.** The first read or change takes the conversation into the agents' store
+  from `opencode session export <id> --standalone`. Its rows are byte for byte the ones OpenCode's
+  server answered (checked on 2.2.6), so the app draws them as before. The rows are counted
+  against OpenCode's database first. `--standalone` keeps the export on its own server, never
+  OpenCode's background service, so nothing stays running. Nothing in OpenCode's database is
+  changed by Kuvo.
+- **Continued.** It keeps its `ses_…` ID, also its ACP session (`acpSession`), so its next turn
+  resumes it (`session/resume`) with all its earlier turns.
+- **Bots.** A bot's conversation on any model with a provider is made with the coding agents
+  (`kit::runs_on_agents`). Editing a bot still uses the agents-only check until the engine goes.
+- **Older records' provider names.** `claude`, `codex` and `grok` (with an `@account`) are the
+  agents' own, never OpenCode's (`Provider::of_model`); their state stays under the name it was
+  kept under. 4.7b had sent them to OpenCode (found by 5.4 in Insights).
+
+| Case | Both boxes | Notes |
+|---|---|---|
+| agents-opencode-history: it's listed with its title, and listing starts no OpenCode | yes | Rust also: no OpenCode process, no engine record |
+| agents-opencode-history: it opens with its whole transcript | yes | same rows and IDs as the reference made |
+| agents-opencode-history: it goes on with a turn that has all that came before | yes | the model hears the earlier turns |
+| bots-opencode (Mac, machine): a bot made from a template on one of its models waits | yes | from `bots.json` |
+| bots-opencode (Mac, machine): it's told who it is and where it runs, its conversation marked as its | yes | from `bots.json`; Rust: on the agent |
+
+| Platform | agents-opencode-history | bots-opencode | terminals |
+|---|---|---|---|
+| macOS | 3/3 both boxes | 4/4 both boxes | 7/7 both boxes |
+| WSL2 (static musl, OpenCode 2.2.6) | 3/3 both boxes | 4/4 both boxes | 7/7 both boxes |
+| Native Windows | — (the reference makes the home) | 4/4 Rust | 7/7 Rust |
+
+Also native Windows: agents-opencode 14/14. Measured on the Mac (debug build, a home holding a
+copy of this Mac's OpenCode database, 446 conversations listed): after the app's opening requests
+one process, the box, 172 MB, and no OpenCode; after opening one older conversation (its export
+ran and ended) still one process, 153 MB. 4.7b's main had 2 processes and 805–915 MB.
+
+Verified on the Mac: both areas on both boxes; bots 36/36, agents-opencode 14/14 and
+engine-sessions 81/81 on Rust; `agents-opencode-live` passed with a real OpenCode Go turn (its
+location is now asked again while the new conversation isn't listed yet, as the app does: the
+first run met that 503 before any turn). The reference makes the older home, so these run where it runs
+(Mac and Linux).
+
+Left: removing an older conversation lists it again from OpenCode's database (it needs a
+"forgotten" mark); a database from before `session_v2` isn't listed; the engine's place.
+
+## The box's own terminals (4.7c)
+
+The app's terminals were OpenCode's: `api/pty` passed to its server, so opening one started
+OpenCode. They are the box's own now, at the same paths, answers and socket frames, so the app is
+unchanged. `kuvo_os::pty` opens a pseudo-terminal (`posix_openpt` on Unix, a ConPTY on Windows)
+and starts the program in it through the shared `Spawn`, owned as any child: its group on Unix,
+its job on Windows. `kuvo_services::terminals` serves `api/pty` (made, listed, read, resized,
+renamed, removed) and the `api/pty/:id/connect` socket.
+
+- **As OpenCode answers.** Measured on the pinned 2.2.6: `{location, data}` answers, `pty_` IDs,
+  `Terminal <last 4>` titles, `-l` added for a POSIX shell, `exited` with its code kept until
+  removed, `204` on removal and `PtyNotFoundError` after. The socket sends what was printed since
+  `?cursor=` (none for `-1`; `0` when it isn't a number), then a binary note
+  `\0{"cursor":n}`, then output as text. OpenCode counts in UTF-16 units and keeps the last 2 MiB,
+  sent again in 64 KiB pieces; so does the box. The shell exiting closes sockets `1000`; a socket
+  opened after that is closed `4404 session exited`; a client's close code comes back to it.
+- **Light.** Nothing runs for terminals until one is made. Each running terminal is one task; on
+  Unix its output is read without a thread (the controller registered with the runtime), on
+  Windows one thread reads the ConPTY's pipe. Removing one hangs up on its programs, then stops
+  them; nothing is left (the case checks its shell is gone).
+- **Its shell's environment** is the box's own, without `KUVO_*`, `OPENCODE_*` and `BUN_*`, with
+  `TERM=xterm-256color`. OpenCode's terminals had OpenCode's: its server password and Kuvo's
+  folders as `XDG_*` homes. The case checks no password reaches the shell.
+- **The engine's terminal socket proxy is gone** (`proxy::socket`), and the engine no longer stays
+  up for a terminal (its busy check asked `api/pty`).
+
+### Cases
+
+| Case (terminals) | Both boxes | Notes |
+|---|---|---|
+| A terminal is the computer's shell in the folder asked for, listed for that folder only | yes | |
+| What's typed reaches it, as text or binary, at the size it's drawn at, and what it prints comes back | yes | Rust also: no password in its shell |
+| A socket opened again takes up where its cursor says, and its note says where the output got to | yes | |
+| Its shell exiting closes its sockets; it's kept, with its code, until removed | yes | |
+| A terminal removed while its socket is open closes it | yes | its shell is gone after |
+| A long burst is kept as OpenCode keeps it: its last 2 MiB, sent again in 64 KiB pieces | yes | Windows' console repaints the burst, so only the pieces are checked there |
+| A terminal's socket is refused without serve's password, only for a terminal and a known route version | yes | statuses compared; the reason words are each server's |
+
+`box/test/pty-socket.test.ts` (3 scenarios) maps onto the first, second and last cases; its
+stand-in engine is gone with the engine's part in terminals. `kuvo_os` has three pty tests (the
+program's console and size, typing and resizing, the exit code) and `kuvo_services` five
+(cursor units, the 2 MiB window, characters split across reads, the shell's environment, IDs).
+
+### Differences from OpenCode's terminals
+
+| Difference | Why |
+|---|---|
+| The shell doesn't get OpenCode's environment (its password, Kuvo's folders as `XDG_*` homes) | A user's shell shouldn't hold a server password or read its settings from Kuvo's folders. |
+| A folder that isn't there starts the shell in the home folder (OpenCode's shell failed to start there) | `cwd` still says the folder asked for. |
+| A terminal is read, changed and removed by its ID from any folder (OpenCode looked in the request's folder) | IDs are unique; the app always names the folder it made it in. |
+| Refusals say `401 Unauthorized` and so on, where the reference says `401 Refused` | Clients read the status only. |
+| Terminals end when the box restarts or updates | OpenCode's ended with the engine too; the reference held an engine switch while one ran (`engine-swap.ts`). |
+
+### Verification
+
+| Platform | terminals, Rust | terminals, TypeScript |
+|---|---:|---:|
+| macOS | 7/7 | 7/7 (on the pinned OpenCode) |
+| WSL2, Ubuntu (static musl) | 7/7 | — |
+| Native Windows x64 (ConPTY, Git Bash) | 7/7 | — |
+
+Also on the Mac, Rust: engine-sessions 81/81.
+
 ## OpenCode as a coding agent (4.7b)
 
 New conversations on OpenCode's models run on the OpenCode agent: the pinned binary as `opencode
@@ -1230,3 +1344,169 @@ The reference's answer to the sleep that replaces one that turned it down (case 
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
+
+## Background work priority (4.9)
+
+An agent's process and the commands it starts are background work. The resident,
+keeper and holder (which reads the agent's output and sends its stream to the
+resident) keep their ordinary priority. User-opened terminals keep their ordinary
+priority; terminals launched by agents inherit the agent's lower priority. There
+are no reserved cores. A new agent or heavy background start waits during critical
+memory pressure without stopping work already running. Linux uses the kernel's
+`MemAvailable` estimate with a 64 MiB floor because it has no system-wide critical
+pressure classification.
+
+The initially planned switch to ordinary priority when a conversation is opened
+was dropped: an unprivileged process on macOS and Linux cannot undo the lowered
+nice value, and children launched after promotion would inherit the wrong class.
+The agent therefore stays at low priority from launch; the conversation's holder
+and resident do not. No privileged helper or desktop change is needed.
+
+The existing holder, agent and engine-session cases exercise the same conversation
+routes, transcripts and handover on both implementations; there is no TypeScript
+priority policy to port. `kuvo_os`'s priority-tree scenario queries the class of a
+real child and the ordinary process it launches, without altering the parent.
+The memory-floor scenario supplies critical pressure at the OS seam and proves a
+real child is deferred until pressure clears. The wake-up tool now uses the same
+process owner and priority seam as the other agents' commands.
+
+### Responsiveness on macOS
+
+An exact build of the preceding revision and the new build each ran three idle
+turns and three turns while ten bounded CPU burners ran as ordinary descendants
+of a stand-in Codex agent. The measurements start at the desktop prompt and end
+at the first feed event announcing the single immediate reply's completed turn;
+live step deltas in this feed belong to 4.6. Each phase started below a one-minute
+load of 8. No test used the user's conversations or working folders.
+
+| Milliseconds, three samples | Idle | With ten CPU burners |
+| --- | --- | --- |
+| Before | 100, 113, 118 | 239, 115, 246 |
+| After | 125, 132, 146 | 102, 121, 115 |
+
+Before, the resident, holder, agent and all ten children reported nice 0. After,
+the resident and holder reported nice 0 and the agent and all ten children nice
+20. The loaded reply after the change took 64/81/75 ms to the agent's emission and
+38/40/40 ms from that emission to the desktop feed, within one second of idle.
+The baseline was already within the target under this bounded synthetic load;
+the result does not claim to reproduce every kind of real machine contention.
+
+The two-turn Claude conversation differential was also run against the reference,
+the preceding Rust revision and the new revision. The Rust-to-Rust request
+answers matched. The TS-to-Rust comparison reports the same 34 request-difference
+paths before and after (transcript metadata, generated message IDs and shape
+differences already outside this row). Complete inventories are not byte-identical:
+the two Rust runs differ in per-run identity, timestamps, SQLite fingerprints and
+the asynchronous Insights scan's progress when the fixture stops. No new saved
+priority or memory-floor state is introduced.
+
+An agent start waiting for memory can be cancelled by Stop, replacement or
+shutdown before it launches a holder; a start already admitted still uses the
+holder's bounded handshake and normal turn lifetime. The old shared engine's
+supervisor waits inside its start operation, so an outstanding start at critical
+pressure can defer that supervisor's drain command until pressure clears. The
+legacy engine launch is being removed in 4.7d rather than adding another
+supervisor mechanism here.
+
+### Verification
+
+| Platform | Parent / agent / ordinary descendant priority | Memory admission |
+| --- | --- | --- |
+| macOS | 0 / 20 / 20 in the normal-priority measurement; seam scenario also passed in the low-priority test lane | Defers, resumes and cancels immediately; real holder creates nothing on cancellation |
+| WSL2 (static Linux musl) | nice 0 / 15 / 15; agent and descendant I/O class 24576 (idle) | Defers and resumes |
+| Native Windows | normal (32) / below normal (16384) / below normal (16384) | Defers and resumes |
+
+The PC process lists were clear before and after and the disposable folders were
+removed. The Linux proof ran in WSL; there was no matching pre-existing container
+image for the capped run on lokum. The platform readbacks preceded the
+platform-independent cancellation wiring; its new tests passed on macOS.
+
+Final conformance (engine-sessions, holder, all actual agent adapters, account and
+session reads, agent turn fixture, agent tools, wakes, agent bots and engine
+golden): Rust 348 passed of 349, with the existing 4.6 seen-cursor TODO; the
+reference 325 passed of 349, with 24 expected skips. Both engine-sessions runs
+passed 81/81. The fixture-enabled Rust binary passed all eleven account/session/
+turn fixture cases, including Stop and keeper handover. The real Claude adapter
+case cancels a new start without creating a holder, then starts and hands over
+the conversation normally. Its existing account-probe fixture now seeds dummy
+local sign-in files, as required by the file-only check introduced in 4.8.
+
+The final differential again matched the Rust-to-Rust request answers, with no
+new TS-to-Rust request difference paths. One real OpenCode Go turn on DeepSeek
+v4.1 Flash passed in the isolated live case; its scratch key and home were
+removed. Workspace test-target and TypeScript type checks passed.
+
+## 4.11 — letters now, and next-step delivery
+
+Deliberate difference from TypeScript, requested by the user (Work Queue #5057):
+`send_message` uses Send Now by default, even for a busy conversation owned by a coding
+agent. `delivery: "steer"` waits for its next step; `delivery: "queue"` waits for its
+turn. An idle conversation starts a turn, unless it was stopped with a held queue.
+Local confirmed answers retain `text` and `isError` and add a delivery disposition;
+mail to another computer remains asynchronous and cannot promise its eventual
+disposition before the receiving computer confirms it.
+
+- Claude Code and Codex hand the input to the running native turn, with the existing
+  native receipt gate. A confirmed native refusal of Send Now uses its interrupt/resume
+  fallback; an uncertain receipt is not sent twice.
+- Grok, Antigravity and OpenCode share ACP: a second active prompt is not supported
+  ("Session already has an active ACP prompt"). Send Now cancels the active prompt
+  and starts the selected input; a next-step request remains marked until a
+  tool finishes or a step ends, then uses that same path. The adapter emits an
+  internal `StepBoundary` for that real boundary (including a hidden tool);
+  synthetic closing rows of a failed or stopped turn do not fire it. No pending
+  input means no queue file read on step notifications.
+- The engine's native next-step inbox remains in use until 4.7d removes that place.
+- Cursor is added by 4.5: its adapter must add the case from
+  `agents-steering.test.mjs`—hold a running prompt at a tool step, write a default
+  letter and an explicit next-step message, assert their delivery before the
+  original turn ends (or the same cancel/resume at the boundary if no native steer),
+  once each. Then check that an explicit after-turn message waits. An adapter
+  without native steering emits `StepBoundary` only while its turn is actually
+  advancing, not as it writes the closing rows.
+
+| TypeScript scenario or contract | Rust proof |
+|---|---|
+| `agent-tools.test.js`: 171 named letter, 180 stopped queue, 220 legacy wait, 226 no such name, 235 message limit | `tools`, `agent-tools.test.mjs` (receipt and new timing), `work-elsewhere.test.mjs` (remote letter timing) |
+| `agents/sessions.test.ts`: 261 message while working, 292 Stop holds, 324 idle queue, 368 program drain | `kuvo_agents/tests/inbox.rs`; new delivery flag remains a steer rather than being downgraded for a non-steering agent |
+| `agents/sessions.test.ts`: 1610 native steer, 1632 non-native steer waits for turn | `agents-steering.test.mjs` (Claude Code, Codex, Grok, Antigravity); the non-native case deliberately now fires at a reported boundary |
+| Queue Send Now and steer, stopped/held line, retry and reorder (`queue-items.test.ts`, `queue-stop.test.ts`) | Existing `engine-sessions`, new `agent-tools` case; `kuvo_agents/tests/inbox.rs` selected message goes first |
+| OpenCode ACP and engine next-step boundary | `agents-opencode.test.mjs`, `engine-steering.test.mjs` on the pinned engine and a labelled model |
+
+The side-by-side synthetic busy-engine scenario compared the same three requests and
+both resulting homes. The new reply has only the added delivery field; the new queue
+file is unpaused with a resume timestamp, as for Send Now. The engine's message
+payload and all other answers match (each box generates its own message ID).
+A baseline comparison with the pre-fix Rust binary has the same unrelated home
+differences (setup keys, usage index, generated timestamps and runtime directories).
+The new field and the saved resume are deliberate, not comparison exclusions.
+
+The existing remote-work approval case explicitly seeds the Auto mode it describes
+and checks each implementation's exact refusal: Rust presents it as Ask First until
+6.1 (no permission behavior changed).
+The shared route fixture now waits for the engine's actual event stream before
+injecting a live event. Native Windows repeatedly missed the first finish event
+because the initial route answered before the stream subscribed; with the gate,
+the unchanged work scenario passed (15/15). One unrelated agent-program-update version
+check failed once and passed its single focused rerun; its test already includes
+the program's reported state on failure. The unchanged TypeScript Codex background
+terminal Stop case timed out once and passed its single focused rerun.
+
+Platform proof — the exact final binaries (cross-checked by hash) ran the new
+steering area (11/11), agent tools (4/4), OpenCode (16/16, including its long
+active prompt and next tool completion), and the native engine's next-step
+case (1/1) on macOS, static Linux musl under WSL, and native Windows. The
+preceding cross binaries also passed engine-sessions 81/81, holders 12/12,
+tools 10/10 and remote work (WSL 6/6; Windows 5/5 and the Unix-only timer skip).
+The final native work suite passed 15/15 with the synchronized fixture. On macOS,
+the final engine-sessions (81/81), holders (12/12), Grok (10/10), Antigravity
+(11/11), Claude routes (20/20), session reads (4/4), native session and turn
+fixtures (10/10), tools (10/10), work (15/15), remote work (6/6), and engine
+golden home (1/1) passed; notices passed with the existing machine-side skip.
+The final Claude turn and Codex guards passed (59 passed, one existing 4.6 TODO;
+100/100, respectively). The move and letter guards passed (70 passed, one
+two-binary reach-file comparison skipped). The TypeScript
+reference ran the shared engine, agent, tools and work scenarios and the golden
+home; new steering behavior is deliberately Rust-only. The inbox integration
+tests (28/28) and ACP projection unit tests (4/4) also passed.
+All model-facing scenarios here use stand-ins; no live sign-ins were copied.

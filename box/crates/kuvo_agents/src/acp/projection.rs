@@ -299,6 +299,7 @@ impl Projection {
             error: None,
         });
         events.push(TurnEvent::StepStarted { model: None });
+        events.push(TurnEvent::StepBoundary);
     }
 
     fn tool(&mut self, events: &mut Vec<TurnEvent>, update: &Call, cx: &Context) {
@@ -307,9 +308,18 @@ impl Projection {
             return;
         }
         let call = self.calls.entry(id.clone()).or_default();
+        let terminal =
+            |call: &Call| matches!(tools::status(call), "completed" | "failed" | "cancelled");
+        let finished = terminal(call);
         tools::merge(call, update);
         let call = call.clone();
-        if cx.flavour.hides(&call) || self.settled.contains(&id) {
+        if cx.flavour.hides(&call) {
+            if !finished && terminal(&call) {
+                events.push(TurnEvent::StepBoundary);
+            }
+            return;
+        }
+        if self.settled.contains(&id) {
             return;
         }
         let (name, input) = tools::kuvo_tool(&call, cx.known);
@@ -383,6 +393,9 @@ impl Projection {
         events.push(tool_event(&id, &name, state, metadata));
         if ended {
             self.declined.remove(&id);
+            if !finished {
+                events.push(TurnEvent::StepBoundary);
+            }
         }
         // A file Kuvo read for it before it said which call read it.
         if tools::open_read(&call)
@@ -391,6 +404,7 @@ impl Projection {
             && let Some(served) = self.served.get_mut(&path).and_then(VecDeque::pop_front)
         {
             self.settle_read(events, &id, served);
+            events.push(TurnEvent::StepBoundary);
         }
     }
 
@@ -427,6 +441,9 @@ impl Projection {
                 _ => Served::Text(String::new()),
             });
             self.settle_read(events, &id, served);
+            if !all {
+                events.push(TurnEvent::StepBoundary);
+            }
         }
     }
 
@@ -454,7 +471,10 @@ impl Projection {
                 && self.read_file(call, cx).as_deref() == Some(path)
         });
         match open.map(|(id, _)| id.clone()) {
-            Some(id) => self.settle_read(&mut events, &id, served),
+            Some(id) => {
+                self.settle_read(&mut events, &id, served);
+                events.push(TurnEvent::StepBoundary);
+            }
             None => self
                 .served
                 .entry(path.to_owned())

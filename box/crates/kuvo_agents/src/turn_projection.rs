@@ -346,6 +346,7 @@ impl Projection {
                     .into_iter()
                     .collect()
             }
+            TurnEvent::StepBoundary => Vec::new(),
             TurnEvent::PlanLimit(reading) => {
                 self.limits.heard(&self.model.provider, reading);
                 Vec::new()
@@ -918,6 +919,7 @@ mod tests {
             permissions: PermissionMode::AskFirst,
             plan: false,
             auto: false,
+            start_cancel: Default::default(),
         };
         let ring = Arc::new(Ring::default());
         let mut projection = Projection::start(

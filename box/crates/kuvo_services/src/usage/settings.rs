@@ -651,46 +651,43 @@ impl Service {
     pub fn notification_milestones(
         &self,
         service: &str,
+        notice_card: Option<&str>,
         window: &super::readings::Window,
     ) -> Option<std::collections::BTreeSet<super::readings::Milestone>> {
         use super::readings::Milestone::*;
         let Ok(settings) = self.read(self.shared().as_ref()) else {
             return Default::default();
         };
-        let spark = service == "codex"
-            && window
-                .model
-                .as_deref()
-                .unwrap_or(&window.id)
-                .to_ascii_lowercase()
-                .contains("spark");
-        let metric = match (service, window.id.as_str()) {
-            ("codex", id) if spark => {
-                if id.ends_with("secondary") {
-                    "sparkWeekly"
-                } else {
-                    "spark"
-                }
-            }
-            ("claude", "five_hour") | ("codex", "primary") | ("opencode", "rolling") => "session",
-            ("claude", "seven_day") | ("codex", "secondary") => "weekly",
-            ("claude", "seven_day_fable") => "fable",
-            ("claude", "seven_day_opus") => "opus",
-            ("claude", "seven_day_sonnet") => "sonnet",
-            ("antigravity", "gemini-5h") => "geminiPro",
-            ("antigravity", "gemini-weekly") => "geminiWeekly",
-            ("antigravity", "argon-weekly") => "argonWeekly",
-            ("antigravity", "3p-5h") => "claude",
-            ("antigravity", "3p-weekly") => "claudeWeekly",
-            ("cursor", "total" | "included") => "usage",
-            ("cursor", "on_demand") => "onDemand",
-            ("cursor", "grok_bot") => "grokBot",
-            ("copilot", "premium_interactions") => "premium",
-            ("openrouter", "key") => "keyLimit",
-            ("zai", "web_search") => "webSearches",
-            ("zai", "window_10080") => "weekly",
-            _ => &window.id,
-        };
+        let metric = metric_name(service, window);
+        let exact = notice_card.filter(|candidate| {
+            let in_list = |value: &Value| {
+                value
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(*candidate)))
+            };
+            settings
+                .units
+                .get("providers")
+                .is_some_and(|p| in_list(&p.value["known"]) || in_list(&p.value["enabled"]))
+                || settings.units.get("layout").is_some_and(|layout| {
+                    let v = &layout.value;
+                    in_list(&v["providerOrder"])
+                        || v["metricOrder"]
+                            .as_object()
+                            .is_some_and(|m| m.contains_key(*candidate))
+                        || ["placed", "seeded"].into_iter().any(|key| {
+                            v[key]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .any(|id| {
+                                    id.split_once('.')
+                                        .is_some_and(|(card, _)| card == *candidate)
+                                })
+                        })
+                })
+        });
         let enabled = |card: &str| {
             settings.units.get("providers").is_none_or(|p| {
                 !p.value["known"]
@@ -709,7 +706,11 @@ impl Service {
                 .filter_map(Value::as_str)
                 .any(|id| {
                     id.split_once('.').is_some_and(|(card, m)| {
-                        card.split('@').next() == Some(service) && m == metric && enabled(card)
+                        exact.map_or_else(
+                            || card.split('@').next() == Some(service),
+                            |wanted| card == wanted,
+                        ) && m == metric
+                            && enabled(card)
                     })
                 })
         } else {
@@ -748,7 +749,8 @@ impl Service {
                 "zai.weekly",
                 "zai.webSearches",
             ];
-            enabled(service) && defaults.contains(&format!("{service}.{metric}").as_str())
+            enabled(exact.unwrap_or(service))
+                && defaults.contains(&format!("{service}.{metric}").as_str())
         };
         if !visible {
             return Default::default();
@@ -767,5 +769,79 @@ impl Service {
             })
             .collect(),
         )
+    }
+}
+
+fn metric_name<'a>(service: &str, window: &'a super::readings::Window) -> &'a str {
+    let spark = service == "codex"
+        && window
+            .model
+            .as_deref()
+            .unwrap_or(&window.id)
+            .to_ascii_lowercase()
+            .contains("spark");
+    match (service, window.id.as_str()) {
+        ("codex", id) if spark => {
+            if id.ends_with("secondary") {
+                "sparkWeekly"
+            } else {
+                "spark"
+            }
+        }
+        ("claude", "five_hour") | ("codex", "primary") | ("opencode", "rolling") => "session",
+        ("claude", "seven_day") | ("codex", "secondary") => "weekly",
+        ("claude", "seven_day_fable") => "fable",
+        ("claude", "seven_day_opus") => "opus",
+        ("claude", "seven_day_sonnet") => "sonnet",
+        ("antigravity", "gemini-5h") => "geminiPro",
+        ("antigravity", "gemini-weekly") => "geminiWeekly",
+        ("antigravity", "argon-weekly") => "argonWeekly",
+        ("antigravity", "3p-5h") => "claude",
+        ("antigravity", "3p-weekly") => "claudeWeekly",
+        ("cursor", "total" | "included") => "usage",
+        ("cursor", "on_demand") => "onDemand",
+        ("cursor", "grok_bot") => "grokBot",
+        ("copilot", "premium_interactions") => "premium",
+        ("openrouter", "key") => "keyLimit",
+        ("zai", "web_search") => "webSearches",
+        ("zai", "window_10080") => "weekly",
+        _ => &window.id,
+    }
+}
+
+#[cfg(test)]
+mod notice_card_tests {
+    use super::*;
+    use crate::usage::readings::{Source, Window};
+
+    #[test]
+    fn window_aliases_name_the_configured_meter() {
+        for (service, id, model, expected) in [
+            ("codex", "primary", Some("GPT-5.3-Codex-Spark"), "spark"),
+            (
+                "codex",
+                "secondary",
+                Some("GPT-5.3-Codex-Spark"),
+                "sparkWeekly",
+            ),
+            ("antigravity", "gemini-5h", None, "geminiPro"),
+            ("antigravity", "gemini-weekly", None, "geminiWeekly"),
+            ("antigravity", "argon-weekly", None, "argonWeekly"),
+            ("antigravity", "3p-5h", None, "claude"),
+            ("antigravity", "3p-weekly", None, "claudeWeekly"),
+        ] {
+            let window = Window {
+                id: id.into(),
+                model: model.map(str::to_owned),
+                name: None,
+                used: 0.5,
+                minutes: None,
+                resets_at: None,
+                amount: None,
+                read: 1,
+                source: Source::Usage,
+            };
+            assert_eq!(metric_name(service, &window), expected);
+        }
     }
 }

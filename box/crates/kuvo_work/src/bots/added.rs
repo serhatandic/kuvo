@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use super::{
     Bots,
     job::Job,
-    kit::runs_with_agents,
+    kit::runs_on_agents,
     make::{Setup, bot_model},
 };
 
@@ -32,7 +32,7 @@ impl AgentBots for Bots {
     }
 
     fn runs_with_agents(&self, model: &Value) -> bool {
-        runs_with_agents(bot_model(model).as_ref())
+        runs_on_agents(bot_model(model).as_ref())
     }
 
     fn make(&self, given: Value, setup: AgentSetup) -> BoxFuture<'_, (u16, Value)> {

@@ -2,7 +2,7 @@
 
 use kuvo_peers::{
     devices::{RecordWriter, record_writer, released_macs},
-    manage::{Candidate, ManageFacts, SetupFacts, Writer},
+    manage::{Candidate, ManageFacts, SetupFacts, SshFacts, Writer},
 };
 
 use super::*;
@@ -10,10 +10,11 @@ use super::*;
 pub(super) fn manage_facts(
     files: &Files,
     link: &Link,
-    own: Option<&Identity>,
+    identity: Option<&Identity>,
+    lease: &lease::Client,
     kind: ComputerKind,
 ) -> ManageFacts {
-    let own = own.map(|own| own.public.as_str());
+    let own = identity.map(|own| own.public.as_str());
     let setup = link.setup().ok().filter(|setup| !setup.aside);
     let membership = setup.and_then(|_| link.member_list().ok());
     let named = |key: &str, fallback: &str| {
@@ -87,5 +88,34 @@ pub(super) fn manage_facts(
         macs: if setup.is_some() { 0 } else { released_macs(&link.extra) },
         machines,
         wipe_here: crate::wipe::supported_here(files.root()),
+        ssh: identity.and_then(|identity| over_ssh(files, link, identity, lease)),
     }
+}
+
+/// Present while this computer can add computers (TS `canAdd`): it's the main computer, nothing
+/// holds its setup back, it's on the relay and it has a release to give. Which computers it set up
+/// over SSH is read with each list (`SetupHandle::computers_listing`).
+fn over_ssh(files: &Files, link: &Link, own: &Identity, lease: &lease::Client) -> Option<SshFacts> {
+    writable(link, own, lease).ok()?;
+    link.relay.as_ref()?;
+    crate::ssh::can_give_release(files).then(SshFacts::default)
+}
+
+/// The computers this one set up over SSH, by key, at the addresses it set them up at. None while
+/// its list of machines can't be read (TS `canAdd` refuses then).
+pub(crate) fn set_up_over_ssh(
+    files: &Files,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let link = files.read::<Link>(LINK).ok().flatten()?;
+    let saved = crate::ssh::saved_machines(files).ok()?;
+    let roster = link.member_list().ok()?;
+    Some(
+        roster
+            .boxes
+            .iter()
+            .filter_map(|peer| {
+                Some((peer.key.clone(), crate::ssh::set_up_at(files, &saved, &link, peer)?))
+            })
+            .collect(),
+    )
 }

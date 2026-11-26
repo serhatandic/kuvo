@@ -1,22 +1,20 @@
 //! Drive a thread's startup, transcript writes and controls independently.
 
 use crate::{
+    foreground::Foreground,
     runtime::AdapterCall,
     session::{
-        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread, TurnEvent,
-        TurnInput,
+        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread,
+        TurnEvent, TurnInput,
     },
-    foreground::Foreground,
     turn_sink::{EventWrite, ResidentSink},
 };
 use std::{
     io::{self, ErrorKind},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use tokio::sync::{mpsc, watch};
+use tokio_util::sync::CancellationToken;
 
 pub trait TurnWriter: Send {
     fn apply<'a>(&'a mut self, event: &'a EventEnvelope) -> AdapterCall<'a, ()>;
@@ -47,20 +45,25 @@ enum State {
 pub struct RunningTurn {
     state: watch::Receiver<State>,
     /// Stop was asked for, maybe before the agent started the turn.
-    stop: Arc<AtomicBool>,
+    stop: CancellationToken,
 }
 
 impl RunningTurn {
-    pub(crate) fn launch(
+    pub(crate) fn launch<F, Fut>(
         thread: Arc<dyn Thread>,
         input: TurnInput,
         sink: Arc<ResidentSink>,
         writes: mpsc::Receiver<EventWrite>,
         writer: impl TurnWriter + 'static,
         foreground: Foreground,
-    ) -> Self {
+        boundary: F,
+    ) -> Self
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         let (publish, state) = watch::channel(State::Starting);
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = input.start_cancel.clone();
         tokio::spawn(run(
             thread,
             input,
@@ -70,6 +73,7 @@ impl RunningTurn {
             foreground,
             publish,
             stop.clone(),
+            boundary,
         ));
         Self { state, stop }
     }
@@ -112,7 +116,7 @@ impl RunningTurn {
     /// Stop it. One its agent couldn't start after all, asked to stop as it
     /// started, ends stopped.
     pub async fn interrupt(&self) -> io::Result<()> {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.cancel();
         match self.active().await {
             Ok(turn) => turn.interrupt().await,
             Err(_)
@@ -150,7 +154,7 @@ impl RunningTurn {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run(
+async fn run<F, Fut>(
     thread: Arc<dyn Thread>,
     input: TurnInput,
     sink: Arc<ResidentSink>,
@@ -158,8 +162,13 @@ async fn run(
     mut writer: impl TurnWriter,
     mut foreground: Foreground,
     publish: watch::Sender<State>,
-    stop: Arc<AtomicBool>,
-) {
+    stop: CancellationToken,
+    boundary: F,
+) where
+    F: Fn() -> Fut + Send,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let native_steer = thread.takes_steers();
     let retirement = sink.retirement();
     let start = thread.start(input, sink);
     tokio::pin!(start);
@@ -203,6 +212,7 @@ async fn run(
                     TurnEvent::Finished(result) => Some(result.outcome.clone()),
                     _ => None,
                 };
+                let step = !native_steer && matches!(&update.event.event, TurnEvent::StepBoundary);
                 foreground.heard(&update.event.event);
                 let result = writer.apply(&update.event).await;
                 let error = result.as_ref().err()
@@ -211,6 +221,7 @@ async fn run(
                 if let Some(error) = error {
                     break Err(error);
                 }
+                if step { boundary().await; }
                 if let Some(outcome) = last {
                     break Ok(Some(outcome));
                 }
@@ -229,9 +240,9 @@ async fn run(
 async fn couldnt_start(
     writer: &mut impl TurnWriter,
     error: io::Error,
-    stop: &AtomicBool,
+    stop: &CancellationToken,
 ) -> Result<Option<Outcome>, Arc<io::Error>> {
-    if stop.load(Ordering::SeqCst) {
+    if stop.is_cancelled() {
         if let Err(unwritten) = writer.stopped().await {
             eprintln!("Kuvo could not write a turn stopped as it started: {unwritten}");
         }

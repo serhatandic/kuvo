@@ -282,6 +282,7 @@ impl Work {
                 return Said {
                     text,
                     refused: failed,
+                    delivery: None,
                 };
             }
         }
@@ -302,6 +303,7 @@ impl Work {
             Some(answer) => Said {
                 text: answer["text"].as_str().unwrap_or_default().to_owned(),
                 refused: answer["isError"] == true,
+                delivery: None,
             },
             None => said(format!(
                 "The user hasn't answered yet: it stays asked on {}, and you'll hear when they answer. Carry on with what you can meanwhile.",
@@ -349,6 +351,7 @@ impl Work {
             return Said {
                 text,
                 refused: error,
+                delivery: None,
             };
         }
         let mut reset =
@@ -378,6 +381,7 @@ impl Work {
             Some(answer) => Said {
                 text: answer["text"].as_str().unwrap_or_default().to_owned(),
                 refused: answer["isError"] == true,
+                delivery: None,
             },
             None => said(format!(
                 "The user hasn't answered yet: it stays asked on {}, and you'll hear when they answer. Carry on with what you can meanwhile.",

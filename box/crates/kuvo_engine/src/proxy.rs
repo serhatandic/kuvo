@@ -1,15 +1,13 @@
 use std::{collections::HashSet, io, time::Duration};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
-use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use http::{HeaderMap, Method, StatusCode, header};
 use http_body_util::BodyExt;
-use kuvo_server::{DispatchRequest, Refusal, Reply, socket::Socket};
+use kuvo_server::{DispatchRequest, Refusal, Reply};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Client, RequestBuilder, redirect};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -153,10 +151,9 @@ pub(crate) async fn busy(upstream: &Upstream, record: &Record) -> bool {
 
 pub(crate) async fn folder_busy(upstream: &Upstream, record: &Record, directory: &str) -> bool {
     let get = |path| upstream.probe::<Value>(record, path, Some(directory), PROBE_TIMEOUT);
-    let Ok((forms, permissions, terminals, commands)) = tokio::try_join!(
+    let Ok((forms, permissions, commands)) = tokio::try_join!(
         get("api/form"),
         get("api/permission/request"),
-        get("api/pty"),
         get("api/shell"),
     ) else {
         return true;
@@ -169,7 +166,6 @@ pub(crate) async fn folder_busy(upstream: &Upstream, record: &Record, directory:
     };
     list(&forms).is_none_or(|forms| !forms.is_empty())
         || list(&permissions).is_none_or(|permissions| !permissions.is_empty())
-        || running(&terminals)
         || running(&commands)
 }
 
@@ -501,59 +497,6 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     let mut reply = Reply::stream(status, "application/octet-stream", stream);
     reply.headers = headers;
     reply
-}
-
-pub(crate) async fn socket(
-    engine: Engine,
-    request: DispatchRequest,
-    cancel: CancellationToken,
-) -> Result<Socket, Refusal> {
-    let mut parts = request
-        .path
-        .split('?')
-        .next()
-        .unwrap_or_default()
-        .split('/');
-    if !matches!((parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
-        (Some("api"), Some("pty"), Some(id), Some("connect"), None) if !id.is_empty())
-    {
-        return Err(Refusal::new(
-            StatusCode::FORBIDDEN,
-            "That isn't available over the link.",
-        ));
-    }
-    let Some(lease) = engine.acquire(Demand::Existing).await else {
-        return Err(Refusal::new(
-            StatusCode::BAD_GATEWAY,
-            "The engine isn't running.",
-        ));
-    };
-    let failed = || Refusal::new(StatusCode::BAD_GATEWAY, "The engine closed it.");
-    let mut upgrade = lease
-        .record
-        .url("ws", &request.path)
-        .into_client_request()
-        .map_err(|_| failed())?;
-    let auth = STANDARD.encode(format!("opencode:{}", lease.record.password));
-    upgrade.headers_mut().insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Basic {auth}")).expect("base64 authorization"),
-    );
-    if let Some(directory) = request.headers.get(DIRECTORY) {
-        upgrade.headers_mut().insert(DIRECTORY, directory.clone());
-    }
-    let (upstream, _) = tokio::select! {
-        result = tokio::time::timeout(PROBE_TIMEOUT, connect_async(upgrade)) => {
-            result.map_err(|_| failed())?.map_err(|_| failed())?
-        }
-        () = cancel.cancelled() => return Err(failed()),
-    };
-    let (client, server) = Socket::pair();
-    tokio::spawn(async move {
-        let _lease = lease;
-        let _ = server.bridge(upstream, cancel).await;
-    });
-    Ok(client)
 }
 
 async fn down(engine: &Engine) -> Refusal {

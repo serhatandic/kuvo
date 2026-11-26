@@ -19,10 +19,11 @@ use sha2::{Digest, Sha256};
 use kuvo_os::platform::{Platform, env_value};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
     time::{Instant, timeout},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     hold::{
@@ -252,6 +253,8 @@ impl Recovery {
 #[derive(Clone)]
 pub(super) struct Conversation {
     commands: mpsc::Sender<Command>,
+    /// Stop/prepare can withdraw a start even while its actor waits for memory.
+    start_stop: watch::Sender<()>,
     session: String,
     directory: PathBuf,
     config: Option<PathBuf>,
@@ -285,7 +288,7 @@ impl tasks::Calls for Calls {
 }
 
 enum Command {
-    Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
+    Start(Box<TurnInput>, Arc<dyn TurnSink>, watch::Receiver<()>, Reply<()>),
     Steer(String, Prompt, Reply<Steer>),
     Interrupt(String, Reply<()>),
     Resolve(SteerReceipt, Reply<Option<bool>>),
@@ -308,6 +311,7 @@ impl Conversation {
         let handed = Handed::default();
         let conversation = Self {
             commands,
+            start_stop: watch::channel(()).0,
             session: context.session_id.clone(),
             directory: context.directory.clone(),
             config: program.config_home(&context.directory),
@@ -363,10 +367,12 @@ impl Conversation {
     }
 
     pub async fn prepare(&self) -> io::Result<()> {
+        self.start_stop.send_replace(());
         self.send(Command::Prepare).await
     }
 
     pub async fn stop(&self, shutdown: bool) -> io::Result<()> {
+        self.start_stop.send_replace(());
         self.send(|reply| Command::Stop(shutdown, reply)).await
     }
 
@@ -391,7 +397,8 @@ impl Thread for Conversation {
     ) -> AdapterCall<'_, Arc<dyn ActiveTurn>> {
         Box::pin(async move {
             let id = input.id.clone();
-            self.send(|reply| Command::Start(Box::new(input), sink, reply))
+            let stop = self.start_stop.subscribe();
+            self.send(|reply| Command::Start(Box::new(input), sink, stop, reply))
                 .await?;
             Ok(Arc::new(Turn {
                 id,
@@ -541,8 +548,8 @@ impl Actor {
 
     async fn command(&mut self, command: Command) -> io::Result<()> {
         match command {
-            Command::Start(input, sink, reply) => {
-                let result = self.start(*input, sink).await;
+            Command::Start(input, sink, stop, reply) => {
+                let result = self.start(*input, sink, stop).await;
                 let _ = reply.send(result);
             }
             Command::Steer(turn, prompt, reply) => {
@@ -635,7 +642,12 @@ impl Actor {
         Ok(())
     }
 
-    async fn start(&mut self, input: TurnInput, sink: Arc<dyn TurnSink>) -> io::Result<()> {
+    async fn start(
+        &mut self,
+        input: TurnInput,
+        sink: Arc<dyn TurnSink>,
+        mut stop: watch::Receiver<()>,
+    ) -> io::Result<()> {
         if self.running.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -726,8 +738,16 @@ impl Actor {
         let state_before = self.state.clone();
         // Discover the account's models when its first real turn needs them, including context
         // limits for the compaction decision. The picker alone never starts this probe.
-        let _ = self.models.refresh(self.program.clone()).await;
-        let compact_at = self.compact_at(&model.id).await?;
+        tokio::select! {
+            biased;
+            () = start_cancelled(&input.start_cancel, &mut stop) => return Err(stopped()),
+            _ = self.models.refresh(self.program.clone()) => {},
+        }
+        let compact_at = tokio::select! {
+            biased;
+            () = start_cancelled(&input.start_cancel, &mut stop) => return Err(stopped()),
+            compact_at = self.compact_at(&model.id) => compact_at?,
+        };
         let instructions_changed = self
             .instructions
             .as_ref()
@@ -748,7 +768,10 @@ impl Actor {
             self.tasks.gone();
         }
         if self.pipe.is_none() {
-            self.pipe = Some(self.launch(&input.instructions, compact_at, plan).await?);
+            self.pipe = Some(
+                self.launch(&input.instructions, compact_at, plan, &input.start_cancel, &mut stop)
+                    .await?,
+            );
             self.instructions = Some(input.instructions.clone());
             self.configured = None;
         }
@@ -870,6 +893,8 @@ impl Actor {
         instructions: &str,
         compact_at: Option<u64>,
         plan: bool,
+        cancel: &CancellationToken,
+        stop: &mut watch::Receiver<()>,
     ) -> io::Result<Pipe> {
         let updates = self.program.updates();
         let program = self.program.clone();
@@ -899,7 +924,7 @@ impl Actor {
         })
         .await??;
         let controller = Directory::for_home(&self.program.home)
-            .start(&self.program.holder_binary, start)
+            .start_cancellable(&self.program.holder_binary, start, start_cancelled(cancel, stop))
             .await?;
         let mut pipe = Pipe::new(controller, false);
         pipe.sign_in = sign_in;
@@ -1604,6 +1629,13 @@ fn envelope(position: Option<Position>, delivery: Delivery, event: TurnEvent) ->
         position,
         delivery,
         event,
+    }
+}
+
+async fn start_cancelled(cancel: &CancellationToken, stop: &mut watch::Receiver<()>) {
+    tokio::select! {
+        () = cancel.cancelled() => {},
+        _ = stop.changed() => {},
     }
 }
 

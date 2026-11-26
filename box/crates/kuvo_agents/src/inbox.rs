@@ -211,6 +211,7 @@ pub enum InboxEvent {
         session: String,
         outcome: Option<crate::session::Outcome>,
         stopped: bool,
+        resuming: bool,
     },
     /// Nothing runs, and what was to go has gone.
     Idle {
@@ -266,7 +267,13 @@ impl InboxEvent {
                 session,
                 outcome,
                 stopped,
+                resuming,
             } => match outcome {
+                _ if *resuming => (
+                    session,
+                    "session.execution.interrupted",
+                    json!({"sessionID": session, "reason": "superseded"}),
+                ),
                 Some(Outcome::Succeeded) if !stopped => (
                     session,
                     "session.execution.succeeded",

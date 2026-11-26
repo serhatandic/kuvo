@@ -254,14 +254,50 @@ pub(super) fn spawn(
     spec: &Spawn,
     _recovery_name: Option<&str>,
     _resident: bool,
+    console: Option<&crate::pty::Console>,
 ) -> io::Result<ChildGroup> {
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
     }
+    #[cfg(target_os = "macos")]
+    let mut command = if spec.priority == Priority::Background {
+        // taskpolicy execs the program in place, applying an inherited utility QoS clamp.
+        // Keep the ordinary missing-program error rather than starting the wrapper for it.
+        std::fs::metadata(spec.executable.path())?;
+        let mut command = Command::new("/usr/sbin/taskpolicy");
+        command.args(["-c", "utility"]).arg(spec.executable.path());
+        command
+    } else {
+        Command::new(spec.executable.path())
+    };
+    #[cfg(target_os = "linux")]
     let mut command = Command::new(spec.executable.path());
     command.args(&spec.args).env_clear().envs(&spec.env);
     if let Some(cwd) = &spec.cwd {
         command.current_dir(cwd);
+    }
+    let background = spec.priority == Priority::Background;
+    // A terminal's program has the terminal as all three, and as its controlling terminal.
+    if let Some(console) = console {
+        let terminal = console.terminal();
+        command
+            .stdin(terminal.try_clone()?)
+            .stdout(terminal.try_clone()?)
+            .stderr(terminal.try_clone()?);
+        // SAFETY: setsid, the TIOCSCTTY ioctl and the priority syscalls are async-signal-safe and
+        // act only on the new child. The new session's leader takes its stdin, the terminal, as
+        // its controlling terminal.
+        unsafe {
+            command.pre_exec(move || {
+                rustix::process::setsid()?;
+                rustix::process::ioctl_tiocsctty(std::os::fd::BorrowedFd::borrow_raw(0))?;
+                if background {
+                    super::priority::lower_child()?;
+                }
+                Ok(())
+            });
+        }
+        return started(command);
     }
     let (stdin, child_stdin) = match &spec.stdin {
         Stdio::Pipe => {
@@ -278,30 +314,55 @@ pub(super) fn spawn(
         .stdin(child_stdin)
         .stdout(child_stdout)
         .stderr(child_stderr);
-    // SAFETY: setsid is async-signal-safe. It gives the child a new session and process group.
+    // SAFETY: setsid and the priority syscalls operate only on the new child.
     unsafe {
-        command.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
+        command.pre_exec(move || {
+            rustix::process::setsid()?;
+            if background {
+                super::priority::lower_child()?;
+            }
+            Ok(())
+        });
     }
+    let mut group = started(command)?;
+    (group.stdin, group.stdout, group.stderr) = (stdin, stdout, stderr);
+    Ok(group)
+}
+
+fn started(mut command: Command) -> io::Result<ChildGroup> {
     let owner = Owner {
         child: command.spawn()?,
         status: None,
         leave_running: false,
     };
     let pid = owner.child.id();
-    // The process may have already exited; its unreaped record still holds the start stamp.
     let identity = ProcessIdentity {
         pid,
-        start_identity: start_record(pid)?
-            .map(|(start, _)| start)
-            .ok_or_else(|| io::Error::other("child start identity is unavailable"))?,
+        start_identity: start_identity(pid, start_record(pid)?, || owner.has_exited())?,
     };
     Ok(ChildGroup {
         owner,
         identity,
-        stdin,
-        stdout,
-        stderr,
+        stdin: None,
+        stdout: None,
+        stderr: None,
     })
+}
+
+/// A child's start identity from its process record. The process may have exited already: Linux
+/// still describes it while it's unreaped, but macOS can stop describing a child that exits at
+/// once (a quick `ssh … true` under load). Unreaped, its PID can't name another process, so it's
+/// known as exited, which no live process ever matches.
+fn start_identity(
+    pid: u32,
+    record: Option<(String, bool)>,
+    exited: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<String> {
+    match record {
+        Some((start, _)) => Ok(start),
+        None if exited()? => Ok(format!("exited:{pid}")),
+        None => Err(io::Error::other("child start identity is unavailable")),
+    }
 }
 
 fn output(mode: &Stdio) -> io::Result<(Option<PipeReader>, ChildStdio)> {
@@ -566,5 +627,18 @@ impl Adopted {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_identity;
+
+    #[test]
+    fn a_child_that_exited_before_its_record_was_read_is_known_as_exited() {
+        assert_eq!(start_identity(41, Some(("1:000002".into(), false)), || Ok(true)).unwrap(), "1:000002");
+        assert_eq!(start_identity(41, None, || Ok(true)).unwrap(), "exited:41");
+        let running = start_identity(41, None, || Ok(false)).unwrap_err();
+        assert_eq!(running.to_string(), "child start identity is unavailable");
     }
 }

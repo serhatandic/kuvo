@@ -439,9 +439,18 @@ impl Service {
             if changed.is_some_and(|selected| !selected.contains(id)) {
                 continue;
             }
-            // An OpenCode conversation's turns are in OpenCode's own database, counted from there.
-            let agent = session["model"]["providerID"].as_str().and_then(kuvo_agents::accounts::Provider::of_model);
-            if agent.is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode) {
+            // OpenCode conversations are counted from its own database. Older portable
+            // transcripts used these native-agent names before their provider IDs were
+            // standardized; model routing must not reinterpret saved history as OpenCode.
+            let provider = session["model"]["providerID"].as_str();
+            let legacy_native = provider.is_some_and(|id| {
+                matches!(id.split('@').next(), Some("claude" | "codex" | "grok"))
+            });
+            let agent = provider.and_then(kuvo_agents::accounts::Provider::of_model);
+            if !legacy_native
+                && agent
+                    .is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode)
+            {
                 continue;
             }
             let stamp = hash(&json!(

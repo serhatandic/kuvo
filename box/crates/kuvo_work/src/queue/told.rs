@@ -760,11 +760,11 @@ impl Delivery {
         for target in targets {
             if self.due(&target.key, &id, now) {
                 due.push(target);
-            } else if let Some(before) = self.sent.get(&target.key) {
-                if before.id != id || !before.kept {
-                    let wait = if before.id != id || before.soon { 15_000 } else { 60_000 };
-                    earlier(&mut next, before.sent.saturating_add(wait));
-                }
+            } else if let Some(before) = self.sent.get(&target.key)
+                && (before.id != id || !before.kept)
+            {
+                let wait = if before.id != id || before.soon { 15_000 } else { 60_000 };
+                earlier(&mut next, before.sent.saturating_add(wait));
             }
         }
         if due.is_empty() {
