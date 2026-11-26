@@ -54,6 +54,7 @@ async fn a_message_added_while_another_agent_works_is_still_part_of_the_request(
         store,
         None,
         asks.for_turn("ses_saved".into(), "msg_current".into()),
+        None,
         Arc::new(Policy),
     );
     let context = sink.handover("msg_current", false).await.unwrap().unwrap();

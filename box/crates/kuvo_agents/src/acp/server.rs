@@ -84,6 +84,7 @@ pub(super) struct Process {
     sessions: Plain<Map<String, Value>>,
     /// Sessions being opened in it: updates for one not yet known wait for it.
     opening: Plain<Staging>,
+    children: Plain<HashMap<String, Option<String>>>,
     /// Taken up from its holder: what it says waits until the turns taken up in it are ready.
     waiting: Plain<HashSet<String>>,
     gate: watch::Sender<bool>,
@@ -96,6 +97,12 @@ struct Staging {
 }
 
 impl Process {
+    pub fn close_children(&self, parent: &str) {
+        for owner in lock(&self.children).values_mut() {
+            if owner.as_deref() == Some(parent) { *owner = None; }
+        }
+    }
+
     pub fn closed(&self) -> bool {
         self.rpc.is_closed()
     }
@@ -689,6 +696,7 @@ impl Shared {
             turns: Plain::new(turns),
             sessions: Plain::new(sessions),
             opening: Plain::default(),
+            children: Plain::default(),
             waiting: Plain::new(waiting),
             gate,
         });
@@ -738,7 +746,25 @@ impl Shared {
                 // (Under the routes' lock: a session being opened is known, or what's said of it
                 // waits for it.)
                 let routes = self.routes();
-                match route_in(&routes, process, update.session.as_deref()) {
+                let destination = route_in(&routes, process, update.session.as_deref()).or_else(|| {
+                    let native = update.session.as_deref()?;
+                    if update.replay || lock(&process.opening).opening > 0
+                        || !matches!(&update.update, super::wire::Update::UserChunk(_) | super::wire::Update::Chunk { .. } | super::wire::Update::Tool(_)) {
+                        return None;
+                    }
+                    let mut children = lock(&process.children);
+                    // A previously associated child's late frames must not go to another parent.
+                    if children.contains_key(native) { return None; }
+                    let turns = lock(&process.turns);
+                    let mut parents = routes.iter().filter(|(_, route)| {
+                        route.process == Some(process.id) && (route.native.as_ref().is_some_and(|id| turns.contains_key(id)) || route.busy.load(Ordering::Acquire))
+                    });
+                    let (parent, route) = parents.next()?;
+                    if parents.next().is_some() { return None; }
+                    children.insert(native.to_owned(), Some(parent.clone()));
+                    Some(route.events.clone())
+                });
+                match destination {
                     Some(events) => {
                         let _ = events.send(Event::Update {
                             process: process.id,
@@ -982,7 +1008,12 @@ fn route_in(
     match native {
         Some(native) => in_it
             .find(|route| route.native.as_deref() == Some(native))
-            .map(|route| route.events.clone()),
+            .map(|route| route.events.clone())
+            .or_else(|| {
+                let children = lock(&process.children);
+                let route = routes.get(children.get(native)?.as_ref()?)?;
+                (route.process == Some(process.id)).then(|| route.events.clone())
+            }),
         None => {
             let only = in_it.next()?;
             in_it.next().is_none().then(|| only.events.clone())

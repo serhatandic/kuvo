@@ -389,6 +389,13 @@ impl Service {
         if state.conversation(session).retired {
             return Err(missing(session));
         }
+        if let Some(header) = self.store.read(session).await? {
+            if header.parent().is_some() {
+                let fields = header.into_fields();
+                let route = &fields["metadata"]["kuvo"]["messages"];
+                return Err(refused(route["note"].as_str().unwrap_or("This agent can't take messages for its subagents.")));
+            }
+        }
         let id = input.id.clone();
         let line = self
             .store
