@@ -130,6 +130,12 @@ For the Rust vectors test, run `scripts/route-shapes.sh` first. For a test that 
 older bundle, set `BUILT_AT_CACHE` to the test's scratch folder and run
 `scripts/built-at.sh <rev>`. It prints the bundle directory.
 
+For changes to the build-lane helper, `python3 scripts/test_heavy.py` exercises its
+queue and lock behaviour using scratch locks. The legacy combined recovery scenarios
+are selected by `scripts/failure-bench.sh` (see [disposable evidence](architecture/receipt-ownership-and-versions.md#disposable-evidence)).
+Run that bench only when checking the historical mixed-release recovery path, since it
+needs the pinned historical builds as well as the current ones.
+
 Run compile checks for what you touched (`cargo-locked.sh check` or `bun run check` in `box/`).
 Never drive the Mac app's window from a test.
 
