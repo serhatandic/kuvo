@@ -7,6 +7,7 @@ mod flavour;
 mod grok;
 mod local;
 mod opencode;
+pub mod opencode_history;
 mod projection;
 mod server;
 mod thread;
