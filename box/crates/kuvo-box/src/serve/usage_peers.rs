@@ -1,5 +1,6 @@
 //! Plan snapshots on the authenticated peer-mail connection. Unlike log readers,
 //! this only runs while a resident is linked, and never asks a provider on a timer.
+use kuvo_os::timer_fires::{self, Timer};
 use kuvo_peers::{
     relay::{RelayEvent, RelayHandle},
     setup_lists::Reader,
@@ -41,9 +42,9 @@ impl Told {
             .then_some(throttle)
     }
 }
-pub(super) async fn at_deadline(at: Option<u64>) {
+pub(super) async fn at_deadline(timer: Timer, at: Option<u64>) {
     if let Some(at) = at {
-        tokio::time::sleep(Duration::from_millis(
+        timer_fires::sleep(timer, Duration::from_millis(
             at.saturating_sub(limits::now()).max(1),
         ))
         .await;
@@ -160,7 +161,7 @@ pub async fn follow_limits(
         tokio::select! {
             changed=changes.changed()=>{if changed.is_err(){break;}},
             changed=directory.changed()=>{if changed.is_err(){break;}},
-            _=at_deadline(deadline)=>{service.answer(limits::now());},
+            _=at_deadline(Timer::UsagePeerHeartbeat, deadline)=>{service.answer(limits::now());},
             _=refreshes.recv()=>{
                 let view=directory.view();
                 let scope=setup.config_receipt_scope().map(|(id,_)|id);
@@ -182,7 +183,7 @@ pub async fn follow_limits(
                         let from=encode(key);
                         if let Some(answer)=given.answer {resets.take_answer(&from,answer);}
                         else if let Some(decision)=given.always {if resets.take_decision(&from,decision).await.is_err(){eprintln!("Couldn't keep peer reset permission.");}}
-                        else if let Some(ask)=given.ask {if let Some(host)=member.host(){let resets=resets.clone();let relay=relay.clone();tokio::spawn(async move{let answer=resets.take_ask(&from,ask).await;send_reset(&relay,host,ResetMail::answer(answer)).await;});}}
+                        else if let Some(ask)=given.ask && let Some(host)=member.host(){let resets=resets.clone();let relay=relay.clone();tokio::spawn(async move{let answer=resets.take_ask(&from,ask).await;send_reset(&relay,host,ResetMail::answer(answer)).await;});}
                         continue;
                     }
                     let Some(value)=envelope.0.get("limits") else {continue;};
@@ -192,15 +193,13 @@ pub async fn follow_limits(
                     let id=encode(key);
                     let ask=reading.ask;
                     service.take_peer(&id,&member.name,reading,now);
-                    if ask && answered.get(&id).is_none_or(|at|now.saturating_sub(*at)>=60_000) {
-                        if let Some(host)=member.host() {
-                            let snapshot=service.peer_snapshot(scope.clone(),now);
-                            let contents=json!([snapshot.accounts,snapshot.notice_setup]);
-                            let checked=snapshot.accounts.iter().map(|a|a.facts.checked).collect();
-                            if send(&relay,host,snapshot).await {
-                                answered.insert(id.clone(),now);
-                                told.insert(id,Told{at:now,contents,checked,scope});
-                            }
+                    if ask && answered.get(&id).is_none_or(|at|now.saturating_sub(*at)>=60_000) && let Some(host)=member.host() {
+                        let snapshot=service.peer_snapshot(scope.clone(),now);
+                        let contents=json!([snapshot.accounts,snapshot.notice_setup]);
+                        let checked=snapshot.accounts.iter().map(|a|a.facts.checked).collect();
+                        if send(&relay,host,snapshot).await {
+                            answered.insert(id.clone(),now);
+                            told.insert(id,Told{at:now,contents,checked,scope});
                         }
                     }
                 },

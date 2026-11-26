@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{Engine, api, lifetime::Lease};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq)]
 pub(crate) struct Session {
     pub id: String,
     #[serde(default)]
@@ -32,7 +32,7 @@ pub(crate) struct Session {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, PartialEq)]
 pub(crate) struct Times {
     pub created: Option<u64>,
     pub updated: Option<u64>,

@@ -6,7 +6,7 @@ use kuvo_protocol::{
     shape::{Primitive, Shape},
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
@@ -27,11 +27,11 @@ const LAYOUT: &[&str] = &[
     "seeded",
 ];
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Stamp {
     v: u64,
     by: String,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "is_false")]
     imported: bool,
 }
 fn is_false(value: &bool) -> bool {
@@ -47,17 +47,87 @@ impl Stamp {
         )
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Unit {
     value: Value,
     stamp: Stamp,
 }
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize)]
 struct Settings {
-    #[serde(default)]
     units: BTreeMap<String, Unit>,
-    #[serde(default)]
     imported: bool,
+}
+
+impl Settings {
+    /// Read each independently versioned part. Older readers retain bounded
+    /// future parts without interpreting them as settings they recognize.
+    fn from_saved(value: &Value, future_limit: usize) -> Self {
+        let mut settings = Self {
+            imported: value["imported"] == true,
+            ..Self::default()
+        };
+        let Some(parts) = value["units"].as_object() else {
+            return settings;
+        };
+        let mut future = 0;
+        for (name, kept) in parts {
+            let stamp = &kept["stamp"];
+            let Some(version) = stamp["v"]
+                .as_f64()
+                .filter(|v| (0.0..=9_007_199_254_740_991.0).contains(v) && v.fract() == 0.0)
+            else {
+                continue;
+            };
+            let Some(by) = stamp["by"]
+                .as_str()
+                .filter(|by| by.encode_utf16().count() <= 200)
+            else {
+                continue;
+            };
+            let Some(value) = kept.get("value") else {
+                continue;
+            };
+            let value = if PARTS.contains(&name.as_str()) {
+                let Some(value) = checked(name, value) else {
+                    continue;
+                };
+                value
+            } else {
+                if future >= future_limit
+                    || name.len() > 40
+                    || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                    || !name.bytes().all(|b| b.is_ascii_alphanumeric())
+                    || matches!(
+                        name.as_str(),
+                        "constructor"
+                            | "toString"
+                            | "valueOf"
+                            | "hasOwnProperty"
+                            | "isPrototypeOf"
+                            | "propertyIsEnumerable"
+                            | "toLocaleString"
+                    )
+                    || kuvo_wire::json::canonical(value).encode_utf16().count() > 64_000
+                {
+                    continue;
+                }
+                future += 1;
+                value.clone()
+            };
+            settings.units.insert(
+                name.clone(),
+                Unit {
+                    value,
+                    stamp: Stamp {
+                        v: version as u64,
+                        by: by.to_owned(),
+                        imported: stamp["imported"] == true,
+                    },
+                },
+            );
+        }
+        settings
+    }
 }
 
 fn id(value: &str, max: usize) -> bool {
@@ -128,7 +198,11 @@ fn checked(name: &str, value: &Value) -> Option<Value> {
         .filter(|(key, _)| !known_fields(name, key))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect::<Map<_, _>>();
-    if serde_json::to_vec(&unknown).ok()?.len() > 16_000 {
+    if kuvo_wire::json::canonical(&Value::Object(unknown))
+        .encode_utf16()
+        .count()
+        > 16_000
+    {
         fields.retain(|key, _| known_fields(name, key));
     }
     Some(Value::Object(fields))
@@ -220,19 +294,9 @@ pub fn notification_availability() -> Value {
 #[derive(Clone)]
 pub struct Service {
     file: PathBuf,
-    run: PathBuf,
     setup: kuvo_setup::SetupHandle,
     unnamed: String,
     gate: Arc<Mutex<()>>,
-}
-#[derive(Deserialize)]
-struct Shared {
-    id: String,
-    epoch: u64,
-    primary: bool,
-    sequence: u64,
-    #[serde(default)]
-    value: Value,
 }
 impl Service {
     pub fn new(home: PathBuf, setup: kuvo_setup::SetupHandle) -> Self {
@@ -240,7 +304,6 @@ impl Service {
         let _ = getrandom::fill(&mut bytes);
         Self {
             file: home.join("agents/usage/settings.json"),
-            run: home.join("run"),
             setup,
             unnamed: format!("?{}", hex::encode(bytes)),
             gate: Arc::default(),
@@ -262,28 +325,13 @@ impl Service {
         self.route(Some(json!({"codexFallback":value})), false)
             .await
     }
-    fn shared(&self) -> Option<Shared> {
-        let link: Value =
-            serde_json::from_str(&std::fs::read_to_string(self.run.join("link.json")).ok()?)
-                .ok()?;
-        let setup = &link["setup"];
-        if setup["aside"] == true || !(setup["standby"] == true || setup["checkpointed"] == true) {
-            return None;
-        }
-        let entry = if link["sharedSetup"] == setup["id"] {
-            &link["shared"]["setupUsageDisplay"]
-        } else {
-            &Value::Null
-        };
-        serde_json::from_value(json!({"id":setup["id"],"epoch":setup["epoch"],"primary":setup["role"]=="primary","sequence":entry["sequence"].as_u64().unwrap_or(0),"value":entry["value"]})).ok()
+    fn shared(&self) -> Option<kuvo_setup::UsageSetup> {
+        self.setup.usage_setup()
     }
-    fn read(&self, shared: Option<&Shared>) -> Result<Settings, Refusal> {
-        if let Some(shared) = shared.filter(|s| s.sequence != 0) {
-            return serde_json::from_value(shared.value.clone()).map_err(internal);
-        }
+    fn disk(&self) -> Result<Option<Value>, Refusal> {
         let text = match std::fs::read_to_string(&self.file) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(internal(e)),
         };
         let value: Value = serde_json::from_str(&text).map_err(internal)?;
@@ -293,13 +341,22 @@ impl Service {
                 "Usage settings format is unsupported.",
             ));
         }
+        Ok(Some(value))
+    }
+    fn read(&self, shared: Option<&kuvo_setup::UsageSetup>) -> Result<Settings, Refusal> {
+        if let Some(shared) = shared.filter(|s| s.sequence != 0) {
+            return Ok(Settings::from_saved(&shared.value, usize::MAX));
+        }
+        let Some(value) = self.disk()? else {
+            return Ok(Settings::default());
+        };
         if let Some(shared) = shared
-            && let Some(previous) = value.get("setup")
+            && let Some(previous) = value.get("setup").filter(|v| v.is_null() || v.is_string())
             && previous.as_str() != Some(shared.id.as_str())
         {
             return Ok(Settings::default());
         }
-        let mut settings: Settings = serde_json::from_value(value.clone()).map_err(internal)?;
+        let mut settings = Settings::from_saved(&value, 20);
         if !settings.units.contains_key("codexFallback")
             && let Some(fallback) = value["codex"].get("fallback")
         {
@@ -332,7 +389,7 @@ impl Service {
     async fn save(
         &self,
         settings: &Settings,
-        shared: Option<Shared>,
+        shared: Option<kuvo_setup::UsageSetup>,
     ) -> Result<Option<Value>, Refusal> {
         if let Some(shared) = shared {
             return self
@@ -343,7 +400,20 @@ impl Service {
         }
         let mut data = json!(settings);
         data["kuvo"] = json!(1);
-        data["setup"] = Value::Null;
+        // A missing or not-yet-known setup is not a confirmed detachment.
+        // Preserve the original file's marker; adopt an unmarked file only
+        // when we know there is no setup, or through an accepted shared save.
+        let marker = self
+            .disk()?
+            .and_then(|old| {
+                old.get("setup")
+                    .filter(|v| v.is_null() || v.is_string())
+                    .cloned()
+            })
+            .or_else(|| self.setup.link_id().is_some().then_some(Value::Null));
+        if let Some(marker) = marker {
+            data["setup"] = marker;
+        }
         if let Some(unit) = settings.units.get("codexFallback") {
             data["codex"] = json!({"fallback":unit.value});
         }
@@ -576,19 +646,32 @@ pub fn register(routes: &mut Registry, service: Service) {
 }
 
 impl Service {
+    /// None means the metric is not visible. Some(empty) means it is visible
+    /// but its alerts are off; that must not consume an unannounced crossing.
     pub fn notification_milestones(
         &self,
         service: &str,
         window: &super::readings::Window,
-    ) -> std::collections::BTreeSet<super::readings::Milestone> {
+    ) -> Option<std::collections::BTreeSet<super::readings::Milestone>> {
         use super::readings::Milestone::*;
         let Ok(settings) = self.read(self.shared().as_ref()) else {
             return Default::default();
         };
-        let Some(unit) = settings.units.get("notifications") else {
-            return Default::default();
-        };
+        let spark = service == "codex"
+            && window
+                .model
+                .as_deref()
+                .unwrap_or(&window.id)
+                .to_ascii_lowercase()
+                .contains("spark");
         let metric = match (service, window.id.as_str()) {
+            ("codex", id) if spark => {
+                if id.ends_with("secondary") {
+                    "sparkWeekly"
+                } else {
+                    "spark"
+                }
+            }
             ("claude", "five_hour") | ("codex", "primary") | ("opencode", "rolling") => "session",
             ("claude", "seven_day") | ("codex", "secondary") => "weekly",
             ("claude", "seven_day_fable") => "fable",
@@ -602,6 +685,10 @@ impl Service {
             ("cursor", "total" | "included") => "usage",
             ("cursor", "on_demand") => "onDemand",
             ("cursor", "grok_bot") => "grokBot",
+            ("copilot", "premium_interactions") => "premium",
+            ("openrouter", "key") => "keyLimit",
+            ("zai", "web_search") => "webSearches",
+            ("zai", "window_10080") => "weekly",
             _ => &window.id,
         };
         let enabled = |card: &str| {
@@ -666,13 +753,19 @@ impl Service {
         if !visible {
             return Default::default();
         }
-        [
-            ("underTenPercent", UnderTenPercent),
-            ("healthyToClose", HealthyToClose),
-            ("closeToRunningOut", CloseToRunningOut),
-        ]
-        .into_iter()
-        .filter_map(|(key, m)| (unit.value[key] == true).then_some(m))
-        .collect()
+        let unit = settings.units.get("notifications");
+        Some(
+            [
+                ("underTenPercent", UnderTenPercent),
+                ("healthyToClose", HealthyToClose),
+                ("closeToRunningOut", CloseToRunningOut),
+            ]
+            .into_iter()
+            .filter_map(|(key, m)| {
+                unit.is_some_and(|unit| unit.value[key] == true)
+                    .then_some(m)
+            })
+            .collect(),
+        )
     }
 }

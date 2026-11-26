@@ -81,8 +81,8 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 pub use actor::{
     AcceptedQueueLabels, ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave,
     MarketplaceSetup, ModelStar, PreparedSetup, QueueLabel, QueueLabelLibrary,
-    QueueNumberAllocation, QueueNumberLease, QueueSetup, SetupHandle, SetupRuntime, is_mac_home,
-    transient_ssh_pairings,
+    QueueNumberAllocation, QueueNumberLease, QueueSetup, SetupHandle, SetupRuntime, UsageSetup,
+    is_mac_home, transient_ssh_pairings,
 };
 pub use discovery::locate;
 pub use model::{Receipt, SharedKind};

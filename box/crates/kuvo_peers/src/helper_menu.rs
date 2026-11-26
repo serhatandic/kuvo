@@ -19,6 +19,19 @@ use crate::{
 };
 
 impl View {
+    pub fn next_helper_change(&self, run: &Path, now: Millis) -> Option<Millis> {
+        let reach = Reach::load(run);
+        let tries: Value = kept::read(&run.join("reach-again.json")).unwrap_or_default();
+        self.roster.members.iter().flat_map(|peer| {
+            let key = encode(&peer.key);
+            let heard = self.announced.get(&key).and_then(|said| said.heard);
+            let trying = tries[&key].as_f64().filter(|at| (0.0..20_000.0).contains(&(now as f64 - at))
+                && heard.is_none_or(|heard| (heard as f64) < *at)).map(|at| (at + 20_000.0).ceil() as Millis);
+            let away = reach.next_standing_change(&key, None, heard, None, now);
+            [trying, away].into_iter().flatten()
+        }).filter(|at| *at > now).min()
+    }
+
     pub fn helper_peers(&self, run: &Path, now: Millis) -> Vec<Computer> {
         let reach = Reach::load(run);
         let tries: Value = kept::read(&run.join("reach-again.json")).unwrap_or_default();

@@ -57,7 +57,7 @@ struct Credential {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SignIn {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: String,
     access: Option<String>,
     refresh: Option<String>,
@@ -72,11 +72,61 @@ impl SignIn {
     }
     fn secret(&self, integration: Integration) -> Option<&str> {
         if integration == Integration::Copilot {
-            self.refresh.as_deref().or(self.key.as_deref())
+            self.refresh
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or(self.key.as_deref())
         } else {
-            self.access.as_deref().or(self.key.as_deref())
+            self.access
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or(self.key.as_deref())
         }
     }
+}
+/// Same credential admission for a read and for withdrawing cached rows. A
+/// historical model call is never a credential, even if it used a plan.
+fn admitted(credentials: &Value) -> Option<Vec<(Account, Integration, SignIn)>> {
+    let list = credentials
+        .as_array()
+        .or_else(|| credentials["data"].as_array())?;
+    Some(
+        list.iter()
+            .filter_map(|c| serde_json::from_value::<Credential>(c.clone()).ok())
+            .filter(|c| c.active)
+            .filter_map(|credential| {
+                let kind = Integration::of(&credential.integration_id)?;
+                let sign_in = credential.value;
+                if matches!(kind, Integration::Openai | Integration::Xai)
+                    && !sign_in.oauth()
+                    && !sign_in.access.as_deref().is_some_and(|s| !s.is_empty())
+                {
+                    return None;
+                }
+                let secret = sign_in.secret(kind)?.trim();
+                if secret.is_empty() {
+                    return None;
+                }
+                let account = Account {
+                    provider: credential.integration_id,
+                    service: kind.provider(),
+                    account: None,
+                    label: None,
+                    identity: identity(kind, &sign_in).map(|raw| Account::identity_of(&raw)),
+                    sign_in: fingerprint(&format!("{}:{}", secret, sign_in.expires.unwrap_or(0))),
+                };
+                Some((account, kind, sign_in))
+            })
+            .collect(),
+    )
+}
+pub fn admitted_accounts(credentials: &Value) -> Option<Vec<Account>> {
+    Some(
+        admitted(credentials)?
+            .into_iter()
+            .map(|(account, _, _)| account)
+            .collect(),
+    )
 }
 fn reset_sign_in(credentials: Value, account: &Account, now: u64) -> Option<SignIn> {
     let list = credentials
@@ -405,8 +455,7 @@ impl Reader {
                 .headers()
                 .get("retry-after")
                 .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|s| now.saturating_add(s.saturating_mul(1000)));
+                .and_then(|s| super::plan_facts::retry_at(s, now));
             return Err(Problem {
                 kind: ProblemKind::RateLimited,
                 message: format!("{maker} is turning away reads of the limits for now."),
@@ -434,7 +483,7 @@ impl Reader {
             };
             return Err(problem);
         }
-        if status != 200 {
+        if !(200..300).contains(&status) {
             return Err(Problem::new(
                 ProblemKind::Failed,
                 format!("{maker} answered {status}."),
@@ -454,43 +503,16 @@ impl Reader {
         held: &BTreeSet<String>,
         selected: Option<&str>,
     ) -> Option<ReadBatch> {
-        let list = credentials
-            .as_array()
-            .or_else(|| credentials["data"].as_array())?;
         let mut returned = vec![];
         let mut providers = vec![];
-        for credential in list
-            .iter()
-            .filter_map(|c| serde_json::from_value::<Credential>(c.clone()).ok())
-            .filter(|c| c.active)
-        {
-            let Some(kind) = Integration::of(&credential.integration_id) else {
-                continue;
-            };
-            let sign_in = credential.value;
-            if matches!(kind, Integration::Openai | Integration::Xai) && !sign_in.oauth() {
-                continue;
-            }
-            let Some(secret) = sign_in
-                .secret(kind)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            if held.contains(&credential.integration_id)
-                || selected.is_some_and(|id| id != credential.integration_id)
+        for (mut account, kind, sign_in) in admitted(&credentials)? {
+            if held.contains(&account.provider) || selected.is_some_and(|id| id != account.provider)
             {
-                providers.push(credential.integration_id.clone());
+                providers.push(account.provider);
                 continue;
             }
-            let mut account = Account {
-                provider: credential.integration_id,
-                service: kind.provider(),
-                account: None,
-                label: None,
-                identity: identity(kind, &sign_in).map(|raw| Account::identity_of(&raw)),
-                sign_in: fingerprint(&format!("{}:{}", secret, sign_in.expires.unwrap_or(0))),
+            let Some(secret) = sign_in.secret(kind).map(str::trim) else {
+                continue;
             };
             let result = if kind != Integration::Copilot
                 && sign_in.oauth()
@@ -875,6 +897,7 @@ fn chatgpt(body: &Value, now: u64) -> (Vec<Window>, Facts, Option<String>) {
                 name: "Extra Usage".into(),
                 amount: left.max(0.).floor(),
                 unit: Unit::Credits,
+                resets_at: None,
             });
         }
     }

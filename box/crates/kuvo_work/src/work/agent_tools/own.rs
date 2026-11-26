@@ -4,6 +4,10 @@
 
 use std::{future::Future, path::Path, pin::Pin, time::Duration};
 
+use kuvo_os::{
+    platform::{Environment, which},
+    process::{Priority, Spawn, Stdio},
+};
 use serde_json::{Map, Value, json};
 
 use super::{Caller, Said, receipts::Operation, refused, said};
@@ -15,7 +19,10 @@ const WATCH_AS_COMMAND: &str = "This conversation asks before running commands, 
 
 /// Whether a conversation with these rules asks before commands, but nothing asked the user about
 /// a watch's check before its tool ran (its rules are from before watches asked).
-fn watch_went_unasked(rules: &Value) -> bool {
+/// Whether a conversation with these rules asks before commands, but nothing asked the user about
+/// a watch's check before its tool ran: its rules are from before watches asked, or the coding
+/// agents run it (`agents`), whose tools aren't checked against them.
+fn watch_went_unasked(rules: &Value, agents: bool) -> bool {
     let rules: Vec<&Value> = rules.as_array().into_iter().flatten().collect();
     let is = |rule: &&Value, action: &str, effect: &str| {
         let (permission, pattern, effect_of) = (
@@ -31,18 +38,16 @@ fn watch_went_unasked(rules: &Value) -> bool {
             && effect_of == Some(effect)
     };
     rules.iter().any(|rule| is(rule, "shell", "ask"))
-        && !rules
-            .iter()
-            .any(|rule| is(rule, "kuvo-browser_watch_for_change", "ask"))
+        && (agents
+            || !rules
+                .iter()
+                .any(|rule| is(rule, "kuvo-browser_watch_for_change", "ask")))
 }
 
 /// What kuvo-wake said, in its words; why it couldn't run where it didn't.
-fn ran_words(
-    ran: Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed>,
-    program: &Path,
-) -> Said {
+fn ran_words(ran: std::io::Result<std::process::Output>, program: &Path) -> Said {
     match ran {
-        Ok(Ok(output)) => {
+        Ok(output) => {
             let text = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),
@@ -59,12 +64,47 @@ fn ran_words(
                 refused: failed,
             }
         }
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => refused(format!(
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => refused(format!(
             "Couldn't run kuvo-wake here: there's none at {}.",
             program.display()
         )),
         _ => refused("That didn't work."),
     }
+}
+
+/// Drain both pipes while the shared process owner keeps the whole command together.
+async fn run_command(spawn: Spawn) -> std::io::Result<std::process::Output> {
+    use std::io::{self, Read};
+    use tokio::task::spawn_blocking;
+    let mut child = spawn_blocking(move || spawn.spawn())
+        .await
+        .map_err(io::Error::other)??;
+    let exited = child.identity().watch_exit()?;
+    let read = |mut pipe: io::PipeReader| {
+        spawn_blocking(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes)?;
+            Ok::<_, io::Error>(bytes)
+        })
+    };
+    let stdout = read(child.stdout.take().expect("requested stdout"));
+    let stderr = read(child.stderr.take().expect("requested stderr"));
+    let finished = tokio::time::timeout(Duration::from_secs(30), exited).await;
+    if finished.is_err() {
+        spawn_blocking(move || child.stop(Duration::ZERO, |_| {}))
+            .await
+            .map_err(io::Error::other)??;
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    finished.unwrap().map_err(io::Error::other)??;
+    let status = spawn_blocking(move || child.wait())
+        .await
+        .map_err(io::Error::other)??;
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.await.map_err(io::Error::other)??,
+        stderr: stderr.await.map_err(io::Error::other)??,
+    })
 }
 
 impl Work {
@@ -76,7 +116,7 @@ impl Work {
         name: &str,
         args: &Map<String, Value>,
         session: Option<&str>,
-        own: Option<&Value>,
+        own: Option<(&Value, bool)>,
         caller: Option<&Caller>,
         operation: Option<&Operation>,
     ) -> Said {
@@ -86,7 +126,7 @@ impl Work {
         let seat = |data: Option<&Value>| {
             data.is_some_and(|data| !data["metadata"]["kuvo"]["seat"].is_null())
         };
-        if seat(own) || seat(caller.map(|caller| &caller.data)) {
+        if seat(own.map(|(data, _)| data)) || seat(caller.map(|caller| &caller.data)) {
             return refused(
                 "Not from a group chat: a chat can meet on a schedule instead (its editor's Meets on a Schedule).",
             );
@@ -132,8 +172,8 @@ impl Work {
             "watch_for_change" => {
                 // A watch runs a command whenever it's due: in Ask First, only once the user was asked.
                 if own
-                    .or(caller.map(|caller| &caller.data))
-                    .is_some_and(|data| watch_went_unasked(&data["permissions"]))
+                    .or(caller.map(|caller| (&caller.data, caller.agents)))
+                    .is_some_and(|(data, agents)| watch_went_unasked(&data["permissions"], agents))
                 {
                     return refused(WATCH_AS_COMMAND);
                 }
@@ -208,23 +248,38 @@ impl Work {
             let target = bot.as_ref().map_or(owner.to_owned(), |bot| {
                 bot.folder.to_string_lossy().into_owned()
             });
-            let mut command = tokio::process::Command::new(&program);
-            command
-                .arg(&target)
-                .args(&verb)
-                .current_dir(&cwd)
-                .env("PWD", &cwd)
-                .env("KUVO_BOTS", &self.bots)
-                .env("KUVO_WAKES", self.home.join("wakes"))
-                .env("KUVO_WAKE_TOOL", "1")
-                // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
-                .env_remove("KUVO_WAKE_VIA")
-                .env_remove("OPENCODE_SESSION_ID")
-                .env_remove("KUVO_WAKE_FOLDER")
-                .stdin(std::process::Stdio::null())
-                .kill_on_drop(true);
+            let mut env: Environment = std::env::vars_os().collect();
+            env.insert("PWD".into(), cwd.clone().into_os_string());
+            env.insert("KUVO_BOTS".into(), self.bots.clone().into_os_string());
+            env.insert(
+                "KUVO_WAKES".into(),
+                self.home.join("wakes").into_os_string(),
+            );
+            env.insert("KUVO_WAKE_TOOL".into(), "1".into());
+            // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
+            env.remove(std::ffi::OsStr::new("OPENCODE_SESSION_ID"));
+            env.remove(std::ffi::OsStr::new("KUVO_WAKE_FOLDER"));
+            // A coding agent's conversation: its wake-ups go to the coding agents.
+            match caller.is_some_and(|caller| caller.agents) {
+                true => env.insert("KUVO_WAKE_VIA".into(), "bridge".into()),
+                false => env.remove(std::ffi::OsStr::new("KUVO_WAKE_VIA")),
+            };
+            let executable = which(program.as_os_str(), &env, &[]);
+            let mut command = Spawn::new(&program, env);
+            command.args = std::iter::once(target.into())
+                .chain(verb.iter().map(|arg| (*arg).into()))
+                .collect();
+            command.cwd = Some(cwd);
+            command.priority = Priority::Background;
+            command.stdout = Stdio::Pipe;
+            command.stderr = Stdio::Pipe;
             Box::pin(async move {
-                let ran = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
+                let ran = if let Some(executable) = executable {
+                    command.executable = executable;
+                    run_command(command).await
+                } else {
+                    Err(std::io::ErrorKind::NotFound.into())
+                };
                 if tells {
                     wakes.changed();
                 }
@@ -400,12 +455,15 @@ mod tests {
     #[test]
     fn a_watch_goes_unasked_only_where_commands_ask_and_the_tool_itself_doesnt() {
         let asks = json!([{ "permission": "shell", "pattern": "*", "action": "ask" }]);
-        assert!(watch_went_unasked(&asks));
+        assert!(watch_went_unasked(&asks, false));
         let both = json!([{ "permission": "shell", "pattern": "*", "action": "ask" }, { "permission": "kuvo-browser_watch_for_change", "pattern": "*", "action": "ask" }]);
-        assert!(!watch_went_unasked(&both));
+        assert!(!watch_went_unasked(&both, false));
+        // (The coding agents don't check Kuvo Code's tools against its rules.)
+        assert!(watch_went_unasked(&both, true));
         assert!(!watch_went_unasked(
-            &json!([{ "action": "shell", "resource": "*", "effect": "allow" }])
+            &json!([{ "action": "shell", "resource": "*", "effect": "allow" }]),
+            true
         ));
-        assert!(!watch_went_unasked(&json!(null)));
+        assert!(!watch_went_unasked(&json!(null), false));
     }
 }

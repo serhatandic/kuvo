@@ -20,6 +20,7 @@ getrandom = "0.4"
 hex = "0.4"
 hmac = "0.12"
 http = "1"
+httpdate = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

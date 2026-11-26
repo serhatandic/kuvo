@@ -117,3 +117,184 @@ fn an_off_toggle_does_not_consume_an_unannounced_crossing() {
         Some(vec![Milestone::UnderTenPercent])
     );
 }
+
+#[test]
+fn projected_crossings_only_follow_accepted_samples_in_the_same_window() {
+    let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+    let all = toggles();
+    for (minute, used) in [(130, 0.12), (140, 0.14)] {
+        assert_eq!(
+            trail.observe(reading(START + minute * MIN, used, RESET), &all),
+            Some(vec![])
+        );
+    }
+    assert_eq!(
+        trail.observe(reading(START + 160 * MIN, 0.285, RESET), &all),
+        Some(vec![Milestone::HealthyToClose])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 170 * MIN, 0.4, RESET), &all),
+        Some(vec![Milestone::CloseToRunningOut])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 180 * MIN, 0.5, RESET), &all),
+        Some(vec![])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 181 * MIN, 0.99, RESET - 60 * MIN), &all),
+        None
+    );
+    assert_eq!(trail.occurrence(Milestone::HealthyToClose), 1);
+    assert_eq!(trail.occurrence(Milestone::CloseToRunningOut), 1);
+}
+
+#[test]
+fn disabling_one_projection_warning_does_not_disable_the_other_warnings() {
+    use Milestone::{CloseToRunningOut, HealthyToClose, UnderTenPercent};
+    for enabled in [
+        BTreeSet::new(),
+        BTreeSet::from([HealthyToClose]),
+        BTreeSet::from([CloseToRunningOut, UnderTenPercent]),
+        toggles(),
+    ] {
+        let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+        for (minute, used, expected) in [
+            (130, 0.12, None),
+            (140, 0.14, None),
+            (160, 0.285, Some(HealthyToClose)),
+            (170, 0.4, Some(CloseToRunningOut)),
+            (180, 0.92, Some(UnderTenPercent)),
+            (181, 0.93, None),
+        ] {
+            let expected = expected
+                .filter(|m| enabled.contains(m))
+                .into_iter()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                trail.observe(reading(START + minute * MIN, used, RESET), &enabled),
+                Some(expected),
+                "enabled {enabled:?}, observation {minute}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hidden_metrics_reprime_after_restart_but_keep_occurrence_ids() {
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    let all = toggles();
+    let almost = Milestone::UnderTenPercent;
+    assert_eq!(
+        trail.observe_visible(reading(START + 161 * MIN, 0.91, RESET), Some(&all)),
+        Some(vec![almost])
+    );
+    // Two consistent recoveries while hidden, then the first visible reading
+    // is a baseline rather than a replay of the old warning.
+    trail.observe_visible(reading(START + 162 * MIN, 0.82, RESET), None);
+    trail.observe_visible(reading(START + 163 * MIN, 0.82, RESET), None);
+    assert!(!trail.notice_state().primed);
+    let mut trail: Trail = serde_json::from_slice(&serde_json::to_vec(&trail).unwrap()).unwrap();
+    assert_eq!(
+        trail.observe_visible(reading(START + 164 * MIN, 0.82, RESET), Some(&all)),
+        Some(vec![])
+    );
+    assert_eq!(trail.occurrence(almost), 1);
+    assert_eq!(
+        trail.observe_visible(reading(START + 165 * MIN, 0.92, RESET), Some(&all)),
+        Some(vec![almost])
+    );
+    assert_eq!(trail.occurrence(almost), 2);
+}
+
+#[test]
+fn cold_start_and_unknown_cadence_do_not_invent_a_projection() {
+    let all = toggles();
+    let mut first = reading(START + 160 * MIN, 0.95, RESET);
+    first.minutes = None;
+    first.resets_at = None;
+    let mut trail = Trail::new(first.clone()).unwrap();
+    assert_eq!(trail.occurrence(Milestone::UnderTenPercent), 0);
+    first.read += MIN;
+    first.used = 0.98;
+    assert_eq!(trail.observe(first, &all), Some(vec![]));
+    assert!(!trail.projected());
+    assert!(!trail.runs_out());
+}
+
+#[test]
+fn a_direct_jump_to_running_out_does_not_also_fire_the_close_warning() {
+    let all = toggles();
+    let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+    for (minute, used) in [(130, 0.12), (140, 0.14)] {
+        assert_eq!(
+            trail.observe(reading(START + minute * MIN, used, RESET), &all),
+            Some(vec![])
+        );
+    }
+    assert_eq!(
+        trail.observe(reading(START + 160 * MIN, 0.4, RESET), &all),
+        Some(vec![Milestone::CloseToRunningOut])
+    );
+    assert_eq!(trail.occurrence(Milestone::HealthyToClose), 0);
+}
+
+#[test]
+fn an_unknown_period_has_only_the_level_warning_and_exact_ten_percent_is_not_under() {
+    let all = toggles();
+    let mut first = reading(START + 160 * MIN, 0.8, RESET);
+    first.minutes = None;
+    first.resets_at = None;
+    let mut trail = Trail::new(first.clone()).unwrap();
+    first.read += MIN;
+    first.used = 0.90;
+    assert_eq!(trail.observe(first.clone(), &all), Some(vec![]));
+    first.read += MIN;
+    first.used = 0.92;
+    assert_eq!(
+        trail.observe(first.clone(), &all),
+        Some(vec![Milestone::UnderTenPercent])
+    );
+    first.read += MIN;
+    first.used = 0.95;
+    assert_eq!(trail.observe(first, &all), Some(vec![]));
+}
+
+#[test]
+fn real_new_window_rearms_level_warning_but_small_reset_jitter_does_not() {
+    let all = toggles();
+    let almost = Milestone::UnderTenPercent;
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, 0.91, RESET), &all),
+        Some(vec![almost])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.92, RESET + 90), &all),
+        Some(vec![])
+    );
+    let reset = RESET + 300 * MIN;
+    assert_eq!(
+        trail.observe(reading(RESET + MIN, 0.5, reset), &all),
+        Some(vec![])
+    );
+    assert_eq!(
+        trail.observe(reading(RESET + 2 * MIN, 0.91, reset), &all),
+        Some(vec![almost])
+    );
+    assert_eq!(trail.occurrence(almost), 1);
+}
+
+#[test]
+fn a_missing_or_invalid_read_preserves_the_previous_notice_signal() {
+    let all = toggles();
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, f64::NAN, RESET), &all),
+        None
+    );
+    assert_eq!(trail.current.used, 0.89);
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.91, RESET), &all),
+        Some(vec![Milestone::UnderTenPercent])
+    );
+}

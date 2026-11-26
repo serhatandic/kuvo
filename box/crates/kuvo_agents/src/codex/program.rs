@@ -240,6 +240,7 @@ impl Program {
                 return Ok(());
             };
             let mut spawn = Spawn::new(executable.path(), env);
+            spawn.priority = kuvo_os::process::Priority::Background;
             spawn.executable = executable;
             spawn.args = vec!["logout".into()];
             spawn.cwd = Some(program.home.root().to_owned());
@@ -405,7 +406,7 @@ pub(super) fn chatgpt_identity(token: &str, account: Option<&str>) -> Option<Str
 }
 
 /// A fingerprint of a secret: who's signed in, never the secret.
-pub(super) fn fingerprint(secret: &str) -> String {
+pub(crate) fn fingerprint(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))[..16].to_owned()
 }
 

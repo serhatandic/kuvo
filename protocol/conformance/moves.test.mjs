@@ -11,6 +11,11 @@ import { boxBinary, isolatedEnv, openLine, readJSON, request, scratch, until, wr
 import { bench as conformanceBench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
+import { parkedTimers } from "./idle-counter.mjs";
+
+test("the move driver parks when there are no transfer journals", { timeout: 30000 }, async t => {
+  await parkedTimers(t, ["moves.round"], 3500);
+});
 
 const bench = t => conformanceBench(t, { orderedMessages: true });
 
@@ -401,6 +406,28 @@ function receiptPeer(t, relay, observer, seed, { sealOneWay, openOneWay, readFra
   };
 }
 
+test("a signed replacement without a removal record leaves the setup available", {timeout: 30000}, async t => {
+  const { computer, relay } = await bench(t);
+  const box = await computer("replacement-without-removal", undefined, folder => ({
+    CODEX_HOME: path.join(folder, "codex"), GROK_HOME: path.join(folder, "grok"),
+    CLAUDE_CONFIG_DIR: path.join(folder, "claude"), KUVO_TEST_PATH_ONLY: "1", KUVO_TEST_PRICE_FEEDS: "off",
+  }));
+  const retired = Buffer.alloc(32, 44).toString("base64url");
+  const { main, spare } = seedPeerSetup(box.home, relay.url, 1, 3, retired);
+  seedPeerSetup(box.home, relay.url, 1, 3, retired, {
+    ownershipRecovery: { sequence: 1, value: {
+      [`replacement:${retired}`]: { source: `b_${Buffer.alloc(16, 2).toString("base64url")}`, computer: spare.key }
+    } },
+  });
+  const seeded = readJSON(path.join(box.home, "run/link.json"));
+  assert.equal(seeded.shared.membershipAndAccess.value.removals, undefined);
+  const resident = await box.start().ready();
+  const setup = await request(resident, "GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  assert.equal(setup.json.setup, seeded.setup.id);
+  assert.equal(setup.json.you.key, main.key);
+});
+
 test("receipt pages keep the same cursor while the setup assigns a replacement issuer", {
   timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -464,7 +491,9 @@ test("receipt pages keep the same cursor while the setup assigns a replacement i
   const assigned = await request(resident, "POST", "kuvo/box/backups/match", {
     source: `b_${Buffer.alloc(16, 2).toString("base64url")}`, previous: retired, replacement: spare.key,
   }, headers);
-  assert.equal(assigned.status, 200, assigned.text);
+  const leaseFile = path.join(reader.home, "run/setup-relay-lease.json");
+  const lease = fs.existsSync(leaseFile) ? readJSON(leaseFile) : null;
+  assert.equal(assigned.status, 200, `${assigned.text}\n${JSON.stringify({ holder: lease?.holder, term: lease?.term, expires: lease?.expires, now: Date.now() })}\n${process.log()}`);
   const interrupted = await finish();
   assert.equal(interrupted.complete, false);
   assert.equal(interrupted.next, undefined);
@@ -2262,7 +2291,8 @@ test("a cold move receipt index resumes its bounded scan after a restart", {
   await readyToMove(original, session, member);
   const retry = await start();
   assert.equal(retry.status, 202, retry.text);
-  assert.equal((await settled(retry.json.move.id)).state, "done");
+  const retried = await settled(retry.json.move.id);
+  assert.equal(retried.state, "done", JSON.stringify(retried));
   assert.deepEqual(readJSON(path.join(there.home, "run/owned-data/mutations", shadow + ".json")), fence);
 });
 

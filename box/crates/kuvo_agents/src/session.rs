@@ -19,6 +19,41 @@ pub struct SessionContext {
     /// Where its agent says what it keeps going besides its turn: commands it left running, and
     /// other tasks.
     pub background: crate::background::Background,
+    /// Where its agent offers a turn it began on its own, between prompts.
+    pub own_turns: OwnTurns,
+}
+
+/// A turn an agent began on its own (Grok after a task of its own ended), offered to the
+/// resident: `taken` says whether a turn there takes it (`TurnKind::AgentStarted`).
+pub struct OwnTurn {
+    pub session: String,
+    pub provider: String,
+    /// What the conversation shows for it.
+    pub text: String,
+    pub taken: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// The resident's end for turns agents begin on their own: none takes them until it's set.
+#[derive(Clone, Default)]
+pub struct OwnTurns(Option<tokio::sync::mpsc::UnboundedSender<OwnTurn>>);
+
+impl OwnTurns {
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<OwnTurn>) -> Self {
+        Self(Some(sender))
+    }
+
+    /// Offers one: whether it's taken (never, with no resident to take it).
+    pub async fn offer(&self, session: &str, provider: &str, text: String) -> bool {
+        let Some(sender) = &self.0 else { return false };
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        let offer = OwnTurn {
+            session: session.into(),
+            provider: provider.into(),
+            text,
+            taken,
+        };
+        sender.send(offer).is_ok() && answer.await.unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +110,8 @@ pub struct TurnInput {
     pub plan: bool,
     /// On Auto, surface a usage limit promptly so the resident can switch.
     pub auto: bool,
+    /// Withdraw a new process start that's waiting for memory before this turn.
+    pub start_cancel: tokio_util::sync::CancellationToken,
 }
 
 /// A conversation on an account. Implementations may share a process between
@@ -271,6 +308,14 @@ pub struct PlanLimitReading {
     pub sign_in: Option<String>,
 }
 
+/// Whether the maker could supply a plan reading for this sign-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectPlanStatus {
+    Ready,
+    NoPlan,
+    Failed,
+}
+
 /// Facts available from a direct account read, not a turn notification.
 #[derive(Clone, Debug)]
 pub struct DirectPlanReading {
@@ -280,7 +325,7 @@ pub struct DirectPlanReading {
     pub credits: Option<f64>,
     pub resets: Option<ResetInventory>,
     pub reset_unreadable: Option<String>,
-    pub no_plan: bool,
+    pub status: DirectPlanStatus,
     pub only_resets: bool,
 }
 impl DirectPlanReading {
@@ -292,7 +337,7 @@ impl DirectPlanReading {
             credits: None,
             resets: None,
             reset_unreadable: None,
-            no_plan: false,
+            status: DirectPlanStatus::Ready,
             only_resets: false,
         }
     }
@@ -385,6 +430,8 @@ pub enum TurnEvent {
         succeeded: bool,
     },
     ReplayCaughtUp,
+    /// The title its agent gave the conversation, for one still without one.
+    Titled(String),
     Finished(TurnResult),
 }
 

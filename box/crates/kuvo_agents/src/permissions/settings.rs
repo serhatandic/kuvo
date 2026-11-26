@@ -76,7 +76,7 @@ fn read(path: &Path, rules: &mut Vec<Rule>) -> io::Result<bool> {
     Ok(true)
 }
 
-fn settings_object(bytes: &[u8]) -> Result<Value, &'static str> {
+pub(crate) fn settings_object(bytes: &[u8]) -> Result<Value, &'static str> {
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
     let mut text = bytes.to_vec();
     let mut input = bytes.iter().copied().enumerate().peekable();

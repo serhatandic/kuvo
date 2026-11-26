@@ -206,14 +206,30 @@ impl Agent for Claude {
                 direct.resets = Some(resets);
                 return Ok(Some(direct));
             }
-            let answer = model::usage(self.program.clone()).await?;
+            let result = model::usage(self.program.clone()).await;
             let Some((mark, current)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
             if identity != current {
                 return Ok(None);
             }
-            use crate::session::{DirectPlanReading, LimitWindow, PlanLimitReading, PlanSpend};
+            use crate::session::{
+                DirectPlanReading, DirectPlanStatus, LimitWindow, PlanLimitReading, PlanSpend,
+            };
+            // A failed read is still an observation of this confirmed account.
+            // The previous windows and extras remain useful until a fresh answer.
+            let answer = match result {
+                Ok(answer) => answer,
+                Err(error) => {
+                    eprintln!("Could not refresh Claude Code limits: {error}");
+                    let mut direct = DirectPlanReading::windows(PlanLimitReading {
+                        windows: vec![],
+                        sign_in: Some(mark),
+                    });
+                    direct.status = DirectPlanStatus::Failed;
+                    return Ok(Some(direct));
+                }
+            };
             let rate = &answer["rate_limits"];
             let mut windows = vec![];
             let timestamp = |value: &Value| {
@@ -276,7 +292,9 @@ impl Agent for Claude {
                 windows,
                 sign_in: Some(mark),
             });
-            direct.no_plan = answer["rate_limits_available"] == false;
+            if answer["rate_limits_available"] == false {
+                direct.status = DirectPlanStatus::NoPlan;
+            }
             direct.plan = answer["subscription_type"]
                 .as_str()
                 .filter(|s| !s.is_empty())

@@ -133,12 +133,18 @@ impl Shared {
                     let _ = self.send(line, Some(NOTIFY_WAIT), None).await;
                 }
                 Some("notifications/cancelled") => {
-                    let call = message["params"]["requestId"].clone();
+                    let Some(call) = message
+                        .get("params")
+                        .and_then(|params| params.get("requestId"))
+                        .filter(|id| !id.is_null())
+                    else {
+                        return;
+                    };
                     let token = self
                         .calls
                         .lock()
                         .expect("the call table is never poisoned")
-                        .get(&key_of(&call))
+                        .get(&key_of(call))
                         .cloned();
                     if let Some(token) = token {
                         token.cancel();
@@ -310,4 +316,38 @@ fn truthy(value: &Value) -> bool {
 
 fn didnt_answer() -> String {
     "Kuvo Code's tools didn't answer.".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_cancellation_without_a_request_id_is_ignored() {
+        let (output, mut answers) = mpsc::channel(1);
+        let waiting = CancellationToken::new();
+        let shared = Arc::new(Shared {
+            relay: Relay {
+                url: "http://127.0.0.1:0".into(),
+                key: "fixture".into(),
+                timeout: Duration::from_secs(1),
+            },
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            session: Mutex::new(None),
+            calls: Mutex::new(HashMap::from([(key_of(&json!(1)), waiting.clone())])),
+            output,
+        });
+        // Execute the actual notification handler so a detached task panic
+        // cannot be mistaken for a successful ignored notification.
+        for notice in [
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled"}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":null}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":null}}),
+        ] {
+            shared.clone().handle(notice.to_string()).await;
+            assert!(!waiting.is_cancelled());
+            assert!(answers.try_recv().is_err());
+        }
+    }
 }

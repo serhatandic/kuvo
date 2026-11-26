@@ -8,7 +8,7 @@ import {
   boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, request, scratch, until, write,
 } from "./adapter.mjs";
 import {
-  assertMatch, askFirst, idles, keptListener, steps, stopFixtureHolders, stopPids, texts, toolCalls,
+  answerSessionAsk, assertCommandCard, assertMatch, askFirst, idles, sessionAsks, keptListener, steps, stopFixtureHolders, stopPids, texts, toolCalls,
   transcript, twoReleases,
 } from "./claude.mjs";
 import { provider, scriptedCodex, seedCodexAuth, seedCodexSession, standInCodex } from "./codex.mjs";
@@ -490,6 +490,25 @@ describe("Codex, more of what it does", { skip }, () => {
     assert.equal((await box.codex.replyForm(id, form.id, { db: "SQLite" })).status, 200);
     assert.deepEqual((await box.codex.answeredFor("q1")).result, { answers: { db: { answers: ["SQLite"] } } });
     await box.codex.idles(id);
+  });
+
+  test("the app's cards: its command and its question are the conversation's asks, and the answers given there reach it", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      item("item/started", { type: "commandExecution", id: "c9", command: "make" }),
+      { ask: ["item/commandExecution/requestApproval", { itemId: "c9", command: "make" }] },
+      item("item/completed", { type: "commandExecution", id: "c9", command: "make", status: "completed", exitCode: 0, aggregatedOutput: "ok" }),
+      { ask: ["item/tool/requestUserInput", { itemId: "q9", questions: [{ id: "size", header: "Size", question: "Which size?", options: [{ label: "Small" }, { label: "Large" }] }] }] },
+    ], { ask: true });
+    const card = await until(async () => (await sessionAsks(box.codex.listener, id)).find((ask) => ask.kind === "permission"), "No card for the command.");
+    assertCommandCard(card, "make");
+    await answerSessionAsk(box.codex.listener, id, card.id, { answer: "once" });
+    assert.deepEqual((await box.codex.answeredFor("c9")).result, { decision: "accept" });
+    const question = await until(async () => (await sessionAsks(box.codex.listener, id)).find((ask) => ask.kind === "question"), "No card for the question.");
+    assertMatch(question.questions[0], { key: "size", question: "Which size?", options: [{ value: "Small" }, { value: "Large" }] });
+    await answerSessionAsk(box.codex.listener, id, question.id, { answers: { size: "Large" } });
+    assert.deepEqual((await box.codex.answeredFor("q9")).result, { answers: { size: { answers: ["Large"] } } });
+    await box.codex.idles(id);
+    assert.deepEqual(await sessionAsks(box.codex.listener, id), []);
   });
 
   test("the speed picked for its account goes with each turn: Fast where its model runs at it", { timeout: 60000 }, async () => {

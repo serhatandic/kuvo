@@ -36,6 +36,23 @@ impl Window {
     fn valid(&self) -> bool {
         !self.id.is_empty() && self.used.is_finite()
     }
+    pub(super) fn valid_kept(&self) -> bool {
+        self.valid() && (0.0..=1.0).contains(&self.used)
+    }
+    /// Makers can name the same plan window differently (for example an
+    /// engine and its native CLI). Its semantic identity is what it counts
+    /// and how long it lasts; only nameless, spanless limits fall back to ID.
+    pub fn limit_key(&self) -> String {
+        if self.model.is_none() && self.name.is_none() && self.minutes.is_none() {
+            return format!("id:{}", self.id);
+        }
+        format!(
+            "{}|{}|{}",
+            self.model.as_deref().unwrap_or_default().to_lowercase(),
+            self.name.as_deref().unwrap_or_default(),
+            self.minutes.map(|m| m.to_string()).unwrap_or_default()
+        )
+    }
     pub fn expired(&self, now: u64) -> bool {
         self.resets_at.is_some_and(|at| at <= now)
     }
@@ -119,8 +136,85 @@ pub struct Trail {
     notice_under: Option<bool>,
     #[serde(default)]
     notice_pace: Option<Pace>,
+    #[serde(default)]
+    notice_dormant: bool,
+}
+/// Local and per-peer projections keep the maker's real window ID. Look up
+/// equivalent limits by meaning before accepting a new observation.
+pub(super) fn equivalent_trail(
+    trails: &BTreeMap<String, Trail>,
+    window: &Window,
+) -> Option<String> {
+    let key = window.limit_key();
+    if trails
+        .get(&window.id)
+        .is_some_and(|trail| trail.current.limit_key() == key)
+    {
+        return Some(window.id.clone());
+    }
+    trails
+        .iter()
+        .find(|(_, trail)| trail.current.limit_key() == key)
+        .map(|(id, _)| id.clone())
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPrediction {
+    UsedUp,
+    RunsOut { at: u64 },
+    Lasts,
 }
 impl Trail {
+    /// A persisted trail is not a maker observation. Refuse impossible
+    /// ratios and out-of-order/future samples before they enter a projection.
+    pub(super) fn valid_kept(&self) -> bool {
+        self.current.valid_kept()
+            && self.candidate.as_ref().is_none_or(Window::valid_kept)
+            && self
+                .samples
+                .iter()
+                .all(|s| s.at <= self.current.read && (0.0..=1.0).contains(&s.used))
+            && self.samples.windows(2).all(|pair| pair[0].at <= pair[1].at)
+    }
+    /// A card's estimate uses the very same accepted, current-window samples as notices.
+    pub fn card_prediction(&self, now: u64) -> Option<CardPrediction> {
+        let w = &self.current;
+        if w.expired(now) {
+            return None;
+        }
+        if w.used >= 0.995 {
+            return Some(CardPrediction::UsedUp);
+        }
+        if now.saturating_sub(w.read) > 30 * MINUTE {
+            return None;
+        }
+        let reset = w.resets_at?;
+        let latest = self.samples.last()?;
+        if latest.at != w.read {
+            return None;
+        }
+        let stretch = self.lookback();
+        let recent = self
+            .samples
+            .iter()
+            .filter(|s| s.at >= latest.at.saturating_sub(stretch))
+            .collect::<Vec<_>>();
+        let first = recent.first()?;
+        if recent.len() < 3 || latest.at.saturating_sub(first.at) < (15 * MINUTE).max(stretch / 4) {
+            return None;
+        }
+        let rate = (latest.used - first.used) / (latest.at - first.at) as f64;
+        if !(rate > 0.) {
+            return Some(CardPrediction::Lasts);
+        }
+        let out = latest.at as f64 + (1. - latest.used) / rate;
+        if out >= reset.saturating_sub(MINUTE) as f64 {
+            return Some(CardPrediction::Lasts);
+        }
+        let rounded = (out / (5 * MINUTE) as f64).round() as u64 * (5 * MINUTE);
+        Some(CardPrediction::RunsOut {
+            at: rounded.max(now),
+        })
+    }
     pub fn new(mut first: Window) -> Option<Self> {
         if !first.valid() {
             return None;
@@ -137,6 +231,7 @@ impl Trail {
             recovering: BTreeMap::new(),
             notice_under: None,
             notice_pace: None,
+            notice_dormant: false,
         };
         trail.note();
         trail.notice_under = Some(trail.current.used > 0.9);
@@ -152,7 +247,7 @@ impl Trail {
         toggles: &BTreeSet<Milestone>,
     ) -> Option<Vec<Milestone>> {
         let old = &self.current;
-        if !next.valid() || next.id != old.id || next.read <= old.read {
+        if !next.valid() || next.limit_key() != old.limit_key() || next.read <= old.read {
             return None;
         }
         next.used = next.used.clamp(0.0, 1.0);
@@ -291,6 +386,45 @@ impl Trail {
         }
         Some(notices)
     }
+    /// Hiding a metric makes its notice baseline dormant, without destroying
+    /// the accepted reading or occurrence counters. A subsequent visible
+    /// reading primes the baseline; merely disabling a trigger does not.
+    pub fn hide_notice(&mut self) {
+        self.notice_dormant = true;
+        for milestone in [
+            Milestone::UnderTenPercent,
+            Milestone::HealthyToClose,
+            Milestone::CloseToRunningOut,
+        ] {
+            if self.fired.remove(&milestone) {
+                self.rearmed.insert(milestone, self.current.read);
+            }
+        }
+        self.recovering.clear();
+    }
+    pub(super) fn notice_is_dormant(&self) -> bool {
+        self.notice_dormant
+    }
+    pub fn observe_visible(
+        &mut self,
+        next: Window,
+        toggles: Option<&BTreeSet<Milestone>>,
+    ) -> Option<Vec<Milestone>> {
+        let Some(toggles) = toggles else {
+            let accepted = self.observe(next, &BTreeSet::new());
+            self.hide_notice();
+            return accepted.map(|_| vec![]);
+        };
+        if self.notice_dormant {
+            let accepted = self.observe(next, &BTreeSet::new())?;
+            debug_assert!(accepted.is_empty());
+            self.notice_dormant = false;
+            self.notice_under = Some(self.current.used > 0.9);
+            self.notice_pace = Some(self.pace);
+            return Some(vec![]);
+        }
+        self.observe(next, toggles)
+    }
     fn lookback(&self) -> u64 {
         self.current.minutes.map_or(60 * MINUTE, |m| {
             (u64::from(m) * MINUTE / 5).clamp(30 * MINUTE, 1440 * MINUTE)
@@ -338,10 +472,9 @@ impl Trail {
         // nor fictitious usage at the beginning of a time period.
         let stretch = self.lookback();
         let start = reset.saturating_sub(period);
-        let mut recent = self
-            .samples
-            .iter()
-            .filter(|s| s.at >= start && s.at >= window.read.saturating_sub(stretch));
+        let mut recent = self.samples.iter().filter(|s| {
+            s.at >= start && s.at >= window.read.saturating_sub(stretch) && s.at <= window.read
+        });
         let Some(first) = recent.next() else {
             return Pace::Unknown;
         };
@@ -361,7 +494,11 @@ impl Trail {
     /// Wake only for a known reset or an estimate of the 90% crossing.
     /// A wake confirms with the maker; it is not itself a new reading.
     pub fn notice_state(&self) -> NoticeState {
-        let previous = match self.notice_pace.unwrap_or(self.pace) {
+        let previous = match if self.notice_dormant {
+            Pace::Unknown
+        } else {
+            self.notice_pace.unwrap_or(self.pace)
+        } {
             Pace::Unknown => NoticeBucket::Untracked,
             Pace::Healthy => NoticeBucket::Healthy,
             Pace::Close => NoticeBucket::Close,
@@ -371,8 +508,8 @@ impl Trail {
             resets_at: self.current.resets_at,
             fired: self.fired.clone(),
             previous,
-            under: self.notice_under.unwrap_or(self.current.used > 0.9),
-            primed: true,
+            under: !self.notice_dormant && self.notice_under.unwrap_or(self.current.used > 0.9),
+            primed: !self.notice_dormant,
             read: Some(self.current.read),
             anchor: self.current.resets_at.map(|at| (at + 500) / 1000),
             counts: [

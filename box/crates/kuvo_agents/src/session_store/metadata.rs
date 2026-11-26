@@ -204,7 +204,7 @@ impl SessionStore {
         }
         let kind = model["providerID"]
             .as_str()
-            .and_then(crate::accounts::Provider::parse)
+            .and_then(crate::accounts::Provider::of_model)
             .map(|provider| provider.kind.name());
         let (chosen, before) = (model.clone(), previous.clone());
         let changed = self

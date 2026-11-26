@@ -170,6 +170,23 @@ async fn scenario(root: PathBuf) {
     assert!(holder.owns_path(&root.join(".claude/projects/project/memory/fixture.md")));
     assert!(!holder.owns_path(&root.join(".claude/projects/project/credentials.json")));
     assert!(!holder.owns_path(&root.join(".claude/plans/../../fixture.md")));
+    // Stop can arrive before a new agent has been admitted, including while it is
+    // waiting for memory. A withdrawn turn must not create a holder or poison the
+    // next turn on this conversation.
+    let cancelled = input(
+        "turn_cancelled",
+        TurnKind::Prompt(prompt("msg_cancelled", "not sent")),
+    );
+    cancelled.start_cancel.cancel();
+    let (cancelled_sink, _events, _asks) = Sink::new();
+    assert!(holder.start(cancelled, cancelled_sink).await.is_err());
+    assert!(
+        kuvo_agents::hold::Directory::for_home(&Home::new(root.clone()).unwrap())
+            .records()
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let (sink, mut events, mut questions) = Sink::new();
     let active = holder
         .start(
@@ -400,7 +417,15 @@ async fn scenario(root: PathBuf) {
         "{end:?}"
     );
 
-    // `claude auth status` still says signed in after Claude turned the sign-in away in a run.
+    // The account's local sign-in files still say signed in after Claude turned it away in a run.
+    // Account checks no longer launch `claude auth status` just for this reading.
+    fs::create_dir_all(root.join(".claude")).unwrap();
+    fs::write(
+        root.join(".claude.json"),
+        json!({"oauthAccount": {"accountUuid": "A-0", "organizationUuid": "O-1"}}).to_string(),
+    )
+    .unwrap();
+    fs::write(root.join(".claude/.credentials.json"), "{}").unwrap();
     assert!(restored.probe_account().await.unwrap().signed_in);
     let (sink, mut refused, _) = Sink::new();
     holder
@@ -520,6 +545,7 @@ fn context(root: &Path, state: VendorState) -> SessionContext {
         directory: root.to_owned(),
         state,
         background: Default::default(),
+        own_turns: Default::default(),
     }
 }
 
@@ -536,6 +562,7 @@ fn input(id: &str, kind: TurnKind) -> TurnInput {
         permissions: PermissionMode::AskFirst,
         plan: false,
         auto: false,
+        start_cancel: Default::default(),
     }
 }
 

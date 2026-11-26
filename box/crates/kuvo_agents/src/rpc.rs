@@ -8,12 +8,13 @@
 //! request IDs, pending answers, acknowledgements and the stderr tail have a
 //! single owner. Adapters hold cheap [`Rpc`] handles.
 
+use kuvo_os::timer_fires::{self, Timer};
 use crate::hold::{Controller, Metadata, Output};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fmt, io, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot, watch},
-    time::{Instant, sleep_until},
+    time::Instant,
 };
 
 /// Whether each message carries `"jsonrpc": "2.0"`.
@@ -105,6 +106,12 @@ pub enum Incoming {
         params: Value,
         sequence: u64,
     },
+    /// The answer to a request sent with [`Rpc::send`], in order with what came before it.
+    Answer {
+        id: u64,
+        answer: Result<Value, RpcError>,
+        sequence: u64,
+    },
     /// An answer to a request an earlier resident sent the held agent.
     Stray {
         id: Value,
@@ -154,6 +161,12 @@ enum Command {
         method: String,
         params: Option<Value>,
         answer: oneshot::Sender<Result<Value, Failure>>,
+        id: oneshot::Sender<u64>,
+    },
+    /// A request whose answer comes as [`Incoming::Answer`].
+    Send {
+        method: String,
+        params: Option<Value>,
         id: oneshot::Sender<u64>,
     },
     Forget(u64),
@@ -242,6 +255,7 @@ impl Rpc {
             ended,
             next: 0,
             pending: HashMap::new(),
+            ordered: Default::default(),
             preparing: None,
             seen: 0,
             acked: 0,
@@ -292,6 +306,21 @@ impl Rpc {
                 Err(Failure::TookTooLong(method.into()))
             }
         }
+    }
+
+    /// Ask the agent without waiting: the request's number. Its answer comes as
+    /// [`Incoming::Answer`], after everything the agent said before it.
+    pub async fn send(&self, method: &str, params: Option<Value>) -> Result<u64, Failure> {
+        let (id, numbered) = oneshot::channel();
+        self.commands
+            .send(Command::Send {
+                method: method.into(),
+                params,
+                id,
+            })
+            .await
+            .map_err(|_| self.closed())?;
+        numbered.await.map_err(|_| self.closed())
     }
 
     pub async fn notify(&self, method: &str, params: Option<Value>) {
@@ -352,6 +381,12 @@ impl Rpc {
             .is_ok_and(|gone| gone.is_ok())
     }
 
+    /// Wait for the holder to report exit, with no periodic polling or timeout.
+    pub(crate) async fn wait_ended(&self) {
+        let mut gone = self.gone.clone();
+        let _ = gone.wait_for(|gone| *gone).await;
+    }
+
     /// Whether the agent is gone (or handed to another resident).
     pub fn is_closed(&self) -> bool {
         *self.gone.borrow()
@@ -389,6 +424,8 @@ struct Connection {
     ended: watch::Sender<bool>,
     next: u64,
     pending: HashMap<u64, oneshot::Sender<Result<Value, Failure>>>,
+    /// Requests whose answers go to `incoming`.
+    ordered: std::collections::HashSet<u64>,
     preparing: Option<oneshot::Sender<bool>>,
     seen: u64,
     acked: u64,
@@ -425,7 +462,7 @@ impl Connection {
                         }
                     }
                 },
-                () = async { sleep_until(ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
+                () = async { timer_fires::sleep_until(Timer::AgentAck, ack_at.expect("an ack is due")).await }, if ack_at.is_some() => {
                     ack_at = None;
                     self.acknowledge().await;
                 }
@@ -532,6 +569,15 @@ impl Connection {
                     Some(error) if !error.is_null() => Err(RpcError::read(error)),
                     _ => Ok(message.remove("result").unwrap_or(Value::Null)),
                 };
+                if let Some(own) = id.as_u64().filter(|own| self.ordered.remove(own)) {
+                    let answer = Incoming::Answer {
+                        id: own,
+                        answer,
+                        sequence,
+                    };
+                    let _ = self.incoming.send(answer).await;
+                    return;
+                }
                 let Some(waiting) = id.as_u64().and_then(|own| self.pending.remove(&own)) else {
                     let _ = self.incoming.send(Incoming::Stray { id, answer }).await;
                     return;
@@ -563,6 +609,22 @@ impl Connection {
                 self.next += 1;
                 let _ = id.send(own);
                 self.pending.insert(own, answer);
+                let mut message = Map::new();
+                message.insert("id".into(), own.into());
+                message.insert("method".into(), method.into());
+                if let Some(params) = params {
+                    message.insert("params".into(), params);
+                }
+                self.write(message).await;
+            }
+            Command::Send { method, params, id } => {
+                if self.closed {
+                    return;
+                }
+                let own = self.next;
+                self.next += 1;
+                let _ = id.send(own);
+                self.ordered.insert(own);
                 let mut message = Map::new();
                 message.insert("id".into(), own.into());
                 message.insert("method".into(), method.into());
@@ -655,6 +717,7 @@ impl Connection {
         self.closed = true;
         self.ended.send_replace(true);
         let why = closing_words(&self.stderr.borrow(), code);
+        self.ordered.clear();
         for (_, waiting) in self.pending.drain() {
             let _ = waiting.send(Err(Failure::Closed(why.clone())));
         }

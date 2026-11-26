@@ -39,6 +39,9 @@ use crate::{
 
 use server::Shared;
 
+pub(crate) use asks::elicitation_form;
+pub(crate) use program::fingerprint;
+
 /// A conversation's replies kept from before Codex's directives in its words were read (an older
 /// bridge kept them as words), and its title with one, as they read now: read once, as the
 /// conversation is first needed (or as the resident starts, for one whose turn goes on). Whether
@@ -429,6 +432,8 @@ impl Agent for Codex {
     /// lines from where the earliest began.
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            // Withdraw a not-yet-started app-server before handing over the existing ones.
+            self.shared.halt();
             if let Some(server) = self.shared.current().await
                 && let Some(from) = server.earliest_turn()
                 && !server.rpc.prepare(from).await

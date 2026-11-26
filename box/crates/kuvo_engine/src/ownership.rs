@@ -9,6 +9,7 @@ use serde_json::Value;
 
 pub type ComputerKey = [u8; 32];
 pub type PeerReply<'a> = Pin<Box<dyn Future<Output = Result<OwnedReply, Refusal>> + Send + 'a>>;
+pub type OwnershipChanges = Pin<Box<dyn futures_util::Stream<Item = ()> + Send>>;
 
 #[derive(Clone)]
 pub struct OwnerScope {
@@ -147,6 +148,9 @@ pub struct OwnedReply {
 
 pub trait SessionOwnership: Send + Sync {
     fn scope(&self, session: &str, issuer: Option<ComputerKey>) -> Result<OwnerScope, Refusal>;
+    /// Relevant owner, reach, admission or grant changes. A port without a change source may
+    /// retry a real outstanding delivery, but the resident supplies a native event stream.
+    fn changes(&self) -> Option<OwnershipChanges> { None }
     fn members(&self) -> Vec<SessionOwner> {
         Vec::new()
     }

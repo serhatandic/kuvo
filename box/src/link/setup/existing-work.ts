@@ -225,7 +225,7 @@ function pendingSessionWork(): boolean {
  * it was left out still name it (`withIndex`). */
 const isArtifactIndex = (folder: string, name: string) => folder === artifactsRoot && name.startsWith("index-v1.sqlite");
 
-function workInventory(omitUsage = false, withIndex = false) {
+function workInventory(omitUsage = false, withIndex = false, omitEmptyArtifacts = false) {
   const hash = createHash("sha256");
   function stamp(file: string, stable?: Hash, skipEmpty = false): bigint {
     const info = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
@@ -244,7 +244,9 @@ function workInventory(omitUsage = false, withIndex = false) {
     if (!skipEmpty || info.size > 0n) stable?.update(entry);
     return info.size;
   }
-  for (const file of [...settings(), ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) if (!omitUsage || file !== usageFile) stamp(file);
+  for (const file of [...settings(), ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) {
+    if ((!omitUsage || file !== usageFile) && !(omitEmptyArtifacts && file === artifactsRoot && !artifactsKept())) stamp(file);
+  }
   const content = hash.copy();
   const stable = hash.copy();
   const files = databases();
@@ -258,7 +260,7 @@ function workInventory(omitUsage = false, withIndex = false) {
       size += journal.size;
     }
   }
-  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size, omitUsage, withIndex };
+  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size, omitUsage, withIndex, omitEmptyArtifacts };
 }
 
 let lastDatabaseStamp: { stability: string; logical: string } | undefined;
@@ -274,7 +276,7 @@ function databaseStamp(inventory: ReturnType<typeof workInventory>) {
     throw error;
   }
   // The link lock doesn't cover the database, session, or bot writers.
-  const after = workInventory(inventory.omitUsage, inventory.withIndex);
+  const after = workInventory(inventory.omitUsage, inventory.withIndex, inventory.omitEmptyArtifacts);
   if (after.stability !== stability) throw new Error("Retained work changed during the check.");
   const logical = content.digest("base64url");
   lastDatabaseStamp = { stability, logical };
@@ -293,6 +295,16 @@ function workStamp(omitUsage: boolean) {
   const inventory = workInventory(omitUsage);
   const stamped = databaseStamp(inventory);
   return { physical: stamped?.physical ?? inventory.physical, logical: stamped?.logical };
+}
+
+/** A lazy Rust resident can depart before opening its artifact store. Preserve
+ * earlier baselines as written, but accept creation of empty infrastructure. */
+function inventoryChanged(omitUsage: boolean, physical: string, logical?: string): boolean {
+  for (const [withIndex, omitEmptyArtifacts] of [[false, false], [false, true], [true, false]] as const) {
+    const inventory = workInventory(omitUsage, withIndex, omitEmptyArtifacts);
+    if (inventory.physical === physical || logical && databaseStamp(inventory)?.logical === logical) return false;
+  }
+  return true;
 }
 
 /** Keep the historical stamp for earlier boxes. The companion compares the
@@ -317,11 +329,7 @@ function scopedWorkChanged(baseline: NonNullable<LinkState["releasedScopedWork"]
   const reset = before.scope !== undefined && now.scope !== before.scope
     && !now.imported && now.digest === new UsageSettings().digest();
   if (!same && !reset) return true;
-  return [false, true].every(withIndex => {
-    const inventory = workInventory(true, withIndex);
-    return inventory.physical !== baseline.physical
-      && (!baseline.logical || databaseStamp(inventory)?.logical !== baseline.logical);
-  });
+  return inventoryChanged(true, baseline.physical, baseline.logical);
 }
 
 /** The probe and both ordinary enrollment paths use the same work test. Historical
@@ -359,10 +367,7 @@ export function hasSetupWork(link: LinkState | null): boolean {
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork) {
       if (link.releasedScopedWork) return scopedWorkChanged(link.releasedScopedWork);
       // Compare even if the work is now empty: a deletion after unlink is also a change.
-      return [false, true].every(withIndex => {
-        const inventory = workInventory(false, withIndex);
-        return inventory.physical !== link.releasedWork && (!link.releasedDatabaseWork || databaseStamp(inventory)?.logical !== link.releasedDatabaseWork);
-      });
+      return inventoryChanged(false, link.releasedWork, link.releasedDatabaseWork);
     }
     return Boolean(hasWork);
   } catch {

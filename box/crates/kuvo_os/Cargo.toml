@@ -23,6 +23,9 @@ libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
 rustix = { version = "1", features = ["fs", "process", "event", "mount", "thread"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+jiff = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
@@ -36,6 +39,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
+    "Win32_System_Memory",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Pipes",

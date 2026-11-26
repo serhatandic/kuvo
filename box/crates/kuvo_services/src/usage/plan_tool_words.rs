@@ -282,6 +282,7 @@ pub fn describe(name: &str, given: &Value, now: u64, zone: Option<&str>) -> Stri
                     };
                     lines.push(format!("  - rate-limit resets: {count} available{more}"));
                 }
+                Extra::Future(_) => {}
             }
         }
         if row.windows.is_empty() && row.balance.is_none() && row.extras.is_empty() {

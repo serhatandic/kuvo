@@ -1,22 +1,20 @@
 //! Drive a thread's startup, transcript writes and controls independently.
 
 use crate::{
+    foreground::Foreground,
     runtime::AdapterCall,
     session::{
         ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread, TurnEvent,
         TurnInput,
     },
-    foreground::Foreground,
     turn_sink::{EventWrite, ResidentSink},
 };
 use std::{
     io::{self, ErrorKind},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use tokio::sync::{mpsc, watch};
+use tokio_util::sync::CancellationToken;
 
 pub trait TurnWriter: Send {
     fn apply<'a>(&'a mut self, event: &'a EventEnvelope) -> AdapterCall<'a, ()>;
@@ -47,7 +45,7 @@ enum State {
 pub struct RunningTurn {
     state: watch::Receiver<State>,
     /// Stop was asked for, maybe before the agent started the turn.
-    stop: Arc<AtomicBool>,
+    stop: CancellationToken,
 }
 
 impl RunningTurn {
@@ -60,7 +58,7 @@ impl RunningTurn {
         foreground: Foreground,
     ) -> Self {
         let (publish, state) = watch::channel(State::Starting);
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = input.start_cancel.clone();
         tokio::spawn(run(
             thread,
             input,
@@ -112,7 +110,7 @@ impl RunningTurn {
     /// Stop it. One its agent couldn't start after all, asked to stop as it
     /// started, ends stopped.
     pub async fn interrupt(&self) -> io::Result<()> {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.cancel();
         match self.active().await {
             Ok(turn) => turn.interrupt().await,
             Err(_)
@@ -158,7 +156,7 @@ async fn run(
     mut writer: impl TurnWriter,
     mut foreground: Foreground,
     publish: watch::Sender<State>,
-    stop: Arc<AtomicBool>,
+    stop: CancellationToken,
 ) {
     let retirement = sink.retirement();
     let start = thread.start(input, sink);
@@ -229,9 +227,9 @@ async fn run(
 async fn couldnt_start(
     writer: &mut impl TurnWriter,
     error: io::Error,
-    stop: &AtomicBool,
+    stop: &CancellationToken,
 ) -> Result<Option<Outcome>, Arc<io::Error>> {
-    if stop.load(Ordering::SeqCst) {
+    if stop.is_cancelled() {
         if let Err(unwritten) = writer.stopped().await {
             eprintln!("Kuvo could not write a turn stopped as it started: {unwritten}");
         }

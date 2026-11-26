@@ -163,6 +163,8 @@ struct Conversation {
     checking: bool,
     /// The turn an earlier resident left under way, being taken up here.
     recovered: Option<AdoptedTurn>,
+    /// A turn its agent began on its own, taken: it starts before what waits in line.
+    own: Option<line::OwnStart>,
 }
 
 /// How long a turn asked to stop is waited for before its conversation goes
@@ -220,6 +222,28 @@ impl SessionRuns {
         limits: Arc<dyn crate::PlanLimits>,
     ) -> Self {
         let (commands, requests) = mpsc::channel(32);
+        // Turns agents begin on their own come here, as line requests.
+        let (offers, mut offered) = mpsc::unbounded_channel::<crate::session::OwnTurn>();
+        let store = store.with_own_turns(crate::session::OwnTurns::new(offers));
+        let line = commands.downgrade();
+        tokio::spawn(async move {
+            while let Some(offer) = offered.recv().await {
+                let Some(commands) = line.upgrade() else {
+                    return;
+                };
+                let (reply, answer) = oneshot::channel();
+                let request = line::Request::OwnTurn {
+                    session: offer.session,
+                    provider: offer.provider,
+                    text: offer.text,
+                    reply,
+                };
+                let sent = commands.send(Command::Line(request)).await.is_ok();
+                drop(commands);
+                let taken = sent && answer.await.ok().and_then(Result::ok).unwrap_or(false);
+                let _ = offer.taken.send(taken);
+            }
+        });
         let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
@@ -503,7 +527,7 @@ impl SessionRuns {
     ) -> io::Result<Option<Option<Value>>> {
         let connected = model["providerID"]
             .as_str()
-            .and_then(Provider::parse)
+            .and_then(Provider::of_model)
             .is_some_and(|provider| agents.roster().find(&provider).is_some());
         self.store.select_model(session, model, connected).await
     }
@@ -905,7 +929,7 @@ impl Service {
     /// The agent's name, when its account is installed and signed out of: as it was last known,
     /// and asked anew (signed in a moment ago, in Terminal say, it goes). At most 10 s each.
     async fn signed_out(&self, provider: &str) -> Option<&'static str> {
-        let parsed = Provider::parse(provider)?;
+        let parsed = Provider::of_model(provider)?;
         let roster = self.agents.roster();
         let entry = roster.find(&parsed)?.clone();
         let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked);
@@ -918,7 +942,7 @@ impl Service {
     }
 
     async fn thread(&self, session: &str, provider: &str) -> io::Result<Arc<dyn Thread>> {
-        let parsed = Provider::parse(provider).ok_or_else(|| {
+        let parsed = Provider::of_model(provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
         })?;
         let roster = self.agents.roster();

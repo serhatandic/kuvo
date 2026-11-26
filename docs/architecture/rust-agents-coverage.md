@@ -285,7 +285,7 @@ Carried to the rows that bring them:
   shared, for every agent (`SessionRuns::signed_out`).
 - 59–60 and 127–139: see the sessions row above. The handing cases are ported
   (4.2); turns an agent begins on its own go with the agents that begin them
-  (Claude Code's with 4.6, the ACP agents' with 4.3), and kept files and the
+  (Claude Code's with 4.6, the ACP agents' in 4.3), and kept files and the
   handover with 4.6.
 - Moves and wake-ups into a coding agent's conversation: 4.6, with carry and
   handover.
@@ -438,7 +438,7 @@ Case numbers use the order in the cited source file.
 
 | TypeScript source | Port and remaining owner |
 |---|---|
-| [hold.test.ts](../../box/test/agents/hold.test.ts), 19 | 1 → R1, diagnostic events checked through H7. 2 → H1. 3 → H7. 4–5 → H2. 6–7 → H4. 8 → managed program install cleanup (4.3). 9 → H4. 10 → H2. 11 → H8. 12 → H9. 13 → H5. 14 → R2. 15 → H6 and H11. 16 → H1. 17 → H3. 18 → socket path fallback integration (4.1b). 19 → startup cancellation and fallback (4.1b). |
+| [hold.test.ts](../../box/test/agents/hold.test.ts), 19 | 1 → R1, diagnostic events checked through H7. 2 → H1. 3 → H7. 4–5 → H2. 6–7 → H4. 8 → `acp::antigravity::forget_releases` (unit test, 4.3): an earlier Antigravity release stays until the kept one is whole and no holder may use it. 9 → H4. 10 → H2. 11 → H8. 12 → H9. 13 → H5. 14 → R2. 15 → H6 and H11. 16 → H1. 17 → H3. 18 → socket path fallback integration (4.1b). 19 → startup cancellation and fallback (4.1b). |
 | [held-resume.test.ts](../../box/test/agents/held-resume.test.ts), 3 | 1–3 → `kuvo_agents/tests/updates.rs`, with `agent-turn-fixture` 4 through the binary. R1 covers the underlying process and replay. |
 | [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder suppression, with real CLI reconnection and request cancellation in 4.4. |
 | [bridge-update.test.ts](../../box/test/agents/bridge-update.test.ts), 2 and [bridge-update-cursor.test.ts](../../box/test/agents/bridge-update-cursor.test.ts), 2 | Holder continuity → R1. Adapter readiness, same conversation and next-turn reuse → 4.1b, 4.2, 4.4 and 4.5. |
@@ -452,11 +452,11 @@ Case numbers use the order in the cited source file.
 |---|---|
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
-| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. The program updater, its drain, its routes, the Accounts rows' versions and update notices are 4.2's (program-updates and update-notices). Grok's and Antigravity's `Agent::program` → 4.3. |
+| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. The program updater, its drain, its routes, the Accounts rows' versions and update notices are 4.2's (program-updates and update-notices). Grok's and Antigravity's `Agent::program` are 4.3's (`Flavour::program`), with no case yet. |
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–6 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 7 and 8 not ported: no caller since the Swift app was dropped. 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 to `inbox.rs`, 12 to agents-codex (4.2). 59 and 133–136 to `inbox.rs` (4.2): a message taken as its turn ends goes once; Stop, with or without resume, and Send Now while one is being handed; a handed one cancelled after Send Now starts nothing later. 60 (a message its agent never got to goes with the next) is the handover's seen cursor → 4.6; Codex never reports one. Turns an agent begins on its own come from Claude Code and the ACP agents only (the reference's `onOwnTurn`): Claude Code's (127–129, 132, 137, 139's own half and 136's second half) → 4.6, and the ACP agents' → 4.3; those waiting on kept files (130, 131, 138) → 4.6. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 to `inbox.rs`, 12 to agents-codex (4.2). 59 and 133–136 to `inbox.rs` (4.2): a message taken as its turn ends goes once; Stop, with or without resume, and Send Now while one is being handed; a handed one cancelled after Send Now starts nothing later. 60 (a message its agent never got to goes with the next) is the handover's seen cursor → 4.6; Codex never reports one. Turns an agent begins on its own come from Claude Code and the ACP agents only (the reference's `onOwnTurn`): Claude Code's (127–129, 132, 137, 139's own half and 136's second half) → 4.6, and the ACP agents' are 4.3's (agents-grok); those waiting on kept files (130, 131, 138) → 4.6. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
@@ -685,7 +685,7 @@ remaining differences.
 
 | Difference | Owner or reason |
 |---|---|
-| Picker generation values and absent generations for accounts with no model catalog | The values are per-instance IDs. 4.1b owns reporting generations for signed-out accounts. Other vendor accounts are registered by 4.2, 4.3 and 4.5. |
+| Picker generation values and absent generations for accounts with no model catalog | The values are per-instance IDs. 4.1b owns reporting generations for signed-out accounts. Codex's, Grok's and Antigravity's accounts are registered (4.2, 4.3); 4.5 registers its own. |
 | `agents/runtime/claude` | The TypeScript fixture installs its SDK symlink here. Rust speaks stream-json directly. |
 | `agents/limits.json`, `agents/usage/`, `run/usage-attribution.json` | 5.4 owns limits, usage collection and Insights. |
 | `agents/sessions/`, `run/agents.json`, `run/glance-source.json`, `run/lists/sessions.json` sequence | 4.1b owns resident session storage and its shared projections. |
@@ -748,6 +748,283 @@ Besides the files in the table above, these differences remain:
 | `run/agents/tmp/claude/catalog-settings.json` | Rust's model probe writes its settings there. TS passes them to the SDK. |
 | `run/work/background.json` `engine` place | The engine's place is written by the engine watcher (5.1). Rust writes the coding agents' `bridge` place. |
 | `run/work-queue/model.json`, `run/work/told.json` | 5.2 and 5.1. |
+
+## Grok and Antigravity over ACP (4.3)
+
+`kuvo_agents::acp` is one ACP client for every agent that speaks it, each a flavour of its own
+(`acp/grok.rs`, `acp/antigravity.rs`; OpenCode is the third in 4.7). The reference ran one agent
+process per conversation. Here a process carries several conversations, each one of its ACP
+sessions, under one holder (`kind: grok|antigravity`, `turns` and `sessions` by ACP session).
+
+- **Sharing.** Conversations whose launch matches share a process: the same mode, sign-in and
+  compaction threshold, and for Antigravity the same program (`agy` or the earlier agent). The
+  key is read before each turn without starting anything (`Flavour::launch_key`). A process
+  that's outdated (a new program, a stop it can't go on from, an answer that never came) takes no
+  new sessions and stops once nothing uses it. One that nothing has used for 15 minutes stops.
+- **Opening sessions.** What a process says before `session/new` answers is kept for that session
+  (at most 1024 updates) and handed to it in order. What a load replays is dropped. A process
+  that ends fails each turn on it with its own words. A turn whose access ran out partway, after
+  the first minute, carries on in a new process.
+- **Wire.** It speaks over the shared `Rpc` (JSON-RPC 2 framing), not the `agent-client-protocol`
+  crate. That crate's connection can't take a holder's replayed lines or the IDs an earlier
+  resident sent. ACP's shapes are read into Kuvo's own types at the edge (`acp/wire.rs`).
+  `Rpc::send` gives a request's ID before its answer, for the holder's turn note.
+- **Light (4.8).** Listing accounts and models never starts Grok or `agy`. Grok's sign-in comes
+  from `GROK_HOME/auth.json` or `XAI_API_KEY`. Its catalog is the one a turn's `session/new` last
+  listed, kept per account under `run/agents/grok/catalogs`. Before any turn it offers one
+  provisional "its default model", which picks no model. Antigravity reads its home's
+  `kuvo-sign-in.json` and `kuvo-models.json`. Refresh doesn't start it, and its sign-in check
+  runs only when you sign in.
+- **No plan mode** (user, 11-25). Neither agent is offered one. A conversation saved in plan mode
+  goes on in the normal mode, and its saved value stays on disk, unread. `Mode::read_only` is the
+  box's own, for 4.6's reviews and side questions (Grok's `--permission-mode plan`,
+  Antigravity's `plan`), never a mode anyone picks. The reference's case 21 and the plan halves
+  of 22 and 23 are not ported.
+- **Agent-started turns.** The resident takes one through `SessionContext::own_turns`. It runs at
+  once when nothing runs, or after the turn under way when that turn is on the same agent (the
+  conversation's `own`, before what waits in line), as `TurnKind::AgentStarted`, shown as
+  "Grok carried on by itself." One not taken is turned away: the agent is told to cancel, and
+  what it begins after 20 quiet seconds is offered again.
+- **Work Queue #992.** For an Antigravity account signed in before `agy` (Google's earlier agent
+  and its `acp_token.json` in its home):
+  - With `agy` installed, it's signed in only once `agy` takes that sign-in. Until then its row
+    offers one Sign In, which first asks `agy` to use the earlier sign-in (`Takeover`, no page).
+    Only if `agy` refuses does Google's page come, as for any sign-in.
+  - Without `agy`, it runs on the earlier agent and says "Install agy, then sign in to move it
+    there".
+  - It never says "update".
+  - Starting a sign-in without `agy` fails with its reason and the fix ("Antigravity needs Google's
+    agy CLI on this computer. Install it in Settings › Accounts…"). The agents' sign-in route keeps
+    every agent's reason (`refuse`). The reference's generic "couldn't be started" is in its
+    `kuvo/sign-in/*` routes (6.1a), not ported yet.
+  - agents-antigravity proves these with a stand-in token in a temp home. **Checked in the update
+    rehearsal:** whether the real `agy` takes a real earlier token it didn't write.
+
+### TypeScript scenarios
+
+Numbers follow source order in [acp.test.ts](../../box/test/agents/acp.test.ts), 73 cases.
+
+| Cases | Coverage and remaining owner |
+|---|---|
+| 1–2 | `acp::projection`: pictures, links, sound clips and unknown kinds' words; context and window. Unit tests for the projection; agents-grok's turn case on both boxes. |
+| 3–6 | Reads that end only as the turn does (`Flavour::reads_unsaid`): unit `a_read_kuvo_did…`, agents-antigravity's read through Kuvo. 5 (in the sandbox) → 6.1. 6: Grok's reads stay as it says (its flavour doesn't settle them). |
+| 7–8 | `acp::tools::kuvo_tool`: wrapped Kuvo tools, tool search, server-prefixed names; a call renamed later carries its new name on its next event. Titled names of Kuvo's own tools need its tool list (`KnownTools`), which the tool program's listing brings (6.4). |
+| 9 | A subagent's session shows its row, named by its task (unit). Its own steps → 4.6. |
+| 10–13 | Antigravity's questions (permission asks on `interaction_…` calls), declined words on its step; Grok's `x.ai/ask_user_question` (agents-grok, both boxes) and declined words as its answer; forms (`elicitation/create`) through `codex::elicitation_field`. |
+| 14 | Agent-started turns: agents-grok, both boxes. |
+| 15–20 | Asks: allow-once picked for Once and Always (Always is Kuvo's to keep); reject-once for No, the step declined; Approve All answered for you (agents-grok's ask case, agents-antigravity's yolo case). Carrying on after a refusal of your settings' (never after yours), at most three times a turn. |
+| 21 | Not ported: no plan mode (user, 11-25). |
+| 22–23 | Grok's mode in its command, a change starting another process; Antigravity's yolo or default by `session/set_config_option`, and a conversation to ask first that can't leave yolo doesn't start. Plan halves not ported. |
+| 24–27 | Skills and your subagents as Grok plugins and Antigravity custom agents: not in the Rust box yet (no skills module in `kuvo_agents`) → 4.6 with subagents. |
+| 28 | Stop: agents-grok, both boxes. |
+| 29 | Closed while starting: `Shared::halt` and `shutdown` (the same as Codex's 11–14); no case yet. |
+| 30 | Stop while it waits on you: an ask settled after Stop answers cancelled (`Settled::Asked { cancellable }`); no case yet. |
+| 31–33 | Background tasks: 31 (a reported start wins) and 32 (busy keeps the process) in `thread.rs`; agents-grok shows them as at work. 33 (killed from outside: the conversation woken with what was lost) → 5.1, which owns waking a conversation; Rust only logs it. |
+| 34–36 | Steps, edits with their change, one to-do list, cost as the conversation's total (unit tests; agents-grok's turn case). |
+| 37–44, 46, 65–66 | The box's sandbox → 6.1. |
+| 45, 47–64 | The computer's MCP servers through the relay: the relay's behaviour is 4.1c's (`kuvo_agents/tests/tool_relay.rs`). Here each session is given the relay's addresses and its own key, and drops them as it closes. |
+| 67 | `agy` stopping as it signs in: its reason in a line (`stopped_words`), the traceback to the log. |
+| 68 | Reading and writing through Kuvo with the sandbox off (agents-antigravity's read). |
+| 69–72 | `/compact` exactly as typed with no instructions; Grok's threshold as a share of its window (`GROK_AUTO_COMPACT_THRESHOLD_PERCENT`); its own summaries as one row. In `thread.rs` and the projection; no conformance case yet. |
+| 73 | Antigravity can't be asked to summarize (`compacts()` is Grok's only). |
+
+[antigravity-agy.test.ts](../../box/test/agents/antigravity-agy.test.ts): signing in with Google's
+code and the models listed then (agents-antigravity, both boxes); not installed (its reason
+kept: Rust only, the reference's route says only "The sign-in couldn't continue"); an account
+from before `agy` (#992 wording, Rust only, the reference still says "update"). A wrong code, someone else's models, sign-out, the version and Update use the
+same code (`Antigravity::{verify_sign_in, saved_models, forget, program}`) and have no case yet.
+
+Not ported yet: Antigravity's transcript follower for its subagents (its rows and sessions → 4.6).
+Its other half, a prompt the transcript says is answered though ACP never said, is
+`Flavour::record_answer`: the actor looks every second and ends the turn on two matching looks.
+
+Size is counted in non-whitespace characters, without tests.
+
+- `acp` and its modules are 1.37× `acp.ts`, `grok.ts` and `antigravity.ts`.
+- They are 1.30× once the base also counts what the reference keeps elsewhere and `acp` does
+  itself:
+  - from `turn.ts`: `startStep`, `ensureStep`, `endStep`, `toolStart`, `toolRename`,
+    `toolCalled`, `stopTools`, `hasTool`, `toolInput` and `toolStep` (the projection's steps and
+    merged calls);
+  - from `agent.ts`: `signOutWith`, `ContextWindows` and `model`;
+  - from `kuvotools.ts`: `isKuvoTool` and `kuvoToolName` (`KnownTools`);
+  - from `shared/agent-credentials.ts`: `grokCredential` and `grokHome` (`grok_secret`, which
+    usage reads too).
+- Forms are Codex's (`codex::elicitation_form`), not a copy.
+- What it does beyond the reference: several conversations on one process, updates kept until
+  `session/new` answers, and Grok's catalog for listing without starting it.
+
+### Verification
+
+| Platform | agents-grok, Rust | agents-grok, TypeScript | agents-antigravity, Rust | agents-antigravity, TypeScript |
+|---|---:|---:|---:|---:|
+| macOS | 8/8 | 6/6, 2 skipped (Rust-only) | 10/10 | 6/6, 4 skipped (#992, Rust-only) |
+| Linux x86-64, lokum (musl) | 8/8 | — | 10/10 | — |
+| WSL2, Ubuntu 24.04 (musl) | 8/8 | — | 10/10 | — |
+| Native Windows x64 | 8/8 | — | 10/10 | — |
+
+On native Windows the stand-in `agy` is `agy.CMD`. Antigravity's sign-in starts it as the
+conversations' holder does (`Spawn::executable`). It first failed two sign-in cases there, which
+started it by its bare path.
+
+Live runs:
+
+- **Passed (2026-11-26): live Antigravity turn (Gemini 4 Hydrogen).** `agents-antigravity-live` ran
+  through the Rust box on macOS with `agy` 1.5.18 and read-only copies of the fresh sign-in files
+  in a temp home (token untouched, no refresh, temp home deleted after). Gemini 4 Hydrogen replied
+  `"OK"`, streamed `session.created`, `session.inbox.enqueued`, `session.inbox.delivered`,
+  `session.execution.started`, `session.execution.succeeded` and `session.idle` to the app's feed,
+  and ended cleanly in 7.0 s.
+- **Pending: live Grok turn on its cheapest model.** Neither the Mac nor lokum has a sign-in to copy
+  (no `auth.json`, no `XAI_API_KEY`).
+
+Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on the rerun:
+agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
+sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
+
+## OpenCode as a coding agent (4.7b)
+
+New conversations on OpenCode's models run on the OpenCode agent: the pinned binary as `opencode
+acp`, the third flavour of the shared ACP client (`acp/opencode.rs`). One process carries every
+OpenCode conversation on the computer (one launch key) and stops when it's been idle. Existing
+conversations stay on the engine until 4.7d. The reference runs them all on its engine, so the
+`agents-opencode` cases assert only what the app reads, on the pinned OpenCode with a labelled
+stand-in model (`opencode-model.mjs`).
+
+- **Where a conversation starts.** A model whose provider isn't a coding agent's is OpenCode's
+  (`Provider::of_model`): its agent account is `opencode-agent`, since `opencode` is Zen's
+  provider. It starts on the agent where the box runs the coding agents and the pinned OpenCode
+  is on the computer (`launch::agent_here`), else on the engine, which still serves its
+  conversations.
+- **What the agent is given.** Ask First on the tools Kuvo asks about (`OPENCODE_CONFIG_CONTENT`,
+  so the box's own rules decide), its questions as elicitation forms, compaction, and child
+  sessions. Kuvo's tools come over HTTP from the relay. The computer's MCP servers are read by
+  the box from the settings files (`tool_relay/settings_servers.rs`), never by asking OpenCode.
+- **Picker and accounts without starting it.** `models/kept.rs` keeps one compact list in
+  `run/engine/catalog.json`, best first:
+  1. OpenCode's own answers, whenever it runs;
+  2. the models its agent offered a conversation (`run/agents/opencode/catalogs`);
+  3. on a computer where it ran before, a list made once from its database: the providers you're
+     signed in to and Zen's free models, only those that chat with tools and aren't retired or
+     early. The 13 MB catalog is read once, keeping only the fields used.
+
+  Where it never ran, the picker offers "OpenCode (its default model)" like an agent not set up;
+  choosing it, a sign-in or Refresh starts it. `api/integration` answers from the same list.
+- **Asks.** `kuvo/sessions/:id/asks` lists and answers an agent conversation's asks through the
+  agents (`asks::Target::Agents`), for all six agents, worded as `session-asks.ts` words them.
+  Always says "in this conversation". A case per agent kind failed on main's Rust box with "The
+  engine isn't running."
+- **Kuvo's tools and wake-ups.** A tool's caller is found through the agents first
+  (`BotEngine::session_found`), so an agent conversation's tools work without the engine. Its
+  wake-ups are kept as an agent's (`via`, `KUVO_WAKE_VIA`), and the app's wake-up route finds it
+  without starting the engine. Cases in agents-opencode and agents-grok failed on the old code.
+- **Usage counted once.** OpenCode keeps its turns in its database, which usage reads, so its
+  agent's transcripts aren't counted again (`insights.rs`). The case failed on the old code (two
+  calls, 220 tokens, against the reference's one call and 110).
+- **Title and tokens.** OpenCode titles its own sessions. As a turn ends, a conversation still
+  without a title takes it from `session/list` (placeholders aside). A turn's tokens are the
+  prompt answer's `usage` (`Flavour::answers_usage`), not how full the context is.
+- **Light.** The app opened with no OpenCode conversation starts no OpenCode. Measured on debug
+  builds, on a home holding a copy of this Mac's OpenCode database, after the app's opening
+  requests (picker, conversation lists, accounts, feeds):
+
+  | Box | Processes | RSS |
+  |---|---:|---:|
+  | main (`01bf21c8e`) | 2: the box, `opencode serve` | 805–915 MB (box 180, OpenCode 650–750) |
+  | this branch, first open (list made from disk) | 1 | 210 MB |
+  | this branch, opened again (list kept) | 1 | 139 MB |
+
+  With an empty database the branch's box is 88 MB and main's 93 MB plus a 356 MB OpenCode.
+
+### Cases
+
+| Case (agents-opencode) | Both boxes | Notes |
+|---|---|---|
+| A new conversation's turn streams its words | yes | |
+| A command it asks to run waits on the app's asks; Allow Once runs it | yes | |
+| Its question is the app's card; the answer chosen there is what it hears | yes | elicitation form → own question |
+| Stop ends the turn where it is, and the next message is answered | yes | |
+| A message sent while it works reaches it before it's done | yes | see the differences |
+| Another model picked goes with its next turn, with its effort | yes | |
+| A picture sent goes to the model as a picture | yes | |
+| /compact summarizes the conversation with its model, and it goes on after | yes | |
+| A subagent it starts runs, and its work shows on its step | yes | its own steps → 4.6 |
+| Its wake-ups are its own: set by its tools or from the app, and Wake Up Now reaches it | yes | |
+| Its usage is counted once | yes | |
+| It's titled as OpenCode titles it, and its turn's tokens are what the model said | yes | |
+| Where OpenCode never ran, the picker offers it as an agent not yet listed | Rust only | the reference starts OpenCode to list |
+| Once a conversation ran, the picker and its accounts list what OpenCode offered it | Rust only | as above |
+
+`agents-opencode-live`: one real OpenCode Go turn (DeepSeek V4.1 Flash) on the agent, in a temp home
+with only a non-renewing key copied in. New app-asks cases in agents-grok, agents-codex,
+agents-claude-turns and agents-antigravity, and a wake-ups case in agents-grok, run on both
+boxes.
+
+### Differences from the engine path
+
+| Difference | Why |
+|---|---|
+| A message sent mid-turn waits for the turn's end, then goes as the next prompt | ACP refuses a second `session/prompt` during a turn; the engine injects it. The model still hears both (the steer case). |
+| The rows are the agents' (`{type, content}`), with their ids, step times and no `finish` | Every agent conversation's shape (4.1b); the app reads both. |
+| The conversation's total tokens leave out OpenCode's title request | ACP reports the turn; the engine's session total adds its title model's call. Usage (insights) counts both alike. |
+| No `model.variant: "default"` and no per-row `cost` | The engine's own fields; a turn's cost is the conversation's (`TurnEvent::Cost`). |
+| Efforts are absent for models in a list made from disk or from the agent | Only OpenCode's own answers have them; refreshed whenever it runs. After 4.7d it never runs for the picker, so 4.7d needs another source (the agent's `effort` option as each model is used). |
+| A subagent's asks aren't listed | Agents' subagents are 4.6's. |
+| A read-only run is refused; Plan goes in the normal mode | No Plan mode (user, 11-25); read-only runs are 4.6's. |
+| Settings can't list or connect OpenCode's providers against the Rust box | `kuvo/sign-in/*` isn't ported (6.1a). Signing in starts OpenCode's own server for the sign-in only. |
+| Bots on OpenCode's models still get engine conversations | They move to the agent with existing conversations in 4.7d, which rewrites the four `bots` cases that make one on the pinned OpenCode. |
+
+### Differential runs
+
+- **Seed against real.** On a temp home holding a copy of this Mac's OpenCode database, the
+  picker's list made from disk (OpenCode not started) against OpenCode's own answers (`refresh=1`
+  starts it): 41 models each, no difference.
+- **One conversation, both boxes.** The same requests (start, send, location, rows, the
+  conversation, asks, the active list, the picker) on copies of one home with the pinned
+  OpenCode and the stand-in. It found the missing title, the tokens (110 input and 0 output for
+  100 and 10), usage counted twice, and the tools' and wake-ups' gap, all fixed above. Left:
+  - the place and row shape in the table above;
+  - `got` (the reference starts in the postponed Auto mode and says it got Ask First; Rust never
+    starts in it);
+  - the send answer's `data` (Rust answers `{}`; the app reads only the status,
+    `kuvo_box/src/client.rs:500`);
+  - efforts in the picker.
+
+  Home files: Rust writes the agent's (`agents/sessions/<id>`, `run/agents/opencode`, the kept
+  list); the reference writes OpenCode's server record and plugin.
+
+### Size
+
+Non-test characters without indentation, against main (`01bf21c8e`):
+
+- **This row's Rust: 37.2k.** The flavour is 10.2k. The kept model list is 11.5k (`kept.rs`, and
+  its use in `models.rs` and `proxy.rs`): Rust only, since the reference starts OpenCode instead.
+  The settings servers are 2.4k, the asks' agents target 3.2k, and the rest is wiring.
+- **Base:** `agents/agents/grok.ts` (the sibling flavour, 19.3k) and `agents/servers.ts` (7.8k), 27.0k.
+- **Ratio:** 0.95× without the kept list, 1.38× with it.
+
+### Verification
+
+| Platform | agents-opencode, Rust | agents-opencode, TypeScript | agents-grok, agents-antigravity, agents (Rust) |
+|---|---:|---:|---:|
+| macOS | 14/14 | 12/12, 2 skipped (Rust-only) | 10/10, 11/11, 12/12 |
+| Linux x86-64, lokum (musl, 1 CPU, 1 GB) | 14/14 | — | 10/10, 11/11, 12/12 |
+| WSL2, Ubuntu 24.04 (musl) | 14/14 | — | 10/10, 11/11, 12/12 |
+| Native Windows x64 | 14/14 | — | 10/10, 11/11, 12/12 |
+
+Each platform ran the pinned OpenCode of its own (2.2.6, from the engine pin). `agents-opencode-live`
+passed once on the Mac with a real OpenCode Go turn. Also on the Mac, Rust: engine-sessions 81/81,
+engine-models 19/19, engine-asks 9/9, agents-codex 100/100, agents-claude 20/20,
+agents-claude-turns 59 and 1 todo (4.6), bots 40/40, usage 53/54 (1 skipped), agent-tools 3/3.
+`work-elsewhere` fails one case ("a lead on another computer lists, stops…", the "asks first for
+now" wording) on main's Rust box too.
+
+The slower runners found two races in the cases, both fixed:
+
+- A message sent while a stopped turn was still ending waited in line, as it should. The Stop
+  case now sends once the turn has ended.
+- A conversation just made wasn't on the list yet: its location answers 503 until it is, and the
+  app asks again. The cases ask again too.
 
 ## Codex (4.2)
 
@@ -863,7 +1140,7 @@ with this row, each 1:1 and for every agent:
   rows (`account_rows`). Each agent's facts are kept by kind, for all five
   agents: its sign-in methods, its installer, and how signing out goes. An
   account shows them whatever adapter runs it here. Grok's and Antigravity's
-  `Agent::program` → 4.3; Cursor reads no program, as in the reference.
+  `Agent::program` is 4.3's (`Flavour::program`); Cursor reads no program, as in the reference.
 - `POST kuvo/agents/api/integration/:provider/install`, the maker's installer.
 - `POST kuvo/agents/api/kuvo/updates[/:provider]`,
   `DELETE kuvo/agents/api/kuvo/updates/:provider?at=`, and the update notices
@@ -953,3 +1230,94 @@ The reference's answer to the sleep that replaces one that turned it down (case 
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
+
+## Background work priority (4.9)
+
+An agent's process and the commands it starts are background work. The resident,
+keeper and holder (which reads the agent's output and sends its stream to the
+resident) keep their ordinary priority. User-opened terminals keep their ordinary
+priority; terminals launched by agents inherit the agent's lower priority. There
+are no reserved cores. A new agent or heavy background start waits during critical
+memory pressure without stopping work already running. Linux uses the kernel's
+`MemAvailable` estimate with a 64 MiB floor because it has no system-wide critical
+pressure classification.
+
+The initially planned switch to ordinary priority when a conversation is opened
+was dropped: an unprivileged process on macOS and Linux cannot undo the lowered
+nice value, and children launched after promotion would inherit the wrong class.
+The agent therefore stays at low priority from launch; the conversation's holder
+and resident do not. No privileged helper or desktop change is needed.
+
+The existing holder, agent and engine-session cases exercise the same conversation
+routes, transcripts and handover on both implementations; there is no TypeScript
+priority policy to port. `kuvo_os`'s priority-tree scenario queries the class of a
+real child and the ordinary process it launches, without altering the parent.
+The memory-floor scenario supplies critical pressure at the OS seam and proves a
+real child is deferred until pressure clears. The wake-up tool now uses the same
+process owner and priority seam as the other agents' commands.
+
+### Responsiveness on macOS
+
+An exact build of the preceding revision and the new build each ran three idle
+turns and three turns while ten bounded CPU burners ran as ordinary descendants
+of a stand-in Codex agent. The measurements start at the desktop prompt and end
+at the first feed event announcing the single immediate reply's completed turn;
+live step deltas in this feed belong to 4.6. Each phase started below a one-minute
+load of 8. No test used the user's conversations or working folders.
+
+| Milliseconds, three samples | Idle | With ten CPU burners |
+| --- | --- | --- |
+| Before | 100, 113, 118 | 239, 115, 246 |
+| After | 125, 132, 146 | 102, 121, 115 |
+
+Before, the resident, holder, agent and all ten children reported nice 0. After,
+the resident and holder reported nice 0 and the agent and all ten children nice
+20. The loaded reply after the change took 64/81/75 ms to the agent's emission and
+38/40/40 ms from that emission to the desktop feed, within one second of idle.
+The baseline was already within the target under this bounded synthetic load;
+the result does not claim to reproduce every kind of real machine contention.
+
+The two-turn Claude conversation differential was also run against the reference,
+the preceding Rust revision and the new revision. The Rust-to-Rust request
+answers matched. The TS-to-Rust comparison reports the same 34 request-difference
+paths before and after (transcript metadata, generated message IDs and shape
+differences already outside this row). Complete inventories are not byte-identical:
+the two Rust runs differ in per-run identity, timestamps, SQLite fingerprints and
+the asynchronous Insights scan's progress when the fixture stops. No new saved
+priority or memory-floor state is introduced.
+
+An agent start waiting for memory can be cancelled by Stop, replacement or
+shutdown before it launches a holder; a start already admitted still uses the
+holder's bounded handshake and normal turn lifetime. The old shared engine's
+supervisor waits inside its start operation, so an outstanding start at critical
+pressure can defer that supervisor's drain command until pressure clears. The
+legacy engine launch is being removed in 4.7d rather than adding another
+supervisor mechanism here.
+
+### Verification
+
+| Platform | Parent / agent / ordinary descendant priority | Memory admission |
+| --- | --- | --- |
+| macOS | 0 / 20 / 20 in the normal-priority measurement; seam scenario also passed in the low-priority test lane | Defers, resumes and cancels immediately; real holder creates nothing on cancellation |
+| WSL2 (static Linux musl) | nice 0 / 15 / 15; agent and descendant I/O class 24576 (idle) | Defers and resumes |
+| Native Windows | normal (32) / below normal (16384) / below normal (16384) | Defers and resumes |
+
+The PC process lists were clear before and after and the disposable folders were
+removed. The Linux proof ran in WSL; there was no matching pre-existing container
+image for the capped run on lokum. The platform readbacks preceded the
+platform-independent cancellation wiring; its new tests passed on macOS.
+
+Final conformance (engine-sessions, holder, all actual agent adapters, account and
+session reads, agent turn fixture, agent tools, wakes, agent bots and engine
+golden): Rust 348 passed of 349, with the existing 4.6 seen-cursor TODO; the
+reference 325 passed of 349, with 24 expected skips. Both engine-sessions runs
+passed 81/81. The fixture-enabled Rust binary passed all eleven account/session/
+turn fixture cases, including Stop and keeper handover. The real Claude adapter
+case cancels a new start without creating a holder, then starts and hands over
+the conversation normally. Its existing account-probe fixture now seeds dummy
+local sign-in files, as required by the file-only check introduced in 4.8.
+
+The final differential again matched the Rust-to-Rust request answers, with no
+new TS-to-Rust request difference paths. One real OpenCode Go turn on DeepSeek
+v4.1 Flash passed in the isolated live case; its scratch key and home were
+removed. Workspace test-target and TypeScript type checks passed.

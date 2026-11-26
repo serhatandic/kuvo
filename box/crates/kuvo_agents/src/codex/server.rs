@@ -2,6 +2,7 @@
 //! needed and again after it stops, restarted once quiet when what it started with changed, and
 //! stopped after a while with nothing on it. What it says goes to the thread it names.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
@@ -17,6 +18,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     hold::{Controller, Directory, Metadata},
@@ -157,6 +159,7 @@ pub(super) struct Shared {
     /// Shut down (or let go of) this many times: a start under way then fails, and stops its own.
     shutdowns: tokio::sync::watch::Sender<u64>,
     idle_check: AtomicBool,
+    idle_changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl Shared {
@@ -170,6 +173,7 @@ impl Shared {
             next: AtomicU64::new(0),
             shutdowns: tokio::sync::watch::Sender::new(0),
             idle_check: AtomicBool::new(false),
+            idle_changes: tokio::sync::watch::Sender::new(0),
         }))
     }
 
@@ -178,6 +182,8 @@ impl Shared {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
+
+    pub(super) fn note_activity(&self) { self.idle_changes.send_modify(|change| *change = change.wrapping_add(1)); }
 
     /// Whether something uses `server`: a turn, work kept going, a sign-in.
     fn busy(&self, server: u64) -> bool {
@@ -190,8 +196,19 @@ impl Shared {
 
     /// The app-server, started the first time it's needed and again after it stops.
     pub async fn server(self: &Arc<Self>) -> io::Result<Arc<Server>> {
+        self.server_cancellable(&CancellationToken::new()).await
+    }
+
+    pub async fn server_cancellable(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+    ) -> io::Result<Arc<Server>> {
         let shutdowns = *self.shutdowns.borrow();
-        let _starting = self.starting.lock().await;
+        let _starting = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(stopped()),
+            lock = self.starting.lock() => lock,
+        };
         if *self.shutdowns.borrow() != shutdowns {
             return Err(stopped());
         }
@@ -213,19 +230,22 @@ impl Shared {
                 .await;
             let slot = self.slot.lock().await;
             if let Some(server) = slot.server.clone().filter(|server| !server.closed()) {
+                self.note_activity();
                 return Ok(server);
             }
             slot.stops
         };
         self.watch_idle();
-        let server = self.start(&compaction, identity, shutdowns).await?;
+        let server = self.start(&compaction, identity, shutdowns, cancel).await?;
         let mut slot = self.slot.lock().await;
         if slot.stops != stops || *self.shutdowns.borrow() != shutdowns {
             server.rpc.stop().await;
             return Err(stopped());
         }
         slot.server = Some(server.clone());
+        slot.last_use = Some(Instant::now());
         drop(slot);
+        self.note_activity();
         self.refresh_catalog(server.clone());
         Ok(server)
     }
@@ -245,6 +265,7 @@ impl Shared {
         compaction: &str,
         identity: Option<String>,
         shutdowns: u64,
+        cancel: &CancellationToken,
     ) -> io::Result<Arc<Server>> {
         let mut halted = self.shutdowns.subscribe();
         let program = self.program.clone();
@@ -253,7 +274,12 @@ impl Shared {
             tokio::task::spawn_blocking(move || program.launch(&compaction)).await??
         };
         let controller = Directory::for_home(&self.program.home)
-            .start(&self.program.holder_binary, launch)
+            .start_cancellable(&self.program.holder_binary, launch, async {
+                tokio::select! {
+                    () = cancel.cancelled() => {},
+                    _ = halted.wait_for(|now| *now != shutdowns) => {},
+                }
+            })
             .await?;
         let server = self.serve(
             controller,
@@ -346,6 +372,7 @@ impl Shared {
         slot.last_use = Some(Instant::now());
         drop(slot);
         self.watch_idle();
+        self.note_activity();
         self.refresh_catalog(server.clone());
         Ok(server)
     }
@@ -488,7 +515,7 @@ impl Shared {
                     server.rpc.respond(id, answer).await;
                 }
             }
-            Incoming::Stray { .. } => {}
+            Incoming::Stray { .. } | Incoming::Answer { .. } => {}
             Incoming::Exited { .. } => {
                 {
                     let mut slot = self.slot.lock().await;
@@ -501,6 +528,7 @@ impl Shared {
                     }
                 }
                 self.account.server_stopped(server.id);
+                self.note_activity();
                 for route in self.routes().values() {
                     let _ = route.events.send(Event::Stopped { server: server.id });
                 }
@@ -544,38 +572,46 @@ impl Shared {
         self.stopped(id);
     }
 
-    /// Stopped when nothing has used it for a while, checked every minute.
+    /// Sleep to the actual idle deadline; a busy or attached server has no idle timer.
     fn watch_idle(self: &Arc<Self>) {
-        if self.idle_check.swap(true, Ordering::Relaxed) {
-            return;
-        }
+        if self.idle_check.swap(true, Ordering::Relaxed) { return; }
         let shared = Arc::downgrade(self);
+        let mut changes = self.idle_changes.subscribe();
         tokio::spawn(async move {
+            let mut using = None;
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                let Some(shared) = shared.upgrade() else {
-                    return;
+                let Some(here) = shared.upgrade() else { return; };
+                here.restart_if_quiet(None, None).await;
+                let (due, stop) = {
+                    let mut slot = here.slot.lock().await;
+                    if let Some(server) = slot.server.clone() {
+                        let on_it = here.routes().values().any(|route| route.server == Some(server.id));
+                        if here.busy(server.id) || on_it {
+                            using = Some(server.id);
+                            (None, None)
+                        } else {
+                            if using.take() == Some(server.id) { slot.last_use = Some(Instant::now()); }
+                            let due = slot.last_use.get_or_insert_with(Instant::now).to_owned() + IDLE;
+                            if due <= Instant::now() {
+                                slot.stops += 1;
+                                slot.server = None;
+                                (None, Some(server))
+                            } else { (Some(due), None) }
+                        }
+                    } else { using = None; (None, None) }
                 };
-                shared.restart_if_quiet(None, None).await;
-                let mut slot = shared.slot.lock().await;
-                let Some(server) = slot.server.clone() else {
-                    continue;
-                };
-                let on_it = shared
-                    .routes()
-                    .values()
-                    .any(|route| route.server == Some(server.id));
-                if shared.busy(server.id) || on_it {
-                    slot.last_use = Some(Instant::now());
-                    continue;
-                }
-                if slot.last_use.is_some_and(|last| last.elapsed() >= IDLE) {
+                if let Some(server) = stop {
                     eprintln!("Stopping Codex app-server: idle");
-                    slot.stops += 1;
-                    slot.server = None;
-                    drop(slot);
                     server.rpc.stop().await;
-                    shared.stopped(server.id);
+                    here.stopped(server.id);
+                }
+                drop(here);
+                tokio::select! {
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    _ = async { match due {
+                        Some(at) => timer_fires::sleep_until(Timer::CodexServerExpiry, at).await,
+                        None => std::future::pending().await,
+                    } } => {},
                 }
             }
         });
@@ -583,6 +619,7 @@ impl Shared {
 
     /// Its threads are told it stopped on purpose (they may be on a newer one by now).
     fn stopped(&self, server: u64) {
+        self.note_activity();
         for route in self.routes().values() {
             let _ = route.events.send(Event::Stopped { server });
         }
@@ -661,6 +698,7 @@ impl Shared {
     pub async fn detach(&self) {
         self.shutdowns.send_modify(|count| *count += 1);
         self.slot.lock().await.server.take();
+        self.note_activity();
     }
 }
 

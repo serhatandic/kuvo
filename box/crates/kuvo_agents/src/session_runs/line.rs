@@ -64,6 +64,19 @@ pub(super) enum Request {
         session: String,
         reply: Reply<Compacting>,
     },
+    /// A turn the agent on `provider` began on its own: whether one here takes it.
+    OwnTurn {
+        session: String,
+        provider: String,
+        text: String,
+        reply: Reply<bool>,
+    },
+}
+
+/// A turn an agent began on its own, taken: it starts once nothing runs.
+pub(super) struct OwnStart {
+    provider: String,
+    text: String,
 }
 
 pub(super) enum Stopping {
@@ -146,7 +159,97 @@ impl Service {
             Request::Compact { session, reply } => {
                 let _ = reply.send(self.compact(state, &session).await);
             }
+            Request::OwnTurn {
+                session,
+                provider,
+                text,
+                reply,
+            } => {
+                let taken = self.own_turn(state, &session, provider, text).await;
+                let _ = reply.send(Ok(taken));
+            }
         }
+    }
+
+    /// Taken now, when nothing runs; or once the turn under way ends, when it runs on the same
+    /// agent (it begins its own only after finishing that one). Not while another agent works,
+    /// as it starts or stops, or as the conversation goes.
+    async fn own_turn(
+        &self,
+        state: &mut State,
+        session: &str,
+        provider: String,
+        text: String,
+    ) -> bool {
+        let closing = state.closing;
+        let conversation = state.conversation(session);
+        if closing || conversation.retired || conversation.own.is_some() {
+            return false;
+        }
+        let taken = match &conversation.doing {
+            Doing::Idle => true,
+            Doing::Running(live) => live.provider == provider,
+            Doing::Starting { .. } | Doing::Stopping(_) => false,
+        };
+        if taken {
+            conversation.own = Some(OwnStart { provider, text });
+            self.advance(state, session, None).await;
+        }
+        taken
+    }
+
+    /// The turn an agent began on its own, on the conversation's model, if that's still its
+    /// agent's: shown as what it carried on with.
+    async fn start_own(&self, state: &mut State, session: &str, own: OwnStart) {
+        let Ok(Some(header)) = self.store.read(session).await else {
+            return;
+        };
+        let Some(folder) = header.directory().map(PathBuf::from) else {
+            return;
+        };
+        let fields = header.into_fields();
+        let provider = fields
+            .get("model")
+            .and_then(|model| model.get("providerID"))
+            .and_then(Value::as_str);
+        if provider != Some(own.provider.as_str()) {
+            return;
+        }
+        let Ok(id) = crate::session_store::SessionStore::make_id("msg") else {
+            return;
+        };
+        let setup = turn_setup(
+            &self.settings.home,
+            folder,
+            &fields,
+            &id,
+            TurnKind::AgentStarted,
+        );
+        let Ok((mut turn, policy)) = setup else {
+            return;
+        };
+        turn.instructions = self.store.instructions(session).await.unwrap_or_default();
+        let shown = crate::session::Prompt {
+            id: id.clone(),
+            text: own.text,
+            files: Vec::new(),
+            synthetic: true,
+        };
+        let _ = self.events.send(InboxEvent::Delivered {
+            session: session.to_owned(),
+            id: id.clone(),
+            row: user(&shown),
+        });
+        state.conversation(session).doing = Doing::Starting { stop: false, id };
+        self.spawn_start(
+            state,
+            session.to_owned(),
+            turn,
+            policy,
+            None,
+            Some(shown),
+            None,
+        );
     }
 
     /// A summary of the conversation, first in line: it goes now, or once the
@@ -240,7 +343,7 @@ impl Service {
         };
         let found = {
             let roster = self.agents.roster();
-            crate::accounts::Provider::parse(provider)
+            crate::accounts::Provider::of_model(provider)
                 .and_then(|parsed| roster.find(&parsed))
                 .map(|entry| (entry.account.kind.display_name(), entry.agent.compacts()))
         };
@@ -871,6 +974,9 @@ impl Service {
         let conversation = state.conversation(session);
         if !matches!(conversation.doing, Doing::Idle) || conversation.retired || closing {
             return;
+        }
+        if let Some(own) = conversation.own.take() {
+            return self.start_own(state, session, own).await;
         }
         let Ok(Some(line)) = self.store.line(session).await else {
             return;

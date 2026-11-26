@@ -1,6 +1,7 @@
 //! A conversation's Codex thread: loaded in the account's app-server, its turns started and
 //! steered, what Codex says made its steps, and what it asks put to you.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashMap,
     io,
@@ -401,14 +402,14 @@ impl Actor {
         while !self.closing {
             let timer = async {
                 match self.deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTurnDeadline, at).await,
                     None => std::future::pending().await,
                 }
             };
             let list_at = self.list_at;
             let listing = async {
                 match list_at {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTerminalList, at).await,
                     None => std::future::pending().await,
                 }
             };
@@ -416,7 +417,7 @@ impl Actor {
             let retry_at = self.retries.iter().map(|retry| retry.at).min();
             let retrying = async {
                 match retry_at {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AgentTurnRetry, at).await,
                     None => std::future::pending().await,
                 }
             };
@@ -440,6 +441,7 @@ impl Actor {
             }
         }
         self.shared.routes().remove(&self.session);
+        self.shared.note_activity();
     }
 
     fn route(&self) {
@@ -448,6 +450,8 @@ impl Actor {
             route.native = self.native.clone();
             route.server = self.server.as_ref().map(|server| server.id);
         }
+        drop(routes);
+        self.shared.note_activity();
     }
 
     async fn command(&mut self, command: Command) -> io::Result<()> {
@@ -536,8 +540,9 @@ impl Actor {
         model: &str,
         instructions: &str,
         sink: &Arc<dyn TurnSink>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> io::Result<Arc<Server>> {
-        let server = self.shared.server().await?;
+        let server = self.shared.server_cancellable(cancel).await?;
         if self.server.as_ref().is_none_or(|old| old.id != server.id) {
             self.server = Some(server.clone());
             self.loaded = false;
@@ -723,8 +728,16 @@ impl Actor {
         self.turned_down = 0;
         self.answers.clear();
         self.busy.store(true, Ordering::Relaxed);
+        self.shared.note_activity();
         let result = self
-            .begin(input.id, prompt, start, input.instructions, sink)
+            .begin(
+                input.id,
+                prompt,
+                start,
+                input.instructions,
+                sink,
+                &input.start_cancel,
+            )
             .await;
         if result.is_err() {
             self.set_busy();
@@ -739,8 +752,9 @@ impl Actor {
         start: TurnStart,
         instructions: String,
         sink: Arc<dyn TurnSink>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> io::Result<()> {
-        self.ensure_thread(&start.model, &instructions, &sink)
+        self.ensure_thread(&start.model, &instructions, &sink, cancel)
             .await?;
         let mut active = Active {
             id: id.clone(),
@@ -921,6 +935,7 @@ impl Actor {
         self.loaded = true;
         self.route();
         self.busy.store(true, Ordering::Relaxed);
+        self.shared.note_activity();
         let turn = note
             .state
             .as_ref()
@@ -1970,7 +1985,7 @@ impl Actor {
     fn set_busy(&self) {
         let open = self.server.as_ref().is_some_and(|server| !server.closed());
         let working = self.active.is_some() || open && self.terminals.keeps_working();
-        self.busy.store(working, Ordering::Relaxed);
+        if self.busy.swap(working, Ordering::Relaxed) != working { self.shared.note_activity(); }
     }
 
     /// Lists what it left running again (after a turn, `initial`: never during one otherwise); while

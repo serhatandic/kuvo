@@ -6,6 +6,7 @@ mod usage;
 mod usage_history_peers;
 mod usage_peers;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
@@ -138,12 +139,18 @@ pub async fn run(
     )
     .await?;
     let authority = setup.handle();
+    let ownership_events = authority.clone();
     let owners = kuvo_peers::ownership::Handle::new(
         peers.reader(),
         peers.relay_handle(),
         devices.clone(),
         move || authority.ownership_state(),
-    );
+    ).with_setup_changes(move || {
+        let mut setup = ownership_events.clone();
+        Box::pin(async_stream::stream! {
+            while setup.changed().await { yield (); }
+        })
+    });
     peers
         .attach_moves_with_queue(
             engine.clone(),
@@ -237,7 +244,11 @@ pub async fn run(
                 None
             });
         usage::confirm(&limits, &accounts).await;
-        tokio::spawn(usage::Turns::follow(limits.clone(), accounts.clone()));
+        tokio::spawn(usage::Turns::follow(
+            limits.clone(),
+            accounts.clone(),
+            standalone_plans.clone(),
+        ));
         let runs = kuvo_agents::session_runs::SessionRuns::start_with_limits(
             accounts.clone(),
             sessions.clone(),
@@ -486,8 +497,7 @@ pub async fn run(
     let approvals_kept = approvals.keep();
     let work_settings =
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
-    let working = sessions.clone();
-    let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let kept_awake = work_settings.keep_awake(sessions.clone());
     let engine_reader = usage::engine_reader(home, &account);
     let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
@@ -548,7 +558,39 @@ pub async fn run(
         (None, None)
     };
     kuvo_services::usage::settings::register(&mut routes, usage_settings.clone());
-    kuvo_services::usage::limits::register(&mut routes, limits.clone());
+    usage::verify_sign_ins(
+        &limits,
+        agent_shutdown.as_ref(),
+        standalone_plans.as_ref(),
+        &engine,
+        home,
+    )
+    .await;
+    let catch_up = limits.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        catch_up.replay_notices(kuvo_services::usage::limits::now());
+    })
+    .await;
+    let (verify_service, verify_agents, verify_readers, verify_engine, verify_home) = (
+        limits.clone(),
+        agent_shutdown.clone(),
+        standalone_plans.clone(),
+        engine.clone(),
+        home.to_owned(),
+    );
+    kuvo_services::usage::limits::register(&mut routes, limits.clone(), move || {
+        let (service, agents, readers, engine, home) = (
+            verify_service.clone(),
+            verify_agents.clone(),
+            verify_readers.clone(),
+            verify_engine.clone(),
+            verify_home.clone(),
+        );
+        async move {
+            usage::verify_sign_ins(&service, agents.as_ref(), readers.as_ref(), &engine, &home)
+                .await;
+        }
+    });
     let insights = kuvo_services::usage::insights::Service::new(
         home.to_owned(),
         peers.reader().view().roster.local().name,
@@ -563,10 +605,14 @@ pub async fn run(
         &hostname::get()?.to_string_lossy(),
     )
     .with_history(usage_settings, limits.clone())
+    .with_directory(peers.reader())
     .with_cursor(standalone_plans.clone());
     let cursor_watch = insights.follow_cursor(routes.client_activity());
     let price_watch = insights.follow_prices(&account);
     let usage_watch = kuvo_os::watch::WatchHub::default();
+    let usage_sign_ins = standalone_plans
+        .as_ref()
+        .map(|reader| reader.follow_sign_ins(usage_watch.clone(), limits.clone()));
     let insights_watch = insights.follow(usage_watch.clone());
     let engine_usage_watch = insights.follow_engine(usage_watch.clone());
     let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
@@ -589,6 +635,7 @@ pub async fn run(
             );
             async move {
                 let agents_failed = if let Some(agents) = agents {
+                    usage::confirm(&limits, &agents).await;
                     usage::refresh(limits.clone(), agents, selected.clone(), explicit).await
                 } else {
                     false
@@ -601,7 +648,7 @@ pub async fn run(
                     false
                 };
                 let engine_failed = if let Some(reader) = reader {
-                    usage::refresh_engine(limits, engine, reader, home, selected).await
+                    usage::refresh_engine(limits, engine, reader, home, selected, explicit).await
                 } else {
                     false
                 };
@@ -841,6 +888,9 @@ pub async fn run(
     approvals_kept.abort();
     insights_watch.abort();
     native_usage_watch.abort();
+    if let Some(watch) = usage_sign_ins {
+        watch.abort();
+    }
     engine_usage_watch.abort();
     if let Some(task) = cursor_watch {
         task.abort();
@@ -901,10 +951,11 @@ async fn publish_peer_waiting(
     mut peers: kuvo_peers::setup_lists::Reader,
     waiting: tokio::sync::watch::Sender<Arc<Vec<kuvo_engine::PeerWaiting>>>,
 ) {
-    let mut refresh = tokio::time::interval(std::time::Duration::from_secs(15));
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let current = peers.view().peer_waiting(peers.now());
+        let now = peers.now();
+        let view = peers.view();
+        let current = view.peer_waiting(now);
+        let expiry = view.next_peer_waiting_change(now);
         waiting.send_if_modified(|last| {
             if **last == current {
                 return false;
@@ -914,7 +965,12 @@ async fn publish_peer_waiting(
         });
         tokio::select! {
             changed = peers.changed() => if changed.is_err() { break; },
-            _ = refresh.tick() => {},
+            _ = async {
+                match expiry {
+                    Some(at) => timer_fires::sleep(Timer::PeerWaiting, std::time::Duration::from_millis(at.saturating_sub(now).max(1) as u64)).await,
+                    None => std::future::pending().await,
+                }
+            } => {},
             _ = waiting.closed() => break,
         }
     }

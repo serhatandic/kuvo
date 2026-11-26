@@ -25,6 +25,8 @@ fn account_of(
         AgentKind::Antigravity => limits::Provider::Antigravity,
         AgentKind::Cursor => limits::Provider::Cursor,
         AgentKind::Grok => limits::Provider::Grok,
+        // (Its plan's limits are read from its own database: it has no plan sign-in here.)
+        AgentKind::OpenCode => limits::Provider::Opencode,
     };
     Account {
         provider: provider.to_string(),
@@ -45,6 +47,56 @@ pub async fn confirm(service: &Service, agents: &ResidentAgents) {
         }
     }
     service.confirm_accounts(&accounts, limits::now());
+}
+
+/// Account admission is cheap local work, not a quota refresh. In particular a
+/// signed-out CLI can keep all of its transcripts and no longer has live rings.
+pub async fn verify_sign_ins(
+    service: &Service,
+    agents: Option<&ResidentAgents>,
+    standalone: Option<&kuvo_services::usage::standalone::Readers>,
+    engine: &kuvo_engine::Engine,
+    home: &std::path::Path,
+) {
+    let native = async {
+        if let Some(agents) = agents {
+            confirm(service, agents).await;
+        } else {
+            service.confirm_accounts(&[], limits::now());
+        }
+    };
+    let standalone = async {
+        if let Some(readers) = standalone {
+            readers.confirm(service).await;
+        } else {
+            service.confirm_standalone_accounts(&[], &Default::default(), limits::now());
+        }
+    };
+    let engine = async {
+        if !service.has_engine_accounts() {
+            return;
+        }
+        // A current engine keeps this evidence in SQLite. The legacy API
+        // fallback addresses only an already-running engine; don't let a
+        // blocked legacy process delay drawing the rings.
+        let current = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            engine_credentials(engine, home.to_owned()),
+        )
+        .await;
+        match current {
+            Ok(Ok(Some(credentials))) => {
+                if let Some(accounts) =
+                    kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+                {
+                    service.confirm_engine_sign_ins(&accounts, limits::now());
+                }
+            }
+            Ok(Ok(None)) => service.confirm_engine_sign_ins(&[], limits::now()),
+            _ => {} // An unreadable credential source is not a confirmed sign-out.
+        }
+    };
+    tokio::join!(native, standalone, engine);
 }
 
 fn windows(reading: PlanLimitReading, at: u64, source: Source) -> Vec<Window> {
@@ -80,6 +132,21 @@ pub async fn refresh(
         {
             continue;
         }
+        if !explicit
+            && selected.is_none()
+            && service.defer_passive_provider(
+                &provider.to_string(),
+                limits::now(),
+                if provider.kind == AgentKind::Claude {
+                    15 * 60_000
+                } else {
+                    10 * 60_000
+                },
+            )
+        {
+            continue;
+        }
+        let started = limits::now();
         match entry.agent.read_plan_limits(explicit).await {
             Ok(Some(reading)) => {
                 let Some((mark, identity)) = entry.agent.plan_sign_in().await else {
@@ -98,7 +165,7 @@ pub async fn refresh(
                     if only_resets {
                         service.observe_reset_facts(account, facts, at)
                     } else {
-                        service.observe_facts(account, windows, Some(facts), at)
+                        service.observe_confirmed_facts(account, windows, facts, started, at)
                     }
                 })
                 .await
@@ -138,12 +205,18 @@ fn direct_facts(
         ),
         ..Default::default()
     };
-    if direct.no_plan {
-        facts.problem = Some(Problem::new(
+    use kuvo_agents::session::DirectPlanStatus;
+    facts.problem = match direct.status {
+        DirectPlanStatus::Ready => None,
+        DirectPlanStatus::Failed => Some(Problem::new(
+            ProblemKind::Failed,
+            format!("{} didn't answer about its plan.", kind.display_name()),
+        )),
+        DirectPlanStatus::NoPlan => Some(Problem::new(
             ProblemKind::None,
             "Not signed in to a plan here.",
-        ));
-    }
+        )),
+    };
     if let Some(spend) = &direct.extra_usage {
         let (id, name) = ("extra_usage".to_owned(), "Extra Usage".to_owned());
         facts.extras.push(if let Some(limit) = spend.limit {
@@ -171,6 +244,7 @@ fn direct_facts(
             name: "Extra Usage".into(),
             amount: credits,
             unit: Unit::Credits,
+            resets_at: None,
         });
     }
     if let Some(resets) = &direct.resets {
@@ -245,31 +319,78 @@ pub async fn refresh_engine(
     reader: kuvo_services::usage::engine_readers::Reader,
     home: std::path::PathBuf,
     selected: Option<String>,
+    explicit: bool,
 ) -> bool {
-    // Never wake the engine solely to poll quota. If it hasn't opened its credential
-    // store, the last readings stay as of when their makers supplied them.
+    // Never wake the engine solely to poll quota. A saved reading is usable only
+    // when the engine still has the matching active credential.
     if selected
         .as_deref()
         .is_some_and(|p| Provider::parse(p).is_some())
     {
         return false;
     }
-    let credentials = match engine_credentials(&engine, home).await {
+    let credentials = match engine_credentials(&engine, home.clone()).await {
         Ok(Some(credentials)) => credentials,
-        Ok(None) => return false,
+        Ok(None) => {
+            service.confirm_engine_sign_ins(&[], limits::now());
+            return false;
+        }
         Err(error) => {
             eprintln!("Could not read engine plan accounts: {error}");
             return true;
         }
     };
     let at = limits::now();
-    let held = service.held_engine_providers(at);
-    let Some(batch) = reader
+    if let Some(accounts) = kuvo_services::usage::engine_readers::admitted_accounts(&credentials) {
+        service.confirm_engine_sign_ins(&accounts, at);
+    }
+    let mut held = service.held_engine_providers(at);
+    if !explicit
+        && selected.is_none()
+        && let Some(accounts) =
+            kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+    {
+        for account in accounts {
+            if !held.contains(&account.provider) && service.defer_passive(&account, at, 10 * 60_000)
+            {
+                held.insert(account.provider);
+            }
+        }
+    }
+    let Some(mut batch) = reader
         .read(credentials, at, &held, selected.as_deref())
         .await
     else {
         return true;
     };
+    // A maker's reply can arrive after the user has changed or removed a key.
+    // The current SQLite credential is authoritative, never the old response.
+    match engine_credentials(&engine, home).await {
+        Ok(Some(credentials)) => {
+            let Some(accounts) =
+                kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+            else {
+                return true;
+            };
+            service.confirm_engine_sign_ins(&accounts, limits::now());
+            batch.plans.retain(|p| {
+                accounts
+                    .iter()
+                    .any(|a| a.provider == p.account.provider && a.sign_in == p.account.sign_in)
+            });
+            batch
+                .providers
+                .retain(|p| accounts.iter().any(|a| &a.provider == p));
+        }
+        Ok(None) => {
+            service.confirm_engine_sign_ins(&[], limits::now());
+            return false;
+        }
+        Err(error) => {
+            eprintln!("Could not recheck engine plan accounts: {error}");
+            return true;
+        }
+    }
     match tokio::task::spawn_blocking(move || {
         let mut failed = false;
         for plan in batch.plans {
@@ -305,7 +426,11 @@ pub struct Turns {
     queue: tokio::sync::mpsc::UnboundedSender<(String, PlanLimitReading, u64)>,
 }
 impl Turns {
-    pub async fn follow(service: Service, agents: ResidentAgents) {
+    pub async fn follow(
+        service: Service,
+        agents: ResidentAgents,
+        standalone: Option<kuvo_services::usage::standalone::Readers>,
+    ) {
         let mut feed = agents.feed().subscribe();
 
         loop {
@@ -316,6 +441,9 @@ impl Turns {
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
             confirm(&service, &agents).await;
+            if let Some(readers) = &standalone {
+                readers.confirm(&service).await;
+            }
         }
     }
 
@@ -390,18 +518,25 @@ pub fn notices(service: &Service, notices: Notices) {
             thread: Some(format!("usage:{}", fact.row)),
             data: data.as_object().expect("notice data").clone(),
         };
-        let _ = notices.keep(notice, false, |kept| {
-            kept.iter()
-                .any(|entry| {
-                    entry
-                        .notice
-                        .data
-                        .get("notice")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(id.as_str())
-                })
-                .then(|| "Already told.".into())
-        });
+        notices
+            .keep_at(
+                notice,
+                false,
+                i64::try_from(fact.at).unwrap_or(i64::MAX),
+                |kept| {
+                    kept.iter()
+                        .any(|entry| {
+                            entry
+                                .notice
+                                .data
+                                .get("notice")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(id.as_str())
+                        })
+                        .then(|| "Already told.".into())
+                },
+            )
+            .is_some()
     }));
 }
 
@@ -522,6 +657,7 @@ impl kuvo_services::usage::resets::Port for ResetPort {
                         reader.clone(),
                         home.clone(),
                         Some(provider.into()),
+                        true,
                     )
                     .await;
                 }

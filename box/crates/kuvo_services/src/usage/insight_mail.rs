@@ -60,10 +60,10 @@ pub struct Record {
     pub root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pricing_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reported_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,6 +128,9 @@ fn small(s: &str) -> bool {
 }
 const DAY: i64 = 86_400_000;
 impl Record {
+    pub fn is_partial(&self) -> bool {
+        !self.human && (self.partial || self.tokens.as_ref().and_then(Buckets::complete).is_none())
+    }
     /// Peers can identify only origins authorised by the current signed setup.
     pub fn validate(&mut self, now: i64, origin: &BTreeSet<String>) -> bool {
         if !key(&self.key)
@@ -138,13 +141,10 @@ impl Record {
                 .into_iter()
                 .all(|s| small(s))
             || !origin.contains(&self.computer)
-            || self.skills.len() > 32
-            || self.pricing_models.len() > 32
-            || !self
-                .skills
-                .iter()
-                .chain(self.pricing_models.iter())
-                .all(|x| small(x))
+            || [&self.skills, &self.pricing_models]
+                .into_iter()
+                .flatten()
+                .any(|list| list.len() > 32 || !list.iter().all(|x| small(x)))
             || self.tokens.as_ref().is_some_and(|t| {
                 t.fields()
                     .into_iter()
@@ -178,7 +178,6 @@ impl Record {
             self.root = None;
         }
         self.account_observed &= self.account.is_some();
-        self.partial |= !self.human && self.tokens.as_ref().and_then(Buckets::complete).is_none();
         true
     }
 }

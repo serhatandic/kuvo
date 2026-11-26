@@ -1,6 +1,7 @@
 //! Through a resident update: what the resident being replaced hands to the
 //! next, and how the next takes up the turns its agents went on with.
 
+use kuvo_os::timer_fires::{self, Timer};
 use super::{Doing, Service, State};
 use crate::{
     accounts::Provider,
@@ -318,7 +319,7 @@ async fn follow_replays(
         };
         tokio::select! {
             changed = pending.changed() => if changed.is_err() { return },
-            () = tokio::time::sleep_until(next) => {}
+            () = timer_fires::sleep_until(Timer::AgentAskReplay, next) => {}
         }
     }
 }

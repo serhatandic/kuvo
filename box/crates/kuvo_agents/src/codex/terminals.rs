@@ -199,6 +199,7 @@ impl Terminals {
                 if total >= printed.total {
                     printed.output = tail(all, OUTPUT_LIMIT).to_owned();
                     printed.total = total;
+                    self.background.note_output();
                 }
             }
             ("item/commandExecution/outputDelta", _) => {
@@ -214,6 +215,7 @@ impl Terminals {
                 printed.output.push_str(delta);
                 printed.output = tail(&printed.output, OUTPUT_LIMIT).to_owned();
                 printed.total += delta.len() as u64;
+                self.background.note_output();
             }
             _ => {}
         }
@@ -361,6 +363,7 @@ struct Source {
 }
 
 impl CommandSource for Source {
+    fn pushes_output(&self) -> bool { true }
     fn output(&self) -> BoxFuture<'_, Printed> {
         let printed = self
             .item

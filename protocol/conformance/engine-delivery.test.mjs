@@ -4,6 +4,11 @@ import { test } from "node:test";
 import { openLine, request, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
+import { parkedTimers } from "./idle-counter.mjs";
+
+test("delivery recovery parks with no saved drafts", { timeout: 30000 }, async t => {
+  await parkedTimers(t, ["delivery.recovery"], 6500);
+});
 
 test("two computers deliver addressed drafts and recover the original scoped receipt", { timeout: 90000 }, async t => {
   const { computer, leases } = await bench(t);

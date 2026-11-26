@@ -6,6 +6,16 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo stays responsive while your agents run builds.
+
+- Rust computers reuse fresh plan readings from another computer instead of asking a maker twice, keep the last successful refresh time when every read fails, and ignore corrupt saved windows instead of showing a false ring.
+
+- Rust computers keep confirmed Claude sign-ins without repeatedly asking the Keychain, respect engine plan read holds across restarts, and show active Z.ai usage without including inactive keys.
+
+- Rust computers keep consistent plan rings and forecasts across upgrades, group many accounts in one rail card, and show Insights bot conversations, their subagents and completed skill use without recounting older calls.
+
+- Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.
+
 - A computer that has run Kuvo Code on its own, with nothing made yet, can join another setup with an installer code.
 - A pending wipe stays visible after the main computer restarts. You can record a lost disk or cancel a wipe that can’t erase the computer’s data layout.
 - A removed computer can finish its wipe when it reconnects and retry its completion after a relay disconnect.
@@ -17,6 +27,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
 - Removing a computer still revokes its access if its SSH address can’t be cleared. Retrying clears the address when the list is writable again.
 - Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
+- A Mac still on Kuvo Code 0.8.0-beta.1 that has gone away can be removed from a Rust computer's list with Remove. Such a Mac sees that computer's conversations with their project, and untitled ones as New session.
 
 - Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
 
@@ -28,9 +39,15 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
 
+- Rust computers stay quiet when nothing is working: the Work Queue, transfers, saved messages, bot edits and followed lists respond to changes instead of checking every few seconds. An unused artifact history no longer creates its files at startup.
+
+- Rust computers share file watches instead of opening a watcher for every folder. A burst of changes from another computer no longer stops the relay connection, and a busy computer keeps accepted peer refresh and update requests until it can handle them.
+
 - Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
 
 - Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.
+- Rust computers run Grok and Antigravity conversations, several sharing one agent process. Neither offers a plan mode, and a conversation saved in one goes on normally. An Antigravity account signed in before Google's agy says to install agy and sign in again instead of offering an update, and a sign-in that can't start says why.
+
 - Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
 
 - Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.

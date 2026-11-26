@@ -1,5 +1,6 @@
 //! Live questions and permissions from a conversation and its local descendants.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeSet, io, time::Duration};
 
 use http::{Method, StatusCode};
@@ -7,8 +8,9 @@ use kuvo_protocol::routes::{
     get_kuvo_sessions_id_asks as read, get_kuvo_sessions_id_asks_events as events,
     post_kuvo_sessions_id_asks_ask as reply,
 };
-use kuvo_server::{Access, DispatchRequest, JsonLine, Refusal, Registry, RouteReply};
-use serde::{Deserialize, Serialize};
+use http_body_util::BodyExt;
+use kuvo_server::{Access, DispatchRequest, Dispatcher, JsonLine, Refusal, Registry, RouteReply};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -108,6 +110,63 @@ struct Ask {
     card: Value,
     answer: Answer,
     shared_folder: Option<String>,
+}
+
+/// Where a conversation runs, its asks read and answered the same way there: the engine's API, or
+/// the coding agents' same routes (`kuvo/agents/…`), through this box's own dispatcher as asked.
+enum Target<'a> {
+    Engine(&'a Lease),
+    Agents(&'a Dispatcher, &'a DispatchRequest),
+}
+
+impl Target<'_> {
+    async fn raw(
+        &self,
+        engine: &Engine,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        headers: http::HeaderMap,
+        wait: Duration,
+    ) -> Result<Value, api::Error> {
+        let (dispatcher, asked) = match self {
+            Self::Engine(lease) => {
+                return engine.call_with_headers(lease, method, path, body, wait, headers).await;
+            }
+            Self::Agents(dispatcher, asked) => (dispatcher, asked),
+        };
+        let request = DispatchRequest {
+            method,
+            path: format!("kuvo/agents/{path}"),
+            headers,
+            body: body.map(|body| body.to_string().into()).unwrap_or_default(),
+            caller: asked.caller.clone(),
+        };
+        let reply = dispatcher.dispatch(request, Default::default()).await;
+        let bytes = reply.body.collect().await.map(|body| body.to_bytes()).unwrap_or_default();
+        let value = serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null);
+        if !reply.status.is_success() {
+            let message = value["message"].as_str().map_or_else(
+                || format!("It answered {}.", reply.status.as_u16()),
+                str::to_owned,
+            );
+            return Err(api::Error::Status(reply.status, message));
+        }
+        Ok(value)
+    }
+
+    async fn call<T: DeserializeOwned>(&self, engine: &Engine, path: &str) -> Result<T, api::Error> {
+        let mut value = self.raw(engine, Method::GET, path, None, Default::default(), api::WAIT).await?;
+        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
+            value = data.take();
+        }
+        serde_json::from_value(value).map_err(api::Error::Invalid)
+    }
+
+    /// A coding agent's conversation: its Always lasts for it, not the project.
+    fn for_conversation(&self) -> bool {
+        matches!(self, Self::Agents(..))
+    }
 }
 
 impl Form {
@@ -424,7 +483,7 @@ fn choice(
 }
 
 impl Permission {
-    fn always(&self, home: &str) -> Value {
+    fn always(&self, home: &str, for_conversation: bool) -> Value {
         let saved = self.save.as_ref().unwrap_or(&self.resources);
         let kinds = saved
             .iter()
@@ -444,7 +503,11 @@ impl Permission {
             })
             .collect::<Vec<_>>();
         let whole = patterns.len() == 1 && patterns[0] == "*";
-        let here = "in this project";
+        let here = if for_conversation {
+            "in this conversation"
+        } else {
+            "in this project"
+        };
         let (title, named, help, spoken) = match self.action.as_str() {
             "edit" | "patch" | "write" => (
                 "Always Allow Edits",
@@ -530,7 +593,14 @@ impl Permission {
         choice("always", title, named, None, Some(help), Some(spoken))
     }
 
-    fn card(self, session: &str, folder: &str, home: &str, command: Option<String>) -> Ask {
+    fn card(
+        self,
+        session: &str,
+        folder: &str,
+        home: &str,
+        command: Option<String>,
+        for_conversation: bool,
+    ) -> Ask {
         let mut subject = self
             .resources
             .first()
@@ -571,7 +641,7 @@ impl Permission {
             .collect::<Vec<_>>();
         let choices = [
             choice("once", "Allow Once", None, None, None, None),
-            self.always(home),
+            self.always(home, for_conversation),
             choice("reject", "Don’t Allow", None, None, None, None),
             choice(
                 "instead",
@@ -592,19 +662,14 @@ impl Permission {
         )
     }
 
-    async fn command(&self, engine: &Engine, lease: &Lease, at: &str) -> Option<String> {
+    async fn command(&self, engine: &Engine, target: &Target<'_>, at: &str) -> Option<String> {
         if !matches!(self.action.as_str(), "bash" | "shell") {
             return None;
         }
         let id = self.source["id"].as_str()?;
         let message = self.source["messageID"].as_str();
-        let messages = engine
-            .call::<Vec<Value>>(
-                lease,
-                Method::GET,
-                &format!("{at}/message?limit=30&order=desc"),
-                None,
-            )
+        let messages = target
+            .call::<Vec<Value>>(engine, &format!("{at}/message?limit=30&order=desc"))
             .await
             .ok()?;
         let part = messages
@@ -619,27 +684,58 @@ impl Permission {
     }
 }
 
+/// Where `session` runs here: with the coding agents, else on the engine while it runs.
+enum Place {
+    Engine(Lease),
+    Agents(Dispatcher, DispatchRequest),
+}
+
+impl Place {
+    async fn of(
+        engine: &Engine,
+        session: &str,
+        dispatcher: Dispatcher,
+        viewer: &DispatchRequest,
+    ) -> Result<Self, Refusal> {
+        if let Some(agents) = &engine.agent_sessions
+            && agents.session(session).await.ok().flatten().is_some()
+        {
+            return Ok(Self::Agents(dispatcher, viewer.clone()));
+        }
+        let lease = engine.acquire(Demand::Passive).await.ok_or_else(|| {
+            Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
+        })?;
+        Ok(Self::Engine(lease))
+    }
+
+    fn target(&self) -> Target<'_> {
+        match self {
+            Self::Engine(lease) => Target::Engine(lease),
+            Self::Agents(dispatcher, viewer) => Target::Agents(dispatcher, viewer),
+        }
+    }
+}
+
 async fn found(
     engine: &Engine,
     session: &str,
     viewer: &DispatchRequest,
+    dispatcher: Dispatcher,
 ) -> Result<Vec<Ask>, Refusal> {
-    let lease = engine.acquire(Demand::Passive).await.ok_or_else(|| {
-        Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
-    })?;
-    found_on(engine, &lease, session, false, Some(viewer)).await
+    let place = Place::of(engine, session, dispatcher, viewer).await?;
+    found_on(engine, &place.target(), session, false, Some(viewer)).await
 }
 
 async fn found_on(
     engine: &Engine,
-    lease: &Lease,
+    target: &Target<'_>,
     session: &str,
     live: bool,
     viewer: Option<&DispatchRequest>,
 ) -> Result<Vec<Ask>, Refusal> {
     let path = format!("api/session/{}", api::segment(session));
-    let top = engine
-        .call::<Session>(lease, Method::GET, &path, None)
+    let top = target
+        .call::<Session>(engine, &path)
         .await
         .map_err(|error| {
             if error.missing() {
@@ -650,7 +746,9 @@ async fn found_on(
         })?;
     let mut askers = vec![session.to_owned()];
     let mut seen = BTreeSet::from([session.to_owned()]);
-    for index in 0..40 {
+    // (A coding agent's subagents aren't conversations of their own here.)
+    let depth = if target.for_conversation() { 0 } else { 40 };
+    for index in 0..depth {
         if index > 0 && askers.len() > 30 {
             break;
         }
@@ -661,8 +759,8 @@ async fn found_on(
             "api/session?limit=50&order=desc&parentID={}",
             api::segment(&parent)
         );
-        let rows = engine
-            .call::<Vec<Session>>(lease, Method::GET, &route, None)
+        let rows = target
+            .call::<Vec<Session>>(engine, &route)
             .await
             .map_err(|_| unavailable())?;
         askers.extend(
@@ -679,8 +777,8 @@ async fn found_on(
         let permission = format!("{at}/permission{}", if live { "?live=1" } else { "" });
         let form = format!("{at}/form");
         let (permissions, forms) = tokio::join!(
-            engine.call::<Vec<Permission>>(lease, Method::GET, &permission, None),
-            engine.call::<Vec<Form>>(lease, Method::GET, &form, None),
+            target.call::<Vec<Permission>>(engine, &permission),
+            target.call::<Vec<Form>>(engine, &form),
         );
         let (permissions, forms) = match (permissions, forms) {
             (Ok(permissions), Ok(forms)) => (permissions, forms),
@@ -688,12 +786,13 @@ async fn found_on(
             _ => return Err(unavailable()),
         };
         for permission in permissions {
-            let command = permission.command(engine, lease, &at).await;
-            found.push(permission.card(asker, top.directory(), &home, command));
+            let command = permission.command(engine, target, &at).await;
+            let conversation = target.for_conversation();
+            found.push(permission.card(asker, top.directory(), &home, command, conversation));
         }
         found.extend(forms.into_iter().map(|form| form.card(asker)));
     }
-    found.extend(shared_forms(engine, lease, session, top.directory(), &askers).await?);
+    found.extend(shared_forms(engine, target, session, top.directory(), &askers).await?);
     if let (Some(source), Some(viewer)) = (&engine.external_asks, viewer) {
         for ask in source.list(&askers, viewer).await? {
             if !askers.iter().any(|session| session == ask.card.session()) {
@@ -713,7 +812,9 @@ async fn found_on(
             });
         }
     }
-    if !found.is_empty() {
+    if !found.is_empty()
+        && let Target::Engine(lease) = target
+    {
         let heard = restore(engine, (lease.record.pid, lease.record.port)).await;
         for ask in &mut found {
             if let Some(pending) = heard.get(&ask.id) {
@@ -734,7 +835,7 @@ async fn found_on(
 
 async fn shared_forms(
     engine: &Engine,
-    lease: &Lease,
+    target: &Target<'_>,
     session: &str,
     folder: &str,
     askers: &[String],
@@ -742,16 +843,14 @@ async fn shared_forms(
     if folder.is_empty() {
         return Ok(Vec::new());
     }
-    let forms = engine
-        .upstream
-        .get_data::<Vec<Value>>(
-            &lease.record,
-            "api/session/global/form",
-            &api::folder_header(folder),
-            api::WAIT,
-        )
+    let mut forms = target
+        .raw(engine, Method::GET, "api/session/global/form", None, api::folder_header(folder), api::WAIT)
         .await
         .map_err(|_| unavailable())?;
+    if let Some(data) = forms.get_mut("data").filter(|data| !data.is_null()) {
+        forms = data.take();
+    }
+    let forms = serde_json::from_value::<Vec<Value>>(forms).map_err(|_| unavailable())?;
     let mut found = Vec::new();
     let mut owners = std::collections::BTreeMap::new();
     for form in forms
@@ -766,7 +865,7 @@ async fn shared_forms(
             continue;
         };
         if !owners.contains_key(server) {
-            let owner = server_owner(engine, lease, folder, server).await;
+            let owner = server_owner(engine, target, folder, server).await;
             owners.insert(server.to_owned(), owner);
         }
         let Some(owner) = owners[server]
@@ -791,12 +890,12 @@ async fn shared_forms(
 
 async fn server_owner(
     engine: &Engine,
-    lease: &Lease,
+    target: &Target<'_>,
     folder: &str,
     server: &str,
 ) -> Option<String> {
-    let active = engine
-        .call_raw(lease, Method::GET, "api/session/active", None, api::WAIT)
+    let active = target
+        .raw(engine, Method::GET, "api/session/active", None, Default::default(), api::WAIT)
         .await
         .ok()?;
     let mut prefix = server
@@ -812,7 +911,7 @@ async fn server_owner(
     prefix.push('_');
     for id in api::active_ids(&active["data"])? {
         let route = crate::sessions::path(id);
-        let Ok(candidate) = engine.call::<Value>(lease, Method::GET, &route, None).await else {
+        let Ok(candidate) = target.call::<Value>(engine, &route).await else {
             continue;
         };
         if candidate
@@ -822,13 +921,8 @@ async fn server_owner(
         {
             continue;
         }
-        let Ok(messages) = engine
-            .call::<Vec<Value>>(
-                lease,
-                Method::GET,
-                &format!("{route}/message?limit=8&order=desc"),
-                None,
-            )
+        let Ok(messages) = target
+            .call::<Vec<Value>>(engine, &format!("{route}/message?limit=8&order=desc"))
             .await
         else {
             continue;
@@ -857,7 +951,7 @@ async fn server_owner(
 }
 
 pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) {
-    let Ok(asks) = found_on(engine, lease, session, false, None).await else {
+    let Ok(asks) = found_on(engine, &Target::Engine(lease), session, false, None).await else {
         return;
     };
     if asks.is_empty() {
@@ -889,8 +983,9 @@ async fn reading(
     engine: &Engine,
     session: &str,
     viewer: &DispatchRequest,
+    dispatcher: Dispatcher,
 ) -> Result<Value, Refusal> {
-    let asks = found(engine, session, viewer)
+    let asks = found(engine, session, viewer, dispatcher)
         .await?
         .into_iter()
         .map(|ask| ask.card)
@@ -904,7 +999,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         let here = here.clone();
         async move {
             Ok(RouteReply::json::<200>(typed(
-                reading(&here, &id(&call)?, &call.request).await?,
+                reading(&here, &id(&call)?, &call.request, call.dispatcher()).await?,
             )?))
         }
     });
@@ -913,17 +1008,22 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
     routes.register::<events::Spec, _, _>(Access::Any, move |call| {
         let here = here.clone();
         let mut changes = updates.ask_changes();
+        let mut sessions = updates.clone();
+        let mut states = here.states();
         let mut external = here.external_asks.as_ref().map(|source| source.waiting());
         async move {
             let session = id(&call)?;
-            let mut current = reading(&here, &session, &call.request).await?;
+            let mut current = reading(&here, &session, &call.request, call.dispatcher()).await?;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
+                let mut retry = false;
                 loop {
                     let answer: events::Status200 = serde_json::from_value(current.clone()).map_err(io::Error::other)?;
                     yield JsonLine::new(answer)?;
                     loop {
                         tokio::select! {
                             changed = changes.changed() => if changed.is_err() { return; },
+                            changed = sessions.changed() => if !changed { return; },
+                            changed = states.changed() => if changed.is_err() { return; },
                             changed = async {
                                 match &mut external {
                                     Some(external) => external.changed().await,
@@ -931,12 +1031,15 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                                 }
                             } => if changed.is_err() { external = None; },
                             () = call.cancel.cancelled() => return,
-                            () = tokio::time::sleep(Duration::from_secs(2)) => {},
+                            () = timer_fires::sleep(Timer::EngineAsksFollow, Duration::from_secs(2)), if retry => {},
                         }
-                        let next = match reading(&here, &session, &call.request).await {
-                            Ok(next) => next,
+                        let next = match reading(&here, &session, &call.request, call.dispatcher()).await {
+                            Ok(next) => { retry = false; next },
                             Err(error) => {
-                                if error.reply().status == StatusCode::NOT_FOUND { json!({"asks":[]}) } else { continue; }
+                                if error.reply().status == StatusCode::NOT_FOUND { retry = false; json!({"asks":[]}) } else {
+                                    retry = matches!(*states.borrow(), crate::State::Running { .. });
+                                    continue;
+                                }
                             },
                         };
                         if next != current {
@@ -957,11 +1060,9 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                 .decode_utf8()
                 .map_err(|_| gone())?;
             let given = serde_json::from_slice::<Value>(&call.request.body).unwrap_or_default();
-            let lease = here
-                .acquire(Demand::Passive)
-                .await
-                .ok_or_else(unavailable)?;
-            let found = found_on(&here, &lease, &session, true, Some(&call.request))
+            let place = Place::of(&here, &session, call.dispatcher(), &call.request).await?;
+            let target = place.target();
+            let found = found_on(&here, &target, &session, true, Some(&call.request))
                 .await?
                 .into_iter()
                 .find(|item| item.id == ask)
@@ -1005,22 +1106,18 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                 .as_deref()
                 .map(api::folder_header)
                 .unwrap_or_default();
+            // (A coding agent keeps what Always allows itself.)
             if matches!(found.answer, Answer::Permission)
                 && let Some(decision) = body.as_ref().and_then(|body| body["decision"].as_str())
+                && let Target::Engine(lease) = target
             {
-                crate::consent::grant(&here, &lease, &found.session, &ask, decision, &headers)
+                crate::consent::grant(&here, lease, &found.session, &ask, decision, &headers)
                     .await?;
                 crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
             }
-            here.call_with_headers(
-                &lease,
-                method,
-                &path,
-                body.as_ref(),
-                Duration::from_secs(15),
-                headers,
-            )
-            .await
+            target
+                .raw(&here, method, &path, body.as_ref(), headers, Duration::from_secs(15))
+                .await
             .map_err(|error| match error {
                 api::Error::Status(StatusCode::NOT_FOUND, _) => gone(),
                 api::Error::Status(

@@ -1,19 +1,34 @@
 // Tagged SSH transcripts and golden homes opened by the selected box binary.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxBinary, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, relayAddress, typescriptRuntime, until, write } from "./adapter.mjs";
 import { currentChecks } from "./compat/current-checks.mjs";
+import { sessionOf, standInEngine } from "./engine.mjs";
 import { generateCurrent, generateRelease } from "./compat/generate.mjs";
-import { fixed, runSync, tags } from "./compat/tagged.mjs";
+import { fixed, runSync, tags, withTag } from "./compat/tagged.mjs";
 
 function command(binary, home, env, args, input) {
   const argsWithRuntime = binary.typescript ? ["--no-env-file", binary.file, ...args] : args;
   return runSync(binary.typescript ? typescriptRuntime() : binary.file, argsWithRuntime,
     { ...env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }, home, input);
+}
+
+// What beta.1's own link (its one bundled file, copied from its tag into `root`) makes of the
+// frames a machine mailed its Mac (compat/released-reader.mjs), each read afresh.
+async function releasedReader(root) {
+  const script = path.join(root, "beta1-link.mjs");
+  await withTag(tags[1], world => copyFileSync(world.script, script));
+  const reader = fileURLToPath(new URL("./compat/released-reader.mjs", import.meta.url));
+  return (macKey, machineKey, frames) => {
+    const folder = mkdtempSync(path.join(root, "mac-")), framesFile = path.join(folder, "frames.json");
+    write(framesFile, JSON.stringify(frames));
+    return JSON.parse(runSync(process.execPath, [reader, script, macKey.toString("hex"), machineKey, framesFile, folder],
+      isolatedEnv(folder), folder));
+  };
 }
 
 function layout(home) {
@@ -143,13 +158,18 @@ test("the current TypeScript beta's setup records survive opening at layout 23",
 test("the beta.1 Mac alone replaces its peer list, even before its address is known", { timeout: 60000 }, async () => {
   const root = scratch();
   const relay = await localRelay();
-  let proc;
+  let proc, engine;
   const mac = relay.device(fixed(3)), second = relay.device(fixed(9));
   try {
     const seed = path.join(root, "release");
     await generateRelease(tags[1], seed, { app: false });
     const home = path.join(seed, "machine"), env = isolatedEnv(root);
     privateHome(home);
+    engine = await standInEngine(root, env);
+    engine.sessions.push(sessionOf({ id: "ses_machineWork", title: "API work", directory: home }),
+      sessionOf({ id: "ses_machineNew", directory: home, updated: 2 }));
+    write(path.join(home, "run/engine.json"), JSON.stringify(engine.record));
+    const releasedRead = await releasedReader(root);
     const file = path.join(home, "run/link.json");
     const before = readJSON(file), { setup, mail, roster } = readJSON(path.join(seed, "vectors.json"));
     const key = JSON.parse(setup.input).mac;
@@ -181,6 +201,21 @@ test("the beta.1 Mac alone replaces its peer list, even before its address is kn
     send(mac, roster.added);
     await waitFor([roster.own.key, key, roster.second.key]);
     assert.deepEqual(readJSON(file).legacy[key].peers.map(row => row.key), [key, roster.second.key, roster.own.key]);
+    // The Mac asks for the machine's agents (beta.1's own mail), and reads the answer with its own
+    // link: the machine's conversations, newest first, by their names and project.
+    send(mac, mail.frame);
+    const frames = [];
+    for (let quiet = Date.now() + 20000; Date.now() < quiet;) {
+      const bytes = await mac.next(Math.max(1, quiet - Date.now())).catch(() => null);
+      if (!bytes) break;
+      frames.push(bytes.subarray(17).toString("hex"));
+      const read = releasedRead(fixed(2), roster.own.key, frames);
+      if (read.agents[roster.own.key]?.list.length) break;
+    }
+    assert.deepEqual(releasedRead(fixed(2), roster.own.key, frames).agents[roster.own.key]?.list, [
+      { session: "ses_machineNew", name: "New session", kind: "session", project: "machine" },
+      { session: "ses_machineWork", name: "API work", kind: "session", project: "machine" },
+    ], "what beta.1's link took from the machine's mail");
     send(mac, roster.stale);
     await heard(key, at + 3);
     assert.equal(readJSON(file).legacy[key].at, at + 2);
@@ -221,6 +256,7 @@ test("the beta.1 Mac alone replaces its peer list, even before its address is kn
   } finally {
     mac.leave(); second.leave();
     await proc?.stop();
+    await engine?.close();
     await relay.close();
     rmSync(root, { recursive: true, force: true });
   }
@@ -334,7 +370,11 @@ test("the beta.1 Mac reads, adopts and changes machine settings over SSH", { tim
   }
 });
 
-test("the current TypeScript beta's durable records survive opening at layout 23", { timeout: 30000 }, async () => {
+// (The TypeScript box syncs folders as it writes, which native Windows refuses, so no computer there
+// has this home; WSL 2 does.)
+test("the current TypeScript beta's durable records survive opening at layout 23", {
+  timeout: 30000, skip: process.platform === "win32" && "The TypeScript box can't make or keep this home on native Windows.",
+}, async () => {
   const root = scratch();
   const relay = await localRelay();
   let proc;

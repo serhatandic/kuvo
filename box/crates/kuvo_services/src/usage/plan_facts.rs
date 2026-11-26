@@ -47,6 +47,8 @@ pub enum Extra {
         name: String,
         amount: f64,
         unit: Unit,
+        #[serde(rename = "resetsAt", skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
     },
     Resets {
         id: String,
@@ -63,6 +65,23 @@ pub enum Extra {
         name: String,
         message: String,
     },
+    #[serde(untagged)]
+    Future(FutureExtra),
+}
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct FutureExtra {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(flatten)]
+    pub fields: std::collections::BTreeMap<String, Plain>,
+}
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Plain {
+    Text(String),
+    Number(serde_json::Number),
+    Bool(bool),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -95,6 +114,9 @@ impl Problem {
 }
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Facts {
+    /// A completed maker read that could not contain every pool.
+    #[serde(default, skip_serializing_if = "false_value")]
+    pub partial: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,4 +133,24 @@ pub struct Facts {
 
 fn false_value(value: &bool) -> bool {
     !*value
+}
+
+/// A Retry-After can be a delay or an HTTP date. A past date means now.
+pub(super) fn retry_at(raw: &str, now: u64) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(now.saturating_add(raw.parse::<u64>().ok()?.saturating_mul(1000)));
+    }
+    if let Ok(date) = httpdate::parse_http_date(raw) {
+        let at = date
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        return Some(u64::try_from(at).ok()?.max(now));
+    }
+    let stamp = raw.parse::<jiff::Timestamp>().ok()?.as_millisecond();
+    Some(u64::try_from(stamp).unwrap_or(0).max(now))
 }

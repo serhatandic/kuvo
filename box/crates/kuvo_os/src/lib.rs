@@ -2,10 +2,12 @@
 
 pub mod disk_usage;
 pub mod ipc;
+pub mod keychain;
 pub mod platform;
 pub mod process;
 pub mod usage_server;
 pub mod sandbox;
+pub mod timer_fires;
 pub mod watch;
 pub mod watch_live;
 

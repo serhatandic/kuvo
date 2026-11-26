@@ -16,6 +16,7 @@ pub mod starts;
 pub mod unanswering;
 pub mod watch;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use http::StatusCode;
@@ -38,8 +39,8 @@ pub use unanswering::Unanswerings;
 
 use crate::bots::here::BotHere;
 
-/// How often a followed list is read again with nothing said to change (another process's writes).
-const LOOK: Duration = Duration::from_secs(2);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Follow { Asks, Oversight, Changes }
 
 fn typed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Refusal> {
     serde_json::from_value(value)
@@ -60,6 +61,7 @@ pub struct Work {
     pub records: Records,
     pub unanswering: Unanswerings,
     home: PathBuf,
+    late_delivery: std::sync::Arc<tokio::sync::Mutex<()>>,
     bots: PathBuf,
     list: crate::bots::Bots,
     sessions: LocalSessions,
@@ -102,6 +104,7 @@ impl Work {
             records: Records::new(&home.join("run")),
             unanswering: Unanswerings::new(&home.join("run")),
             home: home.to_owned(),
+            late_delivery: std::sync::Arc::default(),
             bots: bots.bots_folder().to_owned(),
             list: bots,
             sessions,
@@ -207,10 +210,10 @@ impl Work {
             .collect()
     }
 
-    /// Lines of `read` now and again as it changes: on the session list changing, and a look every
-    /// two seconds for what other processes write.
+    /// Watch only the files and live facts the selected page uses.
     fn followed<F>(
         &self,
+        kind: Follow,
         mut read: F,
         cancel: tokio_util::sync::CancellationToken,
     ) -> impl futures_core::Stream<Item = std::io::Result<Value>> + Send + 'static
@@ -218,18 +221,49 @@ impl Work {
         F: FnMut() -> Value + Send + 'static,
     {
         let mut sessions = self.sessions.clone();
+        let mut peers = self.peers.clone();
+        let mut bots = self.list.changes();
+        let settings = self.settings.clone();
+        let root = self.records.folder().to_owned();
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut bot_files = kuvo_os::watch::FileSet::new(hub);
+        if kind != Follow::Oversight { bot_files.set_child_files(self.bots.clone(), ["bot.json", "session"]); }
         async_stream::try_stream! {
             let mut previous: Option<Value> = None;
             loop {
+                let paths = match kind {
+                    Follow::Asks => { let mut paths = settings.follow_paths(); paths.push(root.join("asks.json")); paths },
+                    Follow::Oversight => vec![root.join("oversight.json")],
+                    Follow::Changes => vec![root.join("changes.json")],
+                };
+                files.set_files(paths);
                 let value = read();
+                let now = jiff::Timestamp::now().as_millisecond();
+                let due = match kind {
+                    Follow::Asks => None,
+                    Follow::Oversight => value["marks"].as_array().into_iter().flatten()
+                        .filter_map(|mark| mark["at"].as_f64()).map(|at| (at.ceil() as i64).saturating_add(60_000)).min(),
+                    Follow::Changes => {
+                        let peer_now = peers.now();
+                        peers.view().next_activity_change(peer_now).map(|at| now.saturating_add(at.saturating_sub(peer_now)))
+                    }
+                };
                 if previous.as_ref() != Some(&value) {
                     previous = Some(value.clone());
                     yield value;
                 }
                 tokio::select! {
                     () = cancel.cancelled() => break,
-                    _ = sessions.changed() => {}
-                    () = tokio::time::sleep(LOOK) => {}
+                    _ = files.changed() => {},
+                    _ = bot_files.changed(), if kind != Follow::Oversight => {},
+                    changed = bots.changed(), if kind != Follow::Oversight => if changed.is_err() { break; },
+                    changed = sessions.changed(), if kind == Follow::Changes => if !changed { break; },
+                    changed = peers.changed(), if kind == Follow::Changes => if changed.is_err() { break; },
+                    () = async { match due {
+                        Some(at) => timer_fires::sleep(Timer::WorkFollow, Duration::from_millis(at.saturating_sub(jiff::Timestamp::now().as_millisecond()).max(1) as u64)).await,
+                        None => std::future::pending().await,
+                    } } => {},
                 }
             }
         }
@@ -372,7 +406,7 @@ impl Work {
             async move {
                 let reading = work.clone();
                 let lines = work.followed(
-                    move || json!({ "asks": reading.asks() }),
+                    Follow::Asks, move || json!({ "asks": reading.asks() }),
                     call.cancel.clone(),
                 );
                 Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
@@ -397,7 +431,7 @@ impl Work {
             async move {
                 let records = work.records.clone();
                 let lines = work.followed(
-                    move || json!({ "marks": records.oversight() }),
+                    Follow::Oversight, move || json!({ "marks": records.oversight() }),
                     call.cancel.clone(),
                 );
                 Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
@@ -414,7 +448,7 @@ impl Work {
                 let reading = work.clone();
                 let mut seen: HashMap<String, (String, i64)> = HashMap::new();
                 let lines = work.followed(
-                    move || {
+                    Follow::Changes, move || {
                         let mut changed = reading.records.changes();
                         for (id, key) in reading.work_keys() {
                             let at = match seen.get(&id) {

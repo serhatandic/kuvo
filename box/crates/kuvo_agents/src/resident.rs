@@ -1,5 +1,6 @@
 //! The resident owns one roster and serializes changes to its accounts.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, io, sync::Arc};
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -27,6 +28,7 @@ pub struct ResidentAgents {
     commands: mpsc::Sender<Command>,
     roster: watch::Receiver<Arc<Roster>>,
     sign_ins: Arc<Mutex<SignIns>>,
+    sign_in_changes: watch::Sender<u64>,
     adopted: Arc<[AdoptedTurn]>,
     feed: Feed,
 }
@@ -41,14 +43,25 @@ impl ResidentAgents {
         let (commands, requests) = mpsc::channel(16);
         let sign_ins = Arc::new(Mutex::new(SignIns::default()));
         let expiry = Arc::downgrade(&sign_ins);
+        let (sign_in_changes, mut changes) = watch::channel(0u64);
         tokio::spawn(async move {
-            let mut clock = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
-                clock.tick().await;
                 let Some(sign_ins) = expiry.upgrade() else {
                     return;
                 };
-                sign_ins.lock().await.expire(Instant::now());
+                let next = {
+                    let mut attempts = sign_ins.lock().await;
+                    attempts.expire(Instant::now());
+                    attempts.next_expiry()
+                };
+                drop(sign_ins);
+                tokio::select! {
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep_until(Timer::AgentSignInExpiry, at).await,
+                        None => std::future::pending().await,
+                    } } => {},
+                }
             }
         });
         tokio::spawn(run(runtime, factories, roster, published, requests));
@@ -57,6 +70,7 @@ impl ResidentAgents {
                 commands,
                 roster: updates,
                 sign_ins,
+                sign_in_changes,
                 adopted: adopted.into(),
                 feed: Feed::default(),
             },
@@ -105,6 +119,7 @@ impl ResidentAgents {
         let mut attempts = self.sign_ins.lock().await;
         let now = Instant::now();
         attempts.expire(now);
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         let id = match attempts.track(provider.clone(), attempt.clone(), now) {
             Ok(id) => id,
             Err(error) => {
@@ -112,6 +127,7 @@ impl ResidentAgents {
                 return Err(error);
             }
         };
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         Ok(Started {
             id,
             page,
@@ -128,8 +144,10 @@ impl ResidentAgents {
             .await
             .status(provider, id, Instant::now())
             .ok_or_else(over)?;
+        self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
         if status == Status::Complete {
             entry.credentials_changed().await;
+            self.account_changed(provider);
         }
         Ok(status)
     }
@@ -145,6 +163,7 @@ impl ResidentAgents {
 
     pub async fn cancel_sign_in(&self, provider: &Provider, id: &str) -> io::Result<()> {
         if self.sign_ins.lock().await.cancel(provider, id) {
+            self.sign_in_changes.send_modify(|change| *change = change.wrapping_add(1));
             Ok(())
         } else {
             Err(over())
@@ -156,6 +175,7 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_in_with_key(key.trim().into()).await?;
         entry.credentials_changed().await;
+        self.account_changed(provider);
         Ok(())
     }
 
@@ -164,6 +184,7 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_out().await?;
         entry.credentials_changed().await;
+        self.account_changed(provider);
         Ok(())
     }
 
@@ -183,18 +204,31 @@ impl ResidentAgents {
         .collect()
     }
 
+    fn account_changed(&self, provider: &Provider) {
+        self.feed.emit(
+            "kuvo.agent.account.changed",
+            serde_json::json!({"integrationID":provider.to_string()}),
+        );
+    }
+
     pub async fn add(&self, kind: AgentKind, label: Option<String>) -> io::Result<Account> {
-        self.ask(|reply| Command::Add(kind, label, reply)).await
+        let account = self.ask(|reply| Command::Add(kind, label, reply)).await?;
+        self.account_changed(&account.provider());
+        Ok(account)
     }
 
     pub async fn rename(&self, provider: Provider, label: Option<String>) -> io::Result<()> {
-        self.ask(|reply| Command::Rename(provider, label, reply))
-            .await
+        self.ask(|reply| Command::Rename(provider.clone(), label, reply))
+            .await?;
+        self.account_changed(&provider);
+        Ok(())
     }
 
     pub async fn remove(&self, provider: Provider, only_unsigned: bool) -> io::Result<()> {
-        self.ask(|reply| Command::Remove(provider, only_unsigned, reply))
-            .await
+        self.ask(|reply| Command::Remove(provider.clone(), only_unsigned, reply))
+            .await?;
+        self.account_changed(&provider);
+        Ok(())
     }
 
     async fn ask<T>(&self, command: impl FnOnce(Answer<T>) -> Command) -> io::Result<T> {

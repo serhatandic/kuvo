@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
-    time::{self, Instant},
+    time::Instant,
 };
 
 use crate::{
@@ -110,6 +111,11 @@ impl SetupHandle {
 
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    /// The usage service observes exactly the current setup actor's accepted state.
+    pub fn usage_setup(&self) -> Option<UsageSetup> {
+        self.views.borrow().usage.clone()
     }
 
     /// Historical computer keys come only from verified setup membership.
@@ -304,6 +310,33 @@ pub async fn transient_ssh_pairings(home: &Path) -> Option<Arc<dyn Pairings>> {
     }))
 }
 
+/// The accepted usage preferences and the authority position they belong to.
+/// Read from the setup actor's view, not by reparsing its on-disk link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageSetup {
+    pub id: String,
+    pub epoch: u64,
+    pub primary: bool,
+    pub sequence: u64,
+    pub value: Arc<Value>,
+}
+
+impl UsageSetup {
+    fn accepted(link: &Link) -> Option<Self> {
+        let setup = link.setup().ok()?;
+        let entry = link
+            .value(SharedKind::SetupUsageDisplay)
+            .zip(link.shared.get(&SharedKind::SetupUsageDisplay));
+        Some(Self {
+            id: setup.position.id.clone(),
+            epoch: setup.position.epoch,
+            primary: setup.role == Role::Primary,
+            sequence: entry.map_or(0, |(_, entry)| entry.sequence),
+            value: Arc::new(entry.map_or(Value::Null, |(value, _)| value.clone())),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct View {
     pub setup: Value,
@@ -313,6 +346,7 @@ pub(crate) struct View {
     link_id: Option<String>,
     work_queue: Option<QueueSetup>,
     marketplace: Option<MarketplaceSetup>,
+    usage: Option<UsageSetup>,
     model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
@@ -1165,6 +1199,7 @@ fn make_view(
             .map(str::to_owned),
         work_queue: work_queue::accepted(link),
         marketplace: marketplace::accepted(link),
+        usage: UsageSetup::accepted(link),
     })
 }
 
@@ -1251,7 +1286,10 @@ impl Owner {
             vec![(self.files.path("run/owned-data/edit-outbox"), false)],
         );
         let mut lease_files = kuvo_os::watch::FileSet::new(hub.clone());
-        lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        let mut clock_offset = self.lease.test_clock_offset();
+        if clock_offset.is_some() {
+            lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        }
         let mut number_files = kuvo_os::watch::FileSet::new(hub);
         number_files.set_files(vec![self.files.path("run/work-queue/numbers.json")]);
         let mut maintenance = Some(Instant::now());
@@ -1288,12 +1326,17 @@ impl Owner {
                     self.refresh();
                 },
                 _ = lease_files.changed() => {
-                    if self.lease_needed() { self.next = Some(Instant::now()); }
+                    let offset = self.lease.test_clock_offset();
+                    if offset != clock_offset {
+                        clock_offset = offset;
+                        if self.lease_needed() { self.next = Some(Instant::now()); }
+                    }
                 },
                 _ = number_files.changed() => {
                     if self.lease_needed() && self.lease.needs_number_reserve(&self.files, &self.link) { self.next = Some(Instant::now()); }
                 },
-                () = async { match until { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                () = async { match until { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+                    timer_fires::fired(Timer::SetupDeadline);
                     if self.next.is_some_and(|at| at <= Instant::now()) {
                         self.next = Some(Instant::now() + Duration::from_secs(2));
                         if let Err(error) = self.tick().await && !matches!(error, Error::Relay(_) | Error::Conflict) { eprintln!("setup heartbeat: {error}"); }
@@ -1352,6 +1395,7 @@ impl Owner {
                     && old.clock == view.clock
                     && old.work_queue == view.work_queue
                     && old.marketplace == view.marketplace
+                    && old.usage == view.usage
                     && old.access == view.access
                     && old.pending_wipes == view.pending_wipes
                     && old.manage == view.manage

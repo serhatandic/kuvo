@@ -1,6 +1,7 @@
 //! Agent holders, accounts, sign-in, tools and handover.
 
 pub mod account_check;
+pub mod acp;
 pub mod account_rows;
 pub mod accounts;
 pub mod background;

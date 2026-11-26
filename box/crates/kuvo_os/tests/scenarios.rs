@@ -6,7 +6,7 @@ use kuvo_os::{
         Account, Environment, Platform, box_home, join_path, windows_extended_path,
         windows_native_path, windows_wire_path,
     },
-    process::{ChildGroup, ProcessIdentity, ProcessState, Spawn, Stdio},
+    process::{ChildGroup, Priority, ProcessIdentity, ProcessState, Spawn, Stdio},
     watch::{Backend, Notice, Options, Subscription, WatchHub},
 };
 use serde_json::Value;
@@ -347,18 +347,117 @@ fn child_only_receives_the_named_environment_and_its_pid_is_checked_with_start_i
     assert_eq!(known.state(), ProcessState::Stale);
 }
 
+#[cfg(target_os = "macos")]
+fn process_priority(pid: u32) -> i32 {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "nice=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn process_priority(pid: u32) -> i32 {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    stat.rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(16)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[cfg(windows)]
+fn process_priority(pid: u32) -> i32 {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{
+        GetPriorityClass, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: the test owns the child and queries its priority through a live process handle.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        assert!(!handle.is_null());
+        let owner = OwnedHandle::from_raw_handle(handle);
+        let priority = GetPriorityClass(owner.as_raw_handle());
+        assert_ne!(priority, 0);
+        priority as i32
+    }
+}
+
+#[test]
+fn background_priority_applies_to_the_agent_and_ordinary_children_but_not_its_owner() {
+    let parent = process_priority(std::process::id());
+    let mut ordinary = child_spec("environment").spawn().unwrap();
+    let _ = read_field(&mut ordinary, "RESULT=");
+    assert_eq!(process_priority(ordinary.identity().pid), parent);
+    ordinary.stdin.as_mut().unwrap().write_all(b"q").unwrap();
+    assert!(ordinary.wait().unwrap().success());
+
+    let mut spec = child_spec("priority-tree");
+    spec.priority = Priority::Background;
+    let mut child = spec.spawn().unwrap();
+    let descendant = read_field(&mut child, "DESC=").parse::<u32>().unwrap();
+    let leader = process_priority(child.identity().pid);
+    #[cfg(target_os = "macos")]
+    assert_eq!(leader, 20);
+    #[cfg(target_os = "linux")]
+    {
+        assert!(leader >= 15, "nice: {leader}");
+        // SAFETY: this only reads the I/O class of our two controlled processes.
+        let io_class = |pid: u32| unsafe { libc::syscall(libc::SYS_ioprio_get, 1, pid) };
+        let agent_io = io_class(child.identity().pid);
+        let descendant_io = io_class(descendant);
+        assert_eq!(agent_io, descendant_io);
+        eprintln!("agent I/O class {agent_io}, descendant {descendant_io}");
+        // The kernel may reject idle I/O scheduling in a restricted container.
+        if agent_io > 0 {
+            assert_eq!(agent_io >> 13, 3, "I/O class: {agent_io}");
+        }
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        leader,
+        windows_sys::Win32::System::Threading::BELOW_NORMAL_PRIORITY_CLASS as i32
+    );
+    let descendant_priority = process_priority(descendant);
+    eprintln!("owner {parent}, agent {leader}, descendant {descendant_priority}");
+    assert_eq!(descendant_priority, leader);
+    assert_eq!(process_priority(std::process::id()), parent);
+    child.stdin.as_mut().unwrap().write_all(b"q").unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
 #[tokio::test]
 async fn an_exit_watch_waits_for_the_exact_child_without_reaping_it() {
     let mut child = child_spec("environment").spawn().unwrap();
     let _ = read_field(&mut child, "RESULT=");
     let identity = child.identity().clone();
     let mut exited = identity.watch_exit().unwrap();
-    assert!(tokio::time::timeout(Duration::from_millis(100), &mut exited).await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut exited)
+            .await
+            .is_err()
+    );
     child.stdin.as_mut().unwrap().write_all(b"q").unwrap();
-    tokio::time::timeout(LIMIT, exited).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(LIMIT, exited)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert!(child.wait().unwrap().success());
     let stale = identity.watch_exit().unwrap();
-    tokio::time::timeout(LIMIT, stale).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(LIMIT, stale)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 #[cfg(unix)]
@@ -497,6 +596,29 @@ fn subprocess_entry() {
             let mut input = [0_u8; 1];
             std::io::stdin().read_exact(&mut input).unwrap();
             assert_eq!(input, [b'q']);
+        }
+        "priority-tree" => {
+            // Unmodified agent tools use their own ordinary child launcher, not Spawn.
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "subprocess_entry", "--nocapture"])
+                .env("KUVO_OS_TEST_MODE", "environment")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut reader = BufReader::new(child.stdout.take().unwrap());
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line.starts_with("RESULT=") {
+                    break;
+                }
+            }
+            println!("DESC={}", child.id());
+            let mut input = [0_u8; 1];
+            std::io::stdin().read_exact(&mut input).unwrap();
+            child.stdin.take().unwrap().write_all(b"q").unwrap();
+            assert!(child.wait().unwrap().success());
         }
         #[cfg(unix)]
         "path-reader" => {

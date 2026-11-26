@@ -75,8 +75,29 @@ impl Directory {
     }
 
     pub async fn start(&self, binary: &Path, options: Start) -> io::Result<Controller> {
+        self.start_cancellable(binary, options, std::future::pending())
+            .await
+    }
+
+    /// Only cancel the memory admission wait, not the bounded holder handshake:
+    /// once launch has begun its controller must own and settle the process.
+    pub async fn start_cancellable(
+        &self,
+        binary: &Path,
+        options: Start,
+        cancelled: impl Future<Output = ()> + Send,
+    ) -> io::Result<Controller> {
         if !self.available() {
             return Err(invalid("The holder socket path is too long"));
+        }
+
+        // The holder remains responsive at normal priority; defer its new agent before
+        // starting the holder's readiness deadline, not while carrying an existing turn.
+        if !kuvo_os::process::wait_for_background_memory_or_cancel(cancelled).await {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "The agent start was cancelled.",
+            ));
         }
 
         let mut random = [0; 30];
@@ -437,4 +458,40 @@ async fn connect(
         })
     })
     .await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_cancelled_start_creates_no_holder() {
+        #[cfg(unix)]
+        let scratch = tempfile::tempdir_in("/tmp").unwrap();
+        #[cfg(windows)]
+        let scratch = tempfile::tempdir().unwrap();
+        let directory = Directory {
+            folder: scratch.path().join("hold"),
+        };
+        let binary = std::env::current_exe().unwrap();
+        let cancelled = tokio_util::sync::CancellationToken::new();
+        cancelled.cancel();
+        let result = directory
+            .start_cancellable(
+                &binary,
+                Start {
+                    command: vec![binary.clone()],
+                    cwd: None,
+                    env: Environment::new(),
+                    kind: HoldKind::JsonRpc,
+                    meta: Metadata::new(),
+                    limits: Limits::default(),
+                    portable_requests: None,
+                },
+                cancelled.cancelled(),
+            )
+            .await;
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted));
+        assert!(!directory.folder.exists());
+    }
 }

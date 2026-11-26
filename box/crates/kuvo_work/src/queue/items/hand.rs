@@ -151,10 +151,10 @@ impl Writer {
         relay: Option<&RelayHandle>,
         delivery: &mut Delivery,
         now: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<i64>, Error> {
         let view = self.peers.view();
         let Some(own) = view.roster.here else {
-            return Ok(());
+            return Ok(None);
         };
         let store = self.store.clone();
         let items = tokio::task::spawn_blocking(move || store.items())
@@ -162,6 +162,7 @@ impl Writer {
             .map_err(io::Error::other)??;
         let setup = self.setup.queue_setup();
         let checkpointed = setup.as_ref().is_some_and(|setup| setup.checkpointed);
+        let mut next = None;
         for item in items.into_iter().filter(|item| item.removed.is_none()) {
             let Some(hand) = Handing::read(&item) else {
                 continue;
@@ -202,6 +203,12 @@ impl Writer {
                 delivery.sent.remove(hand.id.as_str());
                 continue;
             }
+            if hand.released.is_none() {
+                earlier(&mut next, hand.at.saturating_add(HAND_LIFE).saturating_add(1));
+                if peer.is_none() {
+                    earlier(&mut next, hand.missing.unwrap_or(now).saturating_add(3 * 86_400_000).saturating_add(1));
+                }
+            }
             match (peer.is_some(), hand.missing) {
                 (true, Some(_)) | (false, None) => {
                     let kept = peer.is_none().then_some(now);
@@ -222,16 +229,16 @@ impl Writer {
             let (Some(relay), Some(peer)) = (relay, peer) else {
                 continue;
             };
-            if delivery
-                .sent
-                .get(hand.id.as_str())
-                .is_some_and(|(_, sent)| now - sent < 60_000)
-                || (checkpointed && !view.advertises(&peer.key, MOVE_FEATURE))
+            if !view.relay_connected || (checkpointed && !view.advertises(&peer.key, MOVE_FEATURE))
                 || view.peer_updates(&peer.key, now).0
             {
                 continue;
             }
             let Some(host) = peer.host() else { continue };
+            if let Some((_, sent)) = delivery.sent.get(hand.id.as_str()).filter(|(_, sent)| now - *sent < 60_000) {
+                earlier(&mut next, sent.saturating_add(60_000));
+                continue;
+            }
             let store = self.store.clone();
             let setup = self.setup.queue_setup();
             let pending = hand.clone();
@@ -263,9 +270,12 @@ impl Writer {
                 delivery
                     .sent
                     .insert(hand.id.as_str().into(), (peer.key, now));
+                earlier(&mut next, now.saturating_add(60_000));
+            } else {
+                earlier(&mut next, now.saturating_add(2_000));
             }
         }
-        Ok(())
+        Ok(next)
     }
 
     pub(super) async fn handed_back(
