@@ -178,7 +178,7 @@ pub fn turns(rest: Rest, at: i64) -> Option<i64> {
 /// Each bot's state as last said here, and since when.
 #[derive(Default)]
 pub struct Told {
-    states: HashMap<String, (State, i64, Rest)>,
+    states: HashMap<String, (State, i64)>,
 }
 
 impl Told {
@@ -188,10 +188,10 @@ impl Told {
         let before = self.states.get(id);
         let since = match (state, before) {
             (State::Done, _) => counts.unseen.unwrap_or(at),
-            (_, Some((was, since, _))) if *was == state => *since,
+            (_, Some((was, since))) if *was == state => *since,
             _ => at,
         };
-        self.states.insert(id.to_owned(), (state, since, rest));
+        self.states.insert(id.to_owned(), (state, since));
         Now {
             counts,
             state,
@@ -202,18 +202,6 @@ impl Told {
     /// Only these kept (a bot deleted is let go).
     pub fn keep_only(&mut self, ids: &[String]) {
         self.states.retain(|id, _| ids.contains(id));
-    }
-
-    /// Each bot said before, as it is now from its sessions, besides as last listed.
-    pub fn note_all(&mut self, counts: &BTreeMap<String, Counts>, at: i64) {
-        let known: Vec<(String, Rest)> = self
-            .states
-            .iter()
-            .map(|(id, (_, _, rest))| (id.clone(), *rest))
-            .collect();
-        for (id, rest) in known {
-            self.now_of(&id, counts.get(&id).cloned().unwrap_or_default(), rest, at);
-        }
     }
 }
 

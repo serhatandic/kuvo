@@ -597,11 +597,6 @@ impl HeldPack {
 
 /// The old updater kept a manual engine-data copy for thirty days. These
 /// are not rollback or release directories and are never used to launch.
-pub fn prune_engine_backups(home: &Home) -> io::Result<()> {
-    prune_engine_backups_until(home).map(|_| ())
-}
-
-/// Return the next expiry from the same protected directory scan.
 pub fn prune_engine_backups_until(home: &Home) -> io::Result<Option<SystemTime>> {
     const RETIRED: &str = ".retired-engine-backup-";
     const KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);

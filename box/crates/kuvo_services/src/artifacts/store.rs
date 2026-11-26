@@ -22,7 +22,6 @@ use super::{
     budget::budget_confirmation,
     diff::{from_patch, unified},
     index::ArtifactIndex,
-    inventory::ARTIFACT_INDEX_FORMAT,
     kinds::{Kind, basename, is_binary, is_text, kind_of, strip_folder_prefix, type_of},
     paths::real_of,
     policy::{CopyPolicy, DiskProbe, NoCopy},
@@ -31,6 +30,7 @@ use super::{
 
 type HmacSha256 = Hmac<Sha256>;
 
+const ARTIFACT_INDEX_FORMAT: ObjectFormat = ObjectFormat::additive("Artifact index");
 pub const ARTIFACT_SETTINGS_FORMAT: ObjectFormat =
     ObjectFormat::additive("Artifact storage settings");
 pub const COPY_LIMIT: u64 = 25 * 1024 * 1024;

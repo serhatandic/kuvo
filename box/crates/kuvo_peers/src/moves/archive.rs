@@ -40,20 +40,6 @@ pub enum Error {
 
 /// Read the manifest without extracting any files or following archive links.
 pub fn read_manifest(path: &Path) -> Result<Manifest, Error> {
-    read(path).map(|(manifest, _)| manifest)
-}
-
-/// Open the plain-chat form only. No other archive member can be silently
-/// discarded by a caller that installs only the session JSON.
-pub fn read_manifest_only(path: &Path) -> Result<Manifest, Error> {
-    let (manifest, has_files) = read(path)?;
-    if has_files || needs_files(&manifest) {
-        return Err(Error::RequiresFiles);
-    }
-    Ok(manifest)
-}
-
-fn read(path: &Path) -> Result<(Manifest, bool), Error> {
     let file = File::open(path)?;
     if file.metadata()?.len() > MAX_BUNDLE_BYTES {
         return Err(Error::TooLarge);
@@ -61,7 +47,6 @@ fn read(path: &Path) -> Result<(Manifest, bool), Error> {
     let mut archive = Archive::new(GzDecoder::new(file));
     let mut manifest = None;
     let mut total = 0u64;
-    let mut has_files = false;
     for entry in archive.entries()? {
         let entry = entry?;
         let path = entry.path()?;
@@ -83,11 +68,9 @@ fn read(path: &Path) -> Result<(Manifest, bool), Error> {
                 return Err(Error::Invalid);
             }
             manifest = Some(Manifest::read_from(entry)?);
-        } else {
-            has_files = true;
         }
     }
-    Ok((manifest.ok_or(Error::Invalid)?, has_files))
+    manifest.ok_or(Error::Invalid)
 }
 
 /// Pack a move that carries its entire payload in the manifest, such as a
