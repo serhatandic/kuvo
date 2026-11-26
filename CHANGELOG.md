@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo stays responsive while your agents run builds.
+
 - Rust computers reuse fresh plan readings from another computer instead of asking a maker twice, keep the last successful refresh time when every read fails, and ignore corrupt saved windows instead of showing a false ring.
 
 - Rust computers keep confirmed Claude sign-ins without repeatedly asking the Keychain, respect engine plan read holds across restarts, and show active Z.ai usage without including inactive keys.

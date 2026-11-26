@@ -94,6 +94,7 @@ impl RuntimePackages {
         if self.has(agent, packages) {
             return Ok(folder);
         }
+        kuvo_os::process::wait_for_background_memory().await;
         self.running.fetch_add(1, Ordering::SeqCst);
         let packages_owned = packages.to_vec();
         let this = self.clone();
@@ -143,6 +144,7 @@ impl RuntimePackages {
             self.cache.join("install").into_os_string(),
         );
         let mut spawn = Spawn::new(self.installer.program.clone(), env);
+        spawn.priority = kuvo_os::process::Priority::Background;
         spawn.args = self.installer.leading.clone();
         spawn
             .args

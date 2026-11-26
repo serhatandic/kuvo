@@ -22,6 +22,7 @@ use tokio::{
     sync::{Mutex, Notify, mpsc, watch},
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     hold::{Controller, Directory, Metadata},
@@ -328,9 +329,14 @@ impl Shared {
         self: &Arc<Self>,
         key: &str,
         launch: impl FnOnce() -> io::Result<Launch> + Send + 'static,
+        cancel: &CancellationToken,
     ) -> io::Result<Arc<Process>> {
         let shutdowns = *self.shutdowns.borrow();
-        let _starting = self.starting.lock().await;
+        let _starting = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(stopped(self.name())),
+            lock = self.starting.lock() => lock,
+        };
         if *self.shutdowns.borrow() != shutdowns {
             return Err(stopped(self.name()));
         }
@@ -350,7 +356,7 @@ impl Shared {
         let launch = tokio::task::spawn_blocking(launch)
             .await
             .map_err(io::Error::other)??;
-        let process = self.start(key, launch, shutdowns).await?;
+        let process = self.start(key, launch, shutdowns, cancel).await?;
         let mut slots = self.slots.lock().await;
         if *self.shutdowns.borrow() != shutdowns {
             drop(slots);
@@ -378,6 +384,7 @@ impl Shared {
         key: &str,
         launch: Launch,
         shutdowns: u64,
+        cancel: &CancellationToken,
     ) -> io::Result<Arc<Process>> {
         let mut halted = self.shutdowns.subscribe();
         let Launch {
@@ -403,7 +410,12 @@ impl Shared {
             .meta
             .extend(meta.as_object().cloned().unwrap_or_default());
         let controller = match Directory::for_home(&self.home)
-            .start(&self.holder_binary, start)
+            .start_cancellable(&self.holder_binary, start, async {
+                tokio::select! {
+                    () = cancel.cancelled() => {},
+                    _ = halted.wait_for(|now| *now != shutdowns) => {},
+                }
+            })
             .await
         {
             Ok(controller) => controller,

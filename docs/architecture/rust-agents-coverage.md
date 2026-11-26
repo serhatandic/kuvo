@@ -1226,3 +1226,94 @@ The reference's answer to the sleep that replaces one that turned it down (case 
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
+
+## Background work priority (4.9)
+
+An agent's process and the commands it starts are background work. The resident,
+keeper and holder (which reads the agent's output and sends its stream to the
+resident) keep their ordinary priority. User-opened terminals keep their ordinary
+priority; terminals launched by agents inherit the agent's lower priority. There
+are no reserved cores. A new agent or heavy background start waits during critical
+memory pressure without stopping work already running. Linux uses the kernel's
+`MemAvailable` estimate with a 64 MiB floor because it has no system-wide critical
+pressure classification.
+
+The initially planned switch to ordinary priority when a conversation is opened
+was dropped: an unprivileged process on macOS and Linux cannot undo the lowered
+nice value, and children launched after promotion would inherit the wrong class.
+The agent therefore stays at low priority from launch; the conversation's holder
+and resident do not. No privileged helper or desktop change is needed.
+
+The existing holder, agent and engine-session cases exercise the same conversation
+routes, transcripts and handover on both implementations; there is no TypeScript
+priority policy to port. `kuvo_os`'s priority-tree scenario queries the class of a
+real child and the ordinary process it launches, without altering the parent.
+The memory-floor scenario supplies critical pressure at the OS seam and proves a
+real child is deferred until pressure clears. The wake-up tool now uses the same
+process owner and priority seam as the other agents' commands.
+
+### Responsiveness on macOS
+
+An exact build of the preceding revision and the new build each ran three idle
+turns and three turns while ten bounded CPU burners ran as ordinary descendants
+of a stand-in Codex agent. The measurements start at the desktop prompt and end
+at the first feed event announcing the single immediate reply's completed turn;
+live step deltas in this feed belong to 4.6. Each phase started below a one-minute
+load of 8. No test used the user's conversations or working folders.
+
+| Milliseconds, three samples | Idle | With ten CPU burners |
+| --- | --- | --- |
+| Before | 100, 113, 118 | 239, 115, 246 |
+| After | 125, 132, 146 | 102, 121, 115 |
+
+Before, the resident, holder, agent and all ten children reported nice 0. After,
+the resident and holder reported nice 0 and the agent and all ten children nice
+20. The loaded reply after the change took 64/81/75 ms to the agent's emission and
+38/40/40 ms from that emission to the desktop feed, within one second of idle.
+The baseline was already within the target under this bounded synthetic load;
+the result does not claim to reproduce every kind of real machine contention.
+
+The two-turn Claude conversation differential was also run against the reference,
+the preceding Rust revision and the new revision. The Rust-to-Rust request
+answers matched. The TS-to-Rust comparison reports the same 34 request-difference
+paths before and after (transcript metadata, generated message IDs and shape
+differences already outside this row). Complete inventories are not byte-identical:
+the two Rust runs differ in per-run identity, timestamps, SQLite fingerprints and
+the asynchronous Insights scan's progress when the fixture stops. No new saved
+priority or memory-floor state is introduced.
+
+An agent start waiting for memory can be cancelled by Stop, replacement or
+shutdown before it launches a holder; a start already admitted still uses the
+holder's bounded handshake and normal turn lifetime. The old shared engine's
+supervisor waits inside its start operation, so an outstanding start at critical
+pressure can defer that supervisor's drain command until pressure clears. The
+legacy engine launch is being removed in 4.7d rather than adding another
+supervisor mechanism here.
+
+### Verification
+
+| Platform | Parent / agent / ordinary descendant priority | Memory admission |
+| --- | --- | --- |
+| macOS | 0 / 20 / 20 in the normal-priority measurement; seam scenario also passed in the low-priority test lane | Defers, resumes and cancels immediately; real holder creates nothing on cancellation |
+| WSL2 (static Linux musl) | nice 0 / 15 / 15; agent and descendant I/O class 24576 (idle) | Defers and resumes |
+| Native Windows | normal (32) / below normal (16384) / below normal (16384) | Defers and resumes |
+
+The PC process lists were clear before and after and the disposable folders were
+removed. The Linux proof ran in WSL; there was no matching pre-existing container
+image for the capped run on lokum. The platform readbacks preceded the
+platform-independent cancellation wiring; its new tests passed on macOS.
+
+Final conformance (engine-sessions, holder, all actual agent adapters, account and
+session reads, agent turn fixture, agent tools, wakes, agent bots and engine
+golden): Rust 348 passed of 349, with the existing 4.6 seen-cursor TODO; the
+reference 325 passed of 349, with 24 expected skips. Both engine-sessions runs
+passed 81/81. The fixture-enabled Rust binary passed all eleven account/session/
+turn fixture cases, including Stop and keeper handover. The real Claude adapter
+case cancels a new start without creating a holder, then starts and hands over
+the conversation normally. Its existing account-probe fixture now seeds dummy
+local sign-in files, as required by the file-only check introduced in 4.8.
+
+The final differential again matched the Rust-to-Rust request answers, with no
+new TS-to-Rust request difference paths. One real OpenCode Go turn on DeepSeek
+v4.1 Flash passed in the isolated live case; its scratch key and home were
+removed. Workspace test-target and TypeScript type checks passed.

@@ -18,6 +18,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     hold::{Controller, Directory, Metadata},
@@ -195,8 +196,19 @@ impl Shared {
 
     /// The app-server, started the first time it's needed and again after it stops.
     pub async fn server(self: &Arc<Self>) -> io::Result<Arc<Server>> {
+        self.server_cancellable(&CancellationToken::new()).await
+    }
+
+    pub async fn server_cancellable(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+    ) -> io::Result<Arc<Server>> {
         let shutdowns = *self.shutdowns.borrow();
-        let _starting = self.starting.lock().await;
+        let _starting = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(stopped()),
+            lock = self.starting.lock() => lock,
+        };
         if *self.shutdowns.borrow() != shutdowns {
             return Err(stopped());
         }
@@ -224,7 +236,7 @@ impl Shared {
             slot.stops
         };
         self.watch_idle();
-        let server = self.start(&compaction, identity, shutdowns).await?;
+        let server = self.start(&compaction, identity, shutdowns, cancel).await?;
         let mut slot = self.slot.lock().await;
         if slot.stops != stops || *self.shutdowns.borrow() != shutdowns {
             server.rpc.stop().await;
@@ -253,6 +265,7 @@ impl Shared {
         compaction: &str,
         identity: Option<String>,
         shutdowns: u64,
+        cancel: &CancellationToken,
     ) -> io::Result<Arc<Server>> {
         let mut halted = self.shutdowns.subscribe();
         let program = self.program.clone();
@@ -261,7 +274,12 @@ impl Shared {
             tokio::task::spawn_blocking(move || program.launch(&compaction)).await??
         };
         let controller = Directory::for_home(&self.program.home)
-            .start(&self.program.holder_binary, launch)
+            .start_cancellable(&self.program.holder_binary, launch, async {
+                tokio::select! {
+                    () = cancel.cancelled() => {},
+                    _ = halted.wait_for(|now| *now != shutdowns) => {},
+                }
+            })
             .await?;
         let server = self.serve(
             controller,

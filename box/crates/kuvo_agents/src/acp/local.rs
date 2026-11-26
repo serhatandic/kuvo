@@ -65,6 +65,7 @@ pub(super) fn run(
     cwd: &Path,
 ) -> io::Result<bool> {
     let mut spawn = Spawn::new(executable.path(), env);
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.executable = executable;
     spawn.args = args.iter().map(Into::into).collect();
     spawn.cwd = Some(cwd.to_owned());

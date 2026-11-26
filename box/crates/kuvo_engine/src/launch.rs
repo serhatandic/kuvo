@@ -137,6 +137,7 @@ impl Worker {
             executable(home, version),
             environment(home, Some(&password), env)?,
         );
+        spawn.priority = kuvo_os::process::Priority::Background;
         spawn.cwd = Some(home.join("workspace"));
         spawn.args = [
             "serve",

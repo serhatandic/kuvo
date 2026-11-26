@@ -202,6 +202,7 @@ fn run_shell(
             Err(_) => return Some(127),
         },
     };
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.stdout = Stdio::File(fs::File::create(out).ok()?);
     let Ok(mut child) = spawn.spawn() else {
         return Some(127);

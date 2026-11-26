@@ -89,6 +89,7 @@ pub(super) async fn run(
         )
     });
     let mut spawn = Spawn::new(program.clone(), env);
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.args = command.map(PathBuf::into_os_string).collect();
     spawn.cwd = boot.spec.cwd.clone();
     spawn.stdin = Stdio::Pipe;
