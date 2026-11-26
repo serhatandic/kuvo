@@ -1087,7 +1087,7 @@ test('Antigravity history reads only usable generation stores, follows WAL chang
   const base='kuvo/agents/api/kuvo/usage';
   const refresh=async()=>{const res=await call('POST',base+'/refresh?zone=UTC',{});assert.equal(res.status,200,res.text);};
   const read=async()=>{const res=await call('GET',base+'?zone=UTC');assert.equal(res.status,200,res.text);return res.json.data.totals.antigravity.reduce((sum,d)=>sum+d.tokens,0);};
-  const settle=async n=>until(async()=>{const seen=await read();return seen===n;},'Antigravity stores did not settle to '+n);
+  const settle=async n=>{let seen;return until(async()=>{seen=await read();return seen===n;},()=>`Antigravity stores did not settle to ${n}; last total ${seen}\n${resident.log()}`);};
   await refresh();await settle(170);
   live.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2,generation(30));
   await refresh();await settle(210);
@@ -1100,8 +1100,10 @@ test('Antigravity history reads only usable generation stores, follows WAL chang
   fs.rmSync(path.join(folder,'first.db'));
   if(process.platform!=='win32')fs.rmSync(path.join(folder,'same.db'));
   await refresh();await settle(145);
-  live.close();await resident.stop();resident=box.start();call=box.connect(await resident.ready());
-  await refresh();await settle(145);
+  live.close();await resident.stop();
+  fs.rmSync(path.join(folder,'broken.db')); // No watcher could have seen this deletion.
+  resident=box.start();call=box.connect(await resident.ready());
+  await refresh();await settle(130);
 });
 
 test('OpenCode Go limits read the engine’s saved credentials without starting the engine',async t=>{
