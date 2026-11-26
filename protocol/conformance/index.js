@@ -22,6 +22,7 @@ const areas = new Map([
   ["agents-opencode", "./agents-opencode.test.mjs"],
   ["agents-opencode-live", "./agents-opencode-live.test.mjs"],
   ["agents-opencode-history", "./agents-opencode-history.test.mjs"],
+  ["agents-opencode-models", "./agents-opencode-models.test.mjs"],
   ["bots-opencode", "./bots-opencode.test.mjs"],
   ["agents-steering", "./agents-steering.test.mjs"],
   ["agents-updates", "./agents-updates.test.mjs"],
