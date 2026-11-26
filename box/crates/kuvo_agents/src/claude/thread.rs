@@ -818,6 +818,11 @@ impl Actor {
         let mut told = None;
         let message = match prompt {
             Some(mut prompt) => {
+                let fresh = state_before.get("claudeStarted") != Some(&Value::Bool(true))
+                    || state_before.get("claudeSession").and_then(Value::as_str).is_none_or(|id| !is_uuid(id));
+                if let Some(history) = sink.handover(&prompt.id, fresh).await? {
+                    prompt.text = format!("{history}\n\nUser message:\n{}", prompt.text);
+                }
                 if let Some(said) = instructions_note(
                     self.state.get("claudeTold").and_then(Value::as_str),
                     &input.instructions,

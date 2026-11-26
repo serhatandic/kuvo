@@ -1076,6 +1076,7 @@ impl Service {
             session.into(),
             provider.clone(),
             self.store.clone(),
+            Some(self.agents.roster()),
             asks,
             policy.clone(),
         );

@@ -110,7 +110,7 @@ async fn a_single_agents_older_state_becomes_the_slot_of_the_agent_that_replied(
     assert!(store.save_state("ses_old", "claude-code", Default::default()).await.unwrap());
     assert_eq!(
         std::fs::read_to_string(folder.join("agent.json")).unwrap(),
-        r#"{"inbox":[],"snapshots":{},"threads":{"codex-cli":{"state":{"codexThread":"thr_1"}},"claude-code":{"state":{}}}}"#
+        r#"{"inbox":[],"snapshots":{},"threads":{"codex-cli":{"state":{"codexThread":"thr_1"},"seen":"msg_a"},"claude-code":{"state":{}}}}"#
     );
     assert!(store.save_state("ses_old", "codex-cli", state).await.unwrap());
     let reread = store.context("ses_old", "codex-cli").await.unwrap().unwrap();
@@ -369,4 +369,29 @@ async fn deleting_a_conversation_takes_its_subagents_unless_a_fork_shows_them() 
         .collect::<Vec<_>>();
     assert_eq!(left, ["ses_fork", "ses_other", "ses_shared"]);
     assert!(!runs.delete("ses_lead".into()).await.unwrap());
+}
+
+#[test]
+fn insights_read_a_legacy_reply_without_keeping_its_large_tool_output() {
+    use kuvo_agents::session_store::legacy_insight;
+    use serde_json::json;
+    use std::io::Write;
+
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("messages.json");
+    let mut transcript = std::fs::File::create(&file).unwrap();
+    write!(transcript, r#"[{{"type":"assistant","id":"msg_usage","agent":"ada","time":{{"created":1,"completed":2}},
+        "model":{{"id":"claude-test","providerID":"claude-code"}},"tokens":{{"input":12,"output":3}},
+        "content":[{{"type":"tool","id":"large-result","name":"shell","state":{{"status":"completed","content":[{{"type":"text","text":""#).unwrap();
+    let block = "a".repeat(1024 * 1024);
+    for _ in 0..48 {
+        transcript.write_all(block.as_bytes()).unwrap();
+    }
+    write!(transcript, r#""}}]}}}},{{"type":"tool","id":"unfinished","name":"read","state":{{"status":"streaming","input":"{{"}}}},{{"type":"tool","id":"skill","name":"skill","state":{{"status":"completed","input":{{"skill":"paper \"résumé\""}},"content":[]}}}}]}}]"#).unwrap();
+    drop(transcript);
+
+    let rows = legacy_insight(&file).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["tokens"], json!({"input":12,"output":3}));
+    assert_eq!(rows[0]["content"], json!([{"type":"tool","id":"skill","name":"skill","state":{"status":"completed","input":{"skill":"paper \"résumé\""},"content":[]}}]));
 }

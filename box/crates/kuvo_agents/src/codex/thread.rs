@@ -754,8 +754,17 @@ impl Actor {
         sink: Arc<dyn TurnSink>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> io::Result<()> {
+        let previous = self.native.clone();
         self.ensure_thread(&start.model, &instructions, &sink, cancel)
             .await?;
+        let mut prompt = prompt;
+        if let Some(prompt) = &mut prompt
+            && let Some(history) = sink
+                .handover(&prompt.id, previous.is_none() || previous != self.native)
+                .await?
+        {
+            prompt.text = format!("{history}\n\nUser message:\n{}", prompt.text);
+        }
         let mut active = Active {
             id: id.clone(),
             sink,

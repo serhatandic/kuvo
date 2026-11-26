@@ -765,11 +765,17 @@ impl Actor {
         self.own = None;
         let mode = Self::mode(&input);
         let model = (self.shared.flavour).model_value(&input.model.provider, &input.model.id);
+        let previous = self.native.clone();
         if let Err(error) = self.ensure_open(&model, &mode, &input.start_cancel).await {
             if input.start_cancel.is_cancelled() {
                 return Err(error);
             }
             return unsent(sink.as_ref(), error).await;
+        }
+        // A new native session is known before sending the prompt, even when there
+        // are no app instructions to checkpoint at the end of the turn.
+        if previous != self.native {
+            sink.save_state(self.state.clone()).await?;
         }
         let process = self
             .process
@@ -798,7 +804,15 @@ impl Actor {
         let (content, instructed) = match &input.kind {
             TurnKind::Prompt(prompt) => {
                 let images = process.capabilities().images;
-                self.prompt_content(prompt, &input.instructions, images).await
+                let mut prompt = prompt.clone();
+                if let Some(history) = sink
+                    .handover(&prompt.id, previous.is_none() || previous != self.native)
+                    .await?
+                {
+                    prompt.text = format!("{history}\n\nUser message:\n{}", prompt.text);
+                }
+                self.prompt_content(&prompt, &input.instructions, images)
+                    .await
             }
             _ => (vec![json!({"type": "text", "text": "/compact"})], None),
         };

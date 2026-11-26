@@ -672,8 +672,8 @@ impl Service {
                     }
                 }
                 read.commit()?;
-            } else if let Some(text) = kuvo_store::files::text_of(&folder.join("messages.json")) {
-                for message in serde_json::from_str::<Vec<Value>>(&text)? {
+            } else {
+                for message in kuvo_agents::session_store::legacy_insight(&folder.join("messages.json"))? {
                     accept(message)?;
                     decoded += 1;
                 }

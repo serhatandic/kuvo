@@ -40,6 +40,19 @@ pub fn read_saved_session_headers(sessions_dir: &Path) -> Vec<SavedSessionHeader
 }
 
 pub fn saved_messages(folder: &Path) -> Vec<Value> {
+    // The current transcript database is authoritative even if a legacy rollback
+    // array remains beside it. Its small artifacts column already contains what
+    // these two readers need, without all the tool results and inline pictures.
+    let current = folder.join("messages-v1.sqlite");
+    if current.is_file() {
+        if let Ok(conn) = kuvo_store::sqlite::open_index(&current, std::time::Duration::from_secs(1))
+            && let Ok(mut stmt) = conn.prepare("SELECT artifacts FROM message WHERE artifacts IS NOT NULL ORDER BY position")
+            && let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0))
+        {
+            return rows.filter_map(Result::ok).filter_map(|body| serde_json::from_str(&body).ok()).collect();
+        }
+        return Vec::new();
+    }
     let sqlite_path = folder.join("transcript-v1.sqlite");
     if sqlite_path.is_file()
         && let Ok(conn) = rusqlite::Connection::open_with_flags(&sqlite_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -95,13 +108,15 @@ pub fn citation_update(sessions_dir: &Path, previous: &HashMap<String, String>) 
     for session in read_saved_session_headers(sessions_dir) {
         let files = [
             file_stamp(&session.folder.join("session.json")),
+            file_stamp(&session.folder.join("messages-v1.sqlite")),
+            file_stamp(&session.folder.join("messages-v1.sqlite-wal")),
             file_stamp(&session.folder.join("transcript-v1.sqlite")),
             file_stamp(&session.folder.join("transcript-v1.sqlite-wal")),
             file_stamp(&session.folder.join("messages.json")),
         ];
         let revision = revision_key(&files);
         let changed = previous.get(&session.id).map(String::as_str) != Some(revision.as_str());
-        if changed && (files[1].is_some() || (files[3].is_some() && may_have_citations(&session.folder.join("messages.json")))) {
+        if changed && (files[1].is_some() || files[3].is_some() || (files[5].is_some() && may_have_citations(&session.folder.join("messages.json")))) {
             let dir = session.directory.as_deref().unwrap_or("/");
             for message in saved_messages(&session.folder) {
                 if message.get("type").and_then(Value::as_str) != Some("assistant") { continue; }
