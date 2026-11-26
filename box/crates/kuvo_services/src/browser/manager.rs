@@ -3,6 +3,7 @@
 mod access;
 mod asks;
 mod page;
+mod passkeys;
 mod pipe;
 mod sites;
 mod view;
@@ -75,6 +76,8 @@ struct Tabs {
     closing: HashSet<String>,
     active: Option<String>,
     attached: HashMap<String, String>,
+    frame_sessions: HashMap<String, String>,
+    passkeys: HashMap<String, String>,
     claims: HashMap<String, Claim>,
     snapshots: HashMap<String, String>,
     held: HashMap<String, String>,
@@ -97,6 +100,7 @@ struct Tabs {
 }
 struct Living {
     pipe: Pipe,
+    passkey_event: String,
     home: PathBuf,
     config: Arc<Config>,
     engine: Engine,
@@ -160,6 +164,7 @@ impl Living {
         }
         let live = Arc::new(Self {
             pipe,
+            passkey_event: passkeys::event_name()?,
             home,
             config,
             engine,
@@ -208,7 +213,9 @@ impl Living {
             .call("Target.setDiscoverTargets", json!({"discover":true}), None)
             .await?;
         live.pipe.call("Browser.setDownloadBehavior",json!({"behavior":"allowAndName","downloadPath":live.download_folder,"eventsEnabled":true}),None).await?;
-        live.refresh_targets().await?;
+        for target in live.refresh_targets().await? {
+            let _ = live.attach(&target.target_id).await;
+        }
         live.clear_pending().await;
         live.reopen().await;
         live.clear_old_downloads();
@@ -274,6 +281,7 @@ impl Living {
                     Some(&id),
                 )
                 .await?;
+            self.install_passkeys(&id).await?;
             tabs.attached.insert(target.to_owned(), id.clone());
             id
         };
@@ -443,18 +451,53 @@ impl Living {
         self.publish().await;
     }
     async fn event(&self, event: pipe::Event) {
-        let target = if let Some(session) = event.session_id.as_ref() {
-            self.tabs
-                .lock()
-                .await
-                .attached
-                .iter()
-                .find(|(_, id)| *id == session)
-                .map(|(target, _)| target.clone())
+        let (target, frame_page) = if let Some(session) = event.session_id.as_ref() {
+            let tabs = self.tabs.lock().await;
+            (
+                tabs.attached
+                    .iter()
+                    .find(|(_, id)| *id == session)
+                    .map(|(target, _)| target.clone()),
+                tabs.frame_sessions.get(session).cloned(),
+            )
         } else {
-            None
+            (None, None)
         };
         match event.method.as_str() {
+            "Target.attachedToTarget" => {
+                if let Some(target) = target.or(frame_page)
+                    && let Some(session) = event.params["sessionId"].as_str()
+                {
+                    if event.params["targetInfo"]["type"] == "iframe" {
+                        self.tabs
+                            .lock()
+                            .await
+                            .frame_sessions
+                            .insert(session.into(), target);
+                        let _ = self
+                            .pipe
+                            .call("Page.enable", json!({}), Some(session))
+                            .await;
+                        let _ = self.install_passkeys(session).await;
+                    }
+                    if event.params["waitingForDebugger"] == true {
+                        let _ = self
+                            .pipe
+                            .call("Runtime.runIfWaitingForDebugger", json!({}), Some(session))
+                            .await;
+                    }
+                }
+            }
+            "Target.detachedFromTarget" => {
+                if let Some(session) = event.params["sessionId"].as_str() {
+                    self.tabs.lock().await.frame_sessions.remove(session);
+                }
+            }
+            "Runtime.bindingCalled" if event.params["name"] == passkeys::BINDING => {
+                if let Some(target) = target.or(frame_page) {
+                    self.passkey_asked(&target).await;
+                }
+            }
             "Target.targetCreated" | "Target.targetInfoChanged" => {
                 if let Ok(target) =
                     serde_json::from_value::<Target>(event.params["targetInfo"].clone())
@@ -464,6 +507,14 @@ impl Living {
                     let mut tabs = self.tabs.lock().await;
                     if tabs.closing.contains(&id) {
                         return;
+                    }
+                    if tabs
+                        .passkeys
+                        .get(&id)
+                        .is_some_and(|host| Some(host) != page::host_of(&target.url).as_ref())
+                    {
+                        tabs.passkeys.remove(&id);
+                        self.tell("Kuvo.passkeyCleared", json!({"targetId":id}));
                     }
                     if let Some(old) = tabs
                         .targets
@@ -495,6 +546,10 @@ impl Living {
                     tabs.held.remove(id);
                     tabs.hold_macs.remove(id);
                     tabs.attached.remove(id);
+                    tabs.frame_sessions.retain(|_, page| page != id);
+                    if tabs.passkeys.remove(id).is_some() {
+                        self.tell("Kuvo.passkeyCleared", json!({"targetId":id}));
+                    }
                     tabs.working.remove(id);
                     tabs.uploads.remove(id);
                     tabs.choosers.remove(id);
@@ -514,6 +569,11 @@ impl Living {
                 }
             }
             "Page.frameNavigated" => {
+                if (target.is_some() || frame_page.is_some())
+                    && let Some(session) = event.session_id.as_deref()
+                {
+                    let _ = self.bind_passkeys(session).await;
+                }
                 if let Some(target) = target
                     && let Some(frame) = event.params["frame"]["id"].as_str()
                 {
