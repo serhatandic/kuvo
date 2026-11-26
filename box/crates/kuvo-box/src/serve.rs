@@ -281,7 +281,6 @@ pub async fn run(
         let rows = kuvo_agents::account_rows::AccountRows::new(
             home.to_owned(),
             accounts.clone(),
-            Some(Arc::new(runs.clone())),
         );
         found::register(Some(rows.clone()), home, &mut routes);
         agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);

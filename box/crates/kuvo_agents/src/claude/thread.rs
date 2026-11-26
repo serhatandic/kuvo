@@ -214,7 +214,7 @@ pub(super) struct Recovery {
 }
 
 impl Recovery {
-    pub fn new(controller: Controller, note: Option<TurnNote>) -> Self {
+    pub fn new(controller: Controller, note: Option<TurnNote>, program: Option<u64>) -> Self {
         let tasks = controller
             .welcome
             .meta
@@ -229,12 +229,17 @@ impl Recovery {
             .map(str::to_owned);
         let mut pipe = Pipe::new(controller, note.is_some());
         pipe.needs_initialize = true;
+        pipe.program = program;
         Self {
             pipe,
             note,
             instructions,
             tasks,
         }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.note.is_none() && self.tasks.is_null()
     }
 
     pub async fn stop(mut self) -> io::Result<()> {
@@ -294,6 +299,7 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
+    RetireIfQuiet(Reply<()>),
     LetGo(TurnNote, Reply<()>),
     /// A control request about its tasks (their output, Stop): its answer's `response`.
     TaskCall(Value, Reply<Value>),
@@ -374,6 +380,11 @@ impl Conversation {
     pub async fn stop(&self, shutdown: bool) -> io::Result<()> {
         self.start_stop.send_replace(());
         self.send(|reply| Command::Stop(shutdown, reply)).await
+    }
+
+    /// Stop an outdated Claude Code holder right away when this conversation is quiet.
+    pub async fn retire_if_quiet(&self) -> io::Result<()> {
+        self.send(Command::RetireIfQuiet).await
     }
 
     /// The turn it was left under way in won't go on here: that Claude Code goes, and the next
@@ -637,6 +648,10 @@ impl Actor {
                 let _ = self.ended().await;
                 self.closing = shutdown;
                 let _ = reply.send(result);
+            }
+            Command::RetireIfQuiet(reply) => {
+                self.retire_if_quiet().await;
+                let _ = reply.send(Ok(()));
             }
         }
         Ok(())
@@ -917,7 +932,7 @@ impl Actor {
         }
         let native = native.map_or_else(unique_id, Ok)?;
         let sign_in = self.program.sign_in_mark().await;
-        let start = tokio::task::spawn_blocking(move || {
+        let (start, _staged) = tokio::task::spawn_blocking(move || {
             turn_launch(
                 program, session, directory, provider, native, resume, compact_at, plan,
             )
@@ -1149,6 +1164,7 @@ impl Actor {
         if let Some(pipe) = &mut self.pipe {
             pipe.input.acknowledge(sequence).await?;
         }
+        self.retire_if_quiet().await;
         Ok(())
     }
 
@@ -1424,7 +1440,26 @@ impl Actor {
             let _ = pipe.stop().await;
             self.tasks.gone();
         }
+        self.retire_if_quiet().await;
         Ok(())
+    }
+
+    /// Stop an outdated Claude Code holder as soon as no turn or background task needs it, so its
+    /// staged version lease drops right away.
+    async fn retire_if_quiet(&mut self) {
+        let outdated = self
+            .pipe
+            .as_ref()
+            .is_some_and(|pipe| pipe.program != Some(self.program.updates()));
+        if outdated
+            && self.running.is_none()
+            && self.recovery.is_none()
+            && !self.tasks.keeps_working()
+            && let Some(pipe) = self.pipe.take()
+        {
+            let _ = pipe.stop().await;
+            self.tasks.gone();
+        }
     }
 
     async fn ended(&mut self) -> io::Result<()> {
@@ -1516,7 +1551,7 @@ fn turn_launch(
     resume: bool,
     compact_at: Option<u64>,
     plan: bool,
-) -> io::Result<Start> {
+) -> io::Result<(Start, crate::program_updates::store::Staged)> {
     let mut env = program.environment(true);
     let platform = Platform::current();
     let fence = env_value(platform, &env, "KUVO_FENCE")
@@ -1534,7 +1569,13 @@ fn turn_launch(
     let executable = program
         .executable(&env)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Claude Code isn't installed."))?;
-    let mut command = vec![executable.path().to_owned()];
+    let staged = crate::program_updates::store::prepare(
+        program.home.root(),
+        "claude",
+        executable.path(),
+        Some("@anthropic-ai/claude-code"),
+    )?;
+    let mut command = vec![staged.executable.clone()];
     command.extend(
         [
             "--output-format",
@@ -1578,15 +1619,18 @@ fn turn_launch(
         if compact.is_some() { "0" } else { "1" }.into(),
     );
     let meta = json!({ "provider": provider, "session": session, "claudeAdapter":1, "claudeCompactAt":compact_at });
-    Ok(Start {
-        command,
-        cwd: Some(directory),
-        env,
-        kind: HoldKind::ControlJson,
-        meta: meta.as_object().expect("metadata object").clone(),
-        portable_requests: None,
-        limits: Limits::default(),
-    })
+    Ok((
+        Start {
+            command,
+            cwd: Some(directory),
+            env,
+            kind: HoldKind::ControlJson,
+            meta: meta.as_object().expect("metadata object").clone(),
+            portable_requests: None,
+            limits: Limits::default(),
+        },
+        staged,
+    ))
 }
 
 fn initialize(instructions: &str) -> Value {

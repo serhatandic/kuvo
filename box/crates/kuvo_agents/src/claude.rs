@@ -408,12 +408,29 @@ impl Agent for Claude {
         })
     }
 
-    /// Its models are asked of the new Claude Code; each conversation's starts again at its
-    /// next message.
+    /// Its models are asked of the new Claude Code; idle holders on older versions stop right
+    /// away, and busy ones finish their turn before stopping.
     fn program_updated(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
             self.program.updated();
             self.models.clear().await;
+            let (open, idle_held) = {
+                let mut threads = self.threads.lock().await;
+                let open: Vec<_> = threads.open.values().cloned().collect();
+                let idle_keys: Vec<_> = threads
+                    .held
+                    .iter()
+                    .filter(|(_, recovery)| recovery.is_idle())
+                    .map(|(session, _)| session.clone())
+                    .collect();
+                let idle_held: Vec<_> = idle_keys
+                    .into_iter()
+                    .filter_map(|session| threads.held.remove(&session))
+                    .collect();
+                (open, idle_held)
+            };
+            let _ = join_all(open.iter().map(|thread| thread.retire_if_quiet())).await;
+            let _ = join_all(idle_held.into_iter().map(thread::Recovery::stop)).await;
             Ok(())
         })
     }
@@ -508,9 +525,15 @@ impl Adoption for Claude {
                     "This conversation already has a Claude Code holder.",
                 ));
             }
+            let outdated = crate::program_updates::store::is_outdated_executable(
+                self.program.home.root(),
+                "claude",
+                &record.program,
+            );
+            let program = (!outdated).then_some(self.program.updates());
             threads
                 .held
-                .insert(session.into(), thread::Recovery::new(controller, note));
+                .insert(session.into(), thread::Recovery::new(controller, note, program));
             Ok(())
         })
     }

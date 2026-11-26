@@ -449,13 +449,14 @@ impl Agent for Codex {
         Box::pin(async {
             // Withdraw a not-yet-started app-server before handing over the existing ones.
             self.shared.halt();
-            if let Some(server) = self.shared.current().await
-                && let Some(from) = server.earliest_turn()
-                && !server.rpc.prepare(from).await
-            {
-                return Err(io::Error::other(
-                    "Codex's holder couldn't keep its turns for the next resident.",
-                ));
+            for server in self.shared.all_running().await {
+                if let Some(from) = server.earliest_turn()
+                    && !server.rpc.prepare(from).await
+                {
+                    return Err(io::Error::other(
+                        "Codex's holder couldn't keep its turns for the next resident.",
+                    ));
+                }
             }
             let threads: Vec<_> = self
                 .threads
@@ -516,7 +517,7 @@ impl Adoption for Codex {
                 self.shared.discard(controller).await;
                 return Ok(());
             }
-            self.shared.adopt(controller).await?;
+            self.shared.adopt(controller, &record.program).await?;
             Ok(())
         })
     }
@@ -564,7 +565,7 @@ impl Adoption for Codex {
                 Ok(())
             }
             .await;
-            if let Some(server) = self.shared.current().await {
+            for server in self.shared.all_running().await {
                 server.ready("background");
             }
             result

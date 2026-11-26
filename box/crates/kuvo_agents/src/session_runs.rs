@@ -31,7 +31,6 @@ use tokio::{
 };
 
 mod line;
-mod programs;
 mod update;
 
 pub use update::{HandedTurn, Handover, Update};
@@ -95,13 +94,6 @@ enum Command {
     HandOver {
         held: BTreeSet<String>,
         reply: Reply<Handover>,
-    },
-    /// A program's update is over: what it held goes.
-    WakeHeld,
-    /// Whether a program has turns under way.
-    ProgramWorks {
-        program: String,
-        reply: oneshot::Sender<bool>,
     },
 }
 
@@ -189,7 +181,6 @@ pub struct SessionRuns {
     running: watch::Receiver<Arc<BTreeSet<String>>>,
     events: broadcast::Sender<InboxEvent>,
     restoring: Arc<update::Restorings>,
-    programs: programs::Holds,
 }
 
 impl SessionRuns {
@@ -257,10 +248,8 @@ impl SessionRuns {
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
         let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
-        let programs = programs::Holds::new(&home);
         let service = Service {
             limits,
-            programs: programs.clone(),
             restoring: restoring.clone(),
             agents,
             store: store.clone(),
@@ -279,7 +268,6 @@ impl SessionRuns {
             running,
             events,
             restoring,
-            programs,
         }
     }
 
@@ -675,7 +663,6 @@ struct Service {
     events: broadcast::Sender<InboxEvent>,
     commands: mpsc::WeakSender<Command>,
     restoring: Arc<update::Restorings>,
-    programs: programs::Holds,
 }
 
 type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
@@ -803,10 +790,6 @@ impl Service {
             Command::HandOver { held, reply } => {
                 let _ = reply.send(Ok(self.hand_over(state, &held).await));
             }
-            Command::WakeHeld => self.wake_held(state).await,
-            Command::ProgramWorks { program, reply } => {
-                let _ = reply.send(self.program_works(state, &program).await);
-            }
         }
     }
 
@@ -837,7 +820,6 @@ impl Service {
 
     async fn prepared(&self, state: &mut State, prepared: Prepared) {
         let (session, mut outcome, reply) = prepared;
-        self.programs.entered(&session);
         let conversation = state.conversation(&session);
         let stop = matches!(conversation.doing, Doing::Starting { stop: true, .. });
         if conversation.retired
@@ -1031,11 +1013,6 @@ impl Service {
             }
             return Err(io::Error::new(ErrorKind::PermissionDenied, message));
         }
-        // Its program updating, it waits for it (a turn taken up runs already).
-        let recovering = matches!(input.kind, TurnKind::Recover { .. });
-        self.programs
-            .enter(session, &input.model.provider, !recovering)
-            .await;
         let thread = match self.thread(session, &input.model.provider).await {
             Ok(thread) => thread,
             Err(error) => {

@@ -409,6 +409,38 @@ impl Shared {
         start
             .meta
             .extend(meta.as_object().cloned().unwrap_or_default());
+        let mut staged = None;
+        if let Some(definition) = self.flavour.program()
+            && let Some(exe) = start.command.first().cloned()
+            && !exe.starts_with(self.home.root())
+        {
+            let home_root = self.home.root().to_owned();
+            let program = self.flavour.kind().name().to_owned();
+            let npm_package = definition.npm_package;
+            let prepared = tokio::task::spawn_blocking(move || {
+                crate::program_updates::store::prepare(
+                    &home_root,
+                    &program,
+                    &exe,
+                    npm_package.as_deref(),
+                )
+            })
+            .await
+            .map_err(io::Error::other)??;
+            if let Some(first) = start.command.first_mut() {
+                *first = prepared.executable.clone();
+            }
+            if start
+                .env
+                .contains_key(std::ffi::OsStr::new("KUVO_AGY_PROGRAM"))
+            {
+                start.env.insert(
+                    "KUVO_AGY_PROGRAM".into(),
+                    prepared.executable.clone().into_os_string(),
+                );
+            }
+            staged = Some(prepared);
+        }
         let controller = match Directory::for_home(&self.home)
             .start_cancellable(&self.holder_binary, start, async {
                 tokio::select! {
@@ -418,8 +450,12 @@ impl Shared {
             })
             .await
         {
-            Ok(controller) => controller,
+            Ok(controller) => {
+                drop(staged);
+                controller
+            }
             Err(error) => {
+                drop(staged);
                 remove(temporary);
                 return Err(error);
             }
@@ -525,8 +561,14 @@ impl Shared {
         failure.into()
     }
 
-    /// A process an earlier resident left held, this resident's own again as it is.
-    pub async fn adopt(self: &Arc<Self>, controller: Controller) -> io::Result<Arc<Process>> {
+    /// A process an earlier resident left held, this resident's own again as it is. One running an
+    /// older staged version is marked outdated so its running turns finish while new turns launch
+    /// the current version.
+    pub async fn adopt(
+        self: &Arc<Self>,
+        controller: Controller,
+        program_path: &std::path::Path,
+    ) -> io::Result<Arc<Process>> {
         let meta = controller.welcome.meta.clone();
         let first = controller
             .welcome
@@ -563,6 +605,13 @@ impl Shared {
             object("turns"),
             object("sessions"),
         );
+        if crate::program_updates::store::is_outdated_executable(
+            self.home.root(),
+            self.flavour.kind().name(),
+            program_path,
+        ) {
+            process.retire();
+        }
         self.slots.lock().await.processes.push(process.clone());
         self.watch_idle();
         self.note_activity();

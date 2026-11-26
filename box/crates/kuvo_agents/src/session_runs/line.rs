@@ -423,8 +423,7 @@ impl Service {
                 if !input.held
                     && input.delivery != Delivery::Queue
                     && !live.turn.is_done()
-                    && live.thread.takes_steers()
-                    && !self.programs.holds(&live.provider) =>
+                    && live.thread.takes_steers() =>
             {
                 Some(live.clone())
             }
@@ -901,7 +900,6 @@ impl Service {
             && let Doing::Running(live) = &conversation.doing
             && live.thread.takes_steers()
             && !live.turn.is_done()
-            && !self.programs.holds(&live.provider)
         {
             let live = live.clone();
             if now {
@@ -1140,10 +1138,6 @@ impl Service {
             conversation.go = false;
         }
         let Some(index) = index else { return };
-        // (Its program updating, it waits in line, kept.)
-        if self.held_for_program(session, index).await {
-            return;
-        }
         let id = line[index].id.clone();
         let sent = self.store.has_message(session, &id).await.unwrap_or(false);
         let taken = self
