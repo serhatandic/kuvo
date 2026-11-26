@@ -104,6 +104,20 @@ pub(super) async fn factories(
         )
     };
     let (grok, antigravity) = (acp(AgentKind::Grok), acp(AgentKind::Antigravity));
+    // OpenCode as the engine runs it: the pinned program, the same settings and data.
+    let opencode = kuvo_engine::agent_program(home.root(), std::env::vars_os().collect())
+        .map(|(executable, env)| kuvo_agents::acp::OpenCodeProgram { executable, env });
+    let opencode: Arc<dyn Factory> = match opencode {
+        Ok(program) => Arc::new(
+            AcpFactory::new(AgentKind::OpenCode, home.clone(), binary.clone(), Some(relay.clone()))
+                .with_feed(feed.clone())
+                .with_opencode(program),
+        ),
+        Err(error) => {
+            eprintln!("Kuvo could not prepare OpenCode: {error}");
+            acp(AgentKind::OpenCode)
+        }
+    };
     let claude: Arc<dyn Factory> =
         Arc::new(ClaudeFactory::new(home, binary).with_feed(feed.clone()));
     HashMap::from([
@@ -111,6 +125,7 @@ pub(super) async fn factories(
         (AgentKind::Codex, codex),
         (AgentKind::Grok, grok),
         (AgentKind::Antigravity, antigravity),
+        (AgentKind::OpenCode, opencode),
     ])
 }
 
@@ -130,7 +145,14 @@ impl AgentModelSource for Models {
                 unavailable: Vec::new(),
                 generations: BTreeMap::new(),
             };
-            for row in roster.catalog(refresh).await {
+            // (OpenCode's models are the picker's as OpenCode lists them; it's an agent here only
+            // where it never ran, with the one it picks itself.)
+            let rows = roster.catalog(refresh).await.into_iter();
+            let listed = |row: &kuvo_agents::catalog::CatalogEntry| {
+                row.account.kind.in_accounts()
+                    || row.models.as_ref().is_some_and(|models| !models.models.is_empty())
+            };
+            for row in rows.filter(listed) {
                 let provider = row.account.provider().to_string();
                 let known = row.status.ok();
                 let status = known.as_ref();

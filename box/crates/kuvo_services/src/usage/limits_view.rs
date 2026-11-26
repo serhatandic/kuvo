@@ -850,6 +850,7 @@ pub(super) fn merged_facts(members: &[Member]) -> crate::usage::plan_facts::Fact
             | Extra::Left { id, .. }
             | Extra::Resets { id, .. }
             | Extra::Unreadable { id, .. } => id,
+            Extra::Future(extra) => &extra.id,
         }
     }
     let extras = chosen

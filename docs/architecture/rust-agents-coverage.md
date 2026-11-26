@@ -878,6 +878,150 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## OpenCode as a coding agent (4.7b)
+
+New conversations on OpenCode's models run on the OpenCode agent: the pinned binary as `opencode
+acp`, the third flavour of the shared ACP client (`acp/opencode.rs`). One process carries every
+OpenCode conversation on the computer (one launch key) and stops when it's been idle. Existing
+conversations stay on the engine until 4.7d. The reference runs them all on its engine, so the
+`agents-opencode` cases assert only what the app reads, on the pinned OpenCode with a labelled
+stand-in model (`opencode-model.mjs`).
+
+- **Where a conversation starts.** A model whose provider isn't a coding agent's is OpenCode's
+  (`Provider::of_model`): its agent account is `opencode-agent`, since `opencode` is Zen's
+  provider. It starts on the agent where the box runs the coding agents and the pinned OpenCode
+  is on the computer (`launch::agent_here`), else on the engine, which still serves its
+  conversations.
+- **What the agent is given.** Ask First on the tools Kuvo asks about (`OPENCODE_CONFIG_CONTENT`,
+  so the box's own rules decide), its questions as elicitation forms, compaction, and child
+  sessions. Kuvo's tools come over HTTP from the relay. The computer's MCP servers are read by
+  the box from the settings files (`tool_relay/settings_servers.rs`), never by asking OpenCode.
+- **Picker and accounts without starting it.** `models/kept.rs` keeps one compact list in
+  `run/engine/catalog.json`, best first:
+  1. OpenCode's own answers, whenever it runs;
+  2. the models its agent offered a conversation (`run/agents/opencode/catalogs`);
+  3. on a computer where it ran before, a list made once from its database: the providers you're
+     signed in to and Zen's free models, only those that chat with tools and aren't retired or
+     early. The 13 MB catalog is read once, keeping only the fields used.
+
+  Where it never ran, the picker offers "OpenCode (its default model)" like an agent not set up;
+  choosing it, a sign-in or Refresh starts it. `api/integration` answers from the same list.
+- **Asks.** `kuvo/sessions/:id/asks` lists and answers an agent conversation's asks through the
+  agents (`asks::Target::Agents`), for all six agents, worded as `session-asks.ts` words them.
+  Always says "in this conversation". A case per agent kind failed on main's Rust box with "The
+  engine isn't running."
+- **Kuvo's tools and wake-ups.** A tool's caller is found through the agents first
+  (`BotEngine::session_found`), so an agent conversation's tools work without the engine. Its
+  wake-ups are kept as an agent's (`via`, `KUVO_WAKE_VIA`), and the app's wake-up route finds it
+  without starting the engine. Cases in agents-opencode and agents-grok failed on the old code.
+- **Usage counted once.** OpenCode keeps its turns in its database, which usage reads, so its
+  agent's transcripts aren't counted again (`insights.rs`). The case failed on the old code (two
+  calls, 220 tokens, against the reference's one call and 110).
+- **Title and tokens.** OpenCode titles its own sessions. As a turn ends, a conversation still
+  without a title takes it from `session/list` (placeholders aside). A turn's tokens are the
+  prompt answer's `usage` (`Flavour::answers_usage`), not how full the context is.
+- **Light.** The app opened with no OpenCode conversation starts no OpenCode. Measured on debug
+  builds, on a home holding a copy of this Mac's OpenCode database, after the app's opening
+  requests (picker, conversation lists, accounts, feeds):
+
+  | Box | Processes | RSS |
+  |---|---:|---:|
+  | main (`01bf21c8e`) | 2: the box, `opencode serve` | 805–915 MB (box 180, OpenCode 650–750) |
+  | this branch, first open (list made from disk) | 1 | 210 MB |
+  | this branch, opened again (list kept) | 1 | 139 MB |
+
+  With an empty database the branch's box is 88 MB and main's 93 MB plus a 356 MB OpenCode.
+
+### Cases
+
+| Case (agents-opencode) | Both boxes | Notes |
+|---|---|---|
+| A new conversation's turn streams its words | yes | |
+| A command it asks to run waits on the app's asks; Allow Once runs it | yes | |
+| Its question is the app's card; the answer chosen there is what it hears | yes | elicitation form → own question |
+| Stop ends the turn where it is, and the next message is answered | yes | |
+| A message sent while it works reaches it before it's done | yes | see the differences |
+| Another model picked goes with its next turn, with its effort | yes | |
+| A picture sent goes to the model as a picture | yes | |
+| /compact summarizes the conversation with its model, and it goes on after | yes | |
+| A subagent it starts runs, and its work shows on its step | yes | its own steps → 4.6 |
+| Its wake-ups are its own: set by its tools or from the app, and Wake Up Now reaches it | yes | |
+| Its usage is counted once | yes | |
+| It's titled as OpenCode titles it, and its turn's tokens are what the model said | yes | |
+| Where OpenCode never ran, the picker offers it as an agent not yet listed | Rust only | the reference starts OpenCode to list |
+| Once a conversation ran, the picker and its accounts list what OpenCode offered it | Rust only | as above |
+
+`agents-opencode-live`: one real OpenCode Go turn (DeepSeek V4.1 Flash) on the agent, in a temp home
+with only a non-renewing key copied in. New app-asks cases in agents-grok, agents-codex,
+agents-claude-turns and agents-antigravity, and a wake-ups case in agents-grok, run on both
+boxes.
+
+### Differences from the engine path
+
+| Difference | Why |
+|---|---|
+| A message sent mid-turn waits for the turn's end, then goes as the next prompt | ACP refuses a second `session/prompt` during a turn; the engine injects it. The model still hears both (the steer case). |
+| The rows are the agents' (`{type, content}`), with their ids, step times and no `finish` | Every agent conversation's shape (4.1b); the app reads both. |
+| The conversation's total tokens leave out OpenCode's title request | ACP reports the turn; the engine's session total adds its title model's call. Usage (insights) counts both alike. |
+| No `model.variant: "default"` and no per-row `cost` | The engine's own fields; a turn's cost is the conversation's (`TurnEvent::Cost`). |
+| Efforts are absent for models in a list made from disk or from the agent | Only OpenCode's own answers have them; refreshed whenever it runs. After 4.7d it never runs for the picker, so 4.7d needs another source (the agent's `effort` option as each model is used). |
+| A subagent's asks aren't listed | Agents' subagents are 4.6's. |
+| A read-only run is refused; Plan goes in the normal mode | No Plan mode (user, 11-25); read-only runs are 4.6's. |
+| Settings can't list or connect OpenCode's providers against the Rust box | `kuvo/sign-in/*` isn't ported (6.1a). Signing in starts OpenCode's own server for the sign-in only. |
+| Bots on OpenCode's models still get engine conversations | They move to the agent with existing conversations in 4.7d, which rewrites the four `bots` cases that make one on the pinned OpenCode. |
+
+### Differential runs
+
+- **Seed against real.** On a temp home holding a copy of this Mac's OpenCode database, the
+  picker's list made from disk (OpenCode not started) against OpenCode's own answers (`refresh=1`
+  starts it): 41 models each, no difference.
+- **One conversation, both boxes.** The same requests (start, send, location, rows, the
+  conversation, asks, the active list, the picker) on copies of one home with the pinned
+  OpenCode and the stand-in. It found the missing title, the tokens (110 input and 0 output for
+  100 and 10), usage counted twice, and the tools' and wake-ups' gap, all fixed above. Left:
+  - the place and row shape in the table above;
+  - `got` (the reference starts in the postponed Auto mode and says it got Ask First; Rust never
+    starts in it);
+  - the send answer's `data` (Rust answers `{}`; the app reads only the status,
+    `kuvo_box/src/client.rs:500`);
+  - efforts in the picker.
+
+  Home files: Rust writes the agent's (`agents/sessions/<id>`, `run/agents/opencode`, the kept
+  list); the reference writes OpenCode's server record and plugin.
+
+### Size
+
+Non-test characters without indentation, against main (`01bf21c8e`):
+
+- **This row's Rust: 37.2k.** The flavour is 10.2k. The kept model list is 11.5k (`kept.rs`, and
+  its use in `models.rs` and `proxy.rs`): Rust only, since the reference starts OpenCode instead.
+  The settings servers are 2.4k, the asks' agents target 3.2k, and the rest is wiring.
+- **Base:** `agents/agents/grok.ts` (the sibling flavour, 19.3k) and `agents/servers.ts` (7.8k), 27.0k.
+- **Ratio:** 0.95× without the kept list, 1.38× with it.
+
+### Verification
+
+| Platform | agents-opencode, Rust | agents-opencode, TypeScript | agents-grok, agents-antigravity, agents (Rust) |
+|---|---:|---:|---:|
+| macOS | 14/14 | 12/12, 2 skipped (Rust-only) | 10/10, 11/11, 12/12 |
+| Linux x86-64, lokum (musl, 1 CPU, 1 GB) | 14/14 | — | 10/10, 11/11, 12/12 |
+| WSL2, Ubuntu 24.04 (musl) | 14/14 | — | 10/10, 11/11, 12/12 |
+| Native Windows x64 | 14/14 | — | 10/10, 11/11, 12/12 |
+
+Each platform ran the pinned OpenCode of its own (2.2.6, from the engine pin). `agents-opencode-live`
+passed once on the Mac with a real OpenCode Go turn. Also on the Mac, Rust: engine-sessions 81/81,
+engine-models 19/19, engine-asks 9/9, agents-codex 100/100, agents-claude 20/20,
+agents-claude-turns 59 and 1 todo (4.6), bots 40/40, usage 53/54 (1 skipped), agent-tools 3/3.
+`work-elsewhere` fails one case ("a lead on another computer lists, stops…", the "asks first for
+now" wording) on main's Rust box too.
+
+The slower runners found two races in the cases, both fixed:
+
+- A message sent while a stopped turn was still ending waited in line, as it should. The Stop
+  case now sends once the turn has ended.
+- A conversation just made wasn't on the list yet: its location answers 503 until it is, and the
+  app asks again. The cases ask again too.
+
 ## Codex (4.2)
 
 `kuvo_agents::codex` runs your own `codex` through its app-server

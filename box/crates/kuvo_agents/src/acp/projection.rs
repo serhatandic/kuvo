@@ -70,6 +70,8 @@ pub(super) struct Projection {
     synthetic: u64,
     /// What it cost the conversation as it last said, and for which session.
     pub cost: Option<(String, f64)>,
+    /// What the turn used, as its prompt's answer said: its last step's.
+    pub turn: Option<Usage>,
 }
 
 impl Projection {
@@ -537,7 +539,7 @@ impl Projection {
         }
         self.settle_reads(&mut events, true, cx);
         events.push(TurnEvent::StepEnded {
-            usage: self.step_usage(),
+            usage: self.turn.take().or_else(|| self.step_usage()),
             finish: None,
             error: None,
         });

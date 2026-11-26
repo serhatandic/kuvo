@@ -10,11 +10,11 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
-mod engine_servers;
+mod settings_servers;
 mod places;
 mod servers;
 
-pub use engine_servers::{EngineApi, EngineServers, Sandbox};
+pub use settings_servers::{EngineApi, Sandbox, SettingsServers};
 pub use places::{TOOL_SERVER_NAME, ToolPlaces};
 pub use servers::{
     ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
@@ -311,6 +311,18 @@ impl ToolRelay {
             env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
             timeout: timeout + FORWARDER_WAITS,
         }))
+    }
+
+    /// Kuvo Code's tools for a conversation straight from the relay, over HTTP (an agent with
+    /// one process for every conversation, where a program per conversation would be many).
+    pub async fn http_tools(&self, session: &str, holder: Holder) -> io::Result<Option<AgentTools>> {
+        let Some(Tools { key, .. }) = self.0.source.tools(session) else {
+            return Ok(None);
+        };
+        let Some(RelayedTools { url, authorization, timeout }) = self.relayed_tools(session, holder).await? else {
+            return Ok(None);
+        };
+        Ok(Some(AgentTools::Http { key, url, headers: vec![("Authorization".into(), authorization)], timeout }))
     }
 
     /// The relay's port, listening from then on: the one it had before when

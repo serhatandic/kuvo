@@ -124,14 +124,21 @@ impl BotEngine {
 
     /// A conversation's record, the coding agents' or the engine's, as clients read it.
     pub async fn session_data(&self, session: &str) -> Result<Value, Unreachable> {
+        Ok(self.session_found(session).await?.0)
+    }
+
+    /// As `session_data`, and whether it's the coding agents' (else the engine's).
+    pub async fn session_found(&self, session: &str) -> Result<(Value, bool), Unreachable> {
         let theirs = self.engine.agent_session(session).await.map_err(|_| {
             Unreachable("The coding agents on this computer aren't answering.".into())
         });
         match theirs? {
-            Some((_, header)) => Ok(Value::Object(header)),
+            Some((_, header)) => Ok((Value::Object(header), true)),
             None => {
-                self.call(Method::GET, &sessions::path(session), None, WAIT)
-                    .await
+                let data = self
+                    .call(Method::GET, &sessions::path(session), None, WAIT)
+                    .await?;
+                Ok((data, false))
             }
         }
     }
@@ -200,7 +207,7 @@ impl BotEngine {
     /// The model a new conversation starts on here, by the box's rule (`models.rs`): the default,
     /// else the first that runs. `None` while the engine can't say; `Some(None)` for none.
     pub async fn starting_model(&self, directory: &str) -> Option<Option<Value>> {
-        crate::models::starting_here(&self.engine, self.lease().ok()?, directory).await
+        crate::models::starting_here(&self.engine, self.lease.as_ref(), directory).await
     }
 
     /// The conversation's rules and notes changed in its turn, as `change` makes them from the

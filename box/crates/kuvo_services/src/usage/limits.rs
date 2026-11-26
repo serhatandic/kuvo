@@ -23,8 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Provider {
     Claude,
     Codex,
@@ -36,9 +35,43 @@ pub enum Provider {
     Zai,
     Ollama,
     Opencode,
+    /// A name from a newer computer; no local reader or reset is inferred.
+    Future(String),
+}
+impl Serialize for Provider {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        if name.is_empty()
+            || name.len() > 40
+            || !name.as_bytes()[0].is_ascii_lowercase() && !name.as_bytes()[0].is_ascii_digit()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(serde::de::Error::custom("Invalid usage service name"));
+        }
+        Ok(match name.as_str() {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            "antigravity" => Self::Antigravity,
+            "cursor" => Self::Cursor,
+            "grok" => Self::Grok,
+            "copilot" => Self::Copilot,
+            "openrouter" => Self::Openrouter,
+            "zai" => Self::Zai,
+            "ollama" => Self::Ollama,
+            "opencode" => Self::Opencode,
+            _ => Self::Future(name),
+        })
+    }
 }
 impl Provider {
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
@@ -50,9 +83,10 @@ impl Provider {
             Self::Zai => "zai",
             Self::Ollama => "ollama",
             Self::Opencode => "opencode",
+            Self::Future(name) => name,
         }
     }
-    fn title(self, agent: bool) -> &'static str {
+    fn title(&self, agent: bool) -> &str {
         match self {
             Self::Claude => "Claude",
             Self::Codex if agent => "Codex",
@@ -66,6 +100,7 @@ impl Provider {
             Self::Zai => "Z.ai",
             Self::Ollama => "Ollama",
             Self::Opencode => "OpenCode Go",
+            Self::Future(name) => name,
         }
     }
 }
@@ -140,7 +175,7 @@ impl Fact {
         Self {
             id: format!("usage_{}", hex::encode(hash)),
             row,
-            service: account.service,
+            service: account.service.clone(),
             account_name: account.title(),
             window_name: window.title(),
             window: window.id.clone(),
@@ -287,11 +322,14 @@ impl Service {
             super::legacy_limits::Cache::load(&home)
         };
         let peer_file = home.join("agents/usage/accepted-limits-peers.json");
-        let legacy = home.join("agents/usage/limits-peers.json");
+        let legacy = home.join("agents/limits-peers.json");
+        let older = home.join("agents/usage/limits-peers.json");
         let peer_book = Book::read(if peer_file.exists() {
             &peer_file
-        } else {
+        } else if legacy.exists() {
             &legacy
+        } else {
+            &older
         })
         .unwrap_or_default();
         Self {
@@ -336,9 +374,9 @@ impl Service {
                 let acc = &entry.account;
                 AccountMail {
                     provider: acc.provider.clone(),
-                    service: acc.service,
+                    service: acc.service.clone(),
                     account: acc.account.clone(),
-                    agent: acc.account.as_ref().map(|_| acc.service),
+                    agent: acc.account.as_ref().map(|_| acc.service.clone()),
                     identity: acc.identity.clone(),
                     label: acc.label.clone(),
                     facts: entry.facts.clone(),
@@ -1783,7 +1821,7 @@ fn ordered_trails(entry: &Entry) -> Vec<&Trail> {
 }
 fn ring_spans<'a>(
     current: &[&'a Window],
-    service: Provider,
+    service: &Provider,
     now: u64,
 ) -> (Option<&'a String>, Option<&'a String>) {
     let Some(first) = current.first() else {
@@ -1814,7 +1852,7 @@ fn ring_spans<'a>(
         .collect::<Vec<_>>();
     let mut lead = whole[0];
     let used = |w: &Window| if w.expired(now) { 0.0 } else { w.used };
-    if service == Provider::Antigravity {
+    if *service == Provider::Antigravity {
         for w in &whole {
             if used(w) > used(lead) {
                 lead = w;
@@ -1874,7 +1912,7 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
     }
     let ordered = ordered_trails(entry);
     let current: Vec<_> = ordered.iter().map(|t| &t.current).collect();
-    let (short, long) = ring_spans(&current, acc.service, now);
+    let (short, long) = ring_spans(&current, &acc.service, now);
     let mut row = local.clone();
     let mut rings = Map::new();
     for (value, trail) in row["windows"]

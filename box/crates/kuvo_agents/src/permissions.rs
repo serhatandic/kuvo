@@ -9,6 +9,7 @@ pub(crate) mod turn;
 
 pub use allowance::{covers, remember};
 pub use settings::{ConfigLocation, read_blocks};
+pub(crate) use settings::settings_object;
 
 use crate::session::PermissionAsk;
 use serde::Deserialize;

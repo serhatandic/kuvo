@@ -7,11 +7,13 @@ use super::tools::Call;
 
 /// What Kuvo says first: the protocol it speaks and, with `files`, that it reads and writes files
 /// for the agent.
-pub(crate) fn initialize(files: bool, meta: Option<Value>) -> Value {
-    let fs = json!({"readTextFile": files, "writeTextFile": files});
+pub(crate) fn initialize(files: bool, meta: Option<Value>, more: Map<String, Value>) -> Value {
+    let mut capabilities = more;
+    capabilities.insert("fs".into(), json!({"readTextFile": files, "writeTextFile": files}));
+    capabilities.insert("terminal".into(), false.into());
     json!({
         "protocolVersion": 1,
-        "clientCapabilities": {"fs": fs, "terminal": false},
+        "clientCapabilities": capabilities,
         "clientInfo": {"name": "kuvo-code", "title": "Kuvo Code", "version": "1"},
         "_meta": meta,
     })
@@ -85,6 +87,29 @@ pub(crate) enum Update {
 }
 
 /// A count of tokens: a whole number, never negative.
+/// What a turn used, as a prompt's answer says it (`usage`).
+pub fn prompt_usage(answer: &Value) -> Option<crate::session::Usage> {
+    let usage = answer.get("usage").filter(|usage| usage.is_object())?;
+    let count = |key: &str| tokens(&usage[key]).unwrap_or_default();
+    Some(crate::session::Usage {
+        input: tokens(&usage["inputTokens"])?,
+        output: count("outputTokens"),
+        reasoning: count("thoughtTokens"),
+        cache_read: count("cachedReadTokens"),
+        cache_write: count("cachedWriteTokens"),
+        cost: None,
+    })
+}
+
+/// The title an agent gave its session `id`, from `session/list`'s answer; none while it has only
+/// its placeholder ("New session - …").
+pub fn listed_title(answer: &Value, id: &str) -> Option<String> {
+    let sessions = answer["sessions"].as_array()?;
+    let title = sessions.iter().find(|session| session["sessionId"] == id)?["title"].as_str()?.trim();
+    let placeholder = ["New session - ", "Child session - "].iter().any(|start| title.starts_with(start));
+    (!title.is_empty() && !placeholder).then(|| title.to_owned())
+}
+
 fn tokens(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| {
         let float = value.as_f64()?;
@@ -321,5 +346,18 @@ mod tests {
         let again = Capabilities::read(&capabilities.to_value());
         assert_eq!(again.auth_methods, ["oauth-personal"]);
         assert!(again.resume && again.load);
+    }
+
+    #[test]
+    fn a_prompts_usage_and_a_listed_title_are_read_as_said_and_a_placeholder_is_no_title() {
+        let usage = prompt_usage(&json!({"stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 10, "totalTokens": 140, "thoughtTokens": 5, "cachedReadTokens": 25}})).unwrap();
+        assert_eq!((usage.input, usage.output, usage.reasoning, usage.cache_read, usage.cache_write), (100, 10, 5, 25, 0));
+        assert!(prompt_usage(&json!({"stopReason": "end_turn"})).is_none());
+        let listed = json!({"sessions": [
+            {"sessionId": "ses_a", "cwd": "/w", "title": "New session - 2026-11-26T05:00:00.000Z"},
+            {"sessionId": "ses_b", "cwd": "/w", "title": " Fix the login "}]});
+        assert_eq!(listed_title(&listed, "ses_a"), None);
+        assert_eq!(listed_title(&listed, "ses_b").as_deref(), Some("Fix the login"));
+        assert_eq!(listed_title(&listed, "ses_c"), None);
     }
 }

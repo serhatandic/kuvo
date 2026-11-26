@@ -25,6 +25,8 @@ fn account_of(
         AgentKind::Antigravity => limits::Provider::Antigravity,
         AgentKind::Cursor => limits::Provider::Cursor,
         AgentKind::Grok => limits::Provider::Grok,
+        // (Its plan's limits are read from its own database: it has no plan sign-in here.)
+        AgentKind::OpenCode => limits::Provider::Opencode,
     };
     Account {
         provider: provider.to_string(),
@@ -235,6 +237,7 @@ fn direct_facts(
             name: "Extra Usage".into(),
             amount: credits,
             unit: Unit::Credits,
+            resets_at: None,
         });
     }
     if let Some(resets) = &direct.resets {

@@ -439,6 +439,11 @@ impl Service {
             if changed.is_some_and(|selected| !selected.contains(id)) {
                 continue;
             }
+            // An OpenCode conversation's turns are in OpenCode's own database, counted from there.
+            let agent = session["model"]["providerID"].as_str().and_then(kuvo_agents::accounts::Provider::of_model);
+            if agent.is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode) {
+                continue;
+            }
             let stamp = hash(&json!(
                 [
                     "session.json",

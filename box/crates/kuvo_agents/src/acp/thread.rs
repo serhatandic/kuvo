@@ -40,7 +40,7 @@ use super::{
     projection::{Context, Projection, Served},
     server::{Event, Exit, Process, Route, Shared, lock, stopped},
     tools::{self, Call, KnownTools},
-    wire::{SessionUpdate, Setup},
+    wire::{self, SessionUpdate, Setup},
 };
 
 /// How long opening a session, choosing its model, or a stop is waited for.
@@ -128,6 +128,7 @@ impl Conversation {
                 known: KnownTools::default(),
                 closing: false,
                 deadline: None,
+                titled: false,
             }
             .run(receiver, events),
         );
@@ -366,6 +367,8 @@ struct Actor {
     known: KnownTools,
     closing: bool,
     deadline: Option<Instant>,
+    /// Its agent's title for it was taken (one that titles itself).
+    titled: bool,
 }
 
 fn envelope(event: TurnEvent) -> EventEnvelope {
@@ -530,6 +533,7 @@ impl Actor {
             return Ok((Vec::new(), String::new()));
         };
         let http = process.capabilities().http_servers;
+        let own = self.shared.flavour.reads_own_servers();
         let headers = |list: Vec<(String, String)>| -> Vec<Value> {
             list.into_iter()
                 .map(|(name, value)| json!({"name": name, "value": value}))
@@ -537,7 +541,11 @@ impl Actor {
         };
         let mut servers = Vec::new();
         let mut key = String::new();
-        if let Some(tools) = relay.agent_tools(&self.session, self.holder, false).await? {
+        let tools = match own {
+            true => relay.http_tools(&self.session, self.holder).await?,
+            false => relay.agent_tools(&self.session, self.holder, false).await?,
+        };
+        if let Some(tools) = tools {
             match tools {
                 AgentTools::Stdio {
                     key: tools,
@@ -569,7 +577,7 @@ impl Actor {
                 AgentTools::Http { .. } => {}
             }
         }
-        if http {
+        if http && !own {
             let found = relay.computer_servers(&self.directory).await;
             key.push('|');
             key.push_str(&relay.servers_key(&self.session, &found).await);
@@ -746,7 +754,8 @@ impl Actor {
         }
         self.own = None;
         let mode = Self::mode(&input);
-        if let Err(error) = self.ensure_open(&input.model.id, &mode).await {
+        let model = (self.shared.flavour).model_value(&input.model.provider, &input.model.id);
+        if let Err(error) = self.ensure_open(&model, &mode).await {
             return unsent(sink.as_ref(), error).await;
         }
         let process = self
@@ -760,7 +769,7 @@ impl Actor {
             .select_model(
                 &process.rpc,
                 &native,
-                &input.model.id,
+                &model,
                 input.model.variant.as_deref(),
                 &mut self.setup,
                 credential.as_deref(),
@@ -1631,8 +1640,10 @@ impl Actor {
         let name = self.shared.name();
         let outcome = match answer {
             Ok(result) => {
+                let usage = self.shared.flavour.answers_usage().then(|| wire::prompt_usage(&result)).flatten();
                 if let Some(active) = &mut self.active {
                     active.answered = true;
+                    active.projection.turn = usage;
                 }
                 match result["stopReason"].as_str() {
                     Some("rate_limit") => self.limited(Some(format!(
@@ -1940,6 +1951,9 @@ impl Actor {
             known: &self.known,
         };
         let mut events = active.projection.end(&cx);
+        if let Some(title) = self.own_title(&active.process).await {
+            events.push(TurnEvent::Titled(title));
+        }
         if active.compact {
             events.push(TurnEvent::CompactionEnded {
                 succeeded: matches!(outcome, Outcome::Succeeded),
@@ -1961,6 +1975,19 @@ impl Actor {
         }
         self.set_busy();
         Ok(())
+    }
+
+    /// The title its agent gave it, as a turn ends, for one that titles itself: taken once.
+    async fn own_title(&mut self, process: &Process) -> Option<String> {
+        if self.titled || !self.shared.flavour.titles_itself() || process.closed() {
+            return None;
+        }
+        let native = self.native.clone()?;
+        let params = json!({"cwd": self.directory});
+        let answer = process.rpc.request("session/list", Some(params), Some(STOP)).await.ok()?;
+        let title = wire::listed_title(&answer, &native)?;
+        self.titled = true;
+        Some(title)
     }
 
     /// Stops what the agent does for this conversation now.

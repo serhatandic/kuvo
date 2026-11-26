@@ -15,7 +15,10 @@ const WATCH_AS_COMMAND: &str = "This conversation asks before running commands, 
 
 /// Whether a conversation with these rules asks before commands, but nothing asked the user about
 /// a watch's check before its tool ran (its rules are from before watches asked).
-fn watch_went_unasked(rules: &Value) -> bool {
+/// Whether a conversation with these rules asks before commands, but nothing asked the user about
+/// a watch's check before its tool ran: its rules are from before watches asked, or the coding
+/// agents run it (`agents`), whose tools aren't checked against them.
+fn watch_went_unasked(rules: &Value, agents: bool) -> bool {
     let rules: Vec<&Value> = rules.as_array().into_iter().flatten().collect();
     let is = |rule: &&Value, action: &str, effect: &str| {
         let (permission, pattern, effect_of) = (
@@ -31,9 +34,10 @@ fn watch_went_unasked(rules: &Value) -> bool {
             && effect_of == Some(effect)
     };
     rules.iter().any(|rule| is(rule, "shell", "ask"))
-        && !rules
-            .iter()
-            .any(|rule| is(rule, "kuvo-browser_watch_for_change", "ask"))
+        && (agents
+            || !rules
+                .iter()
+                .any(|rule| is(rule, "kuvo-browser_watch_for_change", "ask")))
 }
 
 /// What kuvo-wake said, in its words; why it couldn't run where it didn't.
@@ -76,7 +80,7 @@ impl Work {
         name: &str,
         args: &Map<String, Value>,
         session: Option<&str>,
-        own: Option<&Value>,
+        own: Option<(&Value, bool)>,
         caller: Option<&Caller>,
         operation: Option<&Operation>,
     ) -> Said {
@@ -86,7 +90,7 @@ impl Work {
         let seat = |data: Option<&Value>| {
             data.is_some_and(|data| !data["metadata"]["kuvo"]["seat"].is_null())
         };
-        if seat(own) || seat(caller.map(|caller| &caller.data)) {
+        if seat(own.map(|(data, _)| data)) || seat(caller.map(|caller| &caller.data)) {
             return refused(
                 "Not from a group chat: a chat can meet on a schedule instead (its editor's Meets on a Schedule).",
             );
@@ -132,8 +136,8 @@ impl Work {
             "watch_for_change" => {
                 // A watch runs a command whenever it's due: in Ask First, only once the user was asked.
                 if own
-                    .or(caller.map(|caller| &caller.data))
-                    .is_some_and(|data| watch_went_unasked(&data["permissions"]))
+                    .or(caller.map(|caller| (&caller.data, caller.agents)))
+                    .is_some_and(|(data, agents)| watch_went_unasked(&data["permissions"], agents))
                 {
                     return refused(WATCH_AS_COMMAND);
                 }
@@ -218,11 +222,15 @@ impl Work {
                 .env("KUVO_WAKES", self.home.join("wakes"))
                 .env("KUVO_WAKE_TOOL", "1")
                 // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
-                .env_remove("KUVO_WAKE_VIA")
                 .env_remove("OPENCODE_SESSION_ID")
                 .env_remove("KUVO_WAKE_FOLDER")
                 .stdin(std::process::Stdio::null())
                 .kill_on_drop(true);
+            // A coding agent's conversation: its wake-ups go to the coding agents.
+            match caller.is_some_and(|caller| caller.agents) {
+                true => command.env("KUVO_WAKE_VIA", "bridge"),
+                false => command.env_remove("KUVO_WAKE_VIA"),
+            };
             Box::pin(async move {
                 let ran = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
                 if tells {
@@ -400,12 +408,15 @@ mod tests {
     #[test]
     fn a_watch_goes_unasked_only_where_commands_ask_and_the_tool_itself_doesnt() {
         let asks = json!([{ "permission": "shell", "pattern": "*", "action": "ask" }]);
-        assert!(watch_went_unasked(&asks));
+        assert!(watch_went_unasked(&asks, false));
         let both = json!([{ "permission": "shell", "pattern": "*", "action": "ask" }, { "permission": "kuvo-browser_watch_for_change", "pattern": "*", "action": "ask" }]);
-        assert!(!watch_went_unasked(&both));
+        assert!(!watch_went_unasked(&both, false));
+        // (The coding agents don't check Kuvo Code's tools against its rules.)
+        assert!(watch_went_unasked(&both, true));
         assert!(!watch_went_unasked(
-            &json!([{ "action": "shell", "resource": "*", "effect": "allow" }])
+            &json!([{ "action": "shell", "resource": "*", "effect": "allow" }]),
+            true
         ));
-        assert!(!watch_went_unasked(&json!(null)));
+        assert!(!watch_went_unasked(&json!(null), false));
     }
 }
