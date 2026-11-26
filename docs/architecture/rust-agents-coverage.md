@@ -894,6 +894,87 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## The engine areas on agent conversations (4.7g, in progress)
+
+The `engine-*` conformance areas tested conversations on a stand-in engine. They now test a
+coding agent's conversations (the scripted Grok of `acp.mjs`; `bench.mjs` with `agents: true`
+gives each computer one, and the reference its bridge), so they run on both boxes once the
+engine's place is gone. Cases that test only how OpenCode's server works are left out, each with
+its reason. Rust's failures here are what 4.7d step 5 makes pass.
+
+| Area | Reference | Rust | Left out |
+|---|---|---|---|
+| engine-delivery | 4/4 | 5/5 | none |
+| engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
+| engine-typed | 7/7 | 6/7 | see below |
+| engine-asks | 5/5 (1 skipped) | 2/6 | see below |
+| engine-worktree | 7/7 | 5/7 | see below |
+
+Notes on each area:
+
+- **engine-delivery.** A draft waits on a computer only while its conversation's computer is
+  away: an agent's conversation takes a message at once. So the take-back and Steer/Send Now
+  cases run on two computers with the owner stopped. A draft to an agent's conversation no longer
+  asks the engine whether it may go (`typed.rs`).
+- **engine-search.** The cases seed agent conversations with their rows. The kept text is checked
+  in its true order: what was said, the latest last, then the steps. (The old check that it starts
+  with the latest sentence held only because the stand-in engine handed rows back newest first.)
+- **engine-typed.** Added: a conversation kept with an Autopilot mark opens and takes a message as
+  any other (Autopilot is gone from the app). Left out:
+  - "two retries recover a draft that never reached the engine before restart" and "a retry
+    waiting for the original draft leaves other requests responsive": both hold OpenCode's prompt
+    before it takes it, and an agent's line is the box's own;
+  - the explicit empty default and an unavailable engine catalog, since an agent's conversation
+    always has its model;
+  - the busy engine's uncertain answer.
+- **engine-asks.** The asks are the agent's own: its permission requests and Grok's questions.
+  Left out:
+  - "OpenCode permission cards preserve the shared Always button words": OpenCode's save patterns
+    and project-wide Always; an agent's Always is for its conversation, checked on its cards;
+  - "an MCP form goes to the first conversation waiting on its server…": OpenCode's folder-wide
+    MCP forms;
+  - the engine's own reply refusal and a busy engine;
+  - the raw `api/…/permission/…/reply` route, the engine passthrough's;
+  - the child-question and child-archive parts: ACP agents have no child conversations.
+
+  "A live permission read can expire an ask or discover a new local Block" is folded into the
+  Block case. Archiving doesn't stop an agent's run on either box; that is a bug, fixed in both in
+  4.7d step 5 (the case skips on the reference until then).
+- **engine-worktree.** Left out: "an interrupted start removes an unused worktree…" and "a
+  cancelled client leaves a worktree only if OpenCode created its conversation" (both cut
+  OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
+  answer to an agent start has no `worktree` field and names the branch after the title, so the
+  cases check the files and records.
+
+### engine-models
+
+Cases 1–2 (stars and speeds) don't touch conversations and run as they were. The others test
+OpenCode's model catalog as its server served it. What the app still shows for OpenCode moves to
+the OpenCode agent's catalog (the pinned OpenCode, with a stand-in for deterministic runs), and
+never starts OpenCode just to list models. What is only the engine's plumbing is left out.
+
+| Case | What the user sees | Outcome | Reason |
+|---|---|---|---|
+| the model picker offers models that run and chooses a supported starting model | OpenCode's runnable models, retiring ones, efforts, Free, the starting model | moved | shown for OpenCode's models; the engine-conversation note goes, as OpenCode's conversations are an agent's |
+| the picker distinguishes free access from zero pricing and supplies an unnamed provider’s id | the Free label; a provider named by its id; "Choose a Model" when none runs | moved | shown in the picker |
+| the picker falls back from a signed-out default and says none when nothing runs | the starting model; none when nothing runs | moved | shown in the picker |
+| catalog reads are reused until a credential change publishes the new picker | a key added shows its models without a restart | moved | Settings › Accounts and the picker; the engine-bot note goes, as those bots run on the agent |
+| the engine's catalog distinguishes a working model, an account key and no default | "Example needs an OpenAI key…", Add Key, the plan hint | moved | the composer's refusal and action |
+| only known folders use a project’s models, and session readiness uses its own folder | a project's own models in its pickers | moved | shown per project and worktree |
+| session readiness retries a default the engine could not answer | nothing | left out | the engine's transient default |
+| an unloaded model catalog leaves session readiness and the picker start unknown | no refusal before the list is known | covered | agents-opencode "where OpenCode never ran, the picker offers it as an agent not yet listed, and nothing starts it" |
+| session readiness distinguishes sign-in, project credentials, and a model turned off | each provider's refusal words (key, sign-in, plan, gone) | moved | the composer's refusal and action |
+| a model removed from a catalog keeps the name the box last knew | "Model One is no longer available" | moved | the composer's refusal |
+| a model missing from a signed-in provider is marked gone while later models remain available | "… is no longer among Anthropic’s models" | moved | the composer's refusal |
+| provider refresh holds folders with active work and settles them after the work ends | Refresh Models brings new models | moved | the Settings action; holding busy folders on the engine's server goes |
+| a replacement engine clears an older pending provider refresh without closing a folder | nothing | left out | the engine's server restarting |
+| the picker settles a folder that finishes before its deferred GitLab refresh is saved | nothing | left out | the engine's folders closing |
+| overlapping picker refreshes share the release of a quiet folder and keep the busy one | nothing | left out | the engine's folders closing |
+| an engine-wide refresh checks new work and locations reopened while it closes them | nothing | left out | the engine's folders closing |
+| provider refresh refuses unavailable catalogs and engines without closing a folder | "refreshes by itself", "isn't on this computer" | moved | the Settings action's refusals; the engine's folders go |
+
+Counts: 11 moved, 1 covered, 5 left out.
+
 ## OpenCode's older conversations and bots (4.7d, in progress)
 
 Conversations made on the engine before OpenCode was a coding agent here, and bots on OpenCode's
