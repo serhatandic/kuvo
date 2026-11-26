@@ -1067,7 +1067,9 @@ never starts OpenCode just to list models. What is only the engine's plumbing is
 | an engine-wide refresh checks new work and locations reopened while it closes them | nothing | left out | the engine's folders closing |
 | provider refresh refuses unavailable catalogs and engines without closing a folder | "refreshes by itself", "isn't on this computer" | moved | the Settings action's refusals; the engine's folders go |
 
-Counts: 11 moved, 1 covered, 5 left out.
+Counts: 11 moved, 1 covered, 5 left out. The moved cases are the area agents-opencode-models (8
+cases on the pinned OpenCode: the reference 8/8, Rust 0/8 until 4.7d step 5 gives the OpenCode
+agent's catalog what the engine's showed). Cases 1–2 run as they were.
 
 ## OpenCode's older conversations and bots (4.7d, in progress)
 
