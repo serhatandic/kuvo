@@ -1096,7 +1096,7 @@ corpus 2/2; storage-format differences remain documented. Engine sessions
 project-file refiling case reported 2 engine inventory reads rather than its
 baseline 1; its assertion now dumps both counts, fixture requests, and the
 last inventory. Capped Linux (Lokum) 113/113, container and scratch removed.
-Native Windows and WSL will be checked on the combined slice 23–25 tip.
+Native Windows and WSL both passed the combined slice 23–25 suite (see slice 25).
 Non-test size: 633,118 characters without
 leading indentation (0.921× the 687,546 TS baseline). 13 A1 entries closed;
 71 remain.
@@ -1145,9 +1145,9 @@ and its assertion now includes the fixture resident log on failure. The seeded
 differential matches 12/13 exact answers (actual scan clock only), native
 corpus 2/2. Corrected capped Linux usage 116/116 applicable, including the
 unchanged-WAL revision assertion; container and scratch removed. Windows
-and WSL proof follows in the combined 23–25 run.
+and WSL both passed the combined 23–25 run (see slice 25).
 Non-test size 633,641 characters without indentation (0.922× the TS baseline);
-19 A1 entries have Mac proof, 52 remain.
+19 A1 entries closed, 52 remain.
 
 ### Slice 25: Cursor account-wide history and plan admission
 
@@ -1188,7 +1188,14 @@ summary recount and verifies 1,304 counted tokens before querying the two
 zones, retaining exact daily assertions. Three runs on each box pass. The
 project-file refile test passed the exact engine suite retry and three
 focused repeats; the intermittent extra read is recorded for later (rare).
-Merged-base and combined Windows/WSL/Linux proof to follow before tip.
+On the latest merged base (6.4 browser install and shared provider classifier),
+Mac Rust usage 119/119, TS 41/41, engine sessions 81/81, workspace test targets
+and Bun clean; exact differential 12/13 (scan clock only), native 2/2. The
+combined frozen 23–25 suite also passed native Windows 119/119, WSL 119/119,
+and capped Linux (Lokum) 119/119. All applicable tests pass; each platform
+skips only its other-platform discovery fixture. No test resident/node/bun
+process remains on the PC, its two scratch homes are removed, and the Linux
+container and scratch were removed.
 Non-test size 635,823 characters without indentation (0.925× the 687,546 TS
 baseline). 21 A1 entries closed, 31 remain.
 
