@@ -191,7 +191,7 @@ impl Service {
         let taken = match &conversation.doing {
             Doing::Idle => true,
             Doing::Running(live) => live.provider == provider,
-            Doing::Starting { .. } | Doing::Stopping(_) => false,
+            Doing::Starting { .. } | Doing::Stopping(_) | Doing::Files => false,
         };
         if taken {
             conversation.own = Some(OwnStart { provider, text });
@@ -848,6 +848,9 @@ impl Service {
         into: bool,
         now: bool,
     ) -> io::Result<()> {
+        if matches!(&state.conversation(session).doing, Doing::Starting { id: starting, .. } if starting == id) {
+            return Err(io::Error::new(ErrorKind::NotFound, "That message was sent already."));
+        }
         if into
             && delivery == Delivery::Steer
             && state.conversation(session).handing.contains_key(id)
@@ -929,6 +932,9 @@ impl Service {
         id: &str,
         defer: bool,
     ) -> io::Result<Cancelled> {
+        if matches!(&state.conversation(session).doing, Doing::Starting { id: starting, .. } if starting == id) {
+            return Ok(Cancelled::Busy);
+        }
         // Being handed to the agent: cancelled if it doesn't take it.
         if let Some(handing) = state.conversation(session).handing.get(id) {
             if defer {
@@ -1080,6 +1086,10 @@ impl Service {
                 conversation.go = resume;
                 Stopping::Starting
             }
+            Doing::Files => {
+                conversation.go |= resume;
+                Stopping::Nothing
+            },
             Doing::Idle => {
                 if resume {
                     self.wake(state, session).await;
@@ -1141,24 +1151,21 @@ impl Service {
         let Some(index) = index else { return };
         let id = line[index].id.clone();
         let sent = self.store.has_message(session, &id).await.unwrap_or(false);
-        let taken = self
-            .store
-            .edit_line(session, move |line| {
-                let input = line.take(&id);
-                let changed = input.is_some();
-                (input, changed)
-            })
-            .await;
-        let Ok(Some(Some(input))) = taken else {
-            return;
-        };
         if sent {
             // Already in the conversation (it left the line as a crash cut
             // in): it isn't sent again, and the next goes.
-            Box::pin(self.advance(state, session, ended)).await;
+            let taken = self.store.edit_line(session, move |line| {
+                let changed = line.take(&id).is_some();
+                (changed, changed)
+            }).await;
+            if matches!(taken, Ok(Some(true))) {
+                Box::pin(self.advance(state, session, ended)).await;
+            }
             return;
         }
-        self.start_from_line(state, session, input).await;
+        // The preparation owns this input, but the saved line is its durable
+        // handoff receipt until the writer records its message.
+        self.start_from_line(state, session, line[index].clone()).await;
     }
 
     async fn start_from_line(&self, state: &mut State, session: &str, input: Input) {
@@ -1245,7 +1252,7 @@ impl Service {
         if let Some(why) = why {
             let error = io::Error::new(ErrorKind::InvalidInput, why);
             let agent = if turn.plan { "plan" } else { "build" };
-            let _ = crate::turn_projection::record_failed_start(
+            let written = crate::turn_projection::record_failed_start(
                 self.store.clone(),
                 session.to_owned(),
                 agent.into(),
@@ -1253,8 +1260,14 @@ impl Service {
                 None,
                 None,
                 &error,
-            )
-            .await;
+            ).await.is_ok();
+            if written {
+                let id = input.id;
+                let _ = self.store.edit_line(session, move |line| {
+                    let removed = line.take(&id).is_some();
+                    ((), removed)
+                }).await;
+            }
             return;
         }
         state.conversation(session).doing = Doing::Starting {

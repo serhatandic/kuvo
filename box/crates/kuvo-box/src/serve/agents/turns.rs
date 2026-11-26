@@ -15,9 +15,48 @@ use kuvo_protocol::routes::{
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::Value;
+use kuvo_protocol::{JsonStatus, Route, RouteSpec, shape::{Shape, Primitive}};
 use std::io;
 
+struct StageRevert;
+impl RouteSpec for StageRevert {
+    type Body = Value;
+    const ROUTE: &'static Route = &Route {
+        method: "POST", path: "kuvo/agents/api/session/:id/revert/stage", feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))], body: Some(&Shape::Primitive(Primitive::Any)),
+    };
+}
+impl JsonStatus<200> for StageRevert { type Body = Value; }
+struct ClearRevert;
+impl RouteSpec for ClearRevert {
+    type Body = ();
+    const ROUTE: &'static Route = &Route {
+        method: "DELETE", path: "kuvo/agents/api/session/:id/revert", feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))], body: None,
+    };
+}
+impl JsonStatus<200> for ClearRevert { type Body = Value; }
+
 pub(crate) fn register(runs: SessionRuns, feed: Feed, routes: &mut Registry) {
+    let undo = runs.clone();
+    routes.register::<StageRevert, _, _>(Access::DesktopOrPaired, move |call| {
+        let runs = undo.clone();
+        async move {
+            let session = session_id(call.param("id"))?;
+            let message = call.body["messageID"].as_str().unwrap_or_default().to_owned();
+            let revert = runs.stage_revert(session, message).await.map_err(super::refuse)?;
+            Ok(RouteReply::json::<200>(serde_json::json!({"data":revert})))
+        }
+    });
+    let redo = runs.clone();
+    routes.register::<ClearRevert, _, _>(Access::DesktopOrPaired, move |call| {
+        let runs = redo.clone();
+        async move {
+            let session = session_id(call.param("id"))?;
+            runs.clear_revert(session).await.map_err(super::refuse)?;
+            Ok(RouteReply::json::<200>(serde_json::json!({})))
+        }
+    });
     let as_turns = runs.clone();
     routes.register::<prompt::Spec, _, _>(Access::DesktopOrPaired, move |call| {
         let runs = as_turns.clone();

@@ -16,6 +16,7 @@ mod metadata;
 mod pictures;
 mod projection;
 mod repair;
+mod snapshot_notes;
 
 pub use line::Line;
 pub use projection::legacy_insight;
@@ -70,6 +71,7 @@ impl SessionHeader {
 #[derive(Clone)]
 pub struct SessionStore {
     root: PathBuf,
+    snapshots: crate::snapshots::Snapshots,
     /// What the agents keep going besides each conversation's turn, given to each thread.
     background: crate::background::Background,
     /// Where agents offer turns they began on its own, given to each thread.
@@ -81,8 +83,12 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn new(root: PathBuf) -> Self {
+        let snapshot_root = if root.ends_with("agents/sessions") {
+            root.parent().expect("agents folder").join("snapshots")
+        } else { root.join(".snapshots") };
         Self {
             root,
+            snapshots: crate::snapshots::Snapshots::new(snapshot_root),
             background: crate::background::Background::default(),
             own_turns: Default::default(),
             unrepaired: Default::default(),
