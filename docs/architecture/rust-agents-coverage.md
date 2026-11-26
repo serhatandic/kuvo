@@ -1787,7 +1787,8 @@ prefix in `agents/handover.ts` is a different feature and remains.
 | `sessions.test.ts` subagents: a child's task, own steps and finish, parent linkage and deletion; Stop | A, partial | `agents-subagents` exercises an ACP Grok child with its own text, tool call, active row, disabled messages, parent linkage, eventual finish and deletion; a second case stops the child without ending the parent, and discards late frames. A Claude foreground Task has its own transcript, and completion keeps the link. All three failed with the earlier Rust binary and pass with the reference and Rust. |
 | Claude's background and message forwarding cases; Codex spawned-agent cases; concurrent ACP/Antigravity and Cursor child cases | A, remaining | Background and resumed child lanes, permissions and native message routing, nested children, native Stop where supported, and holder recovery still need porting. An unknown ACP child is associated only with a single unambiguous active parent, never guessed among concurrent parents. |
 | `keywords.test.ts` side questions, follow-ups, threads/events, attachments, restart, conversation deletion | A, remaining | One-off generation, side-question routes and durable side threads are absent. |
-| `sessions.test.ts` Undo, undo carefully, and Undo/Stop/file-keeping races | A, remaining | Repository snapshots, staged Undo/Redo, and finalization are not implemented. |
+| `sessions.test.ts`: repository snapshots, staged Undo, Redo, and a new message making the Undo final | A, partial | `agents-undo` runs an actual Git repository and a scripted Claude turn on both boxes. It checks a changed file and new file restored, unrelated edits and the real Git index unchanged, Redo, then a new message removing the undone transcript and starting a fresh native conversation. A second case covers a session working in a subfolder, changed ignore rules, and a nested repository. |
+| `sessions.test.ts`: Undo/Stop/file-keeping races, steering marks, cut-short turn recovery, legacy notes | A, remaining | A file operation holds only its conversation's admission and the resident waits for it before replacement; full scenario coverage, steered-message snapshots and interrupted snapshot recovery remain. |
 | `carry-agents.test.ts` (both tests); `moves-lanes.test.js` and `moves-lanes-races.test.js`; Claude native conversation and memory move cases | A, remaining | Native lane manifest, packing, placement, verification, rollback and retained copies still to port. |
 | Kuvo reviews and conversation handoff | C | Removed on purpose; only readers of old stored marks remain. |
 
@@ -1822,3 +1823,19 @@ frames separately rather than mixing its text into the parent's answer.
 The activity handle owns cancellation and removal from the active list; a
 completed child discards late writes. The parent tool retains its task and
 child ID as it completes. This adds no native process for a spawned child.
+
+
+Repository snapshots keep a Git object store and index apart from the real
+repository. Non-repository folders need no Git subprocess. File operations are
+serialized per repository, and packing older objects doesn't prune saved trees.
+Undo uses the saved changed-file list, restores ignore rules first, and skips
+nested repositories and paths through links. A directory that would need to
+be recursively removed to restore a file is refused if it still contains other
+files, rather than discarding unrelated contents. Normal Undo and Redo are
+tested through the resident, with a real Git index.
+
+The snapshot is captured after the durable user row but before the native
+prompt. It exposed a previously short interval where a queued input was
+removed before that row existed. The selected input now remains in the saved
+line until the writer has confirmed it; the five resulting queue confirmation
+failures in the engine-sessions guard disappeared on rerun.

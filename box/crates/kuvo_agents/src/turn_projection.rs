@@ -48,11 +48,14 @@ pub(crate) struct Projection {
     summary: bool,
     own: bool,
     summary_started: Option<u64>,
+    snapshot: bool,
     limits: Arc<dyn PlanLimits>,
 }
 
 impl Projection {
     pub(crate) fn for_child(mut self) -> Self { self.own = true; self }
+
+    pub(crate) fn with_snapshot(mut self, snapshot: bool) -> Self { self.snapshot = snapshot; self }
 
     /// The plan limits its turn hears go to `limits` (the limits ring, 5.4).
     #[cfg_attr(not(test), allow(dead_code))]
@@ -97,6 +100,7 @@ impl Projection {
             summary: false,
             own: matches!(input.kind, TurnKind::AgentStarted),
             summary_started: None,
+            snapshot: false,
             limits: Arc::new(Unheard),
         };
         let mut projection = projection;
@@ -520,6 +524,12 @@ impl TurnWriter for Projection {
         Box::pin(async move {
             if matches!(event.event, TurnEvent::Finished(_)) {
                 self.drop_unreplayed().await?;
+                if self.snapshot {
+                    if let Err(error) = self.store.snapshot_finish(&self.session, &self.turn).await {
+                        eprintln!("Kuvo could not finish the repository snapshot: {error}");
+                    }
+                    self.snapshot = false;
+                }
             }
             let rows = self.rows(&event.event);
             if let TurnEvent::Finished(result) = &event.event

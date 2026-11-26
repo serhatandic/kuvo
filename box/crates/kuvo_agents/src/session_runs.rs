@@ -79,6 +79,11 @@ enum Command {
         session: String,
     },
     Line(line::Request),
+    Revert {
+        session: String,
+        message: Option<String>,
+        reply: Reply<Value>,
+    },
     /// A message handed to a turn: what its agent said.
     Steered(Box<line::Steered>),
     StepBoundary {
@@ -132,6 +137,7 @@ enum Doing {
     },
     Running(Live),
     Stopping(Live),
+    Files,
 }
 
 impl Doing {
@@ -156,6 +162,7 @@ struct Conversation {
     /// taken back meanwhile.
     handing: BTreeMap<String, Arc<AtomicBool>>,
     retired: bool,
+    waiting_files: Vec<Command>,
     checking: bool,
     /// A next-step delivery may be waiting; idle step notifications do not read disk.
     step_waiting: bool,
@@ -609,6 +616,14 @@ impl SessionRuns {
         }
     }
 
+    pub async fn stage_revert(&self, session: String, message: String) -> io::Result<Value> {
+        self.call(|reply| Command::Revert { session, message: Some(message), reply }).await
+    }
+
+    pub async fn clear_revert(&self, session: String) -> io::Result<()> {
+        self.call(|reply| Command::Revert { session, message: None, reply }).await.map(|_| ())
+    }
+
     /// Delete a conversation as the bridge does: no turn starts meanwhile, the
     /// running one stops first, and its subagents' conversations go with it
     /// unless a fork's steps still show them. False when it wasn't here.
@@ -702,6 +717,7 @@ struct Service {
 }
 
 type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
+type KeptFiles = (String, bool, io::Result<Value>, Reply<Value>);
 
 /// The actor's state: every conversation it knows of now, and the tasks it
 /// waits on.
@@ -709,6 +725,8 @@ struct State {
     conversations: BTreeMap<String, Conversation>,
     approvals: BTreeMap<String, watch::Sender<Vec<Allowance>>>,
     preparations: JoinSet<Prepared>,
+    files: JoinSet<KeptFiles>,
+    handover_waiting: Vec<(BTreeSet<String>, Reply<Handover>)>,
     turns: JoinSet<(String, io::Result<Option<Outcome>>)>,
     /// Making way for the next resident: nothing more starts here.
     closing: bool,
@@ -726,6 +744,8 @@ impl Service {
             conversations: BTreeMap::new(),
             approvals: BTreeMap::new(),
             preparations: JoinSet::new(),
+            files: JoinSet::new(),
+            handover_waiting: Vec::new(),
             turns: JoinSet::new(),
             closing: false,
         };
@@ -740,6 +760,11 @@ impl Service {
                 prepared = state.preparations.join_next(), if !state.preparations.is_empty() => {
                     if let Some(Ok(prepared)) = prepared {
                         self.prepared(&mut state, prepared).await;
+                    }
+                }
+                files = state.files.join_next(), if !state.files.is_empty() => {
+                    if let Some(Ok((session, staged, result, reply))) = files {
+                        self.files_ended(&mut state, session, staged, result, reply).await;
                     }
                 }
                 ended = state.turns.join_next(), if !state.turns.is_empty() => {
@@ -800,6 +825,10 @@ impl Service {
                 let _ = reply.send(Ok(live));
             }
             Command::Retire { session, reply } => {
+                if matches!(state.conversation(&session).doing, Doing::Files) {
+                    state.conversation(&session).waiting_files.push(Command::Retire { session, reply });
+                    return;
+                }
                 state.approvals.remove(&session);
                 let conversation = state.conversation(&session);
                 conversation.retired = true;
@@ -813,6 +842,31 @@ impl Service {
                     }
                 }
             }
+            Command::Revert { session, message, reply } => {
+                let closing = state.closing;
+                let conversation = state.conversation(&session);
+                if closing || conversation.retired {
+                    let _ = reply.send(Err(io::ErrorKind::NotFound.into()));
+                } else if matches!(conversation.doing, Doing::Files)
+                    || conversation.doing.live().is_some_and(|live| live.turn.is_done())
+                {
+                    conversation.waiting_files.push(Command::Revert { session, message, reply });
+                } else if !matches!(conversation.doing, Doing::Idle) {
+                    let _ = reply.send(Err(io::Error::new(ErrorKind::InvalidInput, "Stop the agent first.")));
+                } else {
+                    conversation.doing = Doing::Files;
+                    let store = self.store.clone();
+                    state.files.spawn(async move {
+                        let staged = message.is_some();
+                        let result = if let Some(message) = message {
+                            store.stage_revert(&session, &message).await
+                        } else {
+                            store.clear_revert(&session).await.map(|_| serde_json::json!({}))
+                        };
+                        (session, staged, result, reply)
+                    });
+                }
+            }
             Command::Line(request) => self.line_request(state, request).await,
             Command::Steered(steered) => self.steered(state, *steered).await,
             Command::StepBoundary { session, turn } => {
@@ -824,7 +878,13 @@ impl Service {
                 remaining,
             } => self.reconciled(state, &session, retry, remaining).await,
             Command::HandOver { held, reply } => {
-                let _ = reply.send(Ok(self.hand_over(state, &held).await));
+                if state.files.is_empty() {
+                    let _ = reply.send(Ok(self.hand_over(state, &held).await));
+                } else {
+                    // An Undo or Redo already changing files finishes before replacement.
+                    state.closing = true;
+                    state.handover_waiting.push((held, reply));
+                }
             }
         }
     }
@@ -856,6 +916,21 @@ impl Service {
 
     async fn prepared(&self, state: &mut State, prepared: Prepared) {
         let (session, mut outcome, reply) = prepared;
+        let selected = match &state.conversation(&session).doing {
+            Doing::Starting { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        if outcome.is_err() && let Some(id) = selected {
+            let written = self.store.has_message(&session, &id).await.unwrap_or(false);
+            let _ = self.store.edit_line(&session, move |line| {
+                if written { return ((), line.take(&id).is_some()); }
+                if let Some(input) = line.inputs.iter_mut().find(|input| input.id == id) {
+                    input.held = true;
+                    return ((), true);
+                }
+                ((), false)
+            }).await;
+        }
         let conversation = state.conversation(&session);
         let stop = matches!(conversation.doing, Doing::Starting { stop: true, .. });
         if conversation.retired
@@ -912,6 +987,29 @@ impl Service {
         }
     }
 
+    async fn files_ended(&self, state: &mut State, session: String, staged: bool, result: io::Result<Value>, reply: Reply<Value>) {
+        let conversation = state.conversation(&session);
+        conversation.doing = Doing::Idle;
+        let waiting = std::mem::take(&mut conversation.waiting_files);
+        if let Ok(value) = &result {
+            let directory = self.store.read(&session).await.ok().flatten().and_then(|header| header.directory().map(str::to_owned));
+            let (kind, data) = if staged {
+                ("session.revert.staged", serde_json::json!({"sessionID":session,"revert":value}))
+            } else {
+                ("session.revert.cleared", serde_json::json!({"sessionID":session}))
+            };
+            self.agents.feed().emit_from(kind, data, directory);
+        }
+        let _ = reply.send(result);
+        for command in waiting { self.handle(state, command).await; }
+        if state.files.is_empty() {
+            for (held, reply) in std::mem::take(&mut state.handover_waiting) {
+                let _ = reply.send(Ok(self.hand_over(state, &held).await));
+            }
+        }
+        self.advance(state, &session, None).await;
+    }
+
     async fn turn_ended(
         &self,
         state: &mut State,
@@ -950,6 +1048,9 @@ impl Service {
         }
         if conversation.retired {
             return;
+        }
+        for command in std::mem::take(&mut state.conversation(session).waiting_files) {
+            self.handle(state, command).await;
         }
         self.advance(state, session, Some(succeeded)).await;
         self.emit_idle(state, session);
@@ -1016,6 +1117,19 @@ impl Service {
         shown: Option<Prompt>,
     ) -> io::Result<Live> {
         let agent = if input.plan { "plan" } else { "build" };
+        let header = self.store.read(session).await?.ok_or(ErrorKind::NotFound)?;
+        let directory = header.directory().map(PathBuf::from).ok_or(ErrorKind::NotFound)?;
+        if matches!(&input.kind, TurnKind::Prompt(prompt) if !prompt.synthetic)
+            && header.into_fields().get("revert").is_some_and(|value| !value.is_null())
+        {
+            // Native histories don't support removing an arbitrary suffix.
+            // Close the native threads before starting a fresh one from the kept rows.
+            let roster = self.agents.roster();
+            for entry in roster.all() { entry.agent.close_thread(session).await?; }
+            if let Some(cut) = self.store.commit_revert(session).await? {
+                self.agents.feed().emit_from("session.revert.committed", serde_json::json!({"sessionID":session,"to":cut}), Some(directory.to_string_lossy().into_owned()));
+            }
+        }
         // Its account signed out of: said at once, rather than fail only after its agent started
         // and tried. (A turn taken up goes on where it is.)
         if !matches!(input.kind, TurnKind::Recover { .. })
@@ -1067,16 +1181,8 @@ impl Service {
                 return Err(error);
             }
         };
-        let directory = self
-            .store
-            .read(session)
-            .await?
-            .and_then(|header| header.directory().map(PathBuf::from))
-            .ok_or_else(|| {
-                io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
-            })?;
         let cwd = directory.to_string_lossy().into_owned();
-        policy.directory = directory;
+        policy.directory = directory.clone();
         policy.own_folders.extend([
             self.settings.home.join("agents"),
             self.settings.home.join("tmp"),
@@ -1106,6 +1212,28 @@ impl Service {
         )
         .await?
         .with_limits(self.limits.clone());
+        // The user row now durably confirms the handoff. Until that write,
+        // the selected input remains in the saved line. The agent hasn't
+        // received the prompt, so the repository capture is still before it.
+        if matches!(input.kind, TurnKind::Prompt(_) | TurnKind::Compact) {
+            let id = input.id.clone();
+            self.store.edit_line(session, move |line| {
+                let removed = line.take(&id).is_some();
+                ((), removed)
+            }).await?;
+        }
+        let snapshot = match &input.kind {
+            TurnKind::Prompt(prompt) if !prompt.synthetic => match self.store.snapshot_start(session, &input.id, &directory).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    eprintln!("Kuvo could not note the repository snapshot: {error}");
+                    false
+                }
+            },
+            TurnKind::Recover { .. } => true,
+            _ => false,
+        };
+        let writer = writer.with_snapshot(snapshot);
         let asks = self.asks.for_turn(session.into(), input.id.clone());
         let provider = input.model.provider.clone();
         let (sink, writes) = ResidentSink::channel(

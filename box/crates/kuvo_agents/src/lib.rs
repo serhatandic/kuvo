@@ -28,6 +28,7 @@ pub mod session_runs;
 pub mod session_store;
 pub mod session_view;
 pub mod subagent;
+mod snapshots;
 pub mod sign_in;
 mod told;
 pub mod tool_forwarder;
