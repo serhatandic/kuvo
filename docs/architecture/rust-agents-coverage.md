@@ -913,6 +913,17 @@ triggers and the `api/…` passthrough) is still to come.
 | bots-opencode (Mac, machine): a bot made from a template on one of its models waits | yes | from `bots.json` |
 | bots-opencode (Mac, machine): it's told who it is and where it runs, its conversation marked as its | yes | from `bots.json`; Rust: on the agent |
 
+| Platform | agents-opencode-history | bots-opencode | terminals |
+|---|---|---|---|
+| macOS | 3/3 both boxes | 4/4 both boxes | 7/7 both boxes |
+| WSL2 (static musl, OpenCode 2.2.6) | 3/3 both boxes | 4/4 both boxes | 7/7 both boxes |
+| Native Windows | — (the reference makes the home) | 4/4 Rust | 7/7 Rust |
+
+Also native Windows: agents-opencode 14/14. Measured on the Mac (debug build, a home holding a
+copy of this Mac's OpenCode database, 446 conversations listed): after the app's opening requests
+one process, the box, 172 MB, and no OpenCode; after opening one older conversation (its export
+ran and ended) still one process, 153 MB. 4.7b's main had 2 processes and 805–915 MB.
+
 Verified on the Mac: both areas on both boxes; bots 36/36, agents-opencode 14/14 and
 engine-sessions 81/81 on Rust; `agents-opencode-live` passed with a real OpenCode Go turn (its
 location is now asked again while the new conversation isn't listed yet, as the app does: the
