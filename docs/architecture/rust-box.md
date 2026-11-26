@@ -795,19 +795,79 @@ resident 11.1 to 11.8 MiB (allocated bytes 8,123 to 8,704 KiB). Private physical
 15.9 to 17.5 MiB. The extra memory is therefore consistent with larger mapped code and the
 native watch subscriptions, stacks and tables, not a multi-megabyte eager catalog cache.
 The artifact database and page subscriptions already wait for use; the resident's remaining
-watchers must be ready for external writes. Sharing more native watch handles could reduce
-stack costs in future without restoring polling. All fixture processes exited.
+watchers must be ready for external writes. The shared watcher change below removes duplicate
+native streams without restoring polling. All fixture processes exited.
+The final merged binary, including the retained-work fix, repeated the keeper sample: 65,232
+KiB without a client (2 callbacks) and 72,128 KiB following the hot pages (16 callbacks), with
+zero agent starts, engines, or setup lease calls. The exact owned fixture PIDs all exited.
 
 The full Mac sweep passed the Work Queue (148/148), moves (70 passed, one mixed-binary
 skip), engine sessions (81/81), delivery (5/5), and the new resident (5/5) and Library
 checks (20/20). The shell-keeper update case saw the up-to-date row before its peer SHA
-**seen once**, then passed on the focused rerun with the same binary. The inherited
+**seen once**, then passed on the focused rerun with the same binary. The final external-record
+follow case also timed out **seen once**, then passed in 8.3 seconds on the same binary. The inherited
 Auto-mode refusal wording is owned by the wording pass, not a timing regression. The
 peer-announcement unit fixture advances the actual elapsed copy-heartbeat deadline as well as
 its injected wall clock, and checks the announced chat project already present in the contract.
 The stale first-inventory conformance still requires exactly two reads on Rust; TypeScript can
 filter its in-flight page using the deletion fence and reread only the affected ID, so it may
 complete in one or two whole reads. Both assert the same no-resurrection answer.
+
+**Combined platform gate.** Tests run from isolated fixture homes; the Mac runs the TypeScript
+reference and Rust, and the cross executables run as the Rust resident and Rust peers. The
+initial Linux/WSL peer and three verified-process SSH fixtures had no Bun runtime; repeating
+with an explicit Rust lead and the isolated fixture Bun runtime proved the actual cases.
+
+| Area | Linux musl | WSL musl | Native Windows |
+|---|---:|---:|---:|
+| Resident / delivery / Work Queue | 5 / 5 / 148 | 5 / 5 / 148 | 3 (+2 debug skips) / 4 (+1 debug skip) / 146 (+2 skips) |
+| Work elsewhere / agent tools / moves | 4 (+1 inherited Auto) / 3 / 70 (+1 skip) | same | 3 (+1 inherited Auto, 1 debug skip) / 3 / 68 (+3 skips; focused receipt-index rerun green) |
+| Bots / held edits / engine sessions / asks | 40 / 1 / 81 / 9 | same | same |
+| Library / Vault / backups / Git / holder | 20 / 9 (+3 skip) / 9 / 15 (+1 skip) / 12 | same | 20 / 6 (+6 skips) / 7 (+2 skips) / 13 (+3 skips) / 12 |
+| Codex / Claude / Claude turns / Grok / ACP | 99 / 20 / 58 (+1 TODO) / 8 / 10 | same | 99 / 20 / 57 (+1 skip, 1 TODO) / 8 / 10 |
+| Agent updates / session reads / settings / peers | 10 / 4 / 17 / 2 | same | 9 (+1 skip) / 4 / 17 / 2 |
+| Adding / removal / setup judge / SSH Add / two-boxes | 11 / 19 (+4 skip) / 5 / 24 (+1 skip) / 3 | 10 (+1 unresolved) / 19 (+4 skip) / 5 / 24 (+1 skip) / 3 | 11 / 11 (+12 skips) / 4 (+1 skip) / 4 (+21 skips) / 3 |
+| Updates / Helper menu | 64 (+37 skip, 1 inherited wipe timeout) / 4 | same | 50 (+51 skips, 1 inherited wipe timeout) / 4 |
+
+The Grok question fixture on WSL read an incomplete trailing JSONL record **seen once**;
+the full focused Grok rerun passed 8/8. Native Windows's immediate local Work Queue
+handoff/update history case returned no item **seen once**; two focused reruns passed. The
+Windows cold move receipt-index retry failed repeatedly, with eight unread records remaining
+after both attempts. The diagnostic checkpoint showed identical directory identity and write
+time but a newer Windows ChangeTime after startup reapplied ACLs. Index revisions now use the
+existing platform retained-change stamp: Unix inode change time, Windows directory write time
+plus identity. Receipt entries are atomically replaced, so real additions, deletions and
+replacements still invalidate the bounded scan. A checkpoint written before this correction
+may do one bounded rebuild; it no longer repeats one after each restart. The native focused gate
+passed all three receipt/replay/forwarding cases. The new 2.3e standalone wipe preparation takes the
+wipe lock before it marks the resident ready to stop; the earlier installer test deliberately
+holds that lock until the resident exits. Both Linux and WSL reproduced the inherited timeout;
+only the exact fixture-owned resident PIDs were terminated. 2.3e owns the fix (`8dcb3c7af`,
+old binary red and new binary green on Linux). **Excluded on native: inherited 2.3e wipe lock,
+being fixed in 2.3e** (lead-approved acceptance-gate exception). Node 26 still executed the
+case because the negative test-name filter matched its ancestor; the same timeout occurred,
+and only its exact fixture-owned PID was terminated. All 50 other applicable cases passed.
+The provisional-installer retirement test on WSL failed at several stages (observer
+replication, former issuer retirement, and replacement enrollment); Mac and Linux passed
+11/11. The same WSL fixture passed all three initial runs of the adding owner's binary and
+failed all three runs of the idle sweep binary. During a further run, the latter's residents
+held 37, 12 and 49 inotify instances, with the user-wide total reaching 120 of the Linux
+default limit of 128. The control binary peaked at 61 and passed.
+
+**Shared file watches.** Each runtime now owns just one native watcher, lazily opened on
+first subscription (one inotify instance on Linux, one FSEvents stream on Mac, one Windows
+notification registry), and one shared polling fallback only for unsupported paths. Logical
+folder subscriptions retain their own relative-path filtering and reconnection grace. A
+recursive ancestor covers its descendants; on release, independently subscribed children are
+rearmed before reporting a rescan, not lost when inotify removes the ancestor's descriptors.
+Root changes and native errors invalidate registrations, so a retry watches the new folder
+rather than a removed inode. FSEvents path updates are batched; affected subscriptions get a
+rescan when registration changes can lose changes. The isolated OS scenario subscribes to
+140 distinct roots, asserts just one additional /proc/self/fd inotify descriptor on Linux,
+and proves notification routing and child coverage before and after a recursive ancestor is
+added and released. The new test and the existing watch/reconnect/poll scenarios pass on
+Mac. Cross verification of the shared watcher follows.
+
 
 ## 7. Release decisions
 
