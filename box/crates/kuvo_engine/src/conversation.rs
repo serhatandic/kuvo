@@ -9,6 +9,62 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
 
+type Thinking = tokio::sync::watch::Sender<Arc<BTreeSet<String>>>;
+
+/// What's thinking here, as one (`merged`): the engine's conversations, as the engine's watcher
+/// says through the sender this answers, and the coding agents', from their turns' moments.
+pub(crate) fn thinking(
+    engine: crate::Engine,
+    merged: Thinking,
+    stop: tokio_util::sync::CancellationToken,
+) -> Thinking {
+    let (own, mut engine_side) = tokio::sync::watch::channel(Arc::new(BTreeSet::new()));
+    let mut events = engine
+        .agent_sessions
+        .as_ref()
+        .and_then(|source| source.events());
+    tokio::spawn(async move {
+        let mut agents = reasoning::Reasoning::default();
+        let mut engine_open = true;
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => break,
+                changed = engine_side.changed(), if engine_open => {
+                    engine_open = changed.is_ok();
+                },
+                event = async {
+                    match &mut events {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match event {
+                    Ok(event) => {
+                        agents.hear(&event.session, event.kind);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => events = None,
+                },
+                () = async {
+                    match agents.next() {
+                        Some(deadline) => timer_fires::sleep_until(Timer::EngineReconnect, deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => agents.advance(),
+            }
+            let mut all = engine_side.borrow().as_ref().clone();
+            all.extend(agents.visible());
+            merged.send_if_modified(|current| {
+                let changed = **current != all;
+                if changed {
+                    *current = Arc::new(all);
+                }
+                changed
+            });
+        }
+    });
+    own
+}
+
 impl crate::Engine {
     /// Rows of a conversation (a page's `data`) as clients are shown them: its summaries titled
     /// and each step in words, as the engine's pages are.

@@ -1126,6 +1126,7 @@ impl Service {
             writes,
             writer,
             foreground,
+            crate::turn_runtime::Moments::new(session, self.events.clone()),
             boundary,
         );
         Ok(Live {

@@ -166,6 +166,7 @@ impl LocalSessions {
         let agent_revision = changed.clone();
         let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
         let (thinking, mut thought) = watch::channel(Arc::new(BTreeSet::new()));
+        let thinking = crate::conversation::thinking(engine.clone(), thinking, stop.clone());
         let (models_changed, models) = crate::model_refresh::watch(engine.clone());
         let limits = crate::queue::watch_limits(engine.clone(), stop.clone());
         let feed = crate::conversation::watch(

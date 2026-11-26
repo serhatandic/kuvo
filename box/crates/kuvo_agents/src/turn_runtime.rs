@@ -2,9 +2,10 @@
 
 use crate::{
     foreground::Foreground,
+    inbox::InboxEvent,
     runtime::AdapterCall,
     session::{
-        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread,
+        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, TextKind, Thread,
         TurnEvent, TurnInput,
     },
     turn_sink::{EventWrite, ResidentSink},
@@ -13,8 +14,47 @@ use std::{
     io::{self, ErrorKind},
     sync::Arc,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
+
+/// What a turn is doing now, told on its line in the engine's words as it changes (it reasons,
+/// writes words, calls a tool): what shows a conversation thinking.
+pub(crate) struct Moments {
+    session: String,
+    events: broadcast::Sender<InboxEvent>,
+    last: Option<&'static str>,
+}
+
+impl Moments {
+    pub(crate) fn new(session: &str, events: broadcast::Sender<InboxEvent>) -> Self {
+        Self {
+            session: session.to_owned(),
+            events,
+            last: None,
+        }
+    }
+
+    fn heard(&mut self, event: &TurnEvent) {
+        let kind = match event {
+            TurnEvent::TextDelta {
+                kind: TextKind::Reasoning,
+                ..
+            } => "session.reasoning.started",
+            TurnEvent::TextDelta {
+                kind: TextKind::Text,
+                ..
+            } => "session.text.started",
+            TurnEvent::Tool { .. } => "session.tool.called",
+            _ => return,
+        };
+        if self.last.replace(kind) != Some(kind) {
+            let _ = self.events.send(InboxEvent::Moment {
+                session: self.session.clone(),
+                kind,
+            });
+        }
+    }
+}
 
 pub trait TurnWriter: Send {
     fn apply<'a>(&'a mut self, event: &'a EventEnvelope) -> AdapterCall<'a, ()>;
@@ -56,6 +96,7 @@ impl RunningTurn {
         writes: mpsc::Receiver<EventWrite>,
         writer: impl TurnWriter + 'static,
         foreground: Foreground,
+        moments: Moments,
         boundary: F,
     ) -> Self
     where
@@ -71,6 +112,7 @@ impl RunningTurn {
             writes,
             writer,
             foreground,
+            moments,
             publish,
             stop.clone(),
             boundary,
@@ -161,6 +203,7 @@ async fn run<F, Fut>(
     mut writes: mpsc::Receiver<EventWrite>,
     mut writer: impl TurnWriter,
     mut foreground: Foreground,
+    mut moments: Moments,
     publish: watch::Sender<State>,
     stop: CancellationToken,
     boundary: F,
@@ -214,6 +257,7 @@ async fn run<F, Fut>(
                 };
                 let step = !native_steer && matches!(&update.event.event, TurnEvent::StepBoundary);
                 foreground.heard(&update.event.event);
+                moments.heard(&update.event.event);
                 let result = writer.apply(&update.event).await;
                 let error = result.as_ref().err()
                     .map(|error| Arc::new(io::Error::new(error.kind(), error.to_string())));

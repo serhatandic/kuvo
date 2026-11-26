@@ -217,6 +217,11 @@ pub enum InboxEvent {
     Idle {
         session: String,
     },
+    /// What its turn does now, in the engine's words (`session.reasoning.started`, …).
+    Moment {
+        session: String,
+        kind: &'static str,
+    },
 }
 
 impl InboxEvent {
@@ -258,6 +263,7 @@ impl InboxEvent {
                 "session.inbox.delivery.changed",
                 json!({"sessionID": session, "inboxID": id, "delivery": delivery.as_str()}),
             ),
+            Self::Moment { session, kind } => (session, kind, json!({"sessionID": session})),
             Self::Started { session } => (
                 session,
                 "session.execution.started",
