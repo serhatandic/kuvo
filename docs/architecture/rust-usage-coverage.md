@@ -1199,11 +1199,85 @@ container and scratch were removed.
 Non-test size 635,823 characters without indentation (0.925× the 687,546 TS
 baseline). 21 A1 entries closed, 31 remain.
 
+### Slices 26–27: native and engine history, price feeds and Insights
+
+A signed fallback change now invalidates the history peer's cached snapshot
+only when the accepted Codex choice changes. The remote account is repriced
+from retained counts and tells the new flags without a manual refresh. The
+actual three-computer test failed on the old resident with 1,300 tokens kept
+instead of 1,425 after the accepted choice reached the second computer. The
+corrected route returns the estimate, unknown model and fallback choice.
+The original old-reader case retains the sent model table and drops only the
+fallback flag; its digest is unchanged, its subsequent heartbeat needs no
+new request, and the send revision distinguishes changed fallback information.
+
+The ChatGPT engine reader accepts a numeric zero stored as text, just like the
+reference Codex history reader; a hosted billed row still requires numeric
+cost. The shared expected corpus now includes its formerly missing unknown
+model, exact per-model counts and costs, duplicate messages, old OAuth auth
+file, completed compaction and closed-WAL channels. A native Codex and engine
+OAuth sign-in with the same account is one row, adding both sources, while
+unchanged engine content checkpoints stay identical and decode no maker rows.
+Unreadable one or all channels retain complete known history through restart;
+other channels advance, and recovery does not add duplicate spend. The shared
+Go/Zen billed corpus, actual Go plan identity, single-provider/no-database cases,
+read-only database bytes, Grok default Terminal folder and Claude same-account
+merge/removal are covered. The fixed-clock engine read tests a real commit in
+another SQLite connection while both hosted providers share one snapshot.
+Three loopback price feeds retain ETags across restart, are not contacted early,
+and recheck after one hour.
+
+Insights watches transcript directories before startup catch-up, batches file
+changes and reads only changed transcript IDs; native files and engine channels
+use their existing offsets and stamps. An initial or lost watch can ask for a
+rescan, not an ordinary timer. Cursor's client-active timer reads recent or
+missing days, the price timer reprices retained observations, and the peer
+deadline uses its cached snapshot. The new accepted-settings watch does not
+add a history scan. A real SQLite writer held during a yearly query, repricing
+and explicit recount leaves unrelated routes responsive; a second explicit
+summary refresh counts a later saved call before it answers. Managed native
+Codex/Grok calls replace portable placeholders and join their own completed
+skills; historical slots and observed account IDs survive sign-in changes.
+Production summary and page tests prove a new peer's first full copy, loading
+never saved as complete, unknown sender and foreign origin refused, local
+pricing, duplicate merge before filters, retained original bot-call origin and
+away usage, and an unchanged local checkpoint after learning its peer key.
+
+Focused final routes 12/12 (exact corrected tests), production scoped six
+cases 6/6. Mac Rust full retry 129/129 applicable; the first run was 128/129
+because the Cursor deadline fixture's own read-only SQLite query returned
+BUSY. The fixture now checks durable completed days after stopping its owning
+writer; exact saved-day reuse remains asserted. The two earlier focused fixture
+errors were an incorrect SQL projection column order (cache buckets precede
+output and reasoning; exact corpus costs now match), and the distinction between
+unchanged content checkpoint and the per-round decoded count (correctly 2 to 0).
+The additional scoped assertion originally rebuilt an independent model table
+instead of representing the older reader's wire table; the corrected wire test
+keeps model names and omits only fallback flags. No production assertion is
+relaxed. Mac TS 45/46 applicable twice, only the already recorded frozen Grok
+cost discrepancy (0.00445 vs 0.0044502, same 1,000,000,003,372 tokens; all five
+new applicable TS cases pass). Engine sessions 81/81, workspace test targets
+and Bun clean. Seed history exact differential 12/13 (actual scan clock only),
+native corpus 2/2. The final tested base incorporates the Antigravity sign-in
+correction from main; its Mac rebuild repeats Rust 129/129, engine 81/81,
+workspace test targets and Bun clean, and the same exact differential results.
+TS 45/46 again only the already accepted frozen Grok cost discrepancy.
+Native Windows 129/129, WSL 129/129 and capped static Linux (Lokum) 129/129
+applicable tests pass on the frozen build. Each skips only the discovery
+fixture for the other platform. PC process lists for resident/node/bun were
+empty and both scratch homes removed; the capped Linux test container and
+scratch were also removed.
+Non-test size 636,575 characters without indentation (0.926× the 687,546 TS
+baseline). The final 31 A1 entries are closed with four-platform proof; no A1
+open or partial entries remain.
+
 ## Remaining implementation gaps
 
-- Direct provider limits, reading admission, accepted-window display, notices, reset spending and signed settings: A1 complete. The individually deferred rare cases remain at their original inventory lines. Cursor Accounts action is owned by row 4.5.
-- Native Codex history, engine zero-billed ChatGPT and hosted history, hourly pricing, signed fallback preference propagation and history-peer identity: remaining actual-source and component cases in slice 26.
-- Insights refresh/kept summary, historical lineage and local/peer page/read/filter boundaries: remaining cases in slice 27.
+No open or partial A1 cases in the inventory. The final batch is verified on
+macOS, capped Linux, WSL and native Windows.
+The individually listed later (rare) scenarios are deferred until after 0.8.
+Cursor Accounts disconnect is completed by row 4.5; retired phone paths and
+later beta or decentralized setup mail are excluded by design.
 
 ### Triage after slice 17
 
@@ -1273,17 +1347,17 @@ does not block completion of the row.
 
 - L11: Insights checkpoints local history and counts only changed transcripts after restart — duplicate — the large portable backfill proves exact totals and identical completed checkpoints after restart; startup/file-change and SQLite transcript projection routes prove a changed transcript is folded once and only the changed revision decoded. The original TS case covers only one portable source, not all maker families.
 - L41: Insights adds engine updates without replaying the older calls in the same database — covered by changed native engine channel scenario with decoded-row count and retained checkpoint.
-- L74: learning the box's peer name leaves its unchanged local history checkpoint in place — open — related portable checkpoint scenario above; this exact case not yet ported.
+- L74: learning the box's peer name leaves its unchanged local history checkpoint in place — covered by production SQLite checkpoint test: a new own peer key/setup leaves the unchanged local transcript checkpoint byte-for-byte equal.
 - L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — covered by both-box five-transcript 12 MiB backfill, exact counts and unchanged restart checkpoints; Rust uses a blocking index worker rather than releasing separate processes.
 
 ### `box/test/usage/insights-kept.test.ts`
 
 - L26: a period asked again is answered at once with the last summary, marked as of when, while it's read afresh — covered by the scoped complete-summary/restart/gate test (explicit refresh bypasses kept answers).
-- L62: a summary that says the box is still reading its usage is never kept — partial — only complete summaries are persisted; scoped restart and changed setup refusal, exact repeated loading fixture open.
+- L62: a summary that says the box is still reading its usage is never kept — covered by production summary with a newly admitted pending peer and two pages: loading on repeated reads and after the first page is never persisted as a complete summary.
 
 ### `box/test/usage/insights-refresh.test.ts`
 
-- L36: a refresh counts again before it answers, and the summary says when the box last counted — partial — explicit route recount and scoped retained-header repair; explicit refresh while catch-up is busy remains open.
+- L36: a refresh counts again before it answers, and the summary says when the box last counted — covered by actual changed transcript refresh and counted-at timestamp plus a second explicit summary refresh while the first recount is waiting on a real SQLite writer.
 
 ### `box/test/usage/insights-summary.test.ts`
 
@@ -1294,23 +1368,23 @@ does not block completion of the row.
 - L215: the cache rate is cached input over all input, at every level — covered by both-box ranked-level fixture, exact ratios for providers, models, computers and sessions and null unknown rate.
 - L234: the change is against the period of the same length just before — covered by named summary fixture with a prior-period call.
 - L253: at most three sessions stand out, each for one reason, once there are enough — covered by both-box cost, low-cache and three-subagent route fixture, including insufficient candidates filtered by model.
-- L267: Insights waits for a new computer’s first complete copy and counts kept usage after it goes away — partial — connected peer coverage and retained-away restart scenario; exact first-page loading states open.
+- L267: Insights waits for a new computer’s first complete copy and counts kept usage after it goes away — covered by real summary/page components: loading until the newly admitted computer’s first full copy completes, then retained calls count after disconnect.
 
 ### `box/test/usage/insights.test.ts`
 
 - L49: an Insights worker exit rejects requests and the bridge reopens the persisted index — deliberate in-process design replacement; the restart/catch-up and kept summary cases exercise reopening the retained index without a separate worker process.
 - L85: closing the Insights index is idempotent and later requests reject — deliberate in-process design replacement; connection ownership is scoped to each blocking operation, resident shutdown closes handles and restart reopens the index. The actual WAL/backfill restart cases test retained data.
-- L93: copies merge before filters, resumed sessions count once, and moved bot calls retain their origin — open.
+- L93: copies merge before filters, resumed sessions count once, and moved bot calls retain their origin — covered by real received duplicate and later resumed call: copies merge before the computer/bot filters, one original call retains its first origin, and the resumed call counts once.
 - L114: a peer account observation enriches the matching local copy and keeps its counts — later (rare) — matching local and peer copies whose account observations disagree in succession while counts differ.
-- L132: a newly available provider call replaces its saved placeholder across filters — open.
+- L132: a newly available provider call replaces its saved placeholder across filters — covered by actual native observation replacing previously saved partial portable step across filters without increasing call count.
 - L142: day bounds use the viewer's time zone, including DST transitions — covered by fixed-clock production bounds for spring/fall DST and Kathmandu, plus both-box exact daily totals crossing UTC midnight.
-- L154: a cold yearly query and repricing both leave the bridge event loop responsive — open.
+- L154: a cold yearly query and repricing both leave the bridge event loop responsive — covered by actual cold yearly query and repricing while a real SQLite writer is occupied: another resident route still completes promptly, and repriced yearly counts/costs are exact.
 - L186: a session page computes shares of the whole filtered snapshot after a scan — covered by both-box 51-session two-page scenario, plus detail and exact invalid-page refusals.
-- L207: resume peer pages, reject vouched computers, and price incoming records locally — partial — peer live cursor/delta, mixed version and unadmitted-origin filter; per-peer pricing fixture and multiple-page malformed-record matrix open.
+- L207: resume peer pages, reject vouched computers, and price incoming records locally — covered by production multi-page receive with resumed cursor, refused unknown sender and unadmitted origin, exact local price and complete first copy.
 - L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — later (rare) — an in-range cursor is first rewound, then a serving peer learns a retired origin and resets again.
 - L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — later (rare) — historical replay with conflicting unrelated origin after a sequence reset.
-- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — partial — managed native Claude and AG supply portable counts, read-only engine SQLite live cursor; native Codex/Grok integration exact fixture open.
-- L423: legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned — open.
+- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — covered by actual managed native Codex and Grok joins (including completed skill use), earlier native Claude/Antigravity and engine SQLite changed-channel scenarios.
+- L423: legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned — covered by actual sign-in identity switch after historical and observed calls are retained: legacy slot stays on its provider and the observed account remains pinned.
 - L458: opening an unversioned Insights database stamps it without losing records — later (rare) — an intentionally unstamped old Insights database and a deliberately future version; the normal current-format upgrade/reopen and retained checkpoints remain required.
 
 ### `box/test/usage/limit-card.test.ts`
@@ -1545,19 +1619,19 @@ does not block completion of the row.
 
 - L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — covered by shared Codex corpus through both routes, with archive date moved into the display window; see slice 13.
 - L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — covered by shared Codex corpus and actual fallback choice route, exact arithmetic.
-- L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — partial — engine OAuth history route fixture; full UsageKit corpus open.
+- L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — covered by actual shared engine Codex zero-billed corpus including textual numeric zero, duplicates and exact expected shifted days; billed hosted rows continue to reject text costs.
 - L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — covered by the production pricing component's historical boundary test, plus the shared native corpus's free auto-review and snapshot-name prices.
 - L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — covered by live priority versus archived copy and exact native corpus differential.
-- L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
+- L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — covered by actual native running-total JSONL append, restart, new append, shorter full replacement and restart, with exact totals.
 - L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — covered by linked native root fixture on Mac/Unix.
 - L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — later (rare) — two separately configured accounts point by links to a third sessions directory outside the selected CODEX_HOME; ordinary same-folder dedup and configured roots already have scenarios.
 - L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — covered by the multiple-home live/archive fixture (including flat-home file).
-- L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — partial — shared corpus validates local choice, restart, refusal and clearing; peer convergence open.
-- L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — partial — v1/v2, zero-price and sign-in cutoff verified; compaction fixture open.
-- L371: a database that can't be read, and none that could: not known now (never none); one the engine left without its -wal and -shm is read as it is — open.
-- L386: an API key's sign-in, or none: nothing of it; before opencode 2 took its sign-ins in, the auth.json beside it says — partial — sign-out verified; API-key credential and legacy auth-file scenario open.
-- L400: its row is Codex's: the same ChatGPT account as a Codex account here is one row, both added up; read again only when a database changed — open.
-- L456: one database that can't be read while another can: not known now (what was read stays), never kept as whole; one that keeps failing doesn't hold up the rest — open.
+- L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — covered by actual accepted signed fallback choice reaching remote history without a manual refresh; exact price/unknown/fallback flags; earlier local fixture covers restart, refusal and clearing.
+- L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — covered by shared engine zero-billed corpus, legacy and v2 sign-in cutoff, and actual completed vs running compaction counted with native history.
+- L371: a database that can't be read, and none that could: not known now (never none); one the engine left without its -wal and -shm is read as it is — covered by actual closed WAL corpus without side files and restart with every engine channel unreadable, preserving the last complete ChatGPT history.
+- L386: an API key's sign-in, or none: nothing of it; before opencode 2 took its sign-ins in, the auth.json beside it says — covered by legacy auth.json OAuth, replacement API key withdrawing the row, then restored OAuth bringing history back; earlier sign-out route.
+- L400: its row is Codex's: the same ChatGPT account as a Codex account here is one row, both added up; read again only when a database changed — covered by actual combined native Codex and engine OAuth identity row (native and engine totals sum), completed compaction and unchanged engine checkpoint on refresh.
+- L456: one database that can't be read while another can: not known now (what was read stays), never kept as whole; one that keeps failing doesn't hold up the rest — covered by actual unreadable channel across restart, another channel advancing exactly while it remains unreadable, and both channels recovering without duplication.
 
 ### `box/test/usage/usage-cursor.test.ts`
 
@@ -1595,16 +1669,16 @@ does not block completion of the row.
 ### `box/test/usage/usage-grok-hosted.test.ts`
 
 - L62: Grok's transcripts: completed turns by model, its own costs where it said them, else priced; a copied event once per model (UsageKit's GrokLogUsageScanner) — covered by exact shared Grok corpus on both routes.
-- L75: the engine's hosted rows: Go's and Zen's billed costs, both tables, a copy in another table or database once; a key of your own, a cost as text, a running compaction never (UsageKit's OpenCodeUsageScanner) — open.
+- L75: the engine's hosted rows: Go's and Zen's billed costs, both tables, a copy in another table or database once; a key of your own, a cost as text, a running compaction never (UsageKit's OpenCodeUsageScanner) — covered by shared billed SQL corpus on both boxes: both tables and channels, copied call once, non-hosted key and textual cost omitted, running compaction omitted.
 - L109: an account's sessions' transcripts, only their updates.jsonl: a row by the account, Grok's total; read on as one grows, through a restart — covered by both-box shared Grok corpus, append and restart.
-- L141: the default account reads your GROK_HOME (your Terminal's sessions too); an added account whose home is the same folder doesn't count it again — open.
-- L179: Go's and Zen's each a row, as billed (not estimated): Go's the same row as its plan limits'; OpenCode's total both; the databases only read — open.
-- L197: an engine's databases in WAL mode, closed so their side files are gone (a channel not running), are read as they are, every one — open.
-- L218: a provider with no use in the window has no row; no database, none; one that isn't the engine's (no message tables) says nothing — open.
-- L236: one database that never could be read while another can: the other counts; none readable: what it had stays; unchanged databases aren't read again — open.
-- L277: a database that can't be read now, after it was, gives what it last did: never less, logged once, and read again whole next round — open.
-- L308: just after a restart, a database that can't be read is not known now: the spend kept from before stays, never less — open.
-- L329: both providers' rows come from one read a round, though the engine writes while it's read — open.
+- L141: the default account reads your GROK_HOME (your Terminal's sessions too); an added account whose home is the same folder doesn't count it again — covered by both-box default GROK_HOME Terminal history plus deliberately linked added account, exact total once; later (rare) — the old reader also draws an empty alias row when two configured accounts resolve to the same physical directory.
+- L179: Go's and Zen's each a row, as billed (not estimated): Go's the same row as its plan limits'; OpenCode's total both; the databases only read — covered by both-box exact Go/Zen billed rows and total, byte-identical source files; actual Rust Go plan identity equals history identity.
+- L197: an engine's databases in WAL mode, closed so their side files are gone (a channel not running), are read as they are, every one — covered by shared SQL corpus opened in WAL mode then closed with both side files absent: both channels’ exact rows and total.
+- L218: a provider with no use in the window has no row; no database, none; one that isn't the engine's (no message tables) says nothing — covered by actual no recognized database after removal, unrelated message-less database, and only one hosted provider with recent usage (no empty Zen row).
+- L236: one database that never could be read while another can: the other counts; none readable: what it had stays; unchanged databases aren't read again — covered by actual unreadable unknown channel, known channels retained when both fail, other channel advancing; unchanged engine checkpoint on refresh.
+- L277: a database that can't be read now, after it was, gives what it last did: never less, logged once, and read again whole next round — covered by actual known channel temporarily unreadable and other channel advanced, then repaired and counted once without losing spend.
+- L308: just after a restart, a database that can't be read is not known now: the spend kept from before stays, never less — covered by actual restart with damaged known channel and then both damaged: prior billed spend retained; restoration keeps exact total.
+- L329: both providers' rows come from one read a round, though the engine writes while it's read — covered by production read transaction: real WAL write between callbacks, both provider rows from one snapshot and the next read sees the change.
 - L344: an engine folder that's there but can't be listed: not known now, what the box had stays — later (rare) — an inaccessible engine directory rather than ordinary absent, closed or individually unreadable databases.
 - L362: no engine folder known: no source, and a box that says so leaves OpenCode out of what it states — superseded — the manually omitted engine-folder/services configuration was a split bridge constructor option; the resident always knows its engine data path. No source database is the current empty case; the billed-channel fixture removes every database and verifies no retained row, and empty history retains service order.
 
@@ -1686,15 +1760,15 @@ does not block completion of the row.
 - L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — covered by native Claude usage route partial append, rewrite and restart (and the Insights boundary scenario).
 - L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — covered by shared corpus and account lifecycle scenarios; reference scratch account removal uses the resulting roster rather than its unavailable mutation bridge.
 - L189: a client's days are today and the 30 before it, in its zone — covered by 31-day cutoff fixture and existing Istanbul zone case.
-- L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — partial — ETag, changed feed, invalid feed and restart fixture; elapsed-hour timing open.
+- L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — covered by fixed-clock actual loopback hourly three-feed reader: initial fetch, no early call, conditional ETags after reopen and next deadline; earlier route verifies changed and invalid feeds.
 - L235: only a real box's bridge fetches them, a Mac app's or a machine's: never one a test started in a folder of its own — superseded — the old app-folder and split-bridge path matrix is no longer a supported live layout; [design §5](rust-box.md#5-what-not-to-port). The resident uses its canonical home and explicit scratch-feed switch in price_feed.rs; the loopback ETag/reprice fixture exercises the current path without a real sign-in.
 - L246: new prices price the next round: a model that was unknown gets its dollars — covered by changed price feed reprice scenario.
-- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — partial — native Codex three-computer same-identity and separate-account scenario; exact Claude identity, idle/away timing and removal variants open.
-- L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — partial — fallback flags excluded from digest and full retell on change implemented; exact older reader scenario open.
+- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — covered by actual two managed Claude computers with same account and removal from one, earlier three Codex holders with distinct and shared physical folders, retained-away case.
+- L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — covered by production digest/revision test of fallback flag omitted by old reader: same digest, no unnecessary ask; actual accepted fallback peer propagation includes the flags.
 - L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — later (rare) — an unusually oversized account history and long name force the full-mail size cutoff; ordinary two-day delta transfer is already exercised. Existing evidence: bounded full/recent slots traffic implemented, live delta case; size-cut test open.
 - L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — covered by local engine billed and peer merged cost scenarios.
 - L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — covered by native Codex shared-folder peer scenario and Claude duplicate corpus.
-- L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — open.
+- L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — covered by production history view of two same-named computers with same canonical path but distinct machine place keys; both counts and names included.
 - L670: refresh asks peers to read now and a restart restores their cached usage — covered by peer merge refresh, live delta and away restart scenario.
 - L715: old directory and usage records do not add an unknown computer to the totals — later (rare) — an intentionally injected unknown retained usage record is vouched in an old directory cache; normal current roster removal and peer history admission remain required. Existing evidence: unadmitted Insight origin fixture and authenticated current usage roster; exact kept usage-cache refusal open.
 

@@ -378,9 +378,21 @@ pub fn read(
             let finished = record.completed.is_some()
                 || row.get::<_, Option<String>>(13)?.as_deref() == Some("text")
                 || record.role == "compaction";
+            // Older ChatGPT history counted a numeric zero written as text too.
+            // The hosted billed reader still requires an actual numeric cost.
+            let zero_cost = record.cost == Some(0.)
+                || match row.get_ref(12)? {
+                    rusqlite::types::ValueRef::Text(raw) => {
+                        std::str::from_utf8(raw)
+                            .ok()
+                            .and_then(|value| value.trim().parse::<f64>().ok())
+                            == Some(0.)
+                    }
+                    _ => false,
+                };
             record.codex_history = sign_in.active()
                 && record.provider.as_deref() == Some("openai")
-                && record.cost == Some(0.)
+                && zero_cost
                 && matches!(record.role.as_str(), "assistant" | "compaction")
                 && finished
                 && (record.version == 1
@@ -654,5 +666,54 @@ mod stamp_tests {
         changed = original.clone();
         changed.size += 1;
         assert_ne!(wal_signature(&original), wal_signature(&changed));
+    }
+    #[test]
+    fn one_engine_read_keeps_both_hosted_providers_in_the_same_wal_snapshot() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("opencode.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL;CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT)").unwrap();
+        let at = 1_794_916_800_000i64;
+        let add = |id: &str, provider: &str, when: i64| {
+            writer.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?)",params![id,"session","assistant",when,when,serde_json::json!({"time":{"completed":when},"model":{"providerID":provider,"id":"gpt-5"},"cost":1.0,"tokens":{"input":10}}).to_string()])
+        };
+        add("go", "opencode-go", at).unwrap();
+        add("zen", "opencode", at + 1).unwrap();
+        let mut seen = Vec::new();
+        let (before, _) = read(
+            &path,
+            0,
+            &Checkpoint::default(),
+            &[],
+            false,
+            |_| Ok(()),
+            |record, _| {
+                if seen.is_empty() {
+                    add("new", "opencode", at + 2)?;
+                }
+                seen.push(record.call);
+                Ok(())
+            },
+        )
+        .unwrap()
+        .unwrap();
+        seen.sort();
+        assert_eq!(seen, ["go", "zen"]);
+        seen.clear();
+        let _ = read(
+            &path,
+            0,
+            &before,
+            &[],
+            false,
+            |_| Ok(()),
+            |record, _| {
+                seen.push(record.call);
+                Ok(())
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(seen.iter().any(|id| id == "new"));
     }
 }

@@ -707,4 +707,84 @@ mod account_wide_tests {
             50
         );
     }
+    #[test]
+    fn a_fallback_flag_changes_the_send_revision_not_the_older_peer_digest() {
+        let mut with = wide(AT, 100);
+        with.provider = "codex-cli".into();
+        with.service = "codex".into();
+        with.agent = Some("codex".into());
+        with.wide = false;
+        let without_fallback = Snapshot::new(vec![with.clone()], AT);
+        let slot = AT.div_euclid(SLOT) * SLOT;
+        with.slots
+            .fallback
+            .entry(slot)
+            .or_default()
+            .insert("gpt-5".into());
+        let with_fallback = Snapshot::new(vec![with], AT);
+        assert_ne!(
+            with_fallback.fallback_revision,
+            without_fallback.fallback_revision
+        );
+        // Older receivers retain the sent model table but omit the new flag.
+        // An independently built snapshot may omit the fallback-only model name.
+        let mut older = with_fallback.accounts.clone();
+        older[0].slots.fallback.clear();
+        assert_eq!(with_fallback.digest, digest(&older));
+        let mut mail = with_fallback.full(AT, false, false);
+        // The old reader keeps no new flags but the hash it computes is still valid.
+        mail["accounts"][0]["slots"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fallback");
+        let mut book = Book::default();
+        book.roster(&BTreeMap::from([("a".into(), "Studio".into())]));
+        assert_eq!(book.take("a", &mail, AT), Some(false));
+        assert_eq!(
+            book.take("a", &with_fallback.heartbeat(AT + 60_000), AT + 60_000),
+            Some(false)
+        );
+    }
+    #[test]
+    fn computers_with_the_same_name_and_path_count_distinct_machine_places() {
+        let path = tempfile::tempdir().unwrap();
+        let now = AT + 60_000;
+        let computers = [("a", 10), ("b", 20)]
+            .into_iter()
+            .map(|(key, count)| {
+                let mut account = wide(AT, count);
+                account.provider = "claude-code".into();
+                account.service = "claude".into();
+                account.agent = Some("claude".into());
+                account.wide = false;
+                account.places = vec![crate::usage::native_index::place_of(key, path.path(), None)];
+                Computer {
+                    key: key.into(),
+                    name: "Pi".into(),
+                    here: key == "a",
+                    away: false,
+                    accounts: vec![account],
+                }
+            })
+            .collect();
+        let view = history::view(
+            computers,
+            now,
+            jiff::tz::TimeZone::UTC,
+            &Pricing::load(None).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
+        let row = &view["data"]["rows"][0];
+        assert_eq!(row["boxes"].as_array().unwrap().len(), 2);
+        assert_eq!(row["days"][0]["tokens"], 30);
+        assert!(
+            row["boxes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|b| b.get("same").is_none())
+        );
+    }
 }
