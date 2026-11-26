@@ -26,12 +26,14 @@ const WAIT: Duration = Duration::from_secs(10);
 pub struct Said {
     pub text: String,
     pub refused: bool,
+    pub delivery: Option<&'static str>,
 }
 
 fn said(text: impl Into<String>) -> Said {
     Said {
         text: text.into(),
         refused: false,
+        delivery: None,
     }
 }
 
@@ -39,6 +41,7 @@ fn refused(text: impl Into<String>) -> Said {
     Said {
         text: text.into(),
         refused: true,
+        delivery: None,
     }
 }
 

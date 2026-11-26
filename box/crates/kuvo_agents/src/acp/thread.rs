@@ -185,7 +185,7 @@ impl Thread for Conversation {
         })
     }
 
-    /// A message waits for the turn's end: ACP has no way into a prompt under way.
+    /// ACP has no way into a prompt under way: the resident cancels and resumes.
     fn takes_steers(&self) -> bool {
         false
     }

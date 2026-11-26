@@ -426,7 +426,7 @@ async fn a_message_starts_at_once_and_one_sent_meanwhile_waits_for_it() {
     case.send(&id, "first", Delivery::Steer).await;
     until("the first turn", || case.runs().len() == 1).await;
     case.send(&id, "second", Delivery::Steer).await;
-    assert_eq!(deliveries(&case.inbox(&id).await), [Delivery::Queue]);
+    assert_eq!(deliveries(&case.inbox(&id).await), [Delivery::Steer]);
     case.release(Outcome::Interrupted);
     // Stopped: the one waiting stays.
     case.settled(&id, 1).await;
@@ -484,10 +484,9 @@ async fn send_now_starts_the_message_you_picked_then_the_rest_in_line() {
     let picked = case.send(&id, "third", Delivery::Steer).await;
     case.with(|script| script.mode = Mode::Replies);
     case.runs
-        .set_delivery(id.clone(), picked, Delivery::Steer, false)
+        .advance_line(id.clone(), picked, true)
         .await
         .unwrap();
-    assert!(case.runs.interrupt_and(id.clone(), true).await.unwrap());
     case.settled(&id, 3).await;
     assert_eq!(case.runs(), ["first", "third", "second"]);
     assert!(case.inbox(&id).await.is_empty());
@@ -770,7 +769,8 @@ async fn what_waits_outlasts_the_resident_and_is_confirmed_by_its_id() {
     )
     .unwrap();
     assert_eq!(saved["inbox"][0]["id"], waiting.as_str());
-    assert_eq!(saved["inbox"][0]["delivery"], "queue");
+    // The requested next-step delivery is durable, not downgraded to after-turn.
+    assert_eq!(saved["inbox"][0]["delivery"], "steer");
 }
 
 // "a message sent while a session is being deleted starts nothing";

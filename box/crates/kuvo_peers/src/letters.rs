@@ -13,7 +13,7 @@ use std::{
 };
 
 use kuvo_engine::{
-    Engine, LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove,
+    Engine, LetterDelivery, LetterPrompt, LetterText, LetterTiming, MoveEngineError, SessionMove,
     TranscriptError, TranscriptScope,
 };
 use kuvo_store::{
@@ -619,18 +619,7 @@ impl Letters {
                 .map(|key| encode(&key));
             return Ok(Some(refused(id, MOVED, true, lives)));
         }
-        let engine = match self.engine.session_move().await {
-            Ok(engine) => engine,
-            Err(error) => {
-                return Ok(Some(refused(
-                    id,
-                    &format!("It didn't reach it: {error}"),
-                    true,
-                    None,
-                )));
-            }
-        };
-        let session = match engine.lookup(&letter.to).await {
+        let session = match self.engine.letter_lookup(&letter.to).await {
             Ok(Some(session)) => session,
             Ok(None) => {
                 if note.is_some()
@@ -696,7 +685,7 @@ impl Letters {
                 .map_err(io::Error::other)?;
                 if !arrived {
                     let under = match letter.from.as_deref() {
-                        Some(lead) => started_under(&engine, &session, lead).await,
+                        Some(lead) => started_under(&self.engine, &session, lead).await,
                         None => Ok(false),
                     };
                     match under {
@@ -781,7 +770,8 @@ impl Letters {
         else {
             return Ok(Some(delivered(id)));
         };
-        match engine
+        match self
+            .engine
             .deliver_letter(
                 &letter.to,
                 LetterPrompt {
@@ -790,7 +780,12 @@ impl Letters {
                     when_queued,
                     from,
                     words,
-                    steer,
+                    timing: if note.is_none() {
+                        LetterTiming::parse(letter.other.get("delivery").and_then(Value::as_str))
+                            .unwrap_or(LetterTiming::Legacy { steer })
+                    } else {
+                        LetterTiming::Legacy { steer }
+                    },
                 },
             )
             .await
@@ -823,8 +818,13 @@ impl Letters {
                 }
                 let mut receipt = delivered(id.clone());
                 if note.is_none() && letter.wait {
-                    if let (Some((from, _)), LetterDelivery::Accepted) =
-                        (&sender, &delivered_letter)
+                    if let (
+                        Some((from, _)),
+                        LetterDelivery::Accepted
+                        | LetterDelivery::Started
+                        | LetterDelivery::Steered,
+                    ) = (&sender, &delivered_letter)
+                        && let Ok(engine) = self.engine.session_move().await
                     {
                         self.answers.spawn(wait_for_answer(
                             engine,
@@ -969,7 +969,7 @@ impl Letters {
         }
         if archived(&info)
             && (engine.lookup(from).await.map_err(unavailable)?.is_some()
-                || !started_under(&engine, &info, from)
+                || !started_under(&self.engine, &info, from)
                     .await
                     .map_err(unavailable)?)
         {
@@ -1105,7 +1105,7 @@ fn archived(info: &Value) -> bool {
 }
 
 async fn started_under(
-    engine: &SessionMove,
+    engine: &Engine,
     info: &Value,
     lead: &str,
 ) -> Result<bool, kuvo_engine::MoveEngineError> {
@@ -1125,7 +1125,7 @@ async fn started_under(
         if contains_lead {
             return Ok(true);
         }
-        let Some(parent) = engine.lookup(parent).await? else {
+        let Some(parent) = engine.letter_lookup(parent).await? else {
             return Ok(false);
         };
         if parent["parentID"].as_str().is_some_and(|id| !id.is_empty()) {

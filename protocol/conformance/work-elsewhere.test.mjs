@@ -52,7 +52,7 @@ test("a lead on another computer lists, stops, summarizes and answers its sessio
   const { studio, lab, tool } = await joined(t, ({ lab, studioKey }) => {
     const work = { startedBy: "ses_lead", line: ["ses_lead"], wake: ["finished"], depth: 1 };
     lab.engine.sessions.push({ ...sessionOf({ id: "ses_build", title: "Build", directory: path.join(lab.home, "..", "app"), updated: 20 }), metadata: { kuvo: work } });
-    lab.engine.sessions.push({ ...sessionOf({ id: "ses_docs", title: "Docs", directory: path.join(lab.home, "..", "app"), updated: 10 }), metadata: { kuvo: work } });
+    lab.engine.sessions.push({ ...sessionOf({ id: "ses_docs", title: "Docs", directory: path.join(lab.home, "..", "app"), updated: 10 }), metadata: { kuvo: { ...work, approval: "auto" } } });
     lab.engine.sessions.push(sessionOf({ id: "ses_mine", title: "Mine", directory: path.join(lab.home, "..", "app") }));
     // Lab knows the lead lives on Studio, as a start it took from there would have noted.
     write(path.join(lab.home, "run", "work", "homes.json"), JSON.stringify({ ses_lead: { key: studioKey, at: Date.now() } }));
@@ -102,7 +102,12 @@ test("a lead on another computer lists, stops, summarizes and answers its sessio
   const allowed = await tool("answer_ask", { session: "ses_docs", ask: "per_status", decision: "allow", reason: "Just looks." });
   assert.equal(allowed.isError, true);
   // (Why Auto can't be had there is that computer's: no sandbox running, or not yet on Windows.)
-  assert.match(allowed.text, /^You can't allow that: "Docs" asks first for now \([^)]+\), so the user answers every ask it makes, whatever mode you're in\. The user sees the ask on "Docs" and answers it there\. Tell them in a line why it's needed if it matters, and carry on with the rest\. You can still deny it\.$/);
+  // Rust deliberately presents Auto as Ask First until the sandbox is ported (6.1).
+  if (boxBinary().typescript) {
+    assert.match(allowed.text, /^You can't allow that: "Docs" asks first for now \([^)]+\), so the user answers every ask it makes, whatever mode you're in\. The user sees the ask on "Docs" and answers it there\. Tell them in a line why it's needed if it matters, and carry on with the rest\. You can still deny it\.$/);
+  } else {
+    assert.equal(allowed.text, `You can't allow that: "Docs" is in Ask First, so the user answers every ask it makes, whatever mode you're in. The user sees the ask on "Docs" and answers it there. Tell them in a line why it's needed if it matters, and carry on with the rest. You can still deny it.`);
+  }
   assert.equal(replied("/api/session/ses_docs/permission/per_status/reply"), undefined, "nothing answered");
   assert.deepEqual(await tool("answer_ask", { session: "ses_docs", ask: "frm_color", answer: "Blue", reason: "The brand's." }),
     { text: "Answered \"Docs\".", isError: false });
@@ -229,4 +234,23 @@ test("a conversation writes to one on another computer and reads its conversatio
   assert.equal(read.isError, false, read.text);
   assert.match(read.text, /^Docs's conversation \(session, on Lab[^)]*, address ses_docs\), oldest first\./);
   assert.match(read.text, /The notes are in NOTES\.md\./);
+});
+
+test("a letter from another computer honors now and explicitly queued delivery", {
+  timeout: 120000, skip: skip || lead?.typescript || boxBinary().typescript,
+}, async t => {
+  const { lab, tool } = await joined(t, ({ lab }) => {
+    lab.engine.sessions.push(sessionOf({ id: "ses_docs", title: "Docs", directory: path.join(lab.home, "..", "app") }));
+    lab.engine.running.add("ses_docs");
+  });
+  await until(async () => (await tool("list_agents")).text.includes("address: ses_docs"), "Lab did not announce Docs", 60000, 250);
+  const sent = await tool("send_message", { to: "ses_docs", text: "Check now." });
+  assert.equal(sent.isError, false, sent.text);
+  await until(() => lab.engine.interrupted.some(each => each.session === "ses_docs" && each.resume), "The letter did not Send Now", 60000, 250);
+  assert.equal(lab.engine.inboxes.get("ses_docs").find(item => item.payload.text.endsWith("Check now.")).delivery, "steer");
+  const queued = await tool("send_message", { to: "ses_docs", text: "After this turn.", delivery: "queue" });
+  assert.equal(queued.isError, false, queued.text);
+  const waiting = await until(() => lab.engine.inboxes.get("ses_docs").find(item => item.payload.text.endsWith("After this turn.")), "The queued letter did not arrive", 60000, 250);
+  assert.equal(waiting.delivery, "queue");
+  assert.equal(lab.engine.interrupted.length, 1);
 });

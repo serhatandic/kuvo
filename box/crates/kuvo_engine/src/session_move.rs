@@ -409,11 +409,42 @@ pub struct LetterPrompt {
     pub when_queued: Option<LetterText>,
     pub from: String,
     pub words: String,
-    pub steer: bool,
+    pub timing: LetterTiming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LetterTiming {
+    Now,
+    Step,
+    Turn,
+    /// Internal notes and a new session's first task retain their existing behaviour.
+    Legacy {
+        steer: bool,
+    },
+}
+
+impl LetterTiming {
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("now") => Some(Self::Now),
+            Some("steer") => Some(Self::Step),
+            Some("queue") => Some(Self::Turn),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::Step | Self::Legacy { steer: true } => "steer",
+            Self::Turn | Self::Legacy { steer: false } => "queue",
+        }
+    }
 }
 
 pub enum LetterDelivery {
     Accepted,
+    Steered,
+    Started,
     Queued(String),
 }
 
@@ -473,6 +504,134 @@ impl Engine {
     }
 }
 
+impl Engine {
+    pub fn letter_id(&self) -> Result<String, Refusal> {
+        crate::send::new_id(self)
+    }
+
+    /// Resolve letters without waking the engine for a coding-agent conversation.
+    pub async fn letter_lookup(&self, session: &str) -> Result<Option<Value>, MoveEngineError> {
+        if !valid_session(session) {
+            return Err(MoveEngineError::InvalidTree);
+        }
+        if let Some((_, header)) = self
+            .agent_session(session)
+            .await
+            .map_err(|_| MoveEngineError::Unavailable)?
+        {
+            return Ok(Some(Value::Object(header)));
+        }
+        self.session_move().await?.lookup(session).await
+    }
+
+    /// Letters and the composer share the same conversation target and Send Now operation.
+    pub async fn deliver_letter(
+        &self,
+        session: &str,
+        letter: LetterPrompt,
+    ) -> Result<LetterDelivery, Refusal> {
+        let _turn = self.turn(session).await;
+        let _admitted = admit(self, session, None).await?;
+        let place = queue::command_target(self, session).await?;
+        let target = place.target();
+        let queue = self.queues.get(session).await.map_err(fence_failure)?;
+        let running = target
+            .is_running(self, session)
+            .await
+            .map_err(fence_failure)?;
+        let now = letter.timing == LetterTiming::Now;
+        let outcome = || match letter.timing {
+            LetterTiming::Legacy { .. } => LetterDelivery::Accepted,
+            _ if !running => LetterDelivery::Started,
+            LetterTiming::Now => LetterDelivery::Steered,
+            _ => LetterDelivery::Queued(queue.letter_wait_reason(&self.home)),
+        };
+        if queue.contains(&letter.id) {
+            if now && running {
+                queue::advance(self, target, session, &letter.id, queue::Advance::Now).await?;
+                let saved = self.queues.get(session).await.map_err(fence_failure)?;
+                if !saved.contains(&letter.id) {
+                    return Ok(outcome());
+                }
+                return Ok(LetterDelivery::Queued(saved.letter_wait_reason(&self.home)));
+            }
+            return Ok(LetterDelivery::Queued(queue.letter_wait_reason(&self.home)));
+        }
+        if target
+            .has_message(self, session, &letter.id)
+            .await
+            .map_err(fence_failure)?
+        {
+            return Ok(outcome());
+        }
+        if target
+            .inbox(self, session)
+            .await
+            .map_err(fence_failure)?
+            .iter()
+            .any(|item| item.id == letter.id)
+        {
+            if now {
+                queue::advance(self, target, session, &letter.id, queue::Advance::Now).await?;
+            }
+            return Ok(outcome());
+        }
+        let mut prompt = queue::Prompt {
+            id: letter.id,
+            text: letter.immediate.text,
+            delivery: queue::Delivery::Queue,
+            metadata: letter.immediate.metadata,
+            files: vec![],
+        };
+        let queued = letter.when_queued.map(|body| queue::Prompt {
+            text: body.text,
+            metadata: body.metadata,
+            ..prompt.clone()
+        });
+        let kept = self
+            .queues
+            .keep(
+                session,
+                queued.as_ref().unwrap_or(&prompt),
+                Some(&letter.words),
+                Some(letter.from),
+                None,
+                matches!(target, queue::Target::Engine(_)),
+            )
+            .await
+            .map_err(fence_failure)?;
+        if kept {
+            if now && running {
+                queue::advance(self, target, session, &prompt.id, queue::Advance::Now).await?;
+                let saved = self.queues.get(session).await.map_err(fence_failure)?;
+                if !saved.contains(&prompt.id) {
+                    return Ok(outcome());
+                }
+                return Ok(LetterDelivery::Queued(saved.letter_wait_reason(&self.home)));
+            }
+            let reason = self
+                .queues
+                .get(session)
+                .await
+                .unwrap_or_else(|_| queue.clone())
+                .letter_wait_reason(&self.home);
+            return Ok(LetterDelivery::Queued(reason));
+        }
+        if matches!(
+            letter.timing,
+            LetterTiming::Step | LetterTiming::Legacy { steer: true }
+        ) {
+            prompt.delivery = queue::Delivery::Steer;
+        }
+        crate::send::post(self, target, session, &prompt).await?;
+        self.queues.notify();
+        if now {
+            queue::advance(self, target, session, &prompt.id, queue::Advance::Now).await?;
+        }
+        Ok(outcome())
+    }
+}
+
 impl SessionMove {
     pub async fn recent_messages(
         &self,
@@ -515,83 +674,12 @@ impl SessionMove {
         Ok(())
     }
 
-    /// Deliver the already composed letter through the same session turn and
-    /// lookup used to reconcile an accepted prompt whose reply was lost.
     pub async fn deliver_letter(
         &self,
         session: &str,
         letter: LetterPrompt,
     ) -> Result<LetterDelivery, Refusal> {
-        let _turn = self.engine.turn(session).await;
-        let _admitted = admit(&self.engine, session, None).await?;
-        let queue = self
-            .engine
-            .queues
-            .get(session)
-            .await
-            .map_err(fence_failure)?;
-        if queue.contains(&letter.id) {
-            return Ok(LetterDelivery::Queued(
-                queue.letter_wait_reason(&self.engine.home),
-            ));
-        }
-        if queue::reached(
-            &self.engine,
-            queue::Target::Engine(&self.lease),
-            session,
-            &letter.id,
-        )
-        .await
-        .map_err(fence_failure)?
-        {
-            return Ok(LetterDelivery::Accepted);
-        }
-        let mut prompt = queue::Prompt {
-            id: letter.id,
-            text: letter.immediate.text,
-            delivery: queue::Delivery::Queue,
-            metadata: letter.immediate.metadata,
-            files: vec![],
-        };
-        let queued = letter.when_queued.map(|body| queue::Prompt {
-            text: body.text,
-            metadata: body.metadata,
-            ..prompt.clone()
-        });
-        if self
-            .engine
-            .queues
-            .keep(
-                session,
-                queued.as_ref().unwrap_or(&prompt),
-                Some(&letter.words),
-                Some(letter.from),
-                None,
-                true,
-            )
-            .await
-            .map_err(fence_failure)?
-        {
-            let reason = self
-                .engine
-                .queues
-                .get(session)
-                .await
-                .unwrap_or(queue)
-                .letter_wait_reason(&self.engine.home);
-            return Ok(LetterDelivery::Queued(reason));
-        }
-        if letter.steer {
-            prompt.delivery = queue::Delivery::Steer;
-        }
-        crate::send::post(
-            &self.engine,
-            queue::Target::Engine(&self.lease),
-            session,
-            &prompt,
-        )
-        .await?;
-        Ok(LetterDelivery::Accepted)
+        self.engine.deliver_letter(session, letter).await
     }
 
     pub async fn ready(&self) -> Result<(), MoveEngineError> {

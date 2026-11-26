@@ -166,6 +166,7 @@ impl Work {
                 Ok(Said {
                     text: started_words(&started),
                     refused: false,
+                    delivery: None,
                 })
             }
             Err(refusal) => {
@@ -262,7 +263,7 @@ impl Work {
                 when_queued: None,
                 from: caller.name.clone(),
                 words: text.to_owned(),
-                steer: false,
+                timing: kuvo_engine::LetterTiming::Legacy { steer: false },
             };
             if mover.deliver_letter(session, letter).await.is_err() {
                 return Err("Waiting for the new session to confirm its task.".into());
@@ -279,6 +280,7 @@ impl Work {
         Ok(Some(Said {
             text: started_words(&started),
             refused: false,
+            delivery: None,
         }))
     }
 
@@ -436,6 +438,7 @@ impl Work {
                     None => Said {
                         text,
                         refused: false,
+                        delivery: None,
                     },
                     Some(session) => {
                         // Made there: it lives there, so a stop or an answer for it goes there at
@@ -451,6 +454,7 @@ impl Work {
                         Said {
                             text,
                             refused: answer.refused,
+                            delivery: None,
                         }
                     }
                 }

@@ -379,6 +379,14 @@ impl AgentSessionSource for Inventory {
         })
     }
 
+    fn advance_line<'a>(&'a self, id: &'a str, item: &'a str, now: bool) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            self.runs()?
+                .advance_line(id.to_owned(), item.to_owned(), now)
+                .await
+        })
+    }
+
     fn take_back<'a>(&'a self, id: &'a str, item: &'a str) -> AgentCall<'a, AgentTakeBack> {
         Box::pin(async move {
             Ok(

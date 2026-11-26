@@ -161,6 +161,18 @@ pub trait AgentSessionSource: Send + Sync {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
     }
 
+    /// Deliver a waiting message at the next step, or now. The agent runtime
+    /// uses native steering when available and the same stop/resume otherwise.
+    fn advance_line<'a>(&'a self, id: &'a str, item: &'a str, now: bool) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            self.set_delivery(id, item, false).await?;
+            if now {
+                self.interrupt(id, true).await?;
+            }
+            Ok(())
+        })
+    }
+
     /// Take a waiting message back.
     fn take_back<'a>(&'a self, _id: &'a str, _item: &'a str) -> AgentCall<'a, AgentTakeBack> {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })

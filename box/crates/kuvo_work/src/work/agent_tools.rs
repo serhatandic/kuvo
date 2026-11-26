@@ -18,10 +18,7 @@ use kuvo_protocol::routes::post_kuvo_agent_tools as route;
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::{Map, Value, json};
 
-use super::{
-    Work,
-    watch::tools::Said,
-};
+use super::{Work, watch::tools::Said};
 use crate::bots::here::BotHere;
 
 /// The tools, by name.
@@ -63,6 +60,7 @@ pub(super) fn said(text: impl Into<String>) -> Said {
     Said {
         text: text.into(),
         refused: false,
+        delivery: None,
     }
 }
 
@@ -70,6 +68,7 @@ pub(super) fn refused(text: impl Into<String>) -> Said {
     Said {
         text: text.into(),
         refused: true,
+        delivery: None,
     }
 }
 
@@ -195,7 +194,13 @@ impl Work {
                     .agent_tool(name, &args, session, operation.as_ref())
                     .await
                 {
-                    Ok(answer) => json!({ "text": answer.text, "isError": answer.refused }),
+                    Ok(answer) => {
+                        let mut value = json!({ "text": answer.text, "isError": answer.refused });
+                        if let Some(delivery) = answer.delivery {
+                            value["delivery"] = json!(delivery);
+                        }
+                        value
+                    }
                     Err(message) => {
                         let again = json!({ "retryToolCall": true, "message": message });
                         return Err(Refusal::json(StatusCode::SERVICE_UNAVAILABLE, again));
@@ -216,7 +221,11 @@ impl Work {
     /// The conversation `session` works for, here: itself, or up its starters' (a subagent's) and
     /// the conversations coding agents' engine runs are for, six steps at most; the coding agents'
     /// own conversations too (`true`), found without the engine.
-    async fn root_of(&self, engine: &BotEngine, session: Option<&str>) -> Option<(String, Value, bool)> {
+    async fn root_of(
+        &self,
+        engine: &BotEngine,
+        session: Option<&str>,
+    ) -> Option<(String, Value, bool)> {
         let mut id = session?.to_owned();
         let mut found = None;
         for _ in 0..6 {
@@ -365,18 +374,18 @@ impl Work {
                 Some(caller) => self.notify_user_tool(caller, args).await,
             },
             "list_agents" => {
-                let (agents, _) = self.everyone(engine.as_ref()).await;
+                let (agents, _) = self.everyone(Some(&finder)).await;
                 said(self.describe_agents(
                     &agents,
                     caller.as_ref().map(|caller| caller.session.as_str()),
                 ))
             }
             "send_message" => {
-                self.send_message_tool(engine.as_ref(), caller.as_ref(), args, operation)
+                self.send_message_tool(Some(&finder), caller.as_ref(), args, operation)
                     .await?
             }
             "read_conversation" => {
-                self.read_conversation_tool(engine.as_ref(), caller.as_ref(), args)
+                self.read_conversation_tool(Some(&finder), caller.as_ref(), args)
                     .await
             }
             "make_project" => match &caller {

@@ -90,7 +90,9 @@ pub use search::{
     PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
 pub use session_list::{Activity, ActivityState, ArchiveRevision, LocalSessions};
-pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove};
+pub use session_move::{
+    LetterDelivery, LetterPrompt, LetterText, LetterTiming, MoveEngineError, SessionMove,
+};
 pub use start_session::{
     ParentLead, Permission as SessionPermission, RemoteLead, StartSteps, session_note,
 };
