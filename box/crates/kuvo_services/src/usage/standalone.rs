@@ -1962,4 +1962,61 @@ mod parity_corpus {
             );
         }
     }
+    #[test]
+    fn exact_quota_clamp_and_first_usable_pool() {
+        let buckets = ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
+            .map(|id| json!({"bucketId":id,"remainingFraction":0.754}));
+        let summary = json!({"groups":[{"buckets":buckets}]});
+        let found = antigravity_summary(&[json!({"groups":[{"buckets":[{"bucketId":"gemini-5h","remainingFraction":"bad"},{"bucketId":"gemini-image-5h","remainingFraction":0},{"bucketId":"gemini-weekly","remainingFraction":-1}]}]}), summary], 0).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|w| (w.id.as_str(), w.used))
+                .collect::<Vec<_>>(),
+            [
+                ("gemini-5h", 0.25),
+                ("gemini-weekly", 1.0),
+                ("3p-5h", 0.25),
+                ("3p-weekly", 0.25)
+            ]
+        );
+        assert!(antigravity_summary(&[json!({})], 0).is_none());
+        assert!(
+            antigravity_summary(&[json!({"groups":[]})], 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn argon_bucket_requires_an_unambiguous_enabled_weekly_pool() {
+        let b = json!({"bucketId":"argon","window":"weekly","remainingFraction":0.5});
+        let windows = |buckets: Vec<Value>| {
+            antigravity_summary(
+                &[json!({"groups":[{"displayName":"Gemini 4 Argon","buckets":buckets}]})],
+                0,
+            )
+            .unwrap()
+        };
+        assert_eq!(windows(vec![b.clone()])[0].id, "argon-weekly");
+        assert!(windows(vec![b.clone(), b.clone()]).is_empty());
+        for field in [json!(true), json!("false")] {
+            let mut disabled = b.clone();
+            disabled["disabled"] = field;
+            assert!(windows(vec![disabled]).is_empty());
+        }
+        let mut wrong = b.clone();
+        wrong["bucketId"] = json!("gemini-weekly");
+        assert!(windows(vec![wrong]).is_empty());
+    }
+    #[test]
+    fn legacy_quota_keeps_worst_and_ignores_hidden_models() {
+        let configs = json!([{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.8}},{"label":"Gemini 3 Flash"},{"label":"Claude","quotaInfo":{"remainingFraction":0.5}},{"label":"Gemini 4 Argon"},{"label":"Hidden","model":"MODEL_CHAT_20706"}]);
+        assert_eq!(
+            antigravity_legacy(configs.as_array().unwrap(), 0)
+                .iter()
+                .map(|w| (w.name.as_deref().unwrap_or_default(), w.used))
+                .collect::<Vec<_>>(),
+            [("Gemini · 5-hour", 1.0), ("Claude and GPT · 5-hour", 0.5)]
+        );
+    }
 }

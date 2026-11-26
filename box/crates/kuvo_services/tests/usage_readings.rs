@@ -189,3 +189,81 @@ fn cold_start_and_unknown_cadence_do_not_invent_a_projection() {
     assert!(!trail.projected());
     assert!(!trail.runs_out());
 }
+
+#[test]
+fn a_direct_jump_to_running_out_does_not_also_fire_the_close_warning() {
+    let all = toggles();
+    let mut trail = Trail::new(reading(START + 120 * MIN, 0.1, RESET)).unwrap();
+    for (minute, used) in [(130, 0.12), (140, 0.14)] {
+        assert_eq!(
+            trail.observe(reading(START + minute * MIN, used, RESET), &all),
+            Some(vec![])
+        );
+    }
+    assert_eq!(
+        trail.observe(reading(START + 160 * MIN, 0.4, RESET), &all),
+        Some(vec![Milestone::CloseToRunningOut])
+    );
+    assert_eq!(trail.occurrence(Milestone::HealthyToClose), 0);
+}
+
+#[test]
+fn an_unknown_period_has_only_the_level_warning_and_exact_ten_percent_is_not_under() {
+    let all = toggles();
+    let mut first = reading(START + 160 * MIN, 0.8, RESET);
+    first.minutes = None;
+    first.resets_at = None;
+    let mut trail = Trail::new(first.clone()).unwrap();
+    first.read += MIN;
+    first.used = 0.90;
+    assert_eq!(trail.observe(first.clone(), &all), Some(vec![]));
+    first.read += MIN;
+    first.used = 0.92;
+    assert_eq!(
+        trail.observe(first.clone(), &all),
+        Some(vec![Milestone::UnderTenPercent])
+    );
+    first.read += MIN;
+    first.used = 0.95;
+    assert_eq!(trail.observe(first, &all), Some(vec![]));
+}
+
+#[test]
+fn real_new_window_rearms_level_warning_but_small_reset_jitter_does_not() {
+    let all = toggles();
+    let almost = Milestone::UnderTenPercent;
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, 0.91, RESET), &all),
+        Some(vec![almost])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.92, RESET + 90), &all),
+        Some(vec![])
+    );
+    let reset = RESET + 300 * MIN;
+    assert_eq!(
+        trail.observe(reading(RESET + MIN, 0.5, reset), &all),
+        Some(vec![])
+    );
+    assert_eq!(
+        trail.observe(reading(RESET + 2 * MIN, 0.91, reset), &all),
+        Some(vec![almost])
+    );
+    assert_eq!(trail.occurrence(almost), 1);
+}
+
+#[test]
+fn a_missing_or_invalid_read_preserves_the_previous_notice_signal() {
+    let all = toggles();
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, f64::NAN, RESET), &all),
+        None
+    );
+    assert_eq!(trail.current.used, 0.89);
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.91, RESET), &all),
+        Some(vec![Milestone::UnderTenPercent])
+    );
+}
