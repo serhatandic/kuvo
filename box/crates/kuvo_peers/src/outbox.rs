@@ -599,6 +599,14 @@ fn letter_mail(id: &Id, letter: &Letter, now: u64) -> Result<mail::Envelope, Err
         fields.insert("to".into(), json!(letter.to));
         fields.insert("text".into(), json!(utf8_prefix(text, max)));
         fields.insert("wait".into(), json!(letter.wait));
+        if let Some(delivery) = letter
+            .other
+            .get("delivery")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "now" | "steer" | "queue"))
+        {
+            fields.insert("delivery".into(), json!(delivery));
+        }
         fields.insert(
             "at".into(),
             json!(if letter.note.is_some() { now } else { at }),

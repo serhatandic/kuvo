@@ -133,6 +133,7 @@ const DEFINED: Tool[] = [
         description: "What to say: all it needs to know, as it hasn't seen this conversation.",
       },
       to: { type: "string", description: "Its name or address." },
+      delivery: { type: "string", enum: ["now", "steer", "queue"], description: "When to deliver: now (default), steer (at its next step), or queue (after the turn)." },
     }, ["to", "text"]),
   tool("schedule_wake_up", "Come back to this conversation later, even while the user is away: at `when`, it gets your note as a message starting with \"[Wake-up]\", and you carry on from it. With every, it comes back again and again until it's canceled. Never say you can't come back later or run on a timer: schedule a wake-up instead.",
     {

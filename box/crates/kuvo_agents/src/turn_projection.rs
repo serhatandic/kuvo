@@ -346,6 +346,7 @@ impl Projection {
                     .into_iter()
                     .collect()
             }
+            TurnEvent::StepBoundary => Vec::new(),
             TurnEvent::PlanLimit(reading) => {
                 self.limits.heard(&self.model.provider, reading);
                 Vec::new()

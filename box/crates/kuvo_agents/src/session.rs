@@ -132,8 +132,8 @@ pub trait Thread: Send + Sync {
         false
     }
 
-    /// Whether its turns take a message partway through. Messages sent to one
-    /// that doesn't wait for the turn's end.
+    /// Whether its turns take a message partway through. Others use the
+    /// resident's cancel/resume at the next reported step.
     fn takes_steers(&self) -> bool {
         true
     }
@@ -412,6 +412,8 @@ pub enum TurnEvent {
         finish: Option<String>,
         error: Option<TurnError>,
     },
+    /// The agent reached a real boundary during its turn (not the synthetic closing rows).
+    StepBoundary,
     Context {
         used: Option<u64>,
         window: Option<u64>,
