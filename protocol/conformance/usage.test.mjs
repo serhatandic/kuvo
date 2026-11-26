@@ -2613,7 +2613,8 @@ test('the shared Grok corpus counts completed model turns once and keeps append-
   assert.equal(grown.cost,days[0].cost+0.001);
   await resident.stop();resident=box.start();call=box.connect(await resident.ready());
   await until(async()=>{const day=(await get()).totals.grok.find(d=>d.date===grown.date);return day?.tokens===grown.tokens;},'Grok history did not survive restart');
-  assert.deepEqual((await get()).totals.grok.find(d=>d.date===grown.date),grown);
+  const restored=(await get()).totals.grok.find(d=>d.date===grown.date);
+  assert.deepEqual(restored,grown,`Grok restart: ${JSON.stringify({before:days[0],grown,restored,files:files.map(file=>({name:path.basename(file),bytes:fs.statSync(file).size}))})}`);
 });
 
 test('the shared Claude corpus prices canonical replies, advisor calls and fast usage without counting replays',async t=>{
