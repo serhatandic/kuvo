@@ -24,6 +24,7 @@ use kuvo_protocol::routes::{
     post_kuvo_agents_api_session_id_model as select_model,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
+use kuvo_agents::acp::opencode_history::OpenCodeHistory;
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value};
@@ -37,6 +38,8 @@ pub(crate) struct Inventory {
     pub running: Option<SessionRuns>,
     pub home: std::path::PathBuf,
     pub agents: Option<ResidentAgents>,
+    /// OpenCode's conversations from before it was a coding agent here.
+    pub opencode: Option<OpenCodeHistory>,
 }
 
 impl Inventory {
@@ -90,6 +93,17 @@ impl Inventory {
             .filter(|window| *window > 0)
     }
 
+    /// Takes one of OpenCode's older conversations into the store before it's read or given
+    /// anything, if it is one.
+    async fn taken(&self, id: &str) -> io::Result<()> {
+        if let Some(history) = &self.opencode
+            && self.store.read(id).await?.is_none()
+        {
+            history.take(id).await?;
+        }
+        Ok(())
+    }
+
     fn runs(&self) -> io::Result<&SessionRuns> {
         self.running
             .as_ref()
@@ -108,10 +122,9 @@ impl AgentSessionSource for Inventory {
     fn inventory(&self) -> AgentSessionRead<'_> {
         Box::pin(async move {
             let active = self.running.as_ref().map(SessionRuns::running);
-            Ok(self
-                .store
-                .headers()
-                .await?
+            let saved = self.store.headers().await?;
+            let kept = saved.iter().map(|saved| saved.id().to_owned()).collect();
+            let mut rows: Vec<_> = saved
                 .into_iter()
                 .map(|saved| {
                     let running = active
@@ -122,7 +135,18 @@ impl AgentSessionSource for Inventory {
                         running,
                     }
                 })
-                .collect())
+                .collect();
+            // (And OpenCode's older ones, as its database has them: none of them is running.)
+            if let Some(history) = &self.opencode {
+                match history.listed(kept).await {
+                    Ok(older) => rows.extend(older.into_iter().map(|header| AgentSessionRow {
+                        header,
+                        running: false,
+                    })),
+                    Err(error) => eprintln!("Kuvo could not read OpenCode's conversations: {error}"),
+                }
+            }
+            Ok(rows)
         })
     }
 
@@ -133,7 +157,11 @@ impl AgentSessionSource for Inventory {
     fn session<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
         Box::pin(async move {
             let Some(saved) = self.store.read(id).await? else {
-                return Ok(None);
+                // (One of OpenCode's older ones, as its database has it, until it's opened.)
+                return match &self.opencode {
+                    Some(history) => history.header(id).await,
+                    None => Ok(None),
+                };
             };
             let mut fields = saved.into_fields();
             // How much its model holds, as its agent's list says, until a turn says.
@@ -161,6 +189,7 @@ impl AgentSessionSource for Inventory {
         patch: AgentSessionPatch,
     ) -> AgentCall<'a, Option<Map<String, Value>>> {
         Box::pin(async move {
+            self.taken(id).await?;
             let AgentSessionPatch {
                 title,
                 permissions,
@@ -205,6 +234,7 @@ impl AgentSessionSource for Inventory {
 
     fn delete<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
         Box::pin(async move {
+            self.taken(id).await?;
             let directory = self
                 .store
                 .read(id)
@@ -285,6 +315,7 @@ impl AgentSessionSource for Inventory {
 
     fn prompt<'a>(&'a self, id: &'a str, prompt: AgentPrompt) -> AgentCall<'a, ()> {
         Box::pin(async move {
+            self.taken(id).await?;
             let runs = self
                 .running
                 .as_ref()
@@ -312,6 +343,7 @@ impl AgentSessionSource for Inventory {
 
     fn put_in_line<'a>(&'a self, id: &'a str, prompt: AgentLinePrompt) -> AgentCall<'a, ()> {
         Box::pin(async move {
+            self.taken(id).await?;
             let runs = self.runs()?;
             let AgentLinePrompt {
                 id: message,
@@ -338,6 +370,7 @@ impl AgentSessionSource for Inventory {
         description: Option<String>,
     ) -> AgentCall<'a, ()> {
         Box::pin(async move {
+            self.taken(id).await?;
             let runs = self.runs()?;
             let message = SessionStore::make_id("msg")?;
             let mut input = Input::new(message, text, Vec::new(), Delivery::Steer);
@@ -355,7 +388,10 @@ impl AgentSessionSource for Inventory {
         key: &'a str,
         text: Option<String>,
     ) -> AgentCall<'a, bool> {
-        Box::pin(async move { self.store.set_instruction(id, key, text).await })
+        Box::pin(async move {
+            self.taken(id).await?;
+            self.store.set_instruction(id, key, text).await
+        })
     }
 
     fn instructions<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
@@ -363,11 +399,15 @@ impl AgentSessionSource for Inventory {
     }
 
     fn select_model<'a>(&'a self, id: &'a str, model: Value) -> AgentCall<'a, bool> {
-        Box::pin(Inventory::select_model(self, id, model))
+        Box::pin(async move {
+            self.taken(id).await?;
+            Inventory::select_model(self, id, model).await
+        })
     }
 
     fn set_delivery<'a>(&'a self, id: &'a str, item: &'a str, queue: bool) -> AgentCall<'a, ()> {
         Box::pin(async move {
+            self.taken(id).await?;
             let delivery = if queue {
                 Delivery::Queue
             } else {
@@ -389,6 +429,7 @@ impl AgentSessionSource for Inventory {
 
     fn take_back<'a>(&'a self, id: &'a str, item: &'a str) -> AgentCall<'a, AgentTakeBack> {
         Box::pin(async move {
+            self.taken(id).await?;
             Ok(
                 match self
                     .runs()?
@@ -408,11 +449,17 @@ impl AgentSessionSource for Inventory {
     }
 
     fn has_message<'a>(&'a self, id: &'a str, message: &'a str) -> AgentCall<'a, bool> {
-        Box::pin(async move { self.store.has_message(id, message).await })
+        Box::pin(async move {
+            self.taken(id).await?;
+            self.store.has_message(id, message).await
+        })
     }
 
     fn recent<'a>(&'a self, id: &'a str, limit: u32) -> AgentCall<'a, Vec<Value>> {
-        Box::pin(async move { self.runs()?.recent(id, limit).await })
+        Box::pin(async move {
+            self.taken(id).await?;
+            self.runs()?.recent(id, limit).await
+        })
     }
 
     fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
@@ -460,7 +507,11 @@ impl AgentSessionSource for Inventory {
     }
 }
 
-pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
+pub(crate) fn register(
+    sessions: SessionStore,
+    opencode: Option<OpenCodeHistory>,
+    routes: &mut Registry,
+) {
     let stops = sessions.clone();
     routes.register::<stop_background::Spec, _, _>(Access::DesktopOrPaired, move |call| {
         let sessions = stops.clone();
@@ -497,13 +548,23 @@ pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
         }
     });
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {
-        let sessions = sessions.clone();
+        let (sessions, opencode) = (sessions.clone(), opencode.clone());
         async move {
             let given = call.param("id").unwrap_or_default();
             let id = percent_decode_str(given)
                 .decode_utf8()
                 .map_err(|_| missing(given))?;
             let query = TranscriptQuery::parse(&call.request.path);
+            // (One of OpenCode's older ones is taken in the first time it's read.)
+            if let Some(history) = &opencode
+                && let Err(error) = history.take(&id).await
+            {
+                eprintln!("Kuvo could not read OpenCode's conversation {id}: {error}");
+                return Err(Refusal::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The conversation couldn't be read. Try again in a moment.",
+                ));
+            }
             let page = sessions
                 .message_page(&id, query.after, query.limit, query.order)
                 .await

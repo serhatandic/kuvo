@@ -425,6 +425,8 @@ struct Entry {
 pub struct Registry {
     entries: Vec<Entry>,
     engine: Option<Fallback>,
+    /// `api/…` subtrees the box answers itself, ahead of the engine.
+    own_api: Vec<(&'static str, Fallback)>,
     socket: Option<SocketHandler>,
     activity: Option<Activity>,
     client_activity: Option<tokio::sync::watch::Sender<usize>>,
@@ -539,6 +541,18 @@ impl Registry {
         self.engine = Some(Box::new(move |request, cancel| {
             Box::pin(handle(request, cancel))
         }));
+    }
+
+    /// An `api/…` subtree (`prefix` and what's under it) the box answers itself: never passed on.
+    pub fn own_api<F, Fut>(&mut self, prefix: &'static str, handle: F)
+    where
+        F: Fn(DispatchRequest, CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Reply> + Send + 'static,
+    {
+        self.own_api.push((
+            prefix,
+            Box::new(move |request, cancel| Box::pin(handle(request, cancel))),
+        ));
     }
 
     pub fn sockets<F, Fut>(&mut self, handle: F)
@@ -753,7 +767,15 @@ impl Dispatcher {
         }
         let canonical_route = canonical.split('?').next().unwrap_or_default();
         if canonical_route == "api" || canonical_route.starts_with("api/") {
+            let own = self.0.own_api.iter().find(|(prefix, _)| {
+                canonical_route
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            });
             request.path = canonical;
+            if let Some((_, own)) = own {
+                return own(request, cancel).await;
+            }
             if let Some(engine) = &self.0.engine {
                 return engine(request, cancel).await;
             }

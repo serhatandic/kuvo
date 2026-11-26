@@ -979,9 +979,12 @@ impl Inventory {
         })
     }
 
+    /// Each conversation once: one the coding agents list (OpenCode's older ones among them) is
+    /// theirs, never the engine's too.
     fn rows(&self) -> impl Iterator<Item = &Observed> {
         self.engine_rows
             .iter()
+            .filter(|row| !self.agent_ids.contains(&row.session.id))
             .chain(self.bridge_rows.iter().flat_map(|rows| rows.iter()))
     }
 

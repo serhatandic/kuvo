@@ -60,7 +60,10 @@ test("a real OpenCode Go turn on the OpenCode agent: the app's new conversation,
     const started = await call("POST", "kuvo/sessions", { folder: work, model, approval: "askFirst" });
     assert.equal(started.status, 200, started.text);
     const id = started.json.info?.id ?? started.json.id;
-    const where = await call("GET", `kuvo/sessions/${id}/location`);
+    // (A conversation just made may not be on the list yet: it says so, and the app asks again.)
+    let where;
+    await until(async () => (where = await call("GET", `kuvo/sessions/${id}/location`)).status !== 503,
+      () => `Its location never answered: ${where?.text}`, 30000, 200);
     assert.ok(JSON.stringify(where.json).includes("agents"), where.text);
     const sent = await call("POST", `kuvo/sessions/${id}/send`, { id: `msg_${Date.now().toString(36)}live`, words: "Reply with only the word READY.", delivery: "steer" });
     assert.equal(sent.status, 200, sent.text);
