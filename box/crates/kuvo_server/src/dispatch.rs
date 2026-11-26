@@ -275,6 +275,10 @@ impl Refusal {
         Self::json(StatusCode::CONFLICT, error)
     }
 
+    pub fn status(&self) -> StatusCode {
+        self.0.status
+    }
+
     pub fn reply(self) -> Reply {
         self.0
     }

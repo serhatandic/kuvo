@@ -79,13 +79,14 @@ async fn facts(ctx: &Context) -> Result<Facts, Refusal> {
         ctx.engine_get("api/agent"),
         ctx.settings.engine.settings_models()
     );
-    let models = models.map(|models| {
+    let agents = agents.and_then(|v| v.as_array().cloned());
+    // An engine not answering offers no models, as the page says, not a cached list.
+    let models = models.filter(|_| agents.is_some()).map(|models| {
         models.into_iter().map(|model|json!({
         "id":format!("{}/{}",model.provider,model.id),"title":model.name,"line":model.provider,
         "model":{"providerID":model.provider,"id":model.id}
     })).collect()
     });
-    let agents = agents.and_then(|v| v.as_array().cloned());
     let title = computer_title(ctx).await;
     let where_ = match title.as_str() {
         "This Mac" => "this Mac".into(),

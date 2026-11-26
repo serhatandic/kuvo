@@ -21,12 +21,16 @@ pub async fn read(ctx: &Context) -> Value {
         .ok()
         .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
         .is_some_and(|v| v["port"].as_u64().is_some_and(|p| p > 0));
-    let working = ctx
-        .ask(Method::GET, "kuvo/box/at-work", None)
-        .await
-        .ok()
-        .and_then(|v| v["working"].as_u64())
-        .map(|n| n != 0);
+    // An engine that doesn't answer leaves what's at work unknown, rather than holding the page.
+    let working = tokio::time::timeout(
+        Duration::from_secs(1),
+        ctx.ask(Method::GET, "kuvo/box/at-work", None),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .and_then(|v| v["working"].as_u64())
+    .map(|n| n != 0);
     let stops = match working {
         Some(true) => format!("Agents are at work on {where_} now: what they’re doing stops."),
         Some(false) => format!("Nothing is at work on {where_} now."),
