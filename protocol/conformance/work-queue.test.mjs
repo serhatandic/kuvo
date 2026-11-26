@@ -322,7 +322,18 @@ test("a queue follower sees a saved change by another writer", { timeout: 30000 
       assert.deepEqual((await frames.next()).value.items.map(item => item.title), ["First title"]);
       write(file + ".stage", record("Changed title"));
       renameSync(file + ".stage", file);
-      assert.deepEqual((await frames.next()).value.items.map(item => item.title), ["Changed title"]);
+      // A separate change (for example, numbering the seeded item) can arrive first.
+      // The follower must still see the new title without reconnecting.
+      for (;;) {
+        const { value, done } = await frames.next();
+        assert.ok(!done, "queue follow ended before the saved title changed");
+        const titles = value.items.map(item => item.title);
+        if (titles.includes("Changed title")) {
+          assert.deepEqual(titles, ["Changed title"]);
+          break;
+        }
+        assert.deepEqual(titles, ["First title"]);
+      }
     } finally {
       await frames.return();
       line.close();
