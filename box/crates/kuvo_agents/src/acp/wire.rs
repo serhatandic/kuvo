@@ -206,6 +206,8 @@ pub(crate) struct Capabilities {
     pub close: bool,
     pub http_servers: bool,
     pub logout: bool,
+    /// It takes pictures in a prompt (`promptCapabilities.image`); else it's told their paths.
+    pub images: bool,
 }
 
 impl Capabilities {
@@ -224,6 +226,7 @@ impl Capabilities {
             close: !session["close"].is_null(),
             http_servers: agent["mcpCapabilities"]["http"] == true,
             logout: !matches!(agent["auth"]["logout"], Value::Null | Value::Bool(false)),
+            images: agent["promptCapabilities"]["image"] == true,
         }
     }
 
@@ -238,6 +241,7 @@ impl Capabilities {
                     "close": if self.close { serde_json::json!({}) } else { Value::Null },
                 },
                 "mcpCapabilities": {"http": self.http_servers},
+                "promptCapabilities": {"image": self.images},
             },
         })
     }

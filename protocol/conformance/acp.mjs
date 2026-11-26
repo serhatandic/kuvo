@@ -20,7 +20,8 @@ export const providers = { grok: "grok-cli", agy: "antigravity" };
  * `{opens: url}` (a command of its own opens a page: through `$BROWSER` where it's set, and
  * writing it to `$TMPDIR/url`), `{say: line}` (a line of its own on stdout, not ACP) or `{wait:
  * ms}`. As `agy`, its models have a `<model>-<level>` entry for each thinking level, as agy's do.
- * What it reads it keeps in `acp-heard.jsonl`.
+ * What it reads it keeps in `acp-heard.jsonl`. `acp-capabilities.json` adds to what it says it can do
+ * (`{ promptCapabilities: { image: true } }`).
  */
 const PROGRAM = String.raw`
 const fs = require("node:fs");
@@ -144,7 +145,7 @@ process.stdin.on("data", (chunk) => {
     if (method === undefined) { waiting.get(id)?.(message); waiting.delete(id); continue; }
     const answer = (result) => send({ id, result });
     const refuse = (code, words) => send({ id, error: { code, message: words } });
-    if (method === "initialize") answer({ protocolVersion: 1, authMethods: name === "grok" ? [{ id: "cached_token" }, { id: "xai.api_key" }] : [{ id: "oauth-personal" }], agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true }, auth: { logout: name === "agy" } } });
+    if (method === "initialize") answer({ protocolVersion: 1, authMethods: name === "grok" ? [{ id: "cached_token" }, { id: "xai.api_key" }] : [{ id: "oauth-personal" }], agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true }, auth: { logout: name === "agy" }, ...read("acp-capabilities.json", {}) } });
     else if (method === "authenticate") signedIn() ? answer({}) : refuse(-32000, "Authentication required");
     else if (method === "logout") { fs.rmSync(path.join(process.env.GEMINI_HOME, "agy-signed-in"), { force: true }); answer({}); }
     else if (method === "session/new") signedIn() ? answer(setup("acp-" + process.pid + "-" + ++made)) : refuse(-32000, "Authentication required");
@@ -242,6 +243,8 @@ export function agentsOn(home, env) {
       write(path.join(root, "acp-script.json"), JSON.stringify(scripts));
     },
     go: (name) => write(path.join(root, name), ""),
+    /** What it says it can do besides, from its next start (`{ promptCapabilities: { image: true } }`). */
+    can: (capabilities) => write(path.join(root, "acp-capabilities.json"), JSON.stringify(capabilities)),
     heard: () => fs.existsSync(heardFile)
       ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
     sent: (method) => agents.heard().filter((line) => line.message?.method === method).map((line) => line.message),

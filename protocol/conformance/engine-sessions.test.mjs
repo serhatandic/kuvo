@@ -1510,6 +1510,32 @@ test("attachment expiry leaves fresh files and files retained for moves and tran
   assert.ok(fs.existsSync(path.join(attachments, "ses_transcript", "transcript-pictures", "notes.txt")));
 });
 
+for (const takes of [true, false]) {
+  const keepsPaths = takes && boxBinary().typescript && "The reference keeps every picture sent to a coding agent as a file on disk.";
+  test(`a picture goes to an agent that ${takes ? "takes pictures as a picture" : "doesn't take them as its path"}`, { timeout: 45000, skip: keepsPaths }, async t => {
+    const session = "ses_picture";
+    const { here } = await onAgents(t, "agent-pictures", [session], { start: false });
+    if (takes) here.agents.can({ promptCapabilities: { image: true } });
+    const record = await here.start().ready();
+    const sent = await request(record, "POST", `kuvo/sessions/${session}/send`, {
+      id: "msg_picture", words: "What's this?", files: [{ name: "shot.png", uri: "data:image/png;base64,cG5n" }],
+    }, desktop);
+    assert.equal(sent.status, 200, sent.text);
+    const [prompt] = await until(() => here.agents.sent("session/prompt").length && here.agents.sent("session/prompt"), "It never reached the agent.", 20000);
+    const parts = prompt.params.prompt;
+    const pictures = parts.filter(part => part.type === "image");
+    const words = parts.filter(part => part.type === "text").map(part => part.text).join("\n");
+    const saved = words.split("\n").map(line => line.replace(/^- /, "")).find(line => line.endsWith(path.sep + "shot.png"));
+    if (takes) {
+      assert.deepEqual(pictures.map(part => [part.mimeType, part.data]), [["image/png", "cG5n"]]);
+    } else {
+      assert.deepEqual(pictures, [], JSON.stringify(parts));
+      assert.ok(saved, words);
+      assert.equal(fs.readFileSync(saved, "utf8"), "png");
+    }
+  });
+}
+
 // (The reference keeps a picture as a path for an agent that didn't say it takes pictures; the Rust box hands it over.)
 const picturesAsPaths = boxBinary().typescript && "The reference keeps a picture sent to a coding agent as a file on disk rather than handing it over.";
 test("a send keeps what the user wrote and the parts that went with it", { timeout: 60000, skip: picturesAsPaths }, async t => {
