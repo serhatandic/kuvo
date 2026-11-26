@@ -136,7 +136,7 @@ impl Catcher {
 /// A `BROWSER` for an agent, in `folder`: the pages it opens are written down in
 /// `KUVO_URL_FILE` instead.
 #[cfg(unix)]
-pub fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
+fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let script = folder.join("browser");
     files::write_new(
@@ -150,7 +150,7 @@ pub fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
 /// A `BROWSER` for an agent, in `folder`: the pages it opens are written down in
 /// `KUVO_URL_FILE` instead.
 #[cfg(windows)]
-pub fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
+fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
     let script = folder.join("browser.cmd");
     files::write_new(
         &script,

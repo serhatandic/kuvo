@@ -729,6 +729,8 @@ impl Actor {
             .shared
             .opened(process, &self.session, native.as_deref(), true);
         self.setup = Setup::read(&answer);
+        // (A conversation of its own from here: what it is to be on is set once, as it starts.)
+        self.setup.set("kuvoFresh", true);
         let started_over = previous.is_some() && previous != native;
         self.native = native.clone();
         if started_over {

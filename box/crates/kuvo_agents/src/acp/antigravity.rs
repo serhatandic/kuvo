@@ -46,11 +46,18 @@ const EARLIER_PROGRAM: &str = "agy_acp_server.par";
 const EARLIER_HARNESS: &str = "localharness_external";
 /// What it says on stdout when it wants you to sign in (not ACP).
 const SIGN_IN_LINE: &str = "Open the following link to authenticate the ACP server:";
+
+/// `agy`'s own words asking for a sign-in: a line of its own, never a protocol message (one that
+/// only carries the words, as a command's output or a file it shows does, isn't it).
+fn asks_sign_in(line: &str) -> bool {
+    !line.trim_start().starts_with('{') && line.contains(SIGN_IN_LINE)
+}
+
 const METHOD: &str = "oauth-personal";
 /// How much a model holds before it says (not all are Gemini's 1M).
 const CONTEXT: u64 = 1_000_000;
 /// Your other Google keys and settings, kept from it: it signs in its own way.
-const SCRUBBED: [&str; 21] = [
+const SCRUBBED: [&str; 22] = [
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
@@ -66,6 +73,7 @@ const SCRUBBED: [&str; 21] = [
     "AGY_ACP_FORCE_FILE_STORAGE",
     "ANTIGRAVITY_HARNESS_PATH",
     "BROWSER",
+    "KUVO_URL_FILE",
     "PYTHONUNBUFFERED",
     "ELECTRON_RUN_AS_NODE",
     "AGY_CLI_DISABLE_AUTO_UPDATE",
@@ -226,13 +234,15 @@ impl Antigravity {
         struct Model {
             value: String,
             name: String,
+            #[serde(default)]
+            efforts: Vec<String>,
         }
         let saved: Saved = serde_json::from_slice(&std::fs::read(self.models_file()).ok()?).ok()?;
-        let models = saved.models.into_iter().map(|Model { value, name }| {
+        let models = saved.models.into_iter().map(|model| {
             let listed = Listed {
-                id: value,
-                name,
-                efforts: Vec::new(),
+                id: model.value,
+                name: model.name,
+                efforts: model.efforts,
                 effort: None,
             };
             (!listed.id.is_empty()).then_some(listed)
@@ -246,7 +256,8 @@ impl Antigravity {
         .filter(|catalog| catalog.credential.is_some())
     }
 
-    /// Keeps the models a session offered, for the sign-in it ran with: whether it listed them.
+    /// Keeps the models and each model's thinking levels a session offered, for the sign-in it
+    /// ran with: whether it listed them.
     fn save_models(&self, setup: &Setup, credential: Option<&str>) -> bool {
         let (Some(credential), Some(now)) = (credential, self.credential()) else {
             return false;
@@ -282,9 +293,16 @@ impl Antigravity {
         if !listed {
             return false;
         }
+        let efforts = model_efforts(setup, &flat);
         let models: Vec<Value> = flat
             .iter()
-            .map(|(value, name)| json!({"value": value, "name": name}))
+            .map(|(value, name)| {
+                let mut entry = json!({"value": value, "name": name});
+                if let Some(levels) = efforts.get(value) {
+                    entry["efforts"] = json!(levels);
+                }
+                entry
+            })
             .collect();
         let saved = json!({"credential": credential, "current": option.map(|option| option["currentValue"].clone()), "models": models});
         let file = self.models_file();
@@ -316,16 +334,12 @@ impl Antigravity {
             .join("agents/tmp/antigravity")
             .join(format!("att_{}", hex::encode(random)));
         kuvo_store::files::private_folder(&temporary)?;
-        let catcher = sign_in::catcher_script(&temporary)?;
         let mut env: Environment = local::environment();
         env.retain(|name, _| {
             !SCRUBBED.contains(&name.to_string_lossy().to_ascii_uppercase().as_str())
         });
-        let url = temporary.join("url");
         for (name, value) in [
             ("GEMINI_HOME", self.profile()),
-            ("BROWSER", catcher),
-            ("KUVO_URL_FILE", url.clone()),
             ("TMPDIR", temporary.clone()),
         ] {
             env.insert(name.into(), value.into_os_string());
@@ -378,7 +392,6 @@ impl Antigravity {
                 portable_requests: None,
             },
             temporary: Some(temporary),
-            sign_in_file: Some(url),
             credential: self.credential(),
         })
     }
@@ -397,7 +410,7 @@ impl Antigravity {
                 Options {
                     framing: Framing::JsonRpc2,
                     first_id: 1,
-                    filter: Some(Box::new(|line: &str| !line.contains(SIGN_IN_LINE))),
+                    filter: Some(Box::new(|line: &str| !asks_sign_in(line))),
                 },
             );
             let checked = async {
@@ -570,6 +583,53 @@ impl Antigravity {
 fn named(entry: &Value, key: &str) -> Option<(String, String)> {
     let value = entry[key].as_str().filter(|value| !value.is_empty())?;
     Some((value.into(), entry["name"].as_str().unwrap_or(value).into()))
+}
+
+/// Thinking levels a model may have beyond those of the one a session is on.
+const LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Each model's thinking levels, as a session lists them: a `<model>-<level>` entry in
+/// `models.availableModels` for each level a model has (`gemini-4-neon-high`), in the order of its
+/// `thought_level` option. Where it lists none, the model it's on has that option's.
+fn model_efforts(setup: &Setup, models: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    let option = setup.option("thought_level", "thought_level");
+    let offered: Vec<&str> = option
+        .and_then(|option| option["options"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["value"].as_str().filter(|value| !value.is_empty()))
+        .collect();
+    let mut levels = offered.clone();
+    levels.extend(LEVELS.iter().filter(|level| !offered.contains(level)));
+    let listed: Vec<&str> = setup.get("models")["availableModels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|info| info["modelId"].as_str())
+        .collect();
+    let mut efforts: HashMap<String, Vec<String>> = models
+        .iter()
+        .filter_map(|(model, _)| {
+            let own: Vec<String> = levels
+                .iter()
+                .filter(|level| listed.contains(&format!("{model}-{level}").as_str()))
+                .map(|level| (*level).to_owned())
+                .collect();
+            (!own.is_empty()).then(|| (model.clone(), own))
+        })
+        .collect();
+    if efforts.is_empty()
+        && !offered.is_empty()
+        && let Some(current) = setup
+            .option("model", "model")
+            .and_then(|model| model["currentValue"].as_str())
+    {
+        efforts.insert(
+            current.to_owned(),
+            offered.iter().map(|level| (*level).to_owned()).collect(),
+        );
+    }
+    efforts
 }
 
 fn not_installed() -> io::Error {
@@ -827,7 +887,7 @@ impl Flavour for Antigravity {
     /// Its access lasts an hour, renewed from the sign-in it keeps: one that asks for a new
     /// sign-in partway is started again, which renews it.
     fn line(&self, line: &str) -> Line {
-        if line.contains(SIGN_IN_LINE) {
+        if asks_sign_in(line) {
             Line::AsksSignIn
         } else {
             Line::Protocol
@@ -855,23 +915,37 @@ impl Flavour for Antigravity {
         rpc: &'a Rpc,
         session: &'a str,
         model: &'a str,
-        _variant: Option<&'a str>,
+        variant: Option<&'a str>,
         setup: &'a mut Setup,
         credential: Option<&'a str>,
     ) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(async move {
-            if model == local::DEFAULT_MODEL || setup.get("kuvoModel") == model {
-                return Ok(());
+            if model != local::DEFAULT_MODEL && setup.get("kuvoModel") != model {
+                let params = json!({"sessionId": session, "configId": "model", "value": model});
+                rpc.request(
+                    "session/set_config_option",
+                    Some(params),
+                    Some(Duration::from_secs(30)),
+                )
+                .await?;
+                setup.set("kuvoModel", model);
+                self.save_models(setup, credential);
             }
-            let params = json!({"sessionId": session, "configId": "model", "value": model});
-            rpc.request(
-                "session/set_config_option",
-                Some(params),
-                Some(Duration::from_secs(30)),
-            )
-            .await?;
-            setup.set("kuvoModel", model);
-            self.save_models(setup, credential);
+            // Its thinking level: the one picked, set once as the conversation starts (set later,
+            // it would drop what it has cached of the conversation).
+            let fresh = setup.0.remove("kuvoFresh").is_some();
+            let option = setup.option("thought_level", "thought_level");
+            if let (true, Some(level), Some(id)) =
+                (fresh, variant, option.map(|option| option["id"].clone()))
+            {
+                let params = json!({"sessionId": session, "configId": id, "value": level});
+                rpc.request(
+                    "session/set_config_option",
+                    Some(params),
+                    Some(Duration::from_secs(30)),
+                )
+                .await?;
+            }
             Ok(())
         })
     }

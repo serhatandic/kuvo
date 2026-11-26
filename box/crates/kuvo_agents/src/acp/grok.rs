@@ -434,7 +434,6 @@ impl Flavour for Grok {
                 portable_requests: None,
             },
             temporary: None,
-            sign_in_file: None,
             credential: self.credential(),
         })
     }
