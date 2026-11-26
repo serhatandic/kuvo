@@ -277,7 +277,8 @@ impl QueueStore {
         }
         let path = self.run.join("queues.json");
         let store = self.clone();
-        let held_changed = before.map(|queue| queue.held) != Some(result.held.clone());
+        let line = |queue: &Queue| (queue.held.clone(), !queue.waiting.is_empty());
+        let held_changed = before.as_ref().map(line) != Some(line(&result));
         tokio::task::spawn_blocking(move || {
             let _edit = edit_guard;
             disk::write(&path, &index)?;
@@ -287,7 +288,9 @@ impl QueueStore {
         .await??;
         // (A coding agent's line keeps what's held, as the engine's inbox does.)
         if held_changed && let Some(agents) = self.agents.get() {
-            let _ = agents.hold_line(session, result.held.clone()).await;
+            let _ = agents
+                .hold_line(session, result.held.clone(), !result.waiting.is_empty())
+                .await;
         }
         Ok(result)
     }
@@ -1154,13 +1157,25 @@ pub(crate) async fn advance(
             advance_held(engine, session, id).await
         };
     }
-    let current = engine.queues.get(session).await.map_err(save_failed)?;
     let running = is_running(engine, target, session)
         .await
         .map_err(queue_failed)?;
     if how == Advance::AfterTurn && running {
         return Ok(true);
     }
+    // (A coding agent's line starts none the box holds: let go first, so it may start this one.)
+    let current = if matches!(target, Target::Agents(_)) {
+        engine
+            .queues
+            .put(session, |queue| {
+                queue.held.retain(|held| held != id);
+                queue.came_held.retain(|held| held != id);
+            })
+            .await
+            .map_err(save_failed)?
+    } else {
+        engine.queues.get(session).await.map_err(save_failed)?
+    };
     if current.contains(id) {
         if !handoff::send(engine, target, session, id, true).await? {
             return Ok(false);
@@ -1202,23 +1217,12 @@ pub(crate) async fn advance(
     };
     let now = how == Advance::Now || !running;
     match target {
-        // (Let go first, so its line may start it; with nothing running, what's steered starts
-        // now, as the engine's does.)
-        Target::Agents(source) => {
-            engine
-                .queues
-                .put(session, |queue| {
-                    queue.held.retain(|held| held != id);
-                    queue.came_held.retain(|held| held != id);
-                })
-                .await
-                .map_err(save_failed)?;
-            match source.advance_line(session, id, now).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-                Err(error) => return Err(save_failed(error)),
-            }
-        }
+        // (With nothing running, what's steered starts now, as the engine's does.)
+        Target::Agents(source) => match source.advance_line(session, id, now).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(save_failed(error)),
+        },
         Target::Engine(_) if item.delivery == Delivery::Queue => {
             if let Err(error) = set_delivery(engine, target, session, id, Delivery::Steer).await {
                 if error.missing() {
@@ -2695,6 +2699,7 @@ pub(crate) fn follow_agents(
         let stop = tokio_util::sync::CancellationToken::new();
         let _stop = stop.clone().drop_guard();
         let mut queues = QueueEvents::default();
+        scan_agents(&engine).await;
         loop {
             match events.recv().await {
                 Ok(event) => queues.hear(
@@ -2760,6 +2765,7 @@ impl QueueEvents {
             "session.execution.interrupted" => match data["reason"].as_str() {
                 Some("superseded" | "inactivity" | "agent-exit") => QueueEvent::Drain,
                 Some("restart") => return,
+                Some("stopped") => QueueEvent::Stopped,
                 _ => QueueEvent::Hold(None),
             },
             "session.execution.failed" => {
@@ -2771,13 +2777,15 @@ impl QueueEvents {
         };
         let delay = match &operation {
             QueueEvent::Started | QueueEvent::Reopen => Duration::ZERO,
-            QueueEvent::Hold(_) | QueueEvent::Drain => Duration::from_millis(1500),
+            QueueEvent::Hold(_) | QueueEvent::Stopped | QueueEvent::Drain => {
+                Duration::from_millis(1500)
+            }
             _ => Duration::from_millis(100),
         };
         let deadline = now + delay;
         let delay_scope = stop.child_token();
         let delayed = match &operation {
-            QueueEvent::Hold(_) => Some(&mut self.stops),
+            QueueEvent::Hold(_) | QueueEvent::Stopped => Some(&mut self.stops),
             QueueEvent::Drain => Some(&mut self.drains),
             _ => None,
         };
@@ -2837,6 +2845,27 @@ pub(crate) fn watch_limits(
     stop: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     limit::watch(engine, stop)
+}
+
+/// A coding agent's conversation whose saved queue isn't paused goes on at start, as the
+/// engine's scan drains its own.
+async fn scan_agents(engine: &Engine) {
+    let Ok(index) = engine.queues.index().await else {
+        return;
+    };
+    for (session, state) in index {
+        if state.paused
+            || state.limit_stop.is_some()
+            || state.waiting.is_empty()
+            || !state.inbox_moved.is_empty()
+            || !matches!(engine.agent_session(&session).await, Ok(Some(_)))
+        {
+            continue;
+        }
+        if let Err(error) = react(engine, &session, QueueEvent::Drain, disk::now()).await {
+            eprintln!("Kuvo could not carry on a saved queue: {error}");
+        }
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -2959,6 +2988,8 @@ pub(crate) async fn scan(engine: &Engine, lease: &Lease) -> io::Result<()> {
 enum QueueEvent {
     Drain,
     Hold(Option<LimitStop>),
+    /// A coding agent's turn the box stopped (Stop, archiving): held, unless resumed since.
+    Stopped,
     Failed(Option<LimitStop>),
     Prune,
     Discard,
@@ -3004,6 +3035,13 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
     let lease = place.target();
     let engine_held = release_holds(engine, lease);
     let saved = engine.queues.get(session).await?;
+    // (Resumed since the Stop, which a coding agent's turn can outlast a moment: what's next
+    // goes, as its line doesn't carry on after a turn that was stopped.)
+    let operation = match operation {
+        QueueEvent::Stopped if !saved.paused && saved.resumed.is_some() => QueueEvent::Drain,
+        QueueEvent::Stopped => QueueEvent::Hold(None),
+        operation => operation,
+    };
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());
     }
@@ -3058,7 +3096,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         .filter(|row| row.is_message())
         .collect::<Vec<_>>();
     match operation {
-        QueueEvent::Discard | QueueEvent::Started | QueueEvent::Reopen => {
+        QueueEvent::Discard | QueueEvent::Started | QueueEvent::Reopen | QueueEvent::Stopped => {
             unreachable!("handled locally")
         }
         QueueEvent::Prune => {

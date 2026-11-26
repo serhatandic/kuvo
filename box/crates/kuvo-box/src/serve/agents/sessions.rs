@@ -513,8 +513,13 @@ impl AgentSessionSource for Inventory {
         })
     }
 
-    fn hold_line<'a>(&'a self, id: &'a str, held: Vec<String>) -> AgentCall<'a, bool> {
-        Box::pin(self.store.hold_line(id, held))
+    fn hold_line<'a>(
+        &'a self,
+        id: &'a str,
+        held: Vec<String>,
+        in_turn: bool,
+    ) -> AgentCall<'a, bool> {
+        Box::pin(self.store.hold_line(id, held, in_turn))
     }
 
     fn transcript<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {

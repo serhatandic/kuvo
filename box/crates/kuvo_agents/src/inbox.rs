@@ -295,6 +295,11 @@ impl InboxEvent {
                     "session.execution.interrupted",
                     json!({"sessionID": session, "reason": "agent-exit"}),
                 ),
+                _ if *stopped => (
+                    session,
+                    "session.execution.interrupted",
+                    json!({"sessionID": session, "reason": "stopped"}),
+                ),
                 _ => (
                     session,
                     "session.execution.interrupted",

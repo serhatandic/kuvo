@@ -909,7 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 7/7 | see below |
-| engine-sessions | 46/46 (8 skipped) | 52/54 | see below |
+| engine-sessions | 46/46 (8 skipped) | 54/54 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
@@ -976,10 +976,14 @@ findings:
 - it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
   parts vector, and the agent that takes pictures).
 
-Rust's 2 failures are 4.7d step 5's:
+Rust passes every case. Where an agent's line differs from the engine's inbox:
 
-- draining an unpaused saved queue after a restart;
-- the place Undo puts a message back;
+- a saved queue that isn't paused goes on when the box starts, as the engine's start-up scan
+  drains its own;
+- while the box keeps a message of its own among what's queued (Undo puts one back), it hands
+  each over in its order, and the agent's line starts only what's steered by itself;
+- a turn the box stopped says so (`reason: "stopped"`): it holds the queue as any interruption
+  does, unless the queue was resumed since, when what's next goes.
 
 Kept on the engine:
 

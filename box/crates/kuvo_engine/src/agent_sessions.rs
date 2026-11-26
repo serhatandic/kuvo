@@ -198,8 +198,14 @@ pub trait AgentSessionSource: Send + Sync {
     }
 
     /// What the box holds in the conversation's line (a Stop held them): none of them starts
-    /// until it's let go.
-    fn hold_line<'a>(&'a self, _id: &'a str, _held: Vec<String>) -> AgentCall<'a, bool> {
+    /// until it's let go. `in_turn`: the box hands what's queued over in its own order, so after
+    /// a turn only what's steered starts by itself.
+    fn hold_line<'a>(
+        &'a self,
+        _id: &'a str,
+        _held: Vec<String>,
+        _in_turn: bool,
+    ) -> AgentCall<'a, bool> {
         Box::pin(async { Ok(false) })
     }
 

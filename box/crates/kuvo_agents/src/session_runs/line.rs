@@ -1119,9 +1119,11 @@ impl Service {
         if let Some(own) = conversation.own.take() {
             return self.start_own(state, session, own).await;
         }
-        let Ok(Some((line, held))) = self
+        let Ok(Some((line, held, in_turn))) = self
             .store
-            .edit_line(session, |line| ((line.inputs.clone(), line.held.clone()), false))
+            .edit_line(session, |line| {
+                ((line.inputs.clone(), line.held.clone(), line.in_turn), false)
+            })
             .await
         else {
             return;
@@ -1142,7 +1144,9 @@ impl Service {
             conversation.continue_after_exit = false;
             (!line.is_empty()).then_some(0)
         } else {
+            // (Where the box hands what's queued over in its order, only what's steered goes.)
             next_in_line(&line, ended == Some(true), conversation.go, handing)
+                .filter(|at| !in_turn || line[*at].delivery == Delivery::Steer)
         };
         // (With nothing to start but one being handed, Send Now waits for it.)
         if index.is_some() || conversation.handing.is_empty() {
