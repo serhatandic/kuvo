@@ -24,6 +24,7 @@ mod relay_routes;
 pub mod remote_work;
 pub mod routes;
 pub mod session;
+pub mod session_follow;
 pub mod setup_lists;
 pub mod work_rows;
 

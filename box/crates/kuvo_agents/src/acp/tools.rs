@@ -210,7 +210,13 @@ pub(crate) fn kuvo_tool(call: &Call, known: &KnownTools) -> (String, Value) {
                 ),
             );
         }
-        "think" => return ("think".into(), json!({})),
+        // (OpenCode names its tool beside the kind: its subagents are `subagent`, with their task.)
+        "think" => {
+            return match call.get("name").and_then(Value::as_str) {
+                Some(name) if !name.is_empty() && name != "think" => (name.into(), raw.clone()),
+                _ => ("think".into(), json!({})),
+            };
+        }
         _ => {}
     }
     // One of Kuvo Code's, named with its server, or with server and tool in its input; its own

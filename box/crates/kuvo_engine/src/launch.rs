@@ -135,8 +135,9 @@ impl Worker {
         let password = format!("kuvo-{token}");
         let mut spawn = Spawn::new(
             executable(home, version),
-            environment(home, &password, env)?,
+            environment(home, Some(&password), env)?,
         );
+        spawn.priority = kuvo_os::process::Priority::Background;
         spawn.cwd = Some(home.join("workspace"));
         spawn.args = [
             "serve",
@@ -175,6 +176,14 @@ impl Worker {
             started,
             process: Process::Spawned(process),
         })
+    }
+
+    pub fn identity(&self) -> &ProcessIdentity {
+        match &self.process {
+            Process::Spawned(child) => child.identity(),
+            Process::Adopted(child) => child.identity(),
+            Process::Borrowed(identity) => identity,
+        }
     }
 
     pub fn alive(&self) -> io::Result<bool> {
@@ -218,7 +227,21 @@ pub(crate) fn executable(home: &Path, version: &str) -> PathBuf {
     home.join("engine").join(version).join(ENGINE_EXE)
 }
 
-fn environment(home: &Path, password: &str, mut env: Environment) -> io::Result<Environment> {
+/// The pinned OpenCode as the coding agent runs it (`opencode acp`): its program, and the engine's
+/// environment without the server's sign-in or Kuvo Code's tools (each conversation is given
+/// those).
+pub fn agent_program(home: &Path, env: Environment) -> io::Result<(PathBuf, Environment)> {
+    let mut env = environment(home, None, env)?;
+    env.retain(|name, _| !name.to_string_lossy().eq_ignore_ascii_case("OPENCODE_CONFIG_CONTENT"));
+    Ok((executable(home, &pinned_version()), env))
+}
+
+/// Whether the pinned OpenCode is on this computer, for the coding agent to run.
+pub(crate) fn agent_here(home: &Path) -> bool {
+    executable(home, &pinned_version()).is_file()
+}
+
+fn environment(home: &Path, password: Option<&str>, mut env: Environment) -> io::Result<Environment> {
     let platform = Platform::current();
     if cfg!(windows) {
         // Cmd includes per-drive working directories as entries such as "=C:".
@@ -252,10 +275,12 @@ fn environment(home: &Path, password: &str, mut env: Environment) -> io::Result<
     fs::create_dir_all(home.join("workspace"))?;
     set("KUVO_HOME", home.as_os_str().to_owned());
     set("OPENCODE_CLIENT", "desktop".into());
-    set("OPENCODE_PASSWORD", password.into());
-    set("OPENCODE_SERVER_PASSWORD", password.into());
-    set("OPENCODE_SERVER_USERNAME", "opencode".into());
-    set("OPENCODE_USERNAME", "opencode".into());
+    if let Some(password) = password {
+        set("OPENCODE_PASSWORD", password.into());
+        set("OPENCODE_SERVER_PASSWORD", password.into());
+        set("OPENCODE_SERVER_USERNAME", "opencode".into());
+        set("OPENCODE_USERNAME", "opencode".into());
+    }
 
     let mac = fs::read_to_string(home.join("box/kind")).is_ok_and(|kind| kind.trim() == "mac");
     if !mac {

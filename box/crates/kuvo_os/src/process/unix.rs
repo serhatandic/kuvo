@@ -52,6 +52,8 @@ pub(super) fn exit_wait(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: the successful kqueue call returned a new descriptor, not yet owned
+    // by any Rust object. OwnedFd takes sole ownership and closes it on drop.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let event = libc::kevent {
         ident: identity.pid as usize,
@@ -83,8 +85,10 @@ pub(super) fn exit_wait(
     }
     Ok(Box::new(move || {
         loop {
-            // SAFETY: the live descriptor and initialized writable event wait for NOTE_EXIT.
+            // SAFETY: kevent contains integer fields and a raw pointer, all valid when zeroed.
             let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: fd is held live by OwnedFd; there is no input list, and event is a
+            // writable, correctly aligned single output entry for this blocking call.
             if unsafe {
                 libc::kevent(
                     fd.as_raw_fd(),
@@ -254,6 +258,18 @@ pub(super) fn spawn(
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
     }
+    #[cfg(target_os = "macos")]
+    let mut command = if spec.priority == Priority::Background {
+        // taskpolicy execs the program in place, applying an inherited utility QoS clamp.
+        // Keep the ordinary missing-program error rather than starting the wrapper for it.
+        std::fs::metadata(spec.executable.path())?;
+        let mut command = Command::new("/usr/sbin/taskpolicy");
+        command.args(["-c", "utility"]).arg(spec.executable.path());
+        command
+    } else {
+        Command::new(spec.executable.path())
+    };
+    #[cfg(target_os = "linux")]
     let mut command = Command::new(spec.executable.path());
     command.args(&spec.args).env_clear().envs(&spec.env);
     if let Some(cwd) = &spec.cwd {
@@ -274,9 +290,16 @@ pub(super) fn spawn(
         .stdin(child_stdin)
         .stdout(child_stdout)
         .stderr(child_stderr);
-    // SAFETY: setsid is async-signal-safe. It gives the child a new session and process group.
+    let background = spec.priority == Priority::Background;
+    // SAFETY: setsid and the priority syscalls operate only on the new child.
     unsafe {
-        command.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
+        command.pre_exec(move || {
+            rustix::process::setsid()?;
+            if background {
+                super::priority::lower_child()?;
+            }
+            Ok(())
+        });
     }
     let owner = Owner {
         child: command.spawn()?,

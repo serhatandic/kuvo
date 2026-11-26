@@ -2,6 +2,7 @@
 // models, its turns, what it asks, Stop, its own turns and what it keeps going.
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import fs from "node:fs";
 import path from "node:path";
 import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
 import { answerSessionAsk, askFirst, assertCommandCard, assertMatch, headers, idles, sessionAsks, texts, toolCalls } from "./claude.mjs";
@@ -27,6 +28,12 @@ describe("Grok", { skip }, () => {
         acp.seed(id, provider, { directory, permissions });
         pool[kind].push(id);
       }
+    }
+    // (Ids as the tools take them.)
+    for (const id of ["ses_grokWakeOne", "ses_grokWakeTwo"]) {
+      const directory = path.join(acp.home, "projects", id);
+      write(path.join(directory, ".keep"), "");
+      acp.seed(id, provider, { directory });
     }
     await acp.start();
   });
@@ -172,5 +179,25 @@ describe("Grok", { skip }, () => {
     await acp.idles(id);
     const work = await until(async () => (await acp.work()).sessions?.[id], "Its background task never showed.");
     assertMatch(work, { tasks: 1 });
+  });
+
+  test("its wake-ups are a coding agent's: set by its tools or from the app, kept as its", { timeout: 60000 }, async () => {
+    const id = "ses_grokWakeOne";
+    if (process.platform !== "win32") {
+      fs.mkdirSync(path.join(acp.home, "bin"), { recursive: true });
+      fs.copyFileSync(new URL("../../box/src/keeper/kuvo-wake", import.meta.url), path.join(acp.home, "bin", "kuvo-wake"));
+      fs.chmodSync(path.join(acp.home, "bin", "kuvo-wake"), 0o755);
+    }
+    const made = await request(acp.listener, "POST", "kuvo/agent-tools", { name: "schedule_wake_up", arguments: { when: "+2h", note: "Look again." }, session: id }, headers);
+    assert.equal(made.status, 200, made.text);
+    assert.equal(made.json.isError, false, made.json.text);
+    assert.match(made.json.text, /^Scheduled /);
+    assert.equal(fs.readFileSync(path.join(acp.home, "wakes", id, "via"), "utf8").trim(), "bridge");
+    // One the app sets first, for another of its conversations.
+    const other = "ses_grokWakeTwo";
+    const added = await request(acp.listener, "POST", `kuvo/wakes/${other}`, { due: Math.floor(Date.now() / 1000) + 3 * 3600, note: "From the app." }, headers);
+    assert.equal(added.status, 200, added.text);
+    assert.deepEqual(added.json.wakes.map((wake) => wake.note), ["From the app."]);
+    assert.equal(fs.readFileSync(path.join(acp.home, "wakes", other, "via"), "utf8").trim(), "bridge");
   });
 });

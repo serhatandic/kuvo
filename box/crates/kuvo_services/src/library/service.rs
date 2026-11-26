@@ -75,6 +75,7 @@ impl LibraryService {
     pub fn bots_folder(&self) -> &Path { &self.bots }
     pub fn clear_bot_descriptions(&self) { self.described.lock().unwrap().clear(); }
     pub fn store(&self) -> &LibraryStore { &self.store }
+    pub fn artifacts_ready(&self) -> bool { self.artifacts.as_ref().is_none_or(|store| store.ensure_history().is_ok()) }
     pub fn handed(&self, handover: Handover) { let _ = self.store.hand(handover); }
     pub fn computer_name(&self) -> String { (self.computer)() }
     pub fn thumbnailable(&self, item: &Item) -> bool { self.thumbnails.can(item) }
@@ -173,7 +174,7 @@ impl LibraryService {
             .and_then(|r| serde_json::from_str::<Value>(&r).ok())
             .and_then(|v| v.get("done")?.as_u64())
             .is_some_and(|d| d >= BACKFILL_VERSION);
-        if done { return; }
+        if done || !self.artifacts_ready() { return; }
         let mut found = library_handovers(&self.sessions, &self.bots);
         if let Some(artifacts) = &self.artifacts {
             for (artifact, version) in artifacts.timeline(&Scope::default(), 100_000, None).0 {

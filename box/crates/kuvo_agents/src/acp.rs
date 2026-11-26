@@ -1,4 +1,4 @@
-//! Agents that speak ACP, the Agent Client Protocol (Grok's CLI, Antigravity's `agy`): one client
+//! Agents that speak ACP, the Agent Client Protocol (Grok's CLI, Antigravity's `agy`, OpenCode): one client
 //! for all of them, each a flavour of its own. A process carries several conversations, each one
 //! of its sessions, under one holder: conversations started the same way share it.
 
@@ -6,6 +6,7 @@ mod antigravity;
 mod flavour;
 mod grok;
 mod local;
+mod opencode;
 mod projection;
 mod server;
 mod thread;
@@ -41,10 +42,11 @@ use crate::{
 pub use antigravity::forget_old_releases as forget_old_antigravity;
 use flavour::Flavour;
 pub use grok::{GrokSecret, grok_installed, grok_secret};
+pub use opencode::OpenCodeProgram;
 use server::Shared;
 use thread::Conversation;
 
-/// Makes each Grok or Antigravity account's agent.
+/// Makes each Grok, Antigravity or OpenCode account's agent.
 #[derive(Clone)]
 pub struct AcpFactory {
     kind: AgentKind,
@@ -52,6 +54,7 @@ pub struct AcpFactory {
     holder_binary: PathBuf,
     relay: Option<ToolRelay>,
     feed: Option<crate::feed::Feed>,
+    opencode: Option<OpenCodeProgram>,
 }
 
 impl AcpFactory {
@@ -69,7 +72,14 @@ impl AcpFactory {
             holder_binary,
             relay,
             feed: None,
+            opencode: None,
         }
+    }
+
+    /// What OpenCode runs as here.
+    pub fn with_opencode(mut self, program: OpenCodeProgram) -> Self {
+        self.opencode = Some(program);
+        self
     }
 
     /// Where its accounts say their sign-in or models changed.
@@ -94,6 +104,12 @@ impl Factory for AcpFactory {
                 provider.clone(),
                 home,
                 self.holder_binary.clone(),
+                self.feed.clone(),
+            )),
+            AgentKind::OpenCode => Arc::new(opencode::OpenCode::new(
+                self.home.clone(),
+                provider.clone(),
+                self.opencode.clone(),
                 self.feed.clone(),
             )),
             other => {
@@ -171,9 +187,9 @@ impl Agent for Acp {
         true
     }
 
-    /// Grok summarizes when asked; Antigravity can't be.
+    /// Grok and OpenCode summarize when asked; Antigravity can't be.
     fn compacts(&self) -> bool {
-        self.flavour().kind() == AgentKind::Grok
+        matches!(self.flavour().kind(), AgentKind::Grok | AgentKind::OpenCode)
     }
 
     fn sign_in(&self, request: Request) -> AdapterCall<'_, Arc<dyn Attempt>> {
@@ -219,6 +235,8 @@ impl Agent for Acp {
     /// its lines from where its earliest turn began.
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            // A start held for memory must not hold up replacement of the resident.
+            self.shared.halt();
             for process in self.shared.running().await {
                 if let Some(from) = process.earliest_turn()
                     && !process.rpc.prepare(from).await

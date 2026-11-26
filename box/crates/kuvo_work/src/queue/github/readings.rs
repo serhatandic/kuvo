@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}},
     time::Duration,
 };
 use tokio::sync::watch;
@@ -29,6 +29,8 @@ pub(in crate::queue) const WAIT: Duration = Duration::from_secs(3);
 pub(in crate::queue) struct Reader {
     file: Arc<PathBuf>,
     running: Arc<Mutex<HashMap<String, watch::Receiver<bool>>>>,
+    changed: watch::Sender<u64>,
+    retry_until: Arc<AtomicI64>,
 }
 
 #[derive(Clone)]
@@ -64,8 +66,12 @@ impl Reader {
         Self {
             file: Arc::new(store.root.join("seen.json")),
             running: Arc::new(Mutex::new(HashMap::new())),
+            changed: watch::channel(0).0,
+            retry_until: Arc::new(AtomicI64::new(0)),
         }
     }
+
+    pub fn changes(&self) -> watch::Receiver<u64> { self.changed.subscribe() }
 
     /// An agent asking for a specific issue gets the full description and may retry a backed-off host.
     pub async fn read_issue(
@@ -155,10 +161,11 @@ impl Reader {
         found
     }
 
-    pub async fn read_seen(&self, refs: Arc<References>, items: Vec<Value>, wait: Duration) {
+    pub async fn read_seen(&self, refs: Arc<References>, items: Vec<Value>, wait: Duration) -> Option<i64> {
         let reader = self.clone();
-        let wishes = tokio::task::spawn_blocking(move || reader.requests(&refs, &items)).await;
-        let Ok(Ok(wishes)) = wishes else { return };
+        let following = wait.is_zero();
+        let wishes = tokio::task::spawn_blocking(move || reader.requests(&refs, &items, following)).await;
+        let Ok(Ok((wishes, next))) = wishes else { return None };
         let mut new = Vec::new();
         let mut watched = Vec::new();
         let (done, watcher) = watch::channel(false);
@@ -178,12 +185,17 @@ impl Reader {
             watched.push(watcher);
             tokio::spawn(async move {
                 let keys: Vec<_> = new.iter().map(|request| request.key.clone()).collect();
-                let _ = reader.read_due(new).await;
+                if !matches!(reader.read_due(new).await, Ok(true)) {
+                    // A competing disk owner or a transient read failure is a
+                    // retry of real visible work, not a periodic page scan.
+                    reader.retry_until.store(now().saturating_add(2_000), Ordering::Relaxed);
+                }
                 let mut running = reader.running.lock().expect("GitHub reads");
                 for id in keys {
                     running.remove(&id);
                 }
                 let _ = done.send(true);
+                reader.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
             });
         }
         if !watched.is_empty() && !wait.is_zero() {
@@ -194,13 +206,18 @@ impl Reader {
             })
             .await;
         }
+        next
     }
 
-    fn requests(&self, refs: &References, items: &[Value]) -> Result<Vec<Request>, Error> {
+    fn requests(&self, refs: &References, items: &[Value], following: bool) -> Result<(Vec<Request>, Option<i64>), Error> {
         let cache = Cache::read(&self.file)?;
         let now = now();
         let mut requests = Vec::new();
         let mut unique = HashSet::new();
+        let mut next = None;
+        let mut deadline = |at: i64| {
+            next = Some(next.map_or(at, |before: i64| before.min(at)));
+        };
         for item in items.iter().filter(|item| item["removed"].is_null()) {
             let source = &item["source"];
             let Some(issue) = source["ref"].as_str().and_then(|name| refs.issue(name)) else {
@@ -209,20 +226,30 @@ impl Reader {
             let seen = &item["seen"];
             if let Some(checked) = seen["checked"].as_f64().or_else(|| seen["at"].as_f64())
                 && seen["gone"] != true
-                && (now as f64 - checked)
-                    < if done(&seen["state"]) {
-                        FRESH_DONE as f64
-                    } else {
-                        BACK_OFF as f64
-                    }
             {
-                continue;
+                let fresh = if done(&seen["state"]) { FRESH_DONE } else { BACK_OFF };
+                let at = (checked + fresh as f64).ceil() as i64;
+                if now < at {
+                    deadline(at);
+                    continue;
+                }
             }
             let key = issue.key();
             if !unique.insert(key.clone()) {
                 continue;
             }
             let saved = cache.reads.get(&key);
+            let mut due = saved.map_or(0, |row| row.asked().saturating_add(row.fresh_for()))
+                .max(cache.hosts.get("github.com").copied().unwrap_or_default());
+            // Only a passive follow needs protection against a completion/retry
+            // loop. A new explicit read must be allowed to claim a freed disk lock.
+            if following {
+                due = due.max(self.retry_until.load(Ordering::Relaxed));
+            }
+            if due > now {
+                deadline(due);
+                continue;
+            }
             let latest = saved.and_then(|row| row.value.as_ref());
             let there = latest
                 .and_then(|row| row["url"].as_str())
@@ -249,10 +276,10 @@ impl Reader {
         }
         requests.sort_by_key(|request| cache.reads.get(&request.key).map_or(0, Reading::asked));
         requests.truncate(MOST_READ);
-        Ok(requests)
+        Ok((requests, next))
     }
 
-    async fn read_due(&self, asks: Vec<Request>) -> Result<(), Error> {
+    async fn read_due(&self, asks: Vec<Request>) -> Result<bool, Error> {
         let file = self.file.clone();
         let start = tokio::task::spawn_blocking(move || {
             let old = Cache::read(&file)?;
@@ -268,7 +295,7 @@ impl Reader {
         .await
         .map_err(io::Error::other)??;
         let Some((hold, cache, asks)) = start else {
-            return Ok(());
+            return Ok(false);
         };
         let mut hosts = BTreeMap::<&str, Vec<Request>>::new();
         for ask in asks.into_iter().filter(|ask| cache.due(ask, now())) {
@@ -365,7 +392,8 @@ impl Reader {
             latest.keep(&file, now())
         })
         .await
-        .map_err(io::Error::other)?
+        .map_err(io::Error::other)??;
+        Ok(true)
     }
 }
 

@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     convert::Infallible,
     io,
@@ -168,7 +169,7 @@ async fn answer(
     } = if head.version == Version::HTTP_11 {
         tokio::pin!(reply);
         let beat = Duration::from_secs(20);
-        let mut pulse = time::interval_at(Instant::now() + beat, beat);
+        let mut pulse = timer_fires::interval_at(Timer::WireHttp, Instant::now() + beat, beat);
         pulse.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

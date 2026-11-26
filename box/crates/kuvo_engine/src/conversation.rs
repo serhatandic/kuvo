@@ -4,6 +4,7 @@ mod reasoning;
 mod summary;
 pub(crate) mod tool_words;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
@@ -178,7 +179,7 @@ pub(crate) fn watch(
                         _ = summaries.join_next(), if !summaries.is_empty() => continue,
                         () = async {
                             match reasoning.next() {
-                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                Some(deadline) => timer_fires::sleep_until(Timer::EngineReconnect, deadline).await,
                                 None => std::future::pending().await,
                             }
                         } => {

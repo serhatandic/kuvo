@@ -233,6 +233,7 @@ impl Program {
                 return Ok(());
             };
             let mut spawn = Spawn::new(executable.path(), env);
+            spawn.priority = kuvo_os::process::Priority::Background;
             spawn.executable = executable;
             spawn.args = vec!["logout".into()];
             spawn.cwd = Some(program.home.root().to_owned());

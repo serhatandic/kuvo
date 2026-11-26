@@ -1,4 +1,5 @@
 //! Authorization and consent shared by fills, tools and SSH.
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
@@ -184,7 +185,7 @@ impl Broker {
         }
         let check = async {
             let mut clock =
-                time::interval_at(time::Instant::now() + AUTOPILOT_LOOK, AUTOPILOT_LOOK);
+                timer_fires::interval_at(Timer::VaultAutopilot, time::Instant::now() + AUTOPILOT_LOOK, AUTOPILOT_LOOK);
             clock.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
                 clock.tick().await;

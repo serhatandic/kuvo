@@ -17,6 +17,9 @@ mod sys;
 #[path = "process/windows.rs"]
 mod sys;
 
+mod priority;
+pub use priority::{wait_for_background_memory, wait_for_background_memory_or_cancel};
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
@@ -167,6 +170,14 @@ pub enum Stdio {
     File(std::fs::File),
 }
 
+/// Lower a command and everything it starts, without lowering its owner.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Priority {
+    #[default]
+    Inherit,
+    Background,
+}
+
 pub struct Spawn {
     pub executable: Executable,
     pub args: Vec<OsString>,
@@ -175,6 +186,7 @@ pub struct Spawn {
     pub stdin: Stdio,
     pub stdout: Stdio,
     pub stderr: Stdio,
+    pub priority: Priority,
 }
 
 impl Spawn {
@@ -187,6 +199,7 @@ impl Spawn {
             stdin: Stdio::Null,
             stdout: Stdio::Null,
             stderr: Stdio::Null,
+            priority: Priority::Inherit,
         }
     }
 

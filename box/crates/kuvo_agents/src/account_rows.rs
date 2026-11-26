@@ -3,6 +3,7 @@
 //! whether Update All updates it, and its ways in. The box's to say, so every client shows the
 //! same. Its program's update notices are decided as its program is read.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -81,7 +82,7 @@ pub fn facts(kind: AgentKind, own: bool) -> Facts {
         sign_out_stops: stops,
         remote_sign_in: true,
         lists_when_listed: listed,
-        program: kind != AgentKind::Cursor,
+        program: !matches!(kind, AgentKind::Cursor | AgentKind::OpenCode),
     };
     match kind {
         AgentKind::Claude => facts(
@@ -133,6 +134,8 @@ pub fn facts(kind: AgentKind, own: bool) -> Facts {
             false,
             true,
         ),
+        // Its sign-ins are its providers', in their own rows.
+        AgentKind::OpenCode => facts(Vec::new(), None, false, false, false, false),
     }
 }
 
@@ -289,7 +292,7 @@ impl AccountRows {
         let rows = Arc::downgrade(&self.0);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+                timer_fires::sleep(Timer::AgentProgramCheck, Duration::from_secs(24 * 60 * 60)).await;
                 let Some(inner) = rows.upgrade() else { return };
                 let rows = AccountRows(inner);
                 let mut programs: Vec<Entry> = Vec::new();
@@ -420,14 +423,15 @@ impl AccountRows {
     /// Every account's row (`fresh`: asked anew).
     pub async fn list(&self, fresh: bool) -> Vec<Value> {
         let roster = self.0.agents.roster();
-        futures_util::future::join_all(roster.all().iter().map(|entry| self.row(entry, fresh)))
-            .await
+        let listed = roster.all().iter().filter(|entry| entry.account.kind.in_accounts());
+        futures_util::future::join_all(listed.map(|entry| self.row(entry, fresh))).await
     }
 
     /// One account's row, asked anew.
     pub async fn one(&self, provider: &Provider) -> Option<Value> {
         let roster = self.0.agents.roster();
         let entry = roster.find(provider)?;
+        provider.kind.in_accounts().then_some(())?;
         Some(self.row(entry, true).await)
     }
 

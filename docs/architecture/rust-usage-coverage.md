@@ -1035,6 +1035,33 @@ removed; both PC process lists were clear. Non-test size:
 631,973 characters without leading indentation (0.919× the TS baseline).
 30 A1 entries closed; 84 remain.
 
+### Reconciliation with the resident's on-demand and background-work changes
+
+Merged main at `e34a3306a`, preserving the instrumented peer heartbeat and
+usage timer calls, the background-process admission and cancellation paths,
+the per-account manual round, and the wall-clock expiry guard. The first
+merged usage run uncovered a historical-reader regression from the new
+OpenCode model routing: legacy native `codex` and `grok` portable headers
+were classified as OpenCode and dropped (backfill 24 rather than 50 tokens).
+The historical reader preserves the three legacy native names while actual
+OpenCode conversations remain counted from their own database. The engine
+SQLite scenario now also seeds a portable copy and proves it isn't added.
+
+Mac Rust usage 109/109, including the repaired backfill and strengthened
+engine-database scenario; TS 40/40 on an exact full retry. The initial TS
+run repeated the Grok cost discrepancy first seen in slice 17: the initial
+day cost 0.0034502 grew to 0.0044502, then restored as 0.00445 despite the
+same 1,000,000,003,372 tokens and source files of 2,989 and 869 bytes.
+The full rerun passed without a tolerance or changed assertion. Engine
+sessions 81/81, holder 12/12, Claude turns 59 passing with the prior TODO,
+Codex 100/100, two idle-service scenarios and eight scoped usage/peer
+cases pass. Workspace test-target check and Bun check clean. Seeded
+differential again matches 12/13 answers exactly (actual scan time only),
+native corpus 2/2; storage-format differences remain documented. The conflict
+resolution and historical-reader change are platform-independent; the
+four-platform gate above remains the platform proof. Usage modules and
+row-specific additions now total 633,072 non-test characters (0.921× TS).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.

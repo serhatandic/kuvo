@@ -110,6 +110,8 @@ pub struct TurnInput {
     pub plan: bool,
     /// On Auto, surface a usage limit promptly so the resident can switch.
     pub auto: bool,
+    /// Withdraw a new process start that's waiting for memory before this turn.
+    pub start_cancel: tokio_util::sync::CancellationToken,
 }
 
 /// A conversation on an account. Implementations may share a process between
@@ -437,6 +439,8 @@ pub enum TurnEvent {
         succeeded: bool,
     },
     ReplayCaughtUp,
+    /// The title its agent gave the conversation, for one still without one.
+    Titled(String),
     Finished(TurnResult),
 }
 

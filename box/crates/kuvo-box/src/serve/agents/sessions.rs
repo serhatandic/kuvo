@@ -76,7 +76,7 @@ impl Inventory {
     /// The window its agent lists for the conversation's model (not one it's still guessing).
     async fn listed_window(&self, fields: &Map<String, Value>) -> Option<u64> {
         let model = fields.get("contextModel").or_else(|| fields.get("model"))?;
-        let provider = Provider::parse(model["providerID"].as_str()?)?;
+        let provider = Provider::of_model(model["providerID"].as_str()?)?;
         let id = model["id"].as_str()?;
         let roster = self.agents.as_ref()?.roster();
         let models = roster.find(&provider)?.agent.models(false).await.ok()?;
@@ -238,7 +238,7 @@ impl AgentSessionSource for Inventory {
         Box::pin(async move {
             let provider = new.model["providerID"]
                 .as_str()
-                .and_then(Provider::parse)
+                .and_then(Provider::of_model)
                 .filter(|_| new.model["id"].as_str().is_some_and(|id| !id.is_empty()))
                 .ok_or_else(no_model)?;
             let agents = self.agents.as_ref().ok_or_else(no_model)?;

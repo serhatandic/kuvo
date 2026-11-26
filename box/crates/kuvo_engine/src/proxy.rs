@@ -328,8 +328,11 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     } else {
         None
     };
+    // (Listing OpenCode's accounts never starts it: its kept list answers while it isn't running.)
+    let listing = request.method == Method::GET && path == "api/integration";
     let demand = match path {
         "api/event" | "api/session/active" => Demand::Passive,
+        _ if listing => Demand::Existing,
         _ => Demand::Start,
     };
     let lease = tokio::select! {
@@ -339,6 +342,13 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     let Some(lease) = lease else {
         if path == "api/session/active" {
             return Reply::json(StatusCode::OK, json!({"data": []}));
+        }
+        if listing {
+            let home = engine.home.clone();
+            let kept = tokio::task::spawn_blocking(move || crate::models::kept::read(&home)).await;
+            if let Ok(Some((_, raw))) = kept {
+                return Reply::json(StatusCode::OK, json!({"data": raw.accounts}));
+            }
         }
         return down(&engine).await.reply();
     };

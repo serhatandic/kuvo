@@ -178,7 +178,7 @@ impl TurnPolicy for TurnRules {
     }
 }
 
-fn project_layers(folder: &Path) -> Vec<PathBuf> {
+pub(crate) fn project_layers(folder: &Path) -> Vec<PathBuf> {
     let mut ancestry = Vec::new();
     for directory in folder.ancestors() {
         ancestry.push(directory);

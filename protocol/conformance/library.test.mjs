@@ -2,17 +2,33 @@
 // Both boxes (TS and Rust) answer the same routes, bytes, diffs, streams, and format refusals.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { boxBinary, boxCommand, isolatedEnv, request, scratch, until } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, openLine, request, scratch, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const sha256 = data => createHash("sha256").update(data).digest("hex");
 const artId = filePath => "art_" + sha256(filePath).slice(0, 24);
 const libId = filePath => "lib_" + sha256(filePath).slice(0, 24);
+
+test("an unused artifact store and empty background inventory do not write files", { timeout: 30000 }, async t => {
+  if (boxBinary().typescript) return t.skip("The Rust resident opens the artifact store on first use.");
+  const { computer } = await bench(t);
+  const box = await computer("Unused artifacts");
+  const ask = box.connect(await box.start().ready());
+  const artifactRoot = path.join(box.home, "artifacts");
+  assert.equal(existsSync(artifactRoot), false);
+  assert.equal(existsSync(path.join(box.home, "run/work/background.json")), false);
+  const library = await ask("GET", "kuvo/library");
+  assert.equal(library.status, 200, library.text);
+  assert.equal(existsSync(artifactRoot), false, "a Library with no artifacts needs no artifact record");
+  const artifacts = await ask("GET", "kuvo/artifacts/storage");
+  assert.equal(artifacts.status, 200, artifacts.text);
+  assert.ok(existsSync(path.join(artifactRoot, "key")));
+});
 
 function seedArtifacts(home, entries, copies = []) {
   mkdirSync(path.join(home, "artifacts", "log"), { recursive: true });
@@ -33,6 +49,30 @@ function seedLibrary(home, items) {
   writeFileSync(path.join(home, "library", "log.jsonl"), lines);
   writeFileSync(path.join(home, "library", "backfill.json"), JSON.stringify({ done: 1 }));
 }
+
+test("a followed solo Library notices an outside file disappear", { timeout: 40000 }, async t => {
+  const { computer } = await bench(t);
+  const box = await computer("Followed solo Library");
+  const file = path.join(realpathSync(box.home), "outside.pdf");
+  writeFileSync(file, "%PDF-1.4 outside");
+  seedLibrary(box.home, [{ id: libId(file), path: file, name: "outside.pdf", kind: "document", type: "application/pdf",
+    how: "shown", session: "ses_outside", at: "2026-10-26T10:05:00.000Z" }]);
+  const record = await box.start().ready();
+  const watch = Buffer.from(JSON.stringify({ library: "kuvo/setup/library/events" })).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch, "kuvo/line", { "x-kuvo-from": "app" }, 35000);
+  t.after(() => line.close());
+  const frames = line.frames();
+  const waitFor = async there => {
+    for (;;) {
+      const { value, done } = await frames.next();
+      assert.ok(!done, "Library follow stopped early");
+      if (value?.t === "library" && value.d?.items?.some(row => row.id === libId(file) && row.there === there)) return;
+    }
+  };
+  await waitFor(true);
+  rmSync(file);
+  await waitFor(false);
+});
 
 test("artifacts routes: scopes, versions, bytes, prose/code diffs, pin, restore, storage and budget", async t => {
   const { computer } = await bench(t);

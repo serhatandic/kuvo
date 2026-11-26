@@ -732,8 +732,10 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **A start on another computer waited for 45 seconds**: the peers' call waits 20 (`remote_work`).
   kuvo_peers (7.2 owns its waits).
 - **A start on a model that just failed** (`warning`, `holdOf`): started without the word. 5.1e-2.
-- **The coding agents' conversations as callers** (`placeOfSession` on the bridge): only the
-  engine's are found. 4.6.
+- **The coding agents' conversations as callers** (`placeOfSession` on the bridge): found through
+  the agents first (`BotEngine::session_found`), their wake-ups kept as theirs (`via`), and the
+  app's wake-up route finds them without starting the engine (4.7b). A subagent's starter up an
+  agent's own line: 4.6.
 - **Commands run free of the sandbox** (`Lead::free`): true on every Rust box, which has no sandbox
   yet. 6.1.
 - **The wake tools and set_job**: done in 5.1e-2. notify_user 5.1c, plan_limits and

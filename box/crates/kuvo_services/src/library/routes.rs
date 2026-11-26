@@ -1,10 +1,10 @@
 //! HTTP and line routes for the Library (`kuvo/library…`, `kuvo/setup/library/events`),
 //! matching `box/src/link/library/routes.ts` and `box/src/link/areas/library.ts`.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::stream;
 use http::{HeaderValue, StatusCode, header::CACHE_CONTROL};
 use kuvo_protocol::{
     ByteStatus, JsonStatus, Route, RouteSpec,
@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 
 use crate::artifacts::routes::{
     any_get_route, bytes_reply, decode_param, merged_ndjson, parse_query, recv_broadcast_opt,
-    unsupported_refusal,
+    unsupported_refusal, watch_opt,
 };
 
 use super::{
@@ -42,9 +42,9 @@ pub enum LibraryHandle {
 impl LibraryHandle {
     fn service(&self) -> Result<&LibraryService, Refusal> {
         match self {
-            Self::Ready(service) => Ok(service),
+            Self::Ready(service) if service.artifacts_ready() => Ok(service),
             Self::UnsupportedFormat(msg) => Err(unsupported_refusal(msg.clone())),
-            Self::Unavailable => Err(Refusal::new(
+            Self::Unavailable | Self::Ready(_) => Err(Refusal::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "This computer's Library isn't running. Try again in a moment.",
             )),
@@ -100,7 +100,7 @@ fn local_computer(handle: &LibraryHandle, peers: Option<&dyn LibraryPeers>) -> P
 fn own_part(handle: &LibraryHandle, peers: Option<&dyn LibraryPeers>, filter: Option<&Filter>) -> Asked {
     let computer = local_computer(handle, peers);
     match (handle, filter) {
-        (LibraryHandle::Ready(service), Some(filter)) => Asked {
+        (LibraryHandle::Ready(service), Some(filter)) if service.artifacts_ready() => Asked {
             computer,
             state: PartState::Here,
             part: Some(service.listed_local(filter, LIST_LIMIT)),
@@ -124,6 +124,18 @@ fn remote_computer<'a>(
     (key != "here" && key != local_computer(handle, peers).key).then_some(key)
 }
 
+fn library_sources(handle: &LibraryHandle, state: &Value) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let LibraryHandle::Ready(service) = handle else { return Default::default(); };
+    let paths = state["items"].as_array().into_iter().flatten().filter(|item| item["computer"]["here"] == true)
+        .flat_map(|item| {
+            let file = item["path"].as_str().map(std::path::PathBuf::from);
+            let bot = item["bot"].as_str().map(|id| service.bots_folder().join(id).join("bot.json"));
+            file.into_iter().chain(bot)
+        }).collect();
+    let roots = if cfg!(windows) { vec![service.bots_folder().to_owned()] } else { Vec::new() };
+    (paths, roots)
+}
+
 pub fn register(registry: &mut Registry, handle: LibraryHandle, peers: Option<Arc<dyn LibraryPeers>>) {
     let (h, p) = (handle.clone(), peers.clone());
     registry.register::<get_kuvo_library::Spec, _, _>(Access::Any, move |call| {
@@ -141,45 +153,52 @@ pub fn register(registry: &mut Registry, handle: LibraryHandle, peers: Option<Ar
         let (h, p, params, cancel) = (h.clone(), p.clone(), parse_query(&call.request.path), call.cancel.clone());
         async move {
             let (filter, query) = (filter_of(&params).ok(), list_query_string(&params));
-            let local_rx = match &h { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
-            let there = p.as_deref().map_or_else(Vec::new, |peers| peers.kept_peers(&query));
-            let stream = stream::unfold(
-                (h, p, filter, query, local_rx, cancel, there, None::<String>, true),
-                |(h, p, filter, query, mut local_rx, cancel, mut there, mut last, first)| async move {
-                    loop {
-                        if cancel.is_cancelled() { return None; }
-                        if !first {
-                            let refresh = tokio::time::sleep(Duration::from_secs(20));
-                            tokio::pin!(refresh);
-                            let mut refresh_peers = false;
-                            tokio::select! {
-                                () = cancel.cancelled() => return None,
-                                () = &mut refresh => refresh_peers = true,
-                                ok = recv_broadcast_opt(&mut local_rx) => {
-                                    if !ok { continue; }
-                                    tokio::select! {
-                                        () = cancel.cancelled() => return None,
-                                        () = tokio::time::sleep(Duration::from_millis(100)) => {}
-                                    }
-                                    if let Some(rx) = &mut local_rx { while rx.try_recv().is_ok() {} }
-                                }
-                            }
-                            if refresh_peers && let Some(peers) = p.as_deref() {
-                                there = peers.ask_peers(&query).await;
-                            }
-                        }
-                        let mut all = Vec::with_capacity(1 + there.len());
-                        all.push(own_part(&h, p.as_deref(), filter.as_ref()));
-                        all.extend(there.clone());
-                        let state = merged(&all);
-                        let line = serde_json::to_string(&state).unwrap_or_default();
-                        if last.as_deref() != Some(line.as_str()) {
-                            last = Some(line);
-                            return Some((JsonLine::<GetLibraryEvents, 200>::new(state), (h, p, filter, query, local_rx, cancel, there, last, false)));
+            let mut local_rx = match &h { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
+            let mut peer_rx = p.as_deref().map(LibraryPeers::changes);
+            let mut there = p.as_deref().map_or_else(Vec::new, |peers| peers.kept_peers(&query));
+            let mut legacy = Vec::<Asked>::new();
+            let mut keys = std::collections::BTreeSet::new();
+            let mut next_legacy = None;
+            let mut sources = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let stream = async_stream::try_stream! {
+                let mut last = None;
+                loop {
+                    let current_keys = p.as_deref().map_or_else(Default::default, LibraryPeers::legacy_keys);
+                    if keys != current_keys {
+                        keys = current_keys;
+                        legacy.retain(|part| keys.contains(&part.computer.key));
+                        next_legacy = (!keys.is_empty()).then(tokio::time::Instant::now);
+                    }
+                    let mut all = vec![own_part(&h, p.as_deref(), filter.as_ref())];
+                    all.extend(there.iter().filter(|part| !legacy.iter().any(|old| old.computer.key == part.computer.key)).cloned());
+                    all.extend(legacy.clone());
+                    let state = merged(&all);
+                    let (paths, roots) = library_sources(&h, &state);
+                    sources.set_files_at_roots(paths, roots);
+                    let line = serde_json::to_string(&state).unwrap_or_default();
+                    if last.as_ref() != Some(&line) {
+                        last = Some(line);
+                        yield JsonLine::<GetLibraryEvents, 200>::new(state)?;
+                    }
+                    let due = p.as_deref().and_then(|peers| peers.next_change(&query));
+                    let refresh_legacy = tokio::select! {
+                        () = cancel.cancelled() => break,
+                        _ = recv_broadcast_opt(&mut local_rx) => false,
+                        _ = watch_opt(&mut peer_rx) => false,
+                        _ = sources.changed() => false,
+                        _ = async { match due { Some(delay) => timer_fires::sleep(Timer::LibraryFollow, delay).await, None => std::future::pending().await } } => false,
+                        _ = async { match next_legacy { Some(at) => timer_fires::sleep_until(Timer::LibraryFollow, at).await, None => std::future::pending().await } } => true,
+                    };
+                    if let LibraryHandle::Ready(service) = &h { service.clear_bot_descriptions(); }
+                    if let Some(peers) = p.as_deref() {
+                        if let Some(filter) = &filter { there = peers.merged_snapshot(filter, &query).await.0; }
+                        if refresh_legacy {
+                            legacy = peers.ask_legacy(&query).await;
+                            next_legacy = (!keys.is_empty()).then(|| tokio::time::Instant::now() + Duration::from_secs(20));
                         }
                     }
-                },
-            );
+                }
+            };
             let mut reply = RouteReply::ndjson::<200>(stream);
             reply.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             Ok(reply)
@@ -194,14 +213,22 @@ pub fn register(registry: &mut Registry, handle: LibraryHandle, peers: Option<Ar
             let query = list_query_string(&params);
             let local_rx = match &h { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
             let peer_rx = p.as_ref().map(|peers| peers.changes());
+            let deadlines = p.clone();
+            let deadline_query = query.clone();
+            let sources = h.clone();
             Ok(merged_ndjson::<get_kuvo_setup_library_events::Spec, _, _, _>(
                 local_rx,
                 peer_rx,
                 cancel,
                 move || {
                     let (h, p, filter, query) = (h.clone(), p.clone(), filter.clone(), query.clone());
-                    async move { build_merged_library(&h, p.as_deref(), &filter, &query).await }
+                    async move {
+                        if let LibraryHandle::Ready(service) = &h { service.clear_bot_descriptions(); }
+                        build_merged_library(&h, p.as_deref(), &filter, &query).await
+                    }
                 },
+                move || deadlines.as_deref().and_then(|peers| peers.next_change(&deadline_query)),
+                move |state| library_sources(&sources, state),
             ))
         }
     });

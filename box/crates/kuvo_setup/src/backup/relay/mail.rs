@@ -1,5 +1,6 @@
 //! The TypeScript forwarded backup messages ride in authenticated peer mail.
 //! The resident correlates replies in memory because it owns both endpoints.
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -264,7 +265,7 @@ impl PeerMail {
             .name
             .clone();
         let exchange = async {
-            let mut retry = tokio::time::interval(RETRY);
+            let mut retry = timer_fires::interval(Timer::BackupRelayRetry, RETRY);
             retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut parts = Assemblies::default();
             loop {

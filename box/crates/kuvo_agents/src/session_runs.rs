@@ -527,7 +527,7 @@ impl SessionRuns {
     ) -> io::Result<Option<Option<Value>>> {
         let connected = model["providerID"]
             .as_str()
-            .and_then(Provider::parse)
+            .and_then(Provider::of_model)
             .is_some_and(|provider| agents.roster().find(&provider).is_some());
         self.store.select_model(session, model, connected).await
     }
@@ -929,7 +929,7 @@ impl Service {
     /// The agent's name, when its account is installed and signed out of: as it was last known,
     /// and asked anew (signed in a moment ago, in Terminal say, it goes). At most 10 s each.
     async fn signed_out(&self, provider: &str) -> Option<&'static str> {
-        let parsed = Provider::parse(provider)?;
+        let parsed = Provider::of_model(provider)?;
         let roster = self.agents.roster();
         let entry = roster.find(&parsed)?.clone();
         let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked);
@@ -942,7 +942,7 @@ impl Service {
     }
 
     async fn thread(&self, session: &str, provider: &str) -> io::Result<Arc<dyn Thread>> {
-        let parsed = Provider::parse(provider).ok_or_else(|| {
+        let parsed = Provider::of_model(provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
         })?;
         let roster = self.agents.roster();

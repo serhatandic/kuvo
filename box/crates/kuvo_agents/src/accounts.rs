@@ -20,15 +20,17 @@ pub enum AgentKind {
     Cursor,
     Grok,
     Antigravity,
+    OpenCode,
 }
 
 impl AgentKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Codex,
         Self::Cursor,
         Self::Grok,
         Self::Antigravity,
+        Self::OpenCode,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -38,6 +40,7 @@ impl AgentKind {
             Self::Cursor => "cursor",
             Self::Grok => "grok",
             Self::Antigravity => "antigravity",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -49,7 +52,14 @@ impl AgentKind {
             Self::Cursor => "Cursor",
             Self::Grok => "Grok",
             Self::Antigravity => "Antigravity",
+            Self::OpenCode => "OpenCode",
         }
+    }
+
+    /// Its accounts are Settings › Accounts' rows. OpenCode's aren't: its accounts are its own
+    /// providers, listed as OpenCode lists them.
+    pub fn in_accounts(self) -> bool {
+        self != Self::OpenCode
     }
 
     pub const fn provider(self) -> &'static str {
@@ -59,6 +69,8 @@ impl AgentKind {
             Self::Cursor => "cursor",
             Self::Grok => "grok-cli",
             Self::Antigravity => "antigravity",
+            // Not `opencode`, which is one of OpenCode's own providers (Zen).
+            Self::OpenCode => "opencode-agent",
         }
     }
 }
@@ -79,6 +91,33 @@ impl Provider {
             kind,
             account: account.into(),
         })
+    }
+}
+
+impl Provider {
+    /// The agent a model's provider runs on: a coding agent's own, else OpenCode's (its providers
+    /// are OpenCode's own, `opencode-go`, `anthropic`…: it has one account).
+    pub fn of_model(provider: &str) -> Option<Self> {
+        Self::parse(provider).or_else(|| {
+            let opencode = !provider.is_empty()
+                && provider
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+            opencode.then(|| Self {
+                kind: AgentKind::OpenCode,
+                account: "default".into(),
+            })
+        })
+    }
+
+    /// Where a model's conversation keeps its agent's state: a coding agent's provider as it is,
+    /// OpenCode's account for each of OpenCode's providers.
+    pub fn slot(provider: &str) -> String {
+        match Self::parse(provider) {
+            None => Self::of_model(provider).map(|parsed| parsed.to_string()),
+            Some(_) => None,
+        }
+        .unwrap_or_else(|| provider.to_owned())
     }
 }
 

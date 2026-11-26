@@ -14,6 +14,7 @@ mod inbox;
 mod routes;
 pub mod verbs;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::HashSet,
     path::Path,
@@ -142,7 +143,7 @@ impl Wakes {
                 _ = stopping.changed() => break,
                 _ = changes.changed() => {},
                 _ = files.changed() => {},
-                () = async { match delay { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                () = async { match delay { Some(delay) => timer_fires::sleep(Timer::WakesDue, delay).await, None => std::future::pending().await } } => {
                     let now = fire::now();
                     last_round = Some((Instant::now(), now));
                     self.round(now, &env, &mut watching).await;

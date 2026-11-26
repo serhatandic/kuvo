@@ -1,3 +1,4 @@
+use kuvo_os::timer_fires::{self, Timer};
 use std::{collections::HashMap, time::Duration};
 
 use kuvo_peers::{
@@ -957,9 +958,9 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
     Ok(false)
 }
 
-/// Kept artifacts, as against the empty store every resident opens when it starts:
-/// its key, a disposable index and empty folders.
-fn artifacts_kept(files: &Files) -> Result<bool, Error> {
+/// Kept artifacts, as against an initialized but empty store: its key, a
+/// disposable index and empty folders.
+pub(super) fn artifacts_kept(files: &Files) -> Result<bool, Error> {
     const EMPTY_STORE: &[&str] = &[
         ".DS_Store",
         "key",
@@ -1064,6 +1065,7 @@ async fn exchange(
                 _ => {}
             },
             _ = resend.tick() => {
+                timer_fires::fired(Timer::InstallerJoinRetry);
                 let payload = serde_json::to_vec(given).expect("installer claim serializes");
                 let _ = relay.sender.installer(to.clone(), payload).await;
             }

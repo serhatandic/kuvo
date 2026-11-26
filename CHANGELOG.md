@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo stays responsive while your agents run builds.
+
 - Rust computers reuse fresh plan readings from another computer instead of asking a maker twice, keep the last successful refresh time when every read fails, and ignore corrupt saved windows instead of showing a false ring.
 
 - Rust computers keep confirmed Claude sign-ins without repeatedly asking the Keychain, respect engine plan read holds across restarts, and show active Z.ai usage without including inactive keys.
@@ -36,6 +38,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A Rust computer on its own no longer contacts the relay to renew a setup lease or number its Work Queue; adding another computer establishes the shared number reservation first.
 
 - Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
+
+- Rust computers stay quiet when nothing is working: the Work Queue, transfers, saved messages, bot edits and followed lists respond to changes instead of checking every few seconds. An unused artifact history no longer creates its files at startup.
+
+- Rust computers share file watches instead of opening a watcher for every folder. A burst of changes from another computer no longer stops the relay connection, and a busy computer keeps accepted peer refresh and update requests until it can handle them.
 
 - Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
 

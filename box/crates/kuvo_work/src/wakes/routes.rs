@@ -176,14 +176,25 @@ pub(crate) struct Said(pub(crate) String);
 
 impl Wakes {
     /// A conversation's folder for its first wake-up or watch, made as `kuvo-wake` makes one:
-    /// its session, its folder, and held while it's archived. None when it isn't a conversation
-    /// here.
+    /// its session, its folder, whether the coding agents run it, and held while it's archived.
+    /// None when it isn't a conversation here.
     pub(crate) async fn folder_for(&self, session: &str) -> Option<PathBuf> {
         if !folder::session_id(session) {
             return None;
         }
-        let engine = self.inner.engine.wake_engine(true).await?;
-        let found = engine.session(session).await.ok().flatten()?;
+        // (A coding agent's is found without starting the engine.)
+        let theirs = match self.inner.engine.agents_wake_engine() {
+            Some(agents) => agents.session(session).await.ok().flatten(),
+            None => None,
+        };
+        let agents = theirs.is_some();
+        let found = match theirs {
+            Some(found) => found,
+            None => {
+                let engine = self.inner.engine.wake_engine(true).await?;
+                engine.session(session).await.ok().flatten()?
+            }
+        };
         let folder = self.roots().sessions.join(session);
         kuvo_store::files::create_private_dirs(&folder).ok()?;
         fs::write(folder.join("session"), session).ok()?;
@@ -192,6 +203,9 @@ impl Wakes {
             .or(found["directory"].as_str())
             .unwrap_or_default();
         fs::write(folder.join("directory"), directory).ok()?;
+        if agents {
+            fs::write(folder.join("via"), "bridge").ok()?;
+        }
         if found["metadata"]["kuvo.archived"] == Value::Bool(true) {
             fs::write(folder.join("paused"), "archived").ok()?;
         }
@@ -741,8 +755,7 @@ fn posted<T>(wakes: &Wakes, call: &RouteCall<T>) -> Result<String, Refusal> {
     Ok(session)
 }
 
-/// A line now, and again as it changes: made here at once, or beside the box as the folders are
-/// looked at again every two seconds.
+/// A line now and whenever the files or resident wake-up state change.
 fn followed<R, T>(
     wakes: Wakes,
     call: RouteCall<T>,
@@ -756,6 +769,14 @@ where
     let said = std::sync::Arc::new(said);
     async_stream::try_stream! {
         let mut changes = wakes.changes();
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut bots = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut sessions = kuvo_os::watch::FileSet::new(hub.clone());
+        let mut moves = kuvo_os::watch::FileSet::new(hub);
+        let names = ["session", "paused", "wakes", "watches", "summaries"];
+        bots.set_child_files(wakes.roots().bots.clone(), names);
+        sessions.set_child_files(wakes.roots().sessions.clone(), names);
+        moves.set_targets(Vec::new(), vec![(wakes.roots().run.join("moves"), false)]);
         let mut previous: Option<Value> = None;
         loop {
             changes.borrow_and_update();
@@ -768,8 +789,10 @@ where
             }
             tokio::select! {
                 () = call.cancel.cancelled() => break,
-                _ = changes.changed() => {}
-                () = tokio::time::sleep(Duration::from_secs(2)) => {}
+                changed = changes.changed() => if changed.is_err() { break; },
+                _ = bots.changed() => {},
+                _ = sessions.changed() => {},
+                _ = moves.changed() => {},
             }
         }
     }

@@ -587,6 +587,7 @@ fn command(
     cwd: &Path,
 ) -> io::Result<(bool, Vec<u8>)> {
     let mut spawn = Spawn::new(executable.path(), env);
+    spawn.priority = kuvo_os::process::Priority::Background;
     spawn.executable = executable;
     spawn.args = args.iter().map(Into::into).collect();
     spawn.cwd = Some(cwd.to_owned());

@@ -390,6 +390,15 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
+        #[cfg(all(unix, debug_assertions))]
+        let _timer_report = if (serve || matches!(&keeper, Some(kuvo_keeper::Command::Run)))
+            && env::var_os("KUVO_TEST_TIMER_REPORT").as_deref() == Some(std::ffi::OsStr::new("1"))
+            && kuvo_keeper::prepare_command::is_scratch(&home)?
+        {
+            kuvo_store::debug_timer_report::start(home.root())?
+        } else {
+            None
+        };
         #[cfg(unix)]
         if ssh_seed {
             let worked = if word(0) == Some("ssh-copy-seed") {

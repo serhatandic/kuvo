@@ -4,6 +4,7 @@ use super::{
     readings::{Milestone, Trail, Window, equivalent_trail},
     settings,
 };
+use kuvo_os::timer_fires::{self, Timer};
 #[path = "limits_view.rs"]
 mod view;
 use crate::limits_menu::MenuLimits;
@@ -2315,7 +2316,7 @@ where
                             if changed.is_err(){return;}
                             if *clients.borrow()==0 {break;}
                         },
-                        _=tokio::time::sleep_until(next)=>{
+                        _=timer_fires::sleep_until(Timer::UsageClientDemand, next)=>{
                             if *clients.borrow()==0 {break;}
                             start_read(&connected_service,connected_reader.clone(),false,false,None,false);
                             next=tokio::time::Instant::now()+Duration::from_secs(60);
@@ -2401,7 +2402,7 @@ where
             if let Some((provider, at)) = next {
                 tokio::select! {
                     result=changes.changed()=>{if result.is_err(){return;}},
-                    _=tokio::time::sleep(std::time::Duration::from_millis(at.saturating_sub(now())))=>{
+                    _=timer_fires::sleep(Timer::UsageResetDeadline, std::time::Duration::from_millis(at.saturating_sub(now())))=>{
                         if let Some(provider) = provider {
                             if start_read(&deadlines,deadline_reader.clone(),true,false,Some(provider.clone()),false) {
                                 attempted.insert(provider,at);
@@ -2459,8 +2460,8 @@ where
         let (service,read)=(service.clone(),read.clone());
         async move {
             let mut changed=service.changes.subscribe();
-            let mut heartbeat=tokio::time::interval(std::time::Duration::from_secs(15));
-            let mut demand=tokio::time::interval(std::time::Duration::from_secs(600));
+            let mut heartbeat=timer_fires::interval(Timer::UsageLimitHeartbeat, std::time::Duration::from_secs(15));
+            let mut demand=timer_fires::interval(Timer::UsageDemand, std::time::Duration::from_secs(600));
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             demand.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let stream=async_stream::try_stream!{

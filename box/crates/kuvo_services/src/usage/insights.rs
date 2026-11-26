@@ -1,5 +1,6 @@
 //! Insights' portable transcript index. The SQLite schema is the same as the old service;
 //! only changed transcripts are decoded, on demand, never in an idle background process.
+use kuvo_os::timer_fires::{self, Timer};
 use super::{native_index, pricing::Pricing};
 use http::StatusCode;
 use jiff::{Span, Timestamp, tz::TimeZone};
@@ -244,7 +245,7 @@ impl Service {
                 if clients.wait_for(|n| *n > 0).await.is_err() {
                     break;
                 }
-                let mut delay = tokio::time::interval(std::time::Duration::from_secs(300));
+                let mut delay = timer_fires::interval(Timer::UsageInsightsRefresh, std::time::Duration::from_secs(300));
                 delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
@@ -436,6 +437,20 @@ impl Service {
         lineage::take(&tx, 1, &nodes, &bots, &mut seq, changed.is_none())?;
         for (id, (folder, session)) in &headers {
             if changed.is_some_and(|selected| !selected.contains(id)) {
+                continue;
+            }
+            // OpenCode conversations are counted from its own database. Older portable
+            // transcripts used these native-agent names before their provider IDs were
+            // standardized; model routing must not reinterpret saved history as OpenCode.
+            let provider = session["model"]["providerID"].as_str();
+            let legacy_native = provider.is_some_and(|id| {
+                matches!(id.split('@').next(), Some("claude" | "codex" | "grok"))
+            });
+            let agent = provider.and_then(kuvo_agents::accounts::Provider::of_model);
+            if !legacy_native
+                && agent
+                    .is_some_and(|agent| agent.kind == kuvo_agents::accounts::AgentKind::OpenCode)
+            {
                 continue;
             }
             let stamp = hash(&json!(
@@ -990,7 +1005,7 @@ impl Service {
                         eprintln!("Couldn't update usage prices: {result:?}");
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(
+                timer_fires::sleep(Timer::UsagePriceFeed, std::time::Duration::from_millis(
                     feeds.next().saturating_sub(super::limits::now()).max(1000),
                 ))
                 .await;

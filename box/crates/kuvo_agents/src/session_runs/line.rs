@@ -343,7 +343,7 @@ impl Service {
         };
         let found = {
             let roster = self.agents.roster();
-            crate::accounts::Provider::parse(provider)
+            crate::accounts::Provider::of_model(provider)
                 .and_then(|parsed| roster.find(&parsed))
                 .map(|entry| (entry.account.kind.display_name(), entry.agent.compacts()))
         };

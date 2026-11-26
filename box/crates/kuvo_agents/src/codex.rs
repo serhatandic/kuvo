@@ -447,6 +447,8 @@ impl Agent for Codex {
     /// lines from where the earliest began.
     fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            // Withdraw a not-yet-started app-server before handing over the existing ones.
+            self.shared.halt();
             if let Some(server) = self.shared.current().await
                 && let Some(from) = server.earliest_turn()
                 && !server.rpc.prepare(from).await

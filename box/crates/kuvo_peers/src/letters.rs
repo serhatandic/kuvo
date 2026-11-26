@@ -2,6 +2,7 @@
 //! and immediately before placing an incoming prompt on a local session.
 pub(crate) mod homes;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -183,11 +184,11 @@ impl Letters {
                 }
                 _ = files.changed() => { schedule_letters(&mut scheduled); Ok(()) },
                 changed = self.reader.changed() => if changed.is_err() { return } else { schedule_letters(&mut scheduled); Ok(()) },
-                _ = async { match scheduled { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                _ = async { match scheduled { Some(at) => timer_fires::sleep_until(Timer::LettersRetry, at).await, None => std::future::pending().await } } => {
                     scheduled = None;
                     self.send_due().await
                 },
-                _ = time::sleep(Duration::from_secs(3)), if outstanding && scheduled.is_none() => self.send_due().await,
+                _ = timer_fires::sleep(Timer::LettersRetry, Duration::from_secs(3)), if outstanding && scheduled.is_none() => self.send_due().await,
             };
             if let Err(error) = result {
                 eprintln!("Keeping letters: {error}");

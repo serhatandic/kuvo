@@ -1014,6 +1014,13 @@ test('Insights watches the engine SQLite channel and counts only new or changed 
   // Seed the first watermark well before the new call, as the maker's old history was written.
   db.prepare('UPDATE session_message SET time_updated=time_created').run();
   db.close();
+  if(!boxBinary().typescript){
+    // OpenCode can have a portable session header too. Its actual maker
+    // database is the authority for its completed calls, not a portable copy.
+    const portable=path.join(box.home,'agents','sessions','ses_engine_usage'),model={providerID:'opencode-go',id:'claude-opus-4-6'};
+    write(path.join(portable,'session.json'),JSON.stringify({id:'ses_engine_usage',title:'Engine usage fixture',model,agent:'build',projectID:'fixture',time:{created:now-5*3600000,updated:now},location:{directory:box.home}}));
+    write(path.join(portable,'messages.json'),JSON.stringify([{id:'portable-copy',type:'assistant',time:{created:now-1000,completed:now},model,agent:'build',tokens:{input:999,output:1},content:[]}]));
+  }
   let resident=box.start();
   let call=box.connect(await resident.ready());
   const totals=async()=>{

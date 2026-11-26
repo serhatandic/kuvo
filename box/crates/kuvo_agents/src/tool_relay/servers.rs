@@ -205,6 +205,10 @@ impl Servers {
         stopping
     }
 
+    pub(super) fn next_idle(&self, idle: Duration) -> Option<Instant> {
+        self.running.values().filter_map(|program| program.idle_deadline(idle)).min()
+    }
+
     /// Not there: checked again later, a few minutes on, then each time
     /// twice as long, up to the most (unless it's set up otherwise now).
     fn check_later(&mut self, at: At, setup: String, timing: &RelayTiming) {
@@ -668,6 +672,7 @@ impl ToolRelay {
         let fresh = fresh(12);
         let at = (session.to_owned(), name.to_owned(), fresh.clone());
         self.state().servers.running.insert(at.clone(), program.clone());
+        self.0.idle_changed.notify_one();
         let brief = self.state().servers.brief.contains(session);
         let start_in = if brief { entry.timeout.min(self.timing().command_starts) } else { entry.timeout };
         let answers = join_all(all.into_iter().map(|message| {
@@ -720,7 +725,7 @@ impl ToolRelay {
         let launch = Launch { command: program, args: args.to_vec(), env: environment };
         let launch = self.0.host.sandboxed(&launch, directory)?.unwrap_or(launch);
         let cwd = cwd.clone().unwrap_or_else(|| directory.to_owned());
-        Program::start(String::new(), launch, Some(cwd), format!("The {} server", entry.name))
+        Program::start(String::new(), launch, Some(cwd), format!("The {} server", entry.name), Some(self.0.idle_changed.clone()))
             .map_err(|error| format!("The {} server couldn't start: {error}", entry.name))
     }
 

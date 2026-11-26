@@ -1,5 +1,6 @@
 //! Plan snapshots on the authenticated peer-mail connection. Unlike log readers,
 //! this only runs while a resident is linked, and never asks a provider on a timer.
+use kuvo_os::timer_fires::{self, Timer};
 use kuvo_peers::{
     relay::{RelayEvent, RelayHandle},
     setup_lists::Reader,
@@ -44,11 +45,12 @@ impl Told {
 fn can_answer(last: Option<u64>, now: u64) -> bool {
     last.is_none_or(|at| now.saturating_sub(at) >= 60_000)
 }
-pub(super) async fn at_deadline(at: Option<u64>) {
+pub(super) async fn at_deadline(timer: Timer, at: Option<u64>) {
     if let Some(at) = at {
-        tokio::time::sleep(Duration::from_millis(
-            at.saturating_sub(limits::now()).max(1),
-        ))
+        timer_fires::sleep(
+            timer,
+            Duration::from_millis(at.saturating_sub(limits::now()).max(1)),
+        )
         .await;
     } else {
         std::future::pending::<()>().await;
@@ -163,7 +165,7 @@ pub async fn follow_limits(
         tokio::select! {
             changed=changes.changed()=>{if changed.is_err(){break;}},
             changed=directory.changed()=>{if changed.is_err(){break;}},
-            _=at_deadline(deadline)=>{service.answer(limits::now());},
+            _=at_deadline(Timer::UsagePeerHeartbeat, deadline)=>{service.answer(limits::now());},
             _=refreshes.recv()=>{
                 let view=directory.view();
                 let scope=setup.config_receipt_scope().map(|(id,_)|id);

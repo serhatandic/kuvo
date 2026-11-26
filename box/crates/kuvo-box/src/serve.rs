@@ -6,6 +6,7 @@ mod usage;
 mod usage_history_peers;
 mod usage_peers;
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
@@ -138,12 +139,18 @@ pub async fn run(
     )
     .await?;
     let authority = setup.handle();
+    let ownership_events = authority.clone();
     let owners = kuvo_peers::ownership::Handle::new(
         peers.reader(),
         peers.relay_handle(),
         devices.clone(),
         move || authority.ownership_state(),
-    );
+    ).with_setup_changes(move || {
+        let mut setup = ownership_events.clone();
+        Box::pin(async_stream::stream! {
+            while setup.changed().await { yield (); }
+        })
+    });
     peers
         .attach_moves_with_queue(
             engine.clone(),
@@ -490,8 +497,7 @@ pub async fn run(
     let approvals_kept = approvals.keep();
     let work_settings =
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
-    let working = sessions.clone();
-    let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let kept_awake = work_settings.keep_awake(sessions.clone());
     let engine_reader = usage::engine_reader(home, &account);
     let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
@@ -717,7 +723,8 @@ pub async fn run(
         Some(work_queue.queue_review()),
     );
     let removal = setup.handle();
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), peers.reach_again(), move || {
+    let follows = kuvo_peers::session_follow::Follows::new(peers.reader(), peers.relay_handle(), peers.reach_again());
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), follows, move || {
         removal.computers_listing()
     });
     peers.register_moves(&mut routes, engine.clone());
@@ -739,6 +746,10 @@ pub async fn run(
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
+    // What other computers follow of this one's conversations, answered while they keep it.
+    let _conversation_follows = peers.relay_handle().and_then(|relay| {
+        kuvo_peers::session_follow::serve(peers.reader(), relay, dispatcher.downgrade(), owners.clone())
+    });
     work_queue.serve_archives(archives.clone(), dispatcher.clone());
     let archive_source = tokio::spawn({
         let peers = peers.clone();
@@ -940,10 +951,11 @@ async fn publish_peer_waiting(
     mut peers: kuvo_peers::setup_lists::Reader,
     waiting: tokio::sync::watch::Sender<Arc<Vec<kuvo_engine::PeerWaiting>>>,
 ) {
-    let mut refresh = tokio::time::interval(std::time::Duration::from_secs(15));
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let current = peers.view().peer_waiting(peers.now());
+        let now = peers.now();
+        let view = peers.view();
+        let current = view.peer_waiting(now);
+        let expiry = view.next_peer_waiting_change(now);
         waiting.send_if_modified(|last| {
             if **last == current {
                 return false;
@@ -953,7 +965,12 @@ async fn publish_peer_waiting(
         });
         tokio::select! {
             changed = peers.changed() => if changed.is_err() { break; },
-            _ = refresh.tick() => {},
+            _ = async {
+                match expiry {
+                    Some(at) => timer_fires::sleep(Timer::PeerWaiting, std::time::Duration::from_millis(at.saturating_sub(now).max(1) as u64)).await,
+                    None => std::future::pending().await,
+                }
+            } => {},
             _ = waiting.closed() => break,
         }
     }

@@ -1,11 +1,12 @@
 //! The resident owns peer copies, independently from local engine state. Readers subscribe to
 //! immutable views. Loading the kept copies precedes publishing the first view.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -314,6 +315,39 @@ impl View {
         let key = encode(&key);
         let release = self.announced.get(&key).and_then(Announcement::release);
         self.reach.copy_standing(&key, seen.into(), release, now)
+    }
+
+    /// Compare routing evidence, not timestamps or an agent's activity.
+    /// This avoids re-reading a queue merely because an unchanged peer heartbeat arrived.
+    pub fn same_ownership_routes(&self, other: &Self) -> bool {
+        if !Arc::ptr_eq(&self.local, &other.local) && self.local.ownership != other.local.ownership {
+            return false;
+        }
+        if Arc::ptr_eq(&self.announced, &other.announced) { return true; }
+        self.roster.members.iter().all(|peer| {
+            let key = encode(&peer.key);
+            match (self.announced.get(&key), other.announced.get(&key)) {
+                (None, None) => true,
+                (Some(before), Some(after)) => {
+                    before.owns == after.owns && before.groups == after.groups
+                        && (before.owns.is_some() || before.list.iter()
+                            .map(|agent| (&agent.session, &agent.kind, &agent.id))
+                            .eq(after.list.iter().map(|agent| (&agent.session, &agent.kind, &agent.id))))
+                }
+                _ => false,
+            }
+        })
+    }
+
+    pub fn next_standing_change(&self, now: Millis) -> Option<Millis> {
+        self.roster.members.iter().filter_map(|peer| {
+            let key = encode(&peer.key);
+            let announcement = self.announced.get(&key);
+            self.reach.next_standing_change(
+                &key, self.lists.get(&peer.key).map(|copy| copy.seen),
+                announcement.and_then(|said| said.heard), announcement.and_then(Announcement::release), now,
+            )
+        }).min()
     }
 
     pub fn owner_of(&self, scope: RecordScope, id: &str, now: Millis) -> Option<Owner> {
@@ -633,7 +667,7 @@ enum Change {
     ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
-    ReachAgain(ComputerKey),
+    ReachAgain(ComputerKey, oneshot::Sender<bool>),
 }
 
 /// Asks the resident to reach a computer that's away again (Connect).
@@ -641,9 +675,19 @@ enum Change {
 pub struct ReachAgain(mpsc::Sender<Change>);
 
 impl ReachAgain {
-    /// False when the ask couldn't be left.
+    /// A cached remote read can try again in the background without waiting.
     pub fn ask(&self, key: ComputerKey) -> bool {
-        self.0.try_send(Change::ReachAgain(key)).is_ok()
+        let (done, _) = oneshot::channel();
+        self.0.try_send(Change::ReachAgain(key, done)).is_ok()
+    }
+
+    /// A successful explicit Connect means the connecting row is published.
+    pub async fn ask_and_wait(&self, key: ComputerKey) -> bool {
+        let (done, answer) = oneshot::channel();
+        if self.0.try_send(Change::ReachAgain(key, done)).is_err() {
+            return false;
+        }
+        answer.await.unwrap_or(false)
     }
 }
 
@@ -1004,11 +1048,11 @@ impl Resident {
         if let Err(error) = self.refresh_move_ownership().await {
             eprintln!("Refreshing move ownership: {error}");
         }
-        let mut heartbeat = tokio::time::interval(COPY_HEARTBEAT);
+        let mut heartbeat = timer_fires::interval(Timer::PeerCopyHeartbeat, COPY_HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents, clock.clone()));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut legacy = devices.as_ref().map(Devices::legacy_watch);
         if let Some(legacy) = &legacy {
@@ -1026,7 +1070,7 @@ impl Resident {
                 Ok(()) = waiting_updates.changed() => {
                     self.view.move_waiting = waiting_updates.borrow_and_update().clone();
                     if let Some(publisher) = &mut publisher {
-                        publisher.request(self.view.clone(), clock(), Refresh::None);
+                        publisher.request(self.view.clone(), clock(), Refresh::Moves);
                     }
                 }
                 change = changes.recv() => match change {
@@ -1074,7 +1118,11 @@ impl Resident {
                         }
                     },
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
-                    Some(Change::ReachAgain(key)) => {
+                    Some(Change::ReachAgain(key, done)) => {
+                        if !self.view.relay_connected || self.view.roster.member(&key).is_none() {
+                            let _ = done.send(false);
+                            continue;
+                        }
                         // It tells that peer its agents now and asks for theirs: an answer marks
                         // it back at once, and none leaves it away once the try is over.
                         let now = clock();
@@ -1084,6 +1132,9 @@ impl Resident {
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), now, Refresh::Reach { key });
                         }
+                        publish.send_replace(Arc::new(self.view.clone()));
+                        let _ = done.send(true);
+                        continue;
                     }
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
@@ -1215,7 +1266,10 @@ impl Resident {
                         }
                         continue;
                     }
-                    Some(relay::Event::Disconnected(_)) => self.view.relay_connected = false,
+                    Some(relay::Event::Disconnected(_)) => {
+                        self.view.relay_connected = false;
+                        if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                    },
                     Some(_) => continue,
                     None => {
                         self.view.relay_connected = false;
@@ -1227,9 +1281,9 @@ impl Resident {
                     if let Err(error) = self.refresh_move_ownership().await {
                         eprintln!("Refreshing move ownership: {error}");
                     }
-                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::Moves); }
                 },
-                _ = async { match expiry { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                _ = async { match expiry { Some(delay) => timer_fires::sleep(Timer::PeerMoveExpiry, delay).await, None => std::future::pending().await } } => {
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, clock()) {
                         eprintln!("Keeping moves on other computers: {error}");
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1407,7 +1461,7 @@ impl Resident {
 
 async fn wait_for_trust(until: Option<tokio::time::Instant>) {
     if let Some(until) = until {
-        tokio::time::sleep_until(until).await;
+        timer_fires::sleep_until(Timer::PeerTrust, until).await;
     } else {
         std::future::pending::<()>().await;
     }
@@ -1525,14 +1579,57 @@ struct Received {
 
 enum Refresh {
     None,
+    Moves,
     All,
     Peer { key: ComputerKey, ask: bool },
     /// Connect: tell this peer alone, and ask for its agents.
     Reach { key: ComputerKey },
 }
 
+/// Coalesce latest state independently of delivery intents. A burst of local
+/// changes needs only one projection, but an explicit peer refresh or Connect
+/// must not be discarded just because the writer is busy sending a copy.
+#[derive(Default)]
+struct RefreshBatch {
+    disconnected: bool,
+    plain: bool,
+    moves: bool,
+    all: bool,
+    peers: BTreeMap<ComputerKey, bool>,
+    reach: BTreeSet<ComputerKey>,
+}
+
+impl RefreshBatch {
+    fn merge(&mut self, refresh: Refresh) {
+        match refresh {
+            Refresh::None => self.plain = true,
+            Refresh::Moves => self.moves = true,
+            Refresh::All => self.all = true,
+            Refresh::Peer { key, ask } => {
+                self.peers.entry(key).and_modify(|before| *before |= ask).or_insert(ask);
+            }
+            Refresh::Reach { key } => { self.reach.insert(key); }
+        }
+    }
+
+    fn forced(&self, key: &ComputerKey) -> bool {
+        self.all || self.peers.contains_key(key) || self.reach.contains(key)
+    }
+
+    fn repeat_moves(&self) -> bool {
+        self.peers.values().any(|ask| *ask)
+    }
+}
+
+struct PendingPublication {
+    view: View,
+    now: Millis,
+    refresh: RefreshBatch,
+}
+
 struct Publisher {
-    tx: mpsc::Sender<(View, Millis, Refresh)>,
+    pending: Arc<Mutex<Option<PendingPublication>>>,
+    ready: watch::Sender<u64>,
     task: JoinHandle<()>,
 }
 
@@ -1543,42 +1640,81 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>) -> Self {
-        let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
+    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>, clock: Clock) -> Self {
+        let pending = Arc::new(Mutex::new(None::<PendingPublication>));
+        let (ready, mut changes) = watch::channel(0u64);
+        let inbox = pending.clone();
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
             let mut announcements = BTreeMap::new();
             let mut moves = crate::moves::Announcer::default();
-            while let Some((view, now, refresh)) = rx.recv().await {
-                match refresh {
-                    Refresh::None => {
-                        moves
-                            .announce(&run, &view.roster, &view.move_waiting, &relay, now)
-                            .await
+            let mut latest = None::<View>;
+            let mut next = None;
+            loop {
+                tokio::select! {
+                    changed = changes.changed() => {
+                        if changed.is_err() { break; }
+                        let request = inbox.lock().unwrap().take();
+                        let Some(PendingPublication { view, now, refresh }) = request else { continue; };
+                        if !view.relay_connected || view.roster.members.is_empty() {
+                            next = None;
+                        } else {
+                            let new_recipients = refresh.disconnected || latest.as_ref().is_none_or(|before| !before.relay_connected
+                                || before.roster.members.iter().map(|peer| (peer.key, peer.address))
+                                    .ne(view.roster.members.iter().map(|peer| (peer.key, peer.address))));
+                            let repeat = new_recipients || refresh.repeat_moves();
+                            if repeat { moves.repeat(); }
+                            let announce = repeat || refresh.moves;
+                            let before = !repeat && refresh.moves;
+                            if before {
+                                next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, now).await;
+                            }
+                            publish_round(
+                                &relay,
+                                view.clone(),
+                                now,
+                                refresh,
+                                &mut previous,
+                                &mut announcements,
+                                &sent_agents,
+                            ).await;
+                            if announce && !before {
+                                // A fresh/asked peer must hear the agent announcement first.
+                                next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, now).await;
+                            }
+                        }
+                        latest = Some(view);
                     }
-                    Refresh::Peer { ask: true, .. } => moves.repeat(),
-                    _ => {}
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep_until(Timer::PeerMoveAnnounce, at).await,
+                        None => std::future::pending().await,
+                    } } => {
+                        if let Some(view) = latest.as_ref() {
+                            next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, clock()).await;
+                        } else { next = None; }
+                    }
                 }
-                publish_round(
-                    &relay,
-                    view,
-                    now,
-                    refresh,
-                    &mut previous,
-                    &mut announcements,
-                    &sent_agents,
-                )
-                .await;
             }
         });
-        Self { tx, task }
+        Self { pending, ready, task }
     }
 
     fn request(&mut self, view: View, now: Millis, refresh: Refresh) {
-        if view.roster.members.is_empty() {
-            return;
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(request) = pending.as_mut() {
+            request.refresh.disconnected |= !view.relay_connected;
+            request.view = view;
+            request.now = now;
+            request.refresh.merge(refresh);
+            request.refresh.peers.retain(|key, _| request.view.roster.member(key).is_some());
+            request.refresh.reach.retain(|key| request.view.roster.member(key).is_some());
+        } else {
+            let mut batch = RefreshBatch { disconnected: !view.relay_connected, ..RefreshBatch::default() };
+            batch.merge(refresh);
+            *pending = Some(PendingPublication { view, now, refresh: batch });
         }
-        let _ = self.tx.try_send((view, now, refresh));
+        drop(pending);
+        self.ready.send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 }
 
@@ -1586,7 +1722,7 @@ async fn publish_round(
     relay: &relay::Sender,
     view: View,
     now: Millis,
-    refresh: Refresh,
+    refresh: RefreshBatch,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
     sent_agents: &watch::Sender<AgentMail>,
@@ -1701,8 +1837,7 @@ async fn publish_round(
         let Some(host) = peer.host() else {
             continue;
         };
-        let forced = matches!(refresh, Refresh::All)
-            || matches!(refresh, Refresh::Peer { key, .. } | Refresh::Reach { key } if key == peer.key);
+        let forced = refresh.forced(&peer.key);
         let known = view.announced.get(&encode(&peer.key));
         let (state, announcement_digest) = bridge
             .as_ref()
@@ -1717,9 +1852,8 @@ async fn publish_round(
             let at = before.map_or(now, |(_, before)| now.max(before.saturating_add(1)));
             let mut fields = json!({"at": now, "agents": state});
             fields["agents"]["at"] = json!(at);
-            if matches!(refresh, Refresh::All)
-                || matches!(refresh, Refresh::Reach { key } if key == peer.key)
-                || (known.is_none() && matches!(refresh, Refresh::None))
+            if refresh.all || refresh.reach.contains(&peer.key)
+                || (known.is_none() && refresh.plain)
             {
                 fields["ask"] = json!("agents");
             }
@@ -1909,4 +2043,32 @@ fn project_name(lists: &lists::Lists, facts: &lists::Facts) -> Option<String> {
     std::path::Path::new(directory)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod refresh_batch_tests {
+    use super::*;
+
+    #[test]
+    fn busy_publication_coalesces_changes_without_losing_explicit_refreshes() {
+        let mut batch = RefreshBatch::default();
+        let asking = [1; 32];
+        let reaching = [2; 32];
+        let other = [3; 32];
+        batch.merge(Refresh::Peer { key: asking, ask: true });
+        batch.merge(Refresh::Reach { key: reaching });
+        for _ in 0..100 {
+            batch.merge(Refresh::None);
+            batch.merge(Refresh::Peer { key: asking, ask: false });
+        }
+        batch.merge(Refresh::Moves);
+        assert!(batch.forced(&asking));
+        assert!(batch.forced(&reaching));
+        assert!(!batch.forced(&other));
+        assert!(batch.repeat_moves());
+        assert!(batch.moves && batch.plain && !batch.all);
+        assert_eq!(batch.peers.len(), 1);
+        batch.merge(Refresh::All);
+        assert!(batch.forced(&other));
+    }
 }

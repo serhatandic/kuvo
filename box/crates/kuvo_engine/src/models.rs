@@ -1,6 +1,7 @@
 //! Read the local OpenCode catalog and apply the conversation's model rules.
 
 mod cache;
+pub(crate) mod kept;
 pub(crate) use cache::CatalogCache;
 
 use std::{
@@ -240,16 +241,37 @@ impl Catalog {
             client.get_data::<Vec<Value>>(record, "api/integration", &headers, CATALOG_WAIT),
             client.get_data::<Value>(record, "api/model/default", &headers, CATALOG_WAIT),
         );
-        let providers: Vec<Provider> = entries(providers.ok()?);
-        let models: Vec<Listed> = entries(models.ok()?);
+        let raw = kept::Raw {
+            providers: providers.ok()?,
+            models: models.ok()?,
+            accounts: accounts.ok()?,
+            fallback: fallback.ok(),
+        };
+        let catalog = Self::parse(raw.clone())?;
+        // Kept for when it isn't running (its own folder's list, which is this computer's too).
+        let home = engine.home.clone();
+        let _ = tokio::task::spawn_blocking(move || kept::keep(&home, &raw)).await;
+        Some(catalog)
+    }
+
+    /// The list OpenCode last gave or what stands in for it, while it isn't running.
+    async fn kept(engine: &Engine) -> Option<Self> {
+        let home = engine.home.clone();
+        let (_, raw) = tokio::task::spawn_blocking(move || kept::read(&home)).await.ok()??;
+        Self::parse(raw)
+    }
+
+    fn parse(raw: kept::Raw) -> Option<Self> {
+        let providers: Vec<Provider> = entries(raw.providers);
+        let models: Vec<Listed> = entries(raw.models);
         if providers.is_empty() || !models.iter().any(|model| model.enabled != Some(false)) {
             return None;
         }
         Some(Self {
             providers,
             models,
-            accounts: entries(accounts.ok()?),
-            fallback: fallback.ok().map(|value| {
+            accounts: entries(raw.accounts),
+            fallback: raw.fallback.map(|value| {
                 serde_json::from_value::<ModelRef>(value)
                     .ok()
                     .map(|mut model| {
@@ -672,8 +694,10 @@ impl Engine {
     async fn offered_models_with(&self, demand: Demand) -> OfferedModels {
         let lease = self.acquire(demand).await;
         let read_engine = async {
-            let lease = lease.as_ref()?;
-            self.catalogs.get(self, lease, "", false).await
+            match lease.as_ref() {
+                Some(lease) => self.catalogs.get(self, lease, "", false).await,
+                None => Catalog::kept(self).await.map(std::sync::Arc::new),
+            }
         };
         let read_agents = async { self.agent_models.as_ref()?.catalog(false).await.ok() };
         let (catalog, agents) = tokio::join!(read_engine, read_agents);
@@ -718,7 +742,7 @@ async fn picker(
     list: &LocalSessions,
     path: &str,
 ) -> Result<RouteReply<offered::Spec>, Refusal> {
-    let (answer, providers) = offer(engine, list, path, Demand::Start).await?;
+    let (answer, providers) = offer(engine, list, path, Demand::Existing).await?;
     // Existing clients read the account detail carried beside a provider's base wire fields.
     RouteReply::json_with::<200>(sessions::typed(answer)?, [("providers", providers)]).map_err(
         |_| {
@@ -775,8 +799,9 @@ async fn offer(
             .filter(|text| !text.is_empty())
     };
     let refresh = query("refresh").as_deref() == Some("1");
-    let lease = engine.acquire(demand).await;
-    if lease.is_none() && engine.agent_models.is_none() {
+    // (Asked to look again, OpenCode starts for it; otherwise its kept list stands in.)
+    let lease = engine.acquire(if refresh { Demand::Start } else { demand }).await;
+    if lease.is_none() && engine.agent_models.is_none() && !kept::known(&engine.home) {
         return Err(Refusal::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "The engine isn't running.",
@@ -796,8 +821,10 @@ async fn offer(
         None => folder.as_deref().and_then(Path::to_str).unwrap_or_default(),
     };
     let read_engine = async {
-        let lease = lease.as_ref()?;
-        engine.catalogs.get(engine, lease, directory, refresh).await
+        match lease.as_ref() {
+            Some(lease) => engine.catalogs.get(engine, lease, directory, refresh).await,
+            None => Catalog::kept(engine).await.map(std::sync::Arc::new),
+        }
     };
     let read_agents = async { engine.agent_models.as_ref()?.catalog(refresh).await.ok() };
     let (catalog, agents, starred, speeds) = tokio::join!(
@@ -941,16 +968,18 @@ impl Names {
 }
 
 /// The model a new conversation in `directory` starts on here, with none named (`starting_model`).
+/// The model a new conversation starts on here: by OpenCode's list, or its kept one while it
+/// isn't running.
 pub(crate) async fn starting_here(
     engine: &Engine,
-    lease: &Lease,
+    lease: Option<&Lease>,
     directory: &str,
 ) -> Option<Option<Value>> {
-    engine
-        .catalogs
-        .get(engine, lease, directory, false)
-        .await?
-        .starting_model()
+    match lease {
+        Some(lease) => engine.catalogs.get(engine, lease, directory, false).await,
+        None => Catalog::kept(engine).await.map(std::sync::Arc::new),
+    }?
+    .starting_model()
 }
 
 pub(crate) async fn readiness(engine: &Engine, lease: &Lease, session: &Session) -> Option<Value> {

@@ -9,6 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
+bytes = "1"
 flate2 = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 form_urlencoded = "1"

@@ -169,7 +169,7 @@ impl PeerReads {
         })
         .await;
         if let Ok(Some(source)) = source {
-            self.github
+            let _ = self.github
                 .read_seen(self.refs.clone(), vec![source], super::github::WAIT)
                 .await;
         }
@@ -268,7 +268,7 @@ impl PeerReads {
                 }
             }
             if refresh && target.item.get("source").is_some() {
-                self.github
+                let _ = self.github
                     .read_seen(
                         self.refs.clone(),
                         vec![target.item.clone()],

@@ -18,6 +18,9 @@ const areas = new Map([
   ["agents-codex-live", "./agents-codex-live.test.mjs"],
   ["agents-grok", "./agents-grok.test.mjs"],
   ["agents-antigravity", "./agents-antigravity.test.mjs"],
+  ["agents-antigravity-live", "./agents-antigravity-live.test.mjs"],
+  ["agents-opencode", "./agents-opencode.test.mjs"],
+  ["agents-opencode-live", "./agents-opencode-live.test.mjs"],
   ["agents-updates", "./agents-updates.test.mjs"],
   ["agents-session-reads", "./agents-session-reads.test.mjs"],
   ["agent-accounts", "./agent-accounts.test.mjs"],
@@ -40,6 +43,8 @@ const areas = new Map([
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
   ["work-queue", "./work-queue.test.mjs"],
+  ["work-elsewhere", "./work-elsewhere.test.mjs"],
+  ["agent-tools", "./agent-tools.test.mjs"],
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
   ["library", "./library.test.mjs"],
@@ -48,6 +53,7 @@ const areas = new Map([
   ["vault", "./vault.test.mjs"],
   // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
   ["bots", "./routes.test.mjs"],
+  ["bots-held", "./bots-held.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

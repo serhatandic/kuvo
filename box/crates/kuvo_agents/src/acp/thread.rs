@@ -2,6 +2,7 @@
 //! its turns prompted, what the agent says made the turn's events, and what it asks put to you.
 //! One task owns it; what its process says comes to it as events.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -19,6 +20,7 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     background::{Helper, WorkOrder},
@@ -39,7 +41,7 @@ use super::{
     projection::{Context, Projection, Served},
     server::{Event, Exit, Process, Route, Shared, lock, stopped},
     tools::{self, Call, KnownTools},
-    wire::{SessionUpdate, Setup},
+    wire::{self, SessionUpdate, Setup},
 };
 
 /// How long opening a session, choosing its model, or a stop is waited for.
@@ -127,6 +129,7 @@ impl Conversation {
                 known: KnownTools::default(),
                 closing: false,
                 deadline: None,
+                titled: false,
             }
             .run(receiver, events),
         );
@@ -205,6 +208,7 @@ impl ActiveTurn for Turn {
 /// A turn under way.
 struct Active {
     id: String,
+    start_cancel: CancellationToken,
     sink: Arc<dyn TurnSink>,
     projection: Projection,
     process: Arc<Process>,
@@ -245,6 +249,7 @@ impl Active {
     ) -> Self {
         Self {
             id: input.id.clone(),
+            start_cancel: input.start_cancel.clone(),
             sink,
             projection,
             process,
@@ -365,6 +370,8 @@ struct Actor {
     known: KnownTools,
     closing: bool,
     deadline: Option<Instant>,
+    /// Its agent's title for it was taken (one that titles itself).
+    titled: bool,
 }
 
 fn envelope(event: TurnEvent) -> EventEnvelope {
@@ -398,7 +405,7 @@ impl Actor {
             let deadline = self.next_deadline();
             let timer = async {
                 match deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
+                    Some(at) => timer_fires::sleep_until(Timer::AcpTurnDeadline, at).await,
                     None => std::future::pending().await,
                 }
             };
@@ -423,6 +430,7 @@ impl Actor {
             }
         }
         self.shared.routes().remove(&self.session);
+        if let Some(process) = &self.process { process.touch(); } else { self.shared.note_activity(); }
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -441,10 +449,10 @@ impl Actor {
     }
 
     fn set_busy(&self) {
-        self.busy.store(
-            self.active.is_some() || !self.tasks.is_empty(),
-            Ordering::Relaxed,
-        );
+        let busy = self.active.is_some() || !self.tasks.is_empty();
+        if self.busy.swap(busy, Ordering::Relaxed) != busy {
+            if let Some(process) = &self.process { process.touch(); } else { self.shared.note_activity(); }
+        }
     }
 
     async fn command(&mut self, command: Command) -> io::Result<()> {
@@ -528,6 +536,7 @@ impl Actor {
             return Ok((Vec::new(), String::new()));
         };
         let http = process.capabilities().http_servers;
+        let own = self.shared.flavour.reads_own_servers();
         let headers = |list: Vec<(String, String)>| -> Vec<Value> {
             list.into_iter()
                 .map(|(name, value)| json!({"name": name, "value": value}))
@@ -535,7 +544,11 @@ impl Actor {
         };
         let mut servers = Vec::new();
         let mut key = String::new();
-        if let Some(tools) = relay.agent_tools(&self.session, self.holder, false).await? {
+        let tools = match own {
+            true => relay.http_tools(&self.session, self.holder).await?,
+            false => relay.agent_tools(&self.session, self.holder, false).await?,
+        };
+        if let Some(tools) = tools {
             match tools {
                 AgentTools::Stdio {
                     key: tools,
@@ -567,7 +580,7 @@ impl Actor {
                 AgentTools::Http { .. } => {}
             }
         }
-        if http {
+        if http && !own {
             let found = relay.computer_servers(&self.directory).await;
             key.push('|');
             key.push_str(&relay.servers_key(&self.session, &found).await);
@@ -584,7 +597,12 @@ impl Actor {
     /// Its session open in a process its launch now shares: the one it's in, or (that one
     /// outdated, stale, or started another way) another, its conversation taken up there.
     /// Whether it started over (its conversation couldn't be taken up).
-    async fn ensure_open(&mut self, model: &str, mode: &Mode) -> io::Result<bool> {
+    async fn ensure_open(
+        &mut self,
+        model: &str,
+        mode: &Mode,
+        cancel: &CancellationToken,
+    ) -> io::Result<bool> {
         let flavour = self.shared.flavour.clone();
         let key = {
             let (flavour, mode, directory, model) = (
@@ -611,7 +629,7 @@ impl Actor {
                     model.to_owned(),
                 );
                 self.shared
-                    .process(&key, move || flavour.launch(&mode, &directory, &model))
+                    .process(&key, move || flavour.launch(&mode, &directory, &model), cancel)
                     .await?
             }
         };
@@ -744,7 +762,11 @@ impl Actor {
         }
         self.own = None;
         let mode = Self::mode(&input);
-        if let Err(error) = self.ensure_open(&input.model.id, &mode).await {
+        let model = (self.shared.flavour).model_value(&input.model.provider, &input.model.id);
+        if let Err(error) = self.ensure_open(&model, &mode, &input.start_cancel).await {
+            if input.start_cancel.is_cancelled() {
+                return Err(error);
+            }
             return unsent(sink.as_ref(), error).await;
         }
         let process = self
@@ -758,7 +780,7 @@ impl Actor {
             .select_model(
                 &process.rpc,
                 &native,
-                &input.model.id,
+                &model,
                 input.model.variant.as_deref(),
                 &mut self.setup,
                 credential.as_deref(),
@@ -1629,8 +1651,10 @@ impl Actor {
         let name = self.shared.name();
         let outcome = match answer {
             Ok(result) => {
+                let usage = self.shared.flavour.answers_usage().then(|| wire::prompt_usage(&result)).flatten();
                 if let Some(active) = &mut self.active {
                     active.answered = true;
+                    active.projection.turn = usage;
                 }
                 match result["stopReason"].as_str() {
                     Some("rate_limit") => self.limited(Some(format!(
@@ -1737,14 +1761,16 @@ impl Actor {
         let Some(active) = &self.active else {
             return Ok(());
         };
-        let (model, variant, mode, compact) = (
+        let (model, variant, mode, compact, cancel) = (
             active.model.clone(),
             active.variant.clone(),
             active.mode.clone(),
             active.compact,
+            active.start_cancel.clone(),
         );
         let name = self.shared.name();
-        match self.ensure_open(&model, &mode).await {
+        match self.ensure_open(&model, &mode, &cancel).await {
+            Err(_) if cancel.is_cancelled() => return self.end(Outcome::Interrupted).await,
             Err(error) => return self.end(Outcome::Failed(failure(error.to_string()))).await,
             Ok(true) => return self.end(Outcome::Failed(failure(format!("{name} started again and couldn't take up this conversation. Send your message again.")))).await,
             Ok(false) => {}
@@ -1938,6 +1964,9 @@ impl Actor {
             known: &self.known,
         };
         let mut events = active.projection.end(&cx);
+        if let Some(title) = self.own_title(&active.process).await {
+            events.push(TurnEvent::Titled(title));
+        }
         if active.compact {
             events.push(TurnEvent::CompactionEnded {
                 succeeded: matches!(outcome, Outcome::Succeeded),
@@ -1959,6 +1988,19 @@ impl Actor {
         }
         self.set_busy();
         Ok(())
+    }
+
+    /// The title its agent gave it, as a turn ends, for one that titles itself: taken once.
+    async fn own_title(&mut self, process: &Process) -> Option<String> {
+        if self.titled || !self.shared.flavour.titles_itself() || process.closed() {
+            return None;
+        }
+        let native = self.native.clone()?;
+        let params = json!({"cwd": self.directory});
+        let answer = process.rpc.request("session/list", Some(params), Some(STOP)).await.ok()?;
+        let title = wire::listed_title(&answer, &native)?;
+        self.titled = true;
+        Some(title)
     }
 
     /// Stops what the agent does for this conversation now.

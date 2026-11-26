@@ -98,7 +98,7 @@ pub fn for_clients(mut header: Map<String, Value>, home: &Path) -> Map<String, V
         .get("contextModel")
         .or_else(|| header.get("model"))
         .and_then(|model| model["providerID"].as_str())
-        .and_then(Provider::parse)
+        .and_then(Provider::of_model)
         .map(|provider| provider.kind);
     if let Some(time) = header.get_mut("time").and_then(Value::as_object_mut)
         && !time.contains_key("activity")

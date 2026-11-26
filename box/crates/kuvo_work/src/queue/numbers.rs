@@ -135,6 +135,18 @@ impl Numbers {
         .await
     }
 
+    /// A request that has not yet been granted needs another send only while
+    /// its main is reachable. The exchange supplies that reachability test.
+    pub async fn request_deadline(&self, now: i64) -> Result<Option<i64>, Error> {
+        let file = self.file.clone();
+        tokio::task::spawn_blocking(move || {
+            Ok::<_, Error>(LEDGER.read(&file)?.and_then(|record| {
+                let asking = record.fields.get("asking").filter(|asking| valid_ask(asking))?;
+                Some(asking["sent"].as_i64().unwrap_or(now).saturating_add(2_000))
+            }))
+        }).await.map_err(io::Error::other)?
+    }
+
     pub async fn give(
         &self,
         by: String,

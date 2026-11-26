@@ -51,9 +51,8 @@ impl EngineFacts {
         })
     }
 
-    pub(super) async fn add_linked(&mut self, rows: &[Observed]) {
+    pub(super) async fn add_linked<'a>(&mut self, rows: impl Iterator<Item = &'a Observed>) {
         let folders = rows
-            .iter()
             .map(|row| Path::new(row.session.directory()))
             .filter(|folder| folder.is_absolute())
             .collect::<BTreeSet<_>>();

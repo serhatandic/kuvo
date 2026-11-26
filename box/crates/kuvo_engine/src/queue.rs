@@ -1,5 +1,6 @@
 //! Local queue state and its ordering across the resident and OpenCode inbox.
 
+use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{BTreeMap, HashSet},
     io::{self, Read},
@@ -225,6 +226,10 @@ impl QueueStore {
         Ok(self.index().await?.remove(session).unwrap_or_default())
     }
 
+    pub(crate) async fn display_deadline(&self, home: &Path, session: &str) -> Option<u64> {
+        self.get(session).await.ok()?.display_deadline(home)
+    }
+
     pub(crate) async fn discard(&self, session: &str) -> io::Result<()> {
         let prior = self.get(session).await?;
         self.verify_waiting(&prior).await?;
@@ -283,6 +288,8 @@ impl QueueStore {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
+
+    pub(crate) fn changes(&self) -> watch::Receiver<u64> { self.changes.subscribe() }
 
     fn waiting_file(&self, id: &str) -> io::Result<PathBuf> {
         if !send::valid_id(id) {
@@ -524,6 +531,11 @@ impl Queue {
         moved.append(&mut self.held);
         self.held = moved;
         self.paused |= inbox.iter().any(Inbox::is_message) || !self.waiting.is_empty();
+    }
+
+    fn display_deadline(&self, home: &Path) -> Option<u64> {
+        if !self.paused { return None; }
+        limit::next_display_change(home, self.limit_stop.as_ref()?)
     }
 
     pub(crate) fn shown(&self, home: &Path) -> Value {
@@ -1628,6 +1640,21 @@ fn not_waiting() -> Refusal {
     )
 }
 
+fn follow_files(home: &Path) -> kuvo_os::watch::FileSet {
+    let run = home.join("run");
+    let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+    files.set_targets(vec![run.join("queues.json"), run.join("fleet-engine-hold.json"),
+        home.join("wakes/timezone"), home.join("box/time-zone.json")], vec![(run.join("waiting"), false)]);
+    files
+}
+
+async fn display_due(at: Option<u64>) {
+    match at {
+        Some(at) => timer_fires::sleep(Timer::EngineQueueFollow, std::time::Duration::from_millis(at.saturating_sub(disk::now()).max(1))).await,
+        None => std::future::pending().await,
+    }
+}
+
 pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
     let local = engine.clone();
     routes.register::<read::Spec, _, _>(Access::Any, move |call| {
@@ -1652,11 +1679,15 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
             let mut updates = engine.queues.changes.subscribe();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut previous = None;
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut files = follow_files(&engine.home);
+                let mut states = engine.states();
                 loop {
                     updates.borrow_and_update();
-                    let seen = engine.queues.views.refresh(&engine, &session).await.complete().await;
+                    let sample = engine.queues.views.refresh(&engine, &session).await;
+                    let requested = sample.requested();
+                    let seen = sample.complete().await;
+                    let retry = requested && seen.is_none();
+                    let deadline = engine.queues.display_deadline(&engine.home, &session).await;
                     if updates.has_changed().unwrap_or_default() {
                         continue;
                     }
@@ -1667,7 +1698,10 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                     tokio::select! {
                         () = call.cancel.cancelled() => break,
                         result = updates.changed() => if result.is_err() { break; },
-                        _ = tick.tick() => {},
+                        _ = files.changed() => {},
+                        result = states.changed() => if result.is_err() { break; },
+                        _ = display_due(deadline) => {},
+                        _ = timer_fires::sleep(Timer::EngineQueueFollow, std::time::Duration::from_secs(2)), if retry => {},
                     }
                 }
             }))
@@ -1681,8 +1715,10 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
             let mut updates = engine.queues.changes.subscribe();
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut previous = None;
+                let mut files = follow_files(&engine.home);
                 loop {
                     let index = engine.queues.index().await?;
+                    let deadline = index.values().filter_map(|state| state.display_deadline(&engine.home)).min();
                     let queues = index.iter().filter(|(_, state)| state.shown_in_overview())
                         .map(|(id, state)| (id, state.shown(&engine.home))).collect::<BTreeMap<_, _>>();
                     let value = json!({ "queues": queues });
@@ -1693,6 +1729,8 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                     tokio::select! {
                         () = call.cancel.cancelled() => break,
                         result = updates.changed() => if result.is_err() { break; },
+                        _ = files.changed() => {},
+                        _ = display_due(deadline) => {},
                     }
                 }
             }))

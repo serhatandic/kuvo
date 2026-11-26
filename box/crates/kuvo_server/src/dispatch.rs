@@ -304,6 +304,12 @@ impl<R, const STATUS: u16> Clone for JsonLine<R, STATUS> {
 }
 
 impl<R: RouteSpec> RouteReply<R> {
+    /// Another route's answer passed on as it came: a route that only carries a read made
+    /// elsewhere, with that read's own status, type and body.
+    pub fn forwarded(reply: Reply) -> Self {
+        Self(reply, PhantomData)
+    }
+
     pub fn json<const STATUS: u16>(body: <R as JsonStatus<STATUS>>::Body) -> Self
     where
         R: JsonStatus<STATUS>,
