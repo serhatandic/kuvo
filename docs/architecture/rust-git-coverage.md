@@ -1,4 +1,4 @@
-# Rust box 6.3b–c: Git, Changes, worktrees and projects, coverage
+# Rust box 6.3b–d: Git, Changes, worktrees and projects, coverage
 
 Parts B and C of row 6.3 in [rust-box.md](rust-box.md). Part A (files and folders) is
 [rust-files-coverage.md](rust-files-coverage.md).
@@ -133,12 +133,12 @@ A case marked partly or proof left has an implementation but does not have the f
 | TS case | Status |
 | --- | --- |
 | projects-worktrees 1, 3, 4 | Existing list conformance and linked-tree unit test |
-| projects-worktrees 2 | Not ported: no client (`projects/events`) |
-| projects-worktrees 5 | Edit: project format read and write refusal; worktree mutation left |
-| projects-worktrees 6 | First-seen folder index, not called by PUT; proof left |
+| projects-worktrees 2 | C: not ported: unreachable (`projects/events`); see caller audit below |
+| projects-worktrees 5 | Edit and Worktrees future-record scenario: read and mutation refuse both newer records without changing bytes |
+| projects-worktrees 6 | C: first-seen folder index belongs to Auto’s reviewer, postponed past 0.8 (6.1) |
 | projects 1–2 | Edit (including retired terminal setting) |
-| projects 3–7 | Remove Project (`DELETE kuvo/projects`), with the engine (row 5.1); left |
-| projects 8 | Not ported: no client (`projects/events`) |
+| projects 3–7 | Remove Project and project removal partial-refusal scenario: main, other, removed-worktree and explicitly filed folders, retry; large paginated removal and the old bridge-only variant remain separate proof gaps |
+| projects 8 | Not ported: unreachable (`projects/events`) |
 | git-files 1 | List, grouped rows, partial stage, line counts and subfolder filtering |
 | git-files 2 | Conflict row proof left |
 | git-files 3 | List covers move; spaced names, staged new discard and nested repository proof left |
@@ -159,11 +159,11 @@ A case marked partly or proof left has an implementation but does not have the f
 | git-files 28 | List, index change; filesystem-only and branch-only reset proof left |
 | changes (bridge) 1 | List, tracked and new file diffs (whole-list diff and old-file stamp proof left) |
 | changes 2–5 | New-file stamps, blank lines, converters, outside repository: proof left |
-| changes 6–10 | Not ported: no client (`changes/count`) |
+| changes 6–10 | Not ported: unreachable (`changes/count`) |
 | changes 11–14 | List, Discard |
-| changes 15 | Not ported: no client (`git/show`) |
-| changes 16 | Discard, first commit including new files; Folder commit proves folder-only diff and commit. Commit-message diff skipped (`commit-diff` not ported: no client) |
-| changes 17 | Login cache proves filtered environment and minute-cache reuse in a Mac commit hook; later refresh timeout and failed refresh are implemented but not scenario-proven |
+| changes 15 | Not ported: unreachable (`git/show`) |
+| changes 16 | Discard, first commit including new files; Folder commit proves folder-only diff and commit. Commit-message diff skipped (`commit-diff` not ported: unreachable) |
+| changes 17 | Login cache: real Mac commit hooks prove filtered environment, minute-cache reuse, a slow refresh returning the previous read, the completed refresh and a failed refresh retaining the last successful environment |
 | changes 18 | Blocking directory discard proof left |
 | changes 19, 21, 23 | Discard: missing stamp, invalid path, unborn HEAD |
 | changes 20, 22 | Move and nested repository discard proof left |
@@ -177,25 +177,186 @@ A case marked partly or proof left has an implementation but does not have the f
 | changes 33–34 | GitLab: main base, host page and local push; explicit origin/HEAD proof left |
 | changes 35 | Dirty submodule discard proof left |
 | changes 36–37 | Branches: listing and create/switch; multiple dated branches, tag name, carried edits, hooks and failure proof left |
-| changes 38 | Not ported: no client (`git/status`) |
+| changes 38 | Not ported: unreachable (`git/status`) |
 | changes 39 | Files/folders: see [coverage](rust-files-coverage.md) |
-| changes 40 | Bare menu conformance, including refused switch; status not ported: no client |
-| git-words 1, 4–7 | Not ported: no client (`commit-diff`, `settings/move`) |
+| changes 40 | Bare menu conformance, including refused switch; status not ported: unreachable |
+| git-words 1, 4–7 | `commit-diff`: not ported: unreachable. `settings/move`: served by 6.2, see its migration case |
 | git-words 2 | GitLab: prompt uses the computer's instructions |
 | git-words 3 | No-origin refusal implemented; proof left |
-| git-settings 1–5 | Settings migration: not ported here, no client for `settings/move` |
+| git-settings 1–5 | Settings migration is already served by `kuvo_services::git_preferences` (6.2), registered by integrations; see [Settings map](rust-settings-coverage.md) |
 | git-programs 1–11, git-common 1–3, git-hostile 1–4 | Layer proof above; Requested Programs and LFS route scenarios; remaining hostile route-level equivalents left |
-| worktrees 1–32, worktrees-where 1–12 | Worktree lifecycle/Settings routes outside this desktop slice (some appear in the generic worktrees route fixture); files/folders cases in the files coverage map |
-| branch-backups 1–14 | Not ported: no client for `git/backups` and restore |
+| worktrees 1–32, worktrees-where 1–12 | 6.3d lifecycle and location preview, with the case map below |
+| branch-backups 1–14 | Not ported: unreachable routes `git/backups` and restore; the internal turn-time backup function is not a route caller |
 
-### Routes not needed by the desktop
+## 6.3d — Worktrees and project removal
 
-Searched the desktop Rust sources, shared conformance tests and their route fixtures. The following have no caller or conformance request: **not ported: no client**.
+The worktree owner lives in `kuvo_services::git::worktrees`, the location preview
+in `where_trees`. The owner acquires the complete engine and native session
+inventory before removal, keeps the checkout while any session runs in it, and
+marks an independent conversation's checkout used. Once the last open
+conversation is archived, a private temporary index keeps staged and unstaged
+edits as one commit. Restore applies that commit and leaves the files unstaged;
+deleting the final conversation also drops the retained ref. The owner wakes on
+session/run and engine reconnect events, not on a periodic sweep. The legacy
+record file lock is shared with the existing starter and acquired off the
+executor. The existing engine creation path and the Settings creation route use
+the same safe Git adapter; bot-created projects and worktrees share the empty
+first-commit helper. Project removal shares the session archive operation and
+bounds concurrent writes at eight. Held native turns count as busy even if not
+yet adopted into the current resident's run list.
 
-- `kuvo/projects/events`, `kuvo/worktrees/events`
-- `kuvo/git/show`, `kuvo/git/changes/count`, `kuvo/git/status`, `kuvo/git/commit-diff`, `kuvo/git/settings/move`, `kuvo/git/backups` and `kuvo/git/backups/restore`
-- `kuvo/plugins/search`, `kuvo/providers/models`, `kuvo/sessions/read`, `kuvo/sessions/glance/events`
+The location preview shares in-flight first reads, retains up to 16 complete
+previews for their exact input, and refreshes on demand after five seconds.
+Where it differs structurally from TS: an owned resident task observes events;
+typed worktree and restorable records omit absent optional fields; a temporary
+directory owns the separate snapshot index; native inventory and the live
+engine's rows are combined without allowing a historical idle row to hide a
+live run. Root worktrees name exactly their checkout (without a trailing slash),
+as exposed by the differential.
 
-The desktop does not call any `kuvo/worktrees` routes; the generic worktrees route fixture is separate from the Changes slice. The grouped `projects` and `git` features are not advertised as complete (some routes in the groups are not served); the individual Changes features implemented here are advertised.
+### Caller audit
 
-The remaining 6.3 cases in the other maps include the golden-home projects (`protocol/conformance/compat.test.mjs`), project removal from 5.1, and `projects-worktrees` / `start-cancelled-worktree` in [rust-engine-coverage.md](rust-engine-coverage.md).
+Searched `gpui/kuvo_box/src`, `gpui/kuvo/src`, conformance and route fixtures,
+the whole `box/src` tree (including dynamically assembled Git route prefixes),
+`browser/tools.ts`, `link/work/tools.ts`, `link/letters`,
+`link/peers`, forwarding, agent/MCP tool definitions, and the named handler
+functions' internal references. No current retained desktop, tool, peer or
+internal request calls the following endpoints (generic forwarding is not a
+specialized caller): **not ported: unreachable**.
+
+- `GET kuvo/projects/events`
+- `POST kuvo/git/changes/count`
+- `GET kuvo/git/show`
+- `POST kuvo/git/status`
+- `POST kuvo/git/commit-diff`
+- `GET kuvo/git/backups`
+- `POST kuvo/git/backups/restore`
+
+Turn-time branch backup in TS is a direct function call, not a request to those
+two endpoints; its separate internal behavior is not claimed ported by this
+audit. The desktop notes mention Suggest a Message as not built. The current
+Settings migration scenario does call `kuvo/git/settings/move`; this is
+already served by the 6.2 owner, so no second implementation is needed.
+Worktree routes (including events, records, remove, restore, location preview)
+are served for Settings and session starts; the full worktree features are
+advertised. Project removal is retained for the existing shared route
+fixture and older clients. The broad `projects` and `git` feature groups
+remain unadvertised because their uncalled routes are not served.
+
+### Scenario map
+
+The shared Worktrees area includes the eight existing route fixtures and new
+scenarios for locations, archive/restore, first commit and deletion/follower,
+future records, restart naming/collision and pushed branch, detached commits,
+project removal (partial refusal/retry), shared/working/unknown-session retention,
+clean/smudge snapshot, native conversation naming/retention and instruction,
+parked-engine location preview, old Mac record handover, and Settings folder/warning/stale removal. The existing
+`engine-worktree` cases cover linked/subfolder filing, new session instructions,
+delete confirmation, failed start and client cancellation.
+
+| TS scenarios | A: ordinary use, shared proof | B: uncommon edge, later proof | C: replaced |
+| --- | --- | --- | --- |
+| worktrees 1–32 | 1–2, 4–5, 8–12, 14–28, 31–32 | 3, 6–7, 13, 29 | 30 |
+| worktrees-where 1–12 | 1–6, 8–11 | 7 (deep repeated parent names; basic disambiguation proven) | 12 (programs, row 5.5) |
+| projects-worktrees 1–6 | 1, 3–5 | — | 2 (unreachable), 6 (Auto postponed) |
+| start-cancelled-worktree 1–2 | 1–2 | — | — |
+
+Worktrees A includes the shared busy/unknown engine inventory and the native
+retained-session case; a held-native-turn-specific route scenario remains a
+separate edge proof. The former separately running coding-agent bridge
+(case 30) is superseded by the integrated native store plus retained holder run
+state. An older relative folder naming a parent (`../trees`) is refused by the shared
+route path guard in TS; the old direct-function scenario bypassed that guard.
+The parked-engine case exercises an absolute folder, as Settings supplies,
+while an inside-checkout relative folder is also tested.
+
+A shared Settings scenario exposed a real TS HTTP bug: Remove used a raw path
+as its action row ID, so the canonical route guard refused its separators
+(403) even though the page advertised the action. Rust uses a reversible
+URL-safe opaque row ID, not a weakened route guard. The reference keeps the
+bug (its equivalent direct owner action is tested); the new Rust action test
+fails on the earlier Rust binary too. Windows worktree location queries now
+use the existing folder-query path rule, which accepts native separators but
+still refuses parent traversal.
+
+The stale `engine-worktree` Plan inheritance assertion was corrected: a newly
+started conversation does not inherit Plan, in either box. The linked-worktree
+filing and starter-chain assertions remain.
+
+The specifically requested remaining Git proof obligations are classified
+separately below (counts are obligations, not full TS test files).
+
+| Class | Obligations |
+| --- | --- |
+| A (6) | Slow login refresh; failed login refresh; ordinary configured diff conversion/raw file lines and blank lines; requested branch switch with a normal checkout hook and carried edits; ordinary repository and linked checkout (creation, diff and branch routes); golden-home projects |
+| B (4) | Broader configured-program combinations through automatic reads; two unusual malformed repository metadata arrangements (existing layer proof); configured-program integration with Undo/branch backup (existing layer proof, not equivalent route proof) |
+| C (3) | Auto reviewer cases (postponed); old count/show/status/commit-diff and backup endpoint-specific answers (unreachable); Git settings migration already owned and proven in 6.2 |
+
+The remaining earlier Git/Changes variant rows above still state their precise
+partial proofs. In particular signed-in GitHub command/session link, native
+Trash timing through the route, and the extra discard/stamp edge variants
+are not silently counted as passed.
+
+### Gates and findings
+
+The final macOS binary passes files 16/16, Git 17/17, worktrees 22/22,
+engine-worktree 9/9, projects 3/3, engine-sessions 81/81, agent-tools 4/4,
+and agents 12/12; Settings Git migration and the durable-record golden home
+both pass. The TS reference passes files 16/16, worktrees 22/22, Git 17/17,
+engine-worktree 9/9, projects 3/3 and the golden home, with the Settings
+refusal noted above. Workspace `cargo check --workspace --tests` and
+`bun run check` are clean.
+The six-request worktree differential compares identical answers, engine
+transcript, repository files and worktree/project records on copies of the
+same home; 177 unrelated startup/runtime/identity file differences remain
+visible in the full comparison. The golden home includes the TS project list.
+A single live pinned OpenCode 2.2.6 Go turn with DeepSeek v4.1 Flash reads a
+file present only in its own checkout; archive removes the checkout and
+restore brings the file back. The stand-in is used for deterministic cases only.
+
+The source-size comparison at base `85f9cf8e3` (non-test lines and UTF-8
+characters without indentation): Rust adds a net 1,895 lines / 45,776 characters;
+TS replaced 1,020 lines / 63,388 characters (0.72× by characters). Rust reuses
+one first-commit helper and one typed worktree owner for session start and
+routes. Worktree sweeps follow session and record changes rather than periodic
+polling, skipping inventory entirely when no records exist. Location previews
+share their first lookup and keep a bounded 16-entry cache; an expired preview
+returns the last complete view while refreshing on demand. A remaining cost is
+Settings' detailed list (`git/worktrees.rs`, `Owner::list`): each checkout incurs
+status, ahead-count and directory size reads on demand, rather than TS's cached
+detail list. No idle worker is started for that view.
+
+The scenario obligations above total 48 A, 10 B, 7 C.
+
+| Area | macOS | Capped Linux musl | WSL musl | Native Windows |
+| --- | --- | --- | --- | --- |
+| Files | 16/16 | 16/16 | 16/16 | 15 pass, 1 skip |
+| Git | 17/17 | 16 pass, 1 skip | 16 pass, 1 skip | 14 pass, 3 skips |
+| Worktrees | 22/22 | 22/22 | 22/22 | 22/22 |
+| Engine worktree | 9/9 | 9/9 | 9/9 | 9/9 |
+| Projects | 3/3 | 3/3 | 3/3 | 3/3 |
+| Engine sessions | 81/81 | 81/81 | 81/81 | 81/81 |
+| Agent tools | 4/4 | 4/4 | 4/4 | 4/4 |
+| Agents | 12/12 | 12/12 | 12/12 | 12/12 |
+
+Windows surfaced a mixed-separator default location and a shared fixture that
+expected a literal Unix folder suffix. The preview now assembles a native
+path, and the fixture still checks an exact subfolder path using `path.join`.
+The first native test package also lacked the cross compiler's runtime DLL;
+including the matching x64 `libunwind.dll` resolved its loader error. The
+corrected worktree area passed 22/22 on all four platforms; all test homes,
+processes and the capped test container were cleaned up.
+
+After merging local main `df3f3bcec` (4.7g), the macOS worktree, Git, files,
+agent-tools and agents areas passed again on Rust and on the TS reference
+(the reference's one documented agent-tools skip remains). The engine-worktree
+area now exercises coding-agent conversations as well as the two retained
+OpenCode create/cancel cases: TS 9/9, Rust 8/9 (the already known finished-notice
+mark on an agent start). Its native header explicitly reports Build, rather
+than the absent agent field of OpenCode's create reply. The changed
+engine-sessions area is TS 46 passed, 9 documented skips; Rust 48/55, with
+exactly the seven pre-existing failures listed under 4.7g in
+[rust-agents-coverage.md](rust-agents-coverage.md#the-engine-areas-on-agent-conversations-47g).
+Those failures remain owned by 4.7c+d step 5, not by the worktree port.
+The workspace and Bun checks are clean; no Windows path handling changed in
+the merge resolution.

@@ -6,7 +6,7 @@ import path from "node:path";
 
 export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
 
-export async function standInEngine(root, env) {
+export async function standInEngine(root, env, { worktreeRoot = path.join(root, "worktrees") } = {}) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
   const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map(), refuseDeletes: new Set() };
   engine.open = new Set();
@@ -379,6 +379,7 @@ export async function standInEngine(root, env) {
       // Worktrees, made and removed with git as the engine does, beside the scenario's repositories:
       // a folder's project is its repository's, by an id of its own, and a worktree is made of the
       // project its id names.
+      if (route === "GET /api/project") return send([...engine.projects].map(([id, canonical]) => ({ id, canonical, vcs: "git" })));
       if (route === "GET /api/location") {
         const folder = folderOf(request);
         let top = null;
@@ -388,7 +389,7 @@ export async function standInEngine(root, env) {
         return send({ directory: folder, project: { id, directory: top ?? folder, canonical: top ?? folder } });
       }
       if (route === "POST /api/worktree") {
-        const folder = path.join(root, "worktrees", `brave-otter-${++engine.worktrees}`);
+        const folder = path.join(worktreeRoot, `brave-otter-${++engine.worktrees}`);
         try { git(env, engine.projects.get(given.projectID), "worktree", "add", "--quiet", "--detach", folder); } catch { return send({ message: "Not a git project." }, 400); }
         return send({ directory: folder });
       }

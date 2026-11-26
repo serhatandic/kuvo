@@ -79,6 +79,11 @@ async function run(t, scenario, kind) {
       const route = filled(rawRoute, vars);
       const expectation = step.expect[kind] ?? step.expect;
       const expect = filled(expectation, vars);
+      // The fixture spells the subfolder with a slash; the worktree folder
+      // is a native path assembled by the resident, not the supplied spelling.
+      if (route === "kuvo/worktrees" && expectation.json?.worktrees?.[0]?.folder === "{{root}}/app") {
+        expect.json.worktrees[0].folder = path.join(vars.root, "app");
+      }
       if (expect.json?.name === "lab.invalid" && route === "kuvo/info") expect.json.name = vars.computer;
       for (const row of [...(Array.isArray(expect.json?.asks) ? expect.json.asks : []), ...(Array.isArray(expect.json?.bots) ? expect.json.bots : []), expect.json?.bot]) {
         if (row?.machine === "lab.invalid") row.machine = vars.computer;

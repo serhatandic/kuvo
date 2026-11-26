@@ -243,13 +243,17 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         async move {
             let id = id(&call)?;
             let given = body(&call).unwrap_or_default();
-            crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
+            crate::session_move::check_action(
+                &crate::session_move::action_state(&engine, &id).await?,
+            )?;
             let _turn = call
                 .cancel
                 .run_until_cancelled(engine.note_turn(&id))
                 .await
                 .ok_or_else(|| cancelled("deleted"))?;
-            crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
+            crate::session_move::check_action(
+                &crate::session_move::action_state(&engine, &id).await?,
+            )?;
             if let Some((source, header)) = engine.agent_session(&id).await? {
                 let session: Session = typed(Value::Object(header))?;
                 session.check_independent()?;
@@ -371,6 +375,18 @@ where
 {
     let id = id(&call)?;
     let given = body(&call)?;
+    Ok(RouteReply::json::<200>(typed(
+        change_info(&engine, id, given, change, &call.cancel).await?,
+    )?))
+}
+
+async fn change_info(
+    engine: &Engine,
+    id: String,
+    given: Map<String, Value>,
+    change: Change,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Value, Refusal> {
     let field = match change {
         Change::Rename => "title",
         Change::Archive => "archived",
@@ -403,19 +419,18 @@ where
     } else {
         "changed"
     };
-    crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
+    crate::session_move::check_action(&crate::session_move::action_state(engine, &id).await?)?;
     let prepare = async {
         let turn = engine.note_turn(&id).await;
-        crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
+        crate::session_move::check_action(&crate::session_move::action_state(engine, &id).await?)?;
         if let Some((source, header)) = engine.agent_session(&id).await? {
             return Ok((turn, Keeper::Agents(source), Value::Object(header)));
         }
-        let lease = api::start(&engine).await?;
-        let info = read(&engine, &lease, &path).await?;
+        let lease = api::start(engine).await?;
+        let info = read(engine, &lease, &path).await?;
         Ok::<_, Refusal>((turn, Keeper::Engine(lease), info))
     };
-    let (_turn, keeper, mut info) = call
-        .cancel
+    let (_turn, keeper, mut info) = cancel
         .run_until_cancelled(prepare)
         .await
         .ok_or_else(|| cancelled(action))??;
@@ -489,9 +504,9 @@ where
         }
         if matches!(change, Change::Archive) {
             match &keeper {
-                Keeper::Engine(lease) => after_archive(&engine, lease, &id, value == true).await,
+                Keeper::Engine(lease) => after_archive(engine, lease, &id, value == true).await,
                 Keeper::Agents(source) => {
-                    hold_wakes(&engine, &id, value == true).await;
+                    hold_wakes(engine, &id, value == true).await;
                     if value == true {
                         let _ = source.stop_if_waiting(&id).await;
                     }
@@ -499,9 +514,87 @@ where
             }
         }
     }
-    Ok(RouteReply::json::<200>(typed(
-        json!({ "session": id, "info": info }),
-    )?))
+    Ok(json!({ "session": id, "info": info }))
+}
+
+impl Engine {
+    /// Archive the project's conversations, including those filed under it from another folder.
+    /// No engine is started solely to remove a project.
+    pub async fn archive_project_sessions(
+        &self,
+        project: &str,
+        filed: &Map<String, Value>,
+        also: &[String],
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<(Vec<String>, usize), Refusal> {
+        let unavailable = || {
+            Refusal::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Its sessions can’t be archived now: the engine isn’t running. Try again in a moment.",
+            )
+        };
+        let lease = self
+            .acquire(crate::lifetime::Demand::Existing)
+            .await
+            .ok_or_else(unavailable)?;
+        let mut rows = crate::session_list::read_inventory(self, &lease)
+            .await
+            .map_err(|_| unavailable())?;
+        if self.agent_sessions.is_some() {
+            rows.extend(
+                crate::session_list::agent_rows(self)
+                    .await
+                    .ok_or_else(unavailable)?,
+            );
+        }
+        let mut ids = BTreeSet::new();
+        for row in rows {
+            let session = row.session;
+            if session.check_independent().is_err() || session.archived() {
+                continue;
+            }
+            let folder = session.directory();
+            let here = folder == project
+                || also.iter().any(|s| s == folder)
+                || filed.get(folder).and_then(Value::as_str) == Some(project)
+                || (!filed.contains_key(folder)
+                    && session
+                        .notes()
+                        .and_then(|n| n.get("filed"))
+                        .is_some_and(|mark| {
+                            mark["project"] == project && mark["folder"] == folder
+                        }));
+            if !here {
+                continue;
+            }
+            ids.insert(session.id);
+        }
+        // Bound the number of independent engine writes just as the reference does;
+        // each individual write still goes through the conversation's own turn.
+        use futures_util::StreamExt;
+        let mut results = futures_util::stream::iter(ids.into_iter().map(|id| async move {
+            let result = change_info(
+                self,
+                id.clone(),
+                Map::from_iter([("archived".into(), json!(true))]),
+                Change::Archive,
+                cancel,
+            )
+            .await;
+            (id, result.is_ok())
+        }))
+        .buffer_unordered(8);
+        let mut archived = Vec::new();
+        let mut kept = 0;
+        while let Some((id, ok)) = results.next().await {
+            if ok {
+                archived.push(id);
+            } else {
+                kept += 1;
+            }
+        }
+        Ok((archived, kept))
+    }
 }
 
 /// Where a conversation is kept: the engine, or the coding agents.

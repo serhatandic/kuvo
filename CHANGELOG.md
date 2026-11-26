@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Removing a worktree from Settings no longer fails because of its folder path.
 - When a site asks for a passkey on a Rust computer, the browser refuses the unsupported request promptly, tells the agent to sign in another way, and marks sign-in requests for that site.
 - Updating a coding agent no longer waits for your running conversations.
 

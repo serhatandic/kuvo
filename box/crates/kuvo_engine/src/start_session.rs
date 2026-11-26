@@ -617,6 +617,9 @@ async fn create_as(
     if let Some(steps) = steps {
         steps.made(id);
     }
+    if created_tree.is_some() || agents.is_some() {
+        let _ = engine.tell_worktree(id).await;
+    }
     if parent.is_none() && requested.is_some() {
         let _turn = engine.turn("approval-settings").await;
         if let Ok(latest) = disk::read::<Value>(&approval_file).await {
@@ -1363,6 +1366,71 @@ pub(crate) async fn linked_location(folder: &Path) -> Option<PathBuf> {
     }
 }
 
+impl Engine {
+    /// The same creation path used by a session starter, without starting a session.
+    pub async fn create_worktree(&self, project: &Path) -> Result<Value, Refusal> {
+        let lease = self
+            .acquire(crate::lifetime::Demand::Existing)
+            .await
+            .ok_or_else(|| {
+                Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
+            })?;
+        let config = if self.is_mac_box().await {
+            "config/opencode/opencode.json"
+        } else {
+            "box/opencode.json"
+        };
+        let settings = disk::read::<Value>(&self.home.join(config))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        make_tree(self, &lease, &settings, project)
+            .await
+            .map(|tree| tree.record)
+    }
+
+    /// Remove a checkout the engine created. The owner has already checked the inventory.
+    pub async fn remove_worktree(
+        &self,
+        project: &Path,
+        root: &Path,
+        force: bool,
+    ) -> Result<(), String> {
+        let lease = self
+            .acquire(crate::lifetime::Demand::Existing)
+            .await
+            .ok_or_else(|| "The engine isn't running.".to_owned())?;
+        let header = api::segment(&project.to_string_lossy());
+        let send = |method, path| {
+            self.upstream
+                .request(&lease.record, method, path)
+                .header("x-opencode-directory", &header)
+                .timeout(api::WAIT)
+        };
+        let location = send(Method::GET, "api/location")
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| e.to_string())?
+            .json::<Value>()
+            .await
+            .map_err(|e| e.to_string())?;
+        let id = location
+            .pointer("/project/id")
+            .or_else(|| location.pointer("/data/project/id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "The engine didn't say which project that is.".to_owned())?;
+        send(Method::DELETE, "api/worktree")
+            .json(&json!({"projectID":id,"directory":root,"force":force}))
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 struct Tree {
     project: PathBuf,
     project_id: String,
@@ -1389,10 +1457,31 @@ async fn make_tree(
             ),
         )
     };
-    let prefix = git(project, &["rev-parse", "--show-prefix"])
+    crate::worktree_notes::read(&engine.home).await.map_err(|error| Refusal::new(StatusCode::CONFLICT,error.to_string()))?;
+    let prefix = engine
+        .worktree_git(project, &["rev-parse", "--show-prefix"], false)
         .await
-        .ok_or_else(|| bad("That folder isn't in a git repository."))?;
-    let base = git(project, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await;
+        .ok_or_else(|| {
+            Refusal::new(
+                StatusCode::CONFLICT,
+                "That folder isn't in a git repository.",
+            )
+        })?;
+    if let Some(git) = &engine.worktree_git {
+        if !git.first_commit(project).await {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                "This branch has no commits yet. Make a first commit, then start a session in a worktree.",
+            ));
+        }
+    }
+    let base = engine
+        .worktree_git(
+            project,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            false,
+        )
+        .await;
     let project_header = api::segment(&project.to_string_lossy());
     let send = |method, path| {
         engine
@@ -1431,7 +1520,7 @@ async fn make_tree(
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| failed("The engine didn't make it.".into()))?;
-    let folder = root.join(prefix.trim_end_matches('/'));
+    let folder = if prefix.is_empty() { root.clone() } else { root.join(prefix.trim_end_matches('/')) };
     let mut tree = Tree {
         project: project.to_owned(),
         project_id,
@@ -1443,31 +1532,70 @@ async fn make_tree(
         .as_str()
         .map_or_else(|| "kuvo/".to_owned(), clean_branch_prefix);
     let root_name = tree.root.file_name().unwrap_or_default().to_string_lossy();
-    let mut branch = format!("{prefix}{root_name}");
-    let mut suffix = 1;
-    while git(
-        &tree.root,
-        &[
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .await
-    .is_some()
-        && suffix <= 100
-    {
-        suffix += 1;
-        branch = format!("{prefix}{root_name}-{suffix}");
+    let mut branch = None;
+    for suffix in 1..=20 {
+        let candidate = if suffix == 1 {
+            format!("{prefix}{root_name}")
+        } else {
+            format!("{prefix}{root_name}-{suffix}")
+        };
+        if engine
+            .worktree_git(
+                &tree.root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{candidate}"),
+                ],
+                false,
+            )
+            .await
+            .is_none()
+            && engine
+                .worktree_git(
+                    &tree.root,
+                    &[
+                        "for-each-ref",
+                        "--count=1",
+                        "--format=%(refname)",
+                        &format!("refs/remotes/*/{candidate}"),
+                    ],
+                    false,
+                )
+                .await
+                .is_some_and(|s| s.is_empty())
+        {
+            branch = Some(candidate);
+            break;
+        }
     }
-    if git(&tree.root, &["switch", "--quiet", "-c", &branch])
-        .await
-        .is_none()
-    {
+    let mut made = false;
+    if let Some(branch) = &branch {
+        made = engine
+            .worktree_git(&tree.root, &["switch", "--quiet", "-c", branch], true)
+            .await
+            .is_some()
+            || engine
+                .worktree_git(
+                    &tree.root,
+                    &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                    false,
+                )
+                .await
+                .as_ref()
+                == Some(branch);
+    }
+    let Some(branch) = branch.filter(|_| made) else {
         undo_tree(engine, lease, &tree).await;
-        return Err(failed("Its branch couldn't be made.".into()));
-    }
+        return Err(failed(if prefix.is_empty() {
+            "Its branch couldn't be made.".into()
+        } else {
+            format!(
+                "A branch starting with “{prefix}” couldn’t be made in this repository. Change the branch prefix in Settings › Git, then try again."
+            )
+        }));
+    };
     tree.record = json!({ "project": project, "root": tree.root, "folder": tree.folder,
         "branch": branch, "made": branch, "prefix": prefix });
     if let Some(base) = base {
@@ -1501,15 +1629,23 @@ fn clean_branch_prefix(given: &str) -> String {
 async fn store_tree(engine: &Engine, tree: &Tree, keep: bool) -> std::io::Result<()> {
     let _guard = engine.turn("worktree-records").await;
     let path = engine.home.join("box/worktrees.json");
+    let lock = path.with_extension("json.lock");
+    let _file_lock = tokio::task::spawn_blocking(move || {
+        kuvo_store::locks::StaleLock::acquire(
+            &lock,
+            Duration::from_secs(10),
+            Duration::from_secs(3),
+            kuvo_store::locks::OnBusy::Refuse,
+        )
+    })
+    .await
+    .map_err(std::io::Error::other)??
+    .ok_or_else(|| std::io::Error::other("Could not lock worktree records"))?;
     let mut record = disk::read::<Value>(&path)
         .await?
         .unwrap_or_else(|| json!({ "worktrees": [], "removed": {}, "restorable": [] }));
-    if record
-        .get("formatVersion")
-        .is_some_and(|format| !matches!(format.as_u64(), Some(0 | 1)))
-    {
-        return Err(std::io::Error::other("Unsupported worktree record format."));
-    }
+    kuvo_store::format::check_version("Worktree records", record.get("formatVersion"), 0, 1)
+        .map_err(std::io::Error::other)?;
     let roots = record["worktrees"]
         .as_array_mut()
         .ok_or_else(|| std::io::Error::other("The worktree records couldn't be read."))?;
@@ -1526,6 +1662,18 @@ async fn store_tree(engine: &Engine, tree: &Tree, keep: bool) -> std::io::Result
 }
 
 async fn tree_unused(engine: &Engine, lease: &Lease, tree: &Tree) -> bool {
+    if let Some(source) = &engine.agent_sessions {
+        let Ok(rows) = source.worktree_inventory().await else {
+            return false;
+        };
+        if rows.into_iter().any(|row| {
+            serde_json::from_value::<Session>(Value::Object(row.header)).map_or(true, |session| {
+                Path::new(session.directory()).starts_with(&tree.root)
+            })
+        }) {
+            return false;
+        }
+    }
     api::Scan::Sessions
         .read(engine, lease, "api/session")
         .await
@@ -1553,7 +1701,9 @@ async fn undo_tree(engine: &Engine, lease: &Lease, tree: &Tree) {
         .await;
     if removed.is_ok_and(|response| response.status().is_success()) && !tree.record.is_null() {
         if let Some(branch) = tree.record["made"].as_str() {
-            let _ = git(&tree.project, &["branch", "-D", "--", branch]).await;
+            let _ = engine
+                .worktree_git(&tree.project, &["branch", "-D", "--", branch], false)
+                .await;
         }
         let _ = store_tree(engine, tree, false).await;
     }
