@@ -967,9 +967,61 @@ Bun check clean. Scoped Codex credential 4/4, display 9/9, peer reading
 7/7, accepted readings 14/14. The seeded history differential matches 12/13
 answers exactly (only actual coverage scan time differs); the native corpus
 matches both answers exactly. Stored inventory/projection-format differences
-remain documented. Remote runs pending the cross-build. Non-test size:
+remain documented. The first remote gate found the no-extras tool discrepancy
+described in the next slice (Windows and Linux showed the expired ring, but
+plan_limits dropped the row). Native Windows 99/100, WSL 98/100 (also one
+Antigravity WAL catch-up timeout, passed on focused repeat), and capped
+Linux 99/100. Focused diagnostics on both Windows modes reproduced the
+tool failure even before reset and the WAL case passed. Non-test size:
 625,294 characters without leading indentation (0.909× the TS baseline).
 36 A1 entries closed; 114 remain.
+
+## Twenty-second slice: multi-computer readings and warning decisions
+
+A three-computer account borrows the first accepted reading without another
+maker call; local sign-in change creates a distinct account, a manual round
+selects a single holder of the remote-only account, a disconnected link
+catches up on returning, and neither sign-in tokens nor raw maker account
+IDs are in the views. Separate scenarios cover one holder's refusal while
+another reads successfully, and a Copilot sign-in whose new identity has to
+be read from its own maker. Fixed-clock production helpers cover passive
+peer borrowing deadlines, first-snapshot pending names, and peer heartbeat
+and answer admission. The shared weekly forecast retains accepted samples
+from different holders across restart and an older fallback.
+
+Three actual warning regressions failed on the previous resident: kept
+warning decisions survived a real setup change; conflicting pins for one
+occurrence remained divergent; and a configured secondary Claude card
+incorrectly inherited the family metric's visibility. Notice scope now
+tracks the accepted setup without withdrawing unchanged account readings,
+a known pin survives changes to membership while conflicting pins converge,
+and exact configured Claude cards take precedence using a local hashed card
+key (not raw identity or credential). The actual two-holder route checks
+the smaller pinned computer delivers the other holder's warning once;
+two native Claude turn-only holders share the same occurrence without a
+maker check; pace and default-meter scenarios use the panel's accepted
+values and names. Scoped tests cover default and exact metric aliases,
+scope changes, pin persistence, occurrence identity and bounded forecasts.
+The real grant inventory cache checks an hourly success, replacement, and
+failed check without losing accepted inventory.
+
+The first Windows and Linux gate of the preceding slice exposed an extra
+projection bug: merging an account with no extras inserted a null array
+and made the typed plan tool discard the entire otherwise valid row.
+Retaining an absent extras field restores the tool's same accepted numbers
+before and after reset, without another provider call. A no-extras Z.ai
+account and the expiry scenario assert tool words as well as panel readings.
+
+Mac Rust usage 109/109 applicable, TS 40/40, engine sessions 81/81,
+holder 12/12, native Codex 100/100, Claude turns 59 passing with the
+pre-existing handover-cursor TODO. Workspace test-target and Bun checks
+clean. Scoped service cases 5/5, grant inventory 1/1, and peer transport
+deadline/answer cases 2/2. Seeded history answers match 12/13 exactly
+(only actual coverage scan time differs), native corpus 2/2 exactly;
+stored inventory and projection-format differences remain documented.
+Remote rerun pending. Non-test size:
+631,663 characters without leading indentation (0.919× the TS baseline).
+30 A1 entries addressed; 84 remain, subject to the completed gates.
 
 ## Remaining implementation gaps
 
@@ -1120,26 +1172,26 @@ does not block completion of the row.
 
 ### `box/test/usage/limits-peers.test.ts`
 
-- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — partial — two-computer merged account with stale reset rejection and restart; one maker fetch on two computers verified with passive menu borrow/restart/sign-out; three-computer timed convergence open.
-- L285: computers that read at the same moment settle on one reader by the next round — open.
-- L301: a refresh asked of one computer reads there only what's due, and asks the computer an account is on for one it doesn't have — partial — fanout after local sign-in admission; complete explicitly due/remote-only matrix open.
-- L324: a computer that's off keeps its last reading, listed as of when it was read and away, through a restart; what it read is read elsewhere once it's due — open.
-- L356: a maker that turns one computer away holds that one only: another reads the account, and a read that failed never stands in for one — open.
-- L388: a computer signed in to another account since, whose sign-in doesn't say who it is (Copilot's), reads it rather than taking a peer's reading of the one before — open.
-- L440: Refresh on a Mac, whose Claude only its turns tell of, asks the computer that reads that account — open.
+- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — covered by the three-holder route: the joining computers borrow the same fresh reading without another maker request, list one merged account, then one remote-only holder reads the next round.
+- L285: computers that read at the same moment settle on one reader by the next round — covered by three-holder route and fixed-clock peer borrowing: previously agreed slack ends at the two-minute deadline, a fresh peer defers a due local reader and a stale peer does not.
+- L301: a refresh asked of one computer reads there only what's due, and asks the computer an account is on for one it doesn't have — covered by the current client-requested round (all local signed-in accounts once; no automatic due-only spacing), and separate remote-only selection: the three-holder route asserts exactly one maker call for each account.
+- L324: a computer that's off keeps its last reading, listed as of when it was read and away, through a restart; what it read is read elsewhere once it's due — covered by retained-away restart route in slice 17, three-holder reconnect route and fixed-clock peer takeover deadline.
+- L356: a maker that turns one computer away holds that one only: another reads the account, and a read that failed never stands in for one — covered by the separate two-computer refused-sign-in route: the turned-away reader has no accepted timestamp and cannot displace the healthy holder’s new reading.
+- L388: a computer signed in to another account since, whose sign-in doesn't say who it is (Copilot's), reads it rather than taking a peer's reading of the one before — covered by the three-credential Copilot route: new unknown login must contact its own maker, rather than borrow the old account’s peer reading.
+- L440: Refresh on a Mac, whose Claude only its turns tell of, asks the computer that reads that account — superseded — native Claude now answers an explicit manual Refresh on every supported computer, without passive launches (slice 19); the three-holder remote-only selection route covers accounts not readable locally.
 - L460: an agent's plan_limits says the numbers its computer's accounts were read with anywhere, and the accounts on your other computers, where — covered by merged remote account/holder tool wording in the peer reset scenario.
 - L484: a box whose group chats didn't start takes plan limits, and says not now to group chat mail, so what mustn't be lost comes again — superseded — the separate usage-services/group-peer HTTP dispatch no longer exists in the one resident; [design §5](rust-box.md#5-what-not-to-port). Current authenticated peer mail and group-work routes are exercised in their respective areas.
-- L495: the link saying who your computers are again tells no one again, and an ask is answered once a minute at most — open.
-- L513: a tell lost while a computer's link was off is made up once that link carries mail again — open.
+- L495: the link saying who your computers are again tells no one again, and an ask is answered once a minute at most — covered by fixed-clock production Told and reply admission tests: unchanged contents wait ten minutes, actual same-checked changes wait one minute, fresh accepted readings bypass that wait, and asks are answered at most once a minute.
+- L513: a tell lost while a computer's link was off is made up once that link carries mail again — covered by the three-holder route disconnecting one real relay link, reading a new value on a connected computer, then receiving that same value after reconnect.
 - L535: an account of a service a newer box knows and this one doesn't is listed by its name — covered by both-box retained newer-service route fixture and scoped peer-mail decoder, including invalid service refusal.
 - L547: what a peer's account has beyond its windows (′extras′) is kept as told, and only what one is — covered by both-box retained newer-service route and scoped peer decoder/round-trip, including non-meter fields, nested values and oversized extras.
 - L579: a computer you removed goes from the list, with its accounts — covered by the both-box retained newer-service route, including restart and real membership removal.
 - L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — later (rare) — a separately mis-set peer clock jumps an hour ahead; ordinary next-read takeover remains required. Existing evidence: fixed-time peer decoder checks window/check/hold normalization; next maker read scheduling open.
-- L604: what goes between them is the readings, never a sign-in or who the account is at its maker — partial — scoped mail decoder/encoder strips fixture sign-in and non-meter data; outgoing maker identity and periodic retell fixture open.
+- L604: what goes between them is the readings, never a sign-in or who the account is at its maker — covered by the scoped peer wire decoder/encoder and the three-holder route checking no credential or raw maker identity appears in any view after reconnect.
 - L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — covered by scoped real Book store/read/roster and retained older-wire route fixture (future service and extras, still visible across restart only for admitted member).
-- L653: a weekly forecast combines both computers' readings and survives a fallback to an older reading — open.
-- L688: a box still shows the weekly forecast it learned from a peer after it restarts — open.
-- L710: usage names a reachable computer while its first limits snapshot is in flight — open.
+- L653: a weekly forecast combines both computers' readings and survives a fallback to an older reading — covered by the production peer group trail reconciliation test: six-hour forecast from both holders and no regression when the only current candidate is older.
+- L688: a box still shows the weekly forecast it learned from a peer after it restarts — covered by the same production peer group forecast serialized and reopened through Book store/read.
+- L710: usage names a reachable computer while its first limits snapshot is in flight — covered by the scoped real Book pending-first-reading helper: known named member is pending until its first accepted snapshot.
 
 ### `box/test/usage/limits-resets.test.ts`
 
@@ -1198,7 +1250,7 @@ does not block completion of the row.
 - L157: an older Claude Code's event, with only the window that limits it, keeps that one — covered by the actual old Claude turn fixture: the older event admits only its named weekly window, then other named windows arrive independently.
 - L165: Claude Code's warning of a limit says how much of which one is used, and close only from 90% (#257) — covered by both-box old Claude turn transcript, exact quarter/Opus/90% warning words and repeated threshold suppression.
 - L200: each login is its own row with what Claude Code says of it (its windows, plan and extra usage), its resets say they show only from Linux, and Anthropic is never asked with its sign-in — covered by the native two-account Claude fixture, including distinct identities, plans, windows, Fable, extra usage, Mac-only reset wording and refusal; isolated mode cannot contact the real maker.
-- L248: its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none — partial — Claude grant fixture proves no repeat inventory read on confirmation; failed hourly read and extra usage timing remain open.
+- L248: its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none — covered by the native per-account extra usage/manual refresh failure fixture (previous accepted extras and read time survive), and fixed-clock real grant inventory cache (hourly successful and failed reads, prior inventory retained). The old automatic Claude control-process spacing is superseded by the explicit manual round approved for 0.8.
 - L294: each login is its own row, asked of Claude Code in its own folder, one a minute — covered by the native two-account fixture, one get_usage in each account folder per explicit round. The old automatic one-minute spacing is superseded by the approved manual round without passive CLI starts.
 - L318: an added account's usage is asked of Claude Code with that account's folder, and never with a token — covered by exact added-account invocation folder, with an injected dummy environment OAuth token absent from the CLI environment.
 - L339: a read under way is kept before it's answered: a restart meanwhile doesn't ask again — superseded — there are no autonomous native Claude reads to repeat after restart. The admitted reading is retained; explicit-only probes run once per manual round, and a second press joins an in-progress round (the real held-read fixture).
@@ -1223,7 +1275,7 @@ does not block completion of the row.
 - L736: the box picks which of a maker's windows is each ring — covered by fixed-clock production ring selection: whole-plan windows outrank model-specific Spark and named separate counters; named pool and no-period ring cases.
 - L750: Antigravity's rings are one pool's, as its reader lists them: Gemini's session is never paired with Claude's week — covered by explicit Gemini versus Claude/GPT pool ring component matrix and existing actual Antigravity menu route; both rings use the same tightest pool.
 - L771: every provider's rows and windows have a name — covered by fixed-clock exact known service and duration names, native model/label fixture, plus actual maker-named counter/pool routes. A future service keeps its received name.
-- L796: two rows that would have one name are told apart, as seen from the box that answers — open.
+- L796: two rows that would have one name are told apart, as seen from the box that answers — covered by the three-holder route switching one computer to a second account, which is listed under a distinct name on all three computers.
 - L813: one bar shows the fuller ring, the session where they're as full, and a ring that started over counts as empty — covered by the fixed-clock fuller/tied/expired ring and bar matrix.
 - L823: a window whose reset has passed has started over: empty, calm, and without the old period's reset or amount — covered by exact expired ratio/level/amount/reset/short-ring component matrix and real deadline route.
 - L838: on the route and its event: named accounts and rows, and clients told when a window starts over — covered by actual accepted Claude quota expiry over the open limits feed: named row, short ring starts over and bar changes to long, without another native probe.
@@ -1399,8 +1451,8 @@ does not block completion of the row.
 - L34: disabled toggles never fire — covered by all-off and per-warning fixed-clock Trail matrix and the real accepted-turn route with every toggle off.
 - L35: per trigger off suppresses only it — covered by the same per-warning matrix; the real route reenables its threshold without consuming the crossing.
 - L36: off toggle does not consume edge — covered by scoped accepted-reading off-toggle test.
-- L49: evaluator healthy to close once, facts and route — open.
-- L50: evaluator close to red — open.
+- L49: evaluator healthy to close once, facts and route — covered by the accepted session pace route: real turn crosses into Healthy to Close, publishes exact named fact, and repeated turns retain the same occurrence.
+- L50: evaluator close to red — covered by the same actual route: later accepted turn crosses Close to Running Out, retains the first fact and adds exactly one new milestone.
 - L51: evaluator jitter and restart do not duplicate — duplicate — the real repeated crossing route compares the stable warning IDs through reset jitter, and the retained warning catch-up route checks exactly one identical ID after two restarts. The scoped reading test also exercises persisted occurrence counts.
 - L52: evaluator all toggles off — covered by the all-off real-turn notice route and fixed-clock projection matrix.
 - L53: evaluator per trigger off — covered by the real-turn toggle route and the per-trigger projection matrix.
@@ -1410,28 +1462,28 @@ does not block completion of the row.
 - L57: failed read cannot create notices or cache zero — covered by native Claude complete/mixed failed reads: last accepted windows stay unchanged, no additional notice and no zero is saved.
 - L58: hidden metric prunes baseline — covered by empty layout hide/show route and dormant fixed-clock trail test.
 - L59: pace near empty and projection gate — superseded — the old one-sample elapsed-window projection is intentionally replaced by accepted current-window samples (slice 14, #990). The scoped cold/unknown and healthy-close-running-out matrices prove the replacement.
-- L60: notices go only to peers in the setup — open.
+- L60: notices go only to peers in the setup — covered by scoped peer mail and setup-bound notice admission (ordinary readings remain accepted; previous-scope facts and notice state discarded).
 - L71: large notice history cannot evict the current limits account from peer mail — covered by scoped real Reading wire serialization with 100 notices, bounded mail and current window retained.
-- L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — open.
-- L96: visibility mappings cover model-specific Codex and Antigravity windows — partial — corrected Spark alias and existing Antigravity mappings; exact multi-window layout fixture open.
+- L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — covered by two actual native Claude turn-only holders: the second learns the first warning, accepts its own later turn with no checked timestamp, and does not create a second occurrence.
+- L96: visibility mappings cover model-specific Codex and Antigravity windows — covered by fixed-clock production window-to-meter aliases for Spark session/weekly and all five Antigravity windows, along with the existing visible-setting route.
 - L102: exact ten percent remaining does not trigger Almost Out — covered by exact 0.90 accepted level sample, then 0.92 crossing.
-- L108: parallel readers use the same occurrence IDs and recovery receives a new one — partial — scoped test checks the distinct rearmed occurrence; simultaneous parallel readers open.
+- L108: parallel readers use the same occurrence IDs and recovery receives a new one — covered by production Fact ID test for two holders and a distinct rearmed occurrence, plus conflict/restart route consolidating one occurrence.
 - L116: peer handoff timestamps are normalized to the receiver clock — later (rare) — the sender’s notice timestamp has significant clock skew during a forwarder handoff.
-- L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
+- L128: one direct account holder forwards even a received peer decision — covered by two direct holders: the larger key reads the crossing, the smaller pinned holder receives the fact and writes one local notice; the source writes none.
 - L142: provider hide and re-enable resets baseline but preserves occurrence counters — covered by dormant accepted trail restart and unique second occurrence test, plus route hide/show scenario.
-- L152: notice facts stay in their setup — open.
-- L173: setup changes invalidate notice caches while preserving ordinary limit readings — open.
+- L152: notice facts stay in their setup — covered by real Book scope change, scoped mail admission, and setup-change route that retains the account but clears previous-setup decisions.
+- L173: setup changes invalidate notice caches while preserving ordinary limit readings — covered by actual resident restart with previous-setup kept facts and current sign-in: reading survives, previous warning removed; production Trail clears occurrence state.
 - L185: catch-up is short and warnings disappear when their reset passes — covered by retained current/old/expired warning catch-up route scenario.
-- L198: without layout settings only default meters can decide notices — open.
-- L208: a decision waits for the directory and pins a forwarder only once — open.
+- L198: without layout settings only default meters can decide notices — covered by actual native Claude turn route without a layout: Sonnet crossing is ignored, weekly default crossing produces one fact.
+- L208: a decision waits for the directory and pins a forwarder only once — covered by fixed-clock production pin reconciliation: unpinned before directory, assigned once when scope is known, retained after a holder leaves and after restart.
 - L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — covered by actual turn/cache/notice scenario, old Rust failed and patched Rust focused check passed.
 - L239: unsupported Devin notice facts from older peers cannot trigger native alerts — covered by scoped real peer decoder: valid future service row survives, unsupported notices do not.
-- L244: notice wording carries the same named account and window as the panel — open.
+- L244: notice wording carries the same named account and window as the panel — covered by accepted session pace route asserting named account and window from the actual panel row for both pace milestones, plus the secondary Claude label case.
 - L256: learning the setup immediately shares pending facts despite a recent unscoped limits mail — later (rare) — a notice arises before a setup is known, immediately after an unscoped limits mail that has already set the throttle.
-- L272: an exact secondary Claude card's meter visibility and enablement override the family card — open.
+- L272: an exact secondary Claude card's meter visibility and enablement override the family card — covered by native secondary Claude turn route: known exact card hides family-only placements, exact visible card triggers one warning, and the label identifies the correct account.
 - L285: unmappable Codex card identities fall back to enabled matching meters on any family card — later (rare) — a legacy or unmappable Codex card identity needs the fallback to another family card’s enablement.
-- L294: conflicting pins for the same occurrence converge to the smallest forwarder and persist — open.
-- L314: unrelated directory heartbeats do not bypass the heard-mail throttle — open.
+- L294: conflicting pins for the same occurrence converge to the smallest forwarder and persist — covered by two-holder route with retained conflicting valid decisions for one occurrence, both copies converge to the smaller pin and persist across restart.
+- L314: unrelated directory heartbeats do not bypass the heard-mail throttle — covered by existing fixed-clock Told component and reply rate-limit test: identical roster heartbeats do not bypass the ten-minute retell interval and same-reading changes retain the minute throttle.
 - L329: unsupported notification providers and their wording come from box answers — covered by the exact unsupported-provider availability and wording asserted on both settings and limits routes.
 
 ### `box/test/usage/usage-settings.test.ts`

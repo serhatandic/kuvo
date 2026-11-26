@@ -41,6 +41,9 @@ impl Told {
             .then_some(throttle)
     }
 }
+fn can_answer(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|at| now.saturating_sub(at) >= 60_000)
+}
 pub(super) async fn at_deadline(at: Option<u64>) {
     if let Some(at) = at {
         tokio::time::sleep(Duration::from_millis(
@@ -192,7 +195,7 @@ pub async fn follow_limits(
                     let id=encode(key);
                     let ask=reading.ask;
                     service.take_peer(&id,&member.name,reading,now);
-                    if ask && answered.get(&id).is_none_or(|at|now.saturating_sub(*at)>=60_000) && let Some(host)=member.host() {
+                    if ask && can_answer(answered.get(&id).copied(),now) && let Some(host)=member.host() {
                         let snapshot=service.peer_snapshot(scope.clone(),now);
                         let contents=json!([snapshot.accounts,snapshot.notice_setup]);
                         let checked=snapshot.accounts.iter().map(|a|a.facts.checked).collect();
@@ -307,5 +310,12 @@ mod tests {
             told.wait_until(&json!(["old"]), &[Some(1000)], Some("setup"), 601_000),
             None
         );
+    }
+    #[test]
+    fn a_peer_ask_is_answered_at_most_once_per_minute() {
+        assert!(can_answer(None, 1000));
+        assert!(!can_answer(Some(1000), 1000));
+        assert!(!can_answer(Some(1000), 60999));
+        assert!(can_answer(Some(1000), 61000));
     }
 }

@@ -114,6 +114,7 @@ fn admitted(credentials: &Value) -> Option<Vec<(Account, Integration, SignIn)>> 
                     label: None,
                     identity: identity(kind, &sign_in).map(|raw| Account::identity_of(&raw)),
                     sign_in: fingerprint(&format!("{}:{}", secret, sign_in.expires.unwrap_or(0))),
+                    notice_card: None,
                 };
                 Some((account, kind, sign_in))
             })

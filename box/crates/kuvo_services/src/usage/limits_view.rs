@@ -938,6 +938,7 @@ mod tests {
                     label: None,
                     identity: Some("0123456789abcdef".into()),
                     sign_in: "fixture".into(),
+                    notice_card: None,
                 },
                 facts,
                 trails,

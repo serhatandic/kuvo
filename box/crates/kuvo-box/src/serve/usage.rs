@@ -32,6 +32,7 @@ fn account_of(
         account: Some(provider.account.clone()),
         label: entry.account.label.clone(),
         identity: Some(Account::identity_of(&raw_identity)),
+        notice_card: Account::notice_card_of(&raw_identity),
         sign_in,
     }
 }

@@ -113,6 +113,9 @@ pub struct Account {
     // Identity is a domain-separated hash of the maker's account id, not the credential.
     pub identity: Option<String>,
     pub sign_in: String,
+    // The local Claude settings card key; never included in peer account mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_card: Option<String>,
 }
 impl Account {
     pub fn row(&self, key: &str) -> String {
@@ -127,6 +130,13 @@ impl Account {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .map_or_else(|| base.into(), |s| format!("{base} · {}", s.trim()))
+    }
+    pub fn notice_card_of(raw: &str) -> Option<String> {
+        let suffix = raw.strip_prefix("anthropic:")?;
+        Some(format!(
+            "claude@{}",
+            hex::encode(&Sha256::digest(suffix.to_lowercase().as_bytes())[..4])
+        ))
     }
     pub fn identity_of(raw: &str) -> String {
         hex::encode(&Sha256::digest(format!("kuvo-code plan limits account v1\n{raw}"))[..8])
@@ -217,6 +227,8 @@ struct Saved {
     entries: BTreeMap<String, Entry>,
     #[serde(default)]
     order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notice_setup: Option<String>,
 }
 impl Saved {
     fn ordered(&self) -> Vec<&Entry> {
@@ -229,6 +241,126 @@ impl Saved {
             .collect()
     }
 }
+fn peer_borrow_until(checked: u64, now: u64, every: u64, agreed: Option<u64>) -> Option<u64> {
+    let next = checked.saturating_add(every).saturating_add(2 * 60_000);
+    // Honor the slack only if a fresh reading already deferred this computer.
+    (now.saturating_sub(checked) < every || agreed.is_some_and(|at| at > now && next > now))
+        .then_some(next)
+}
+
+/// A setup change invalidates notice decisions, not the accepted usage numbers.
+fn update_notice_scope(
+    state: &mut Saved,
+    previous: Option<&str>,
+    scope: Option<&str>,
+) -> (bool, bool) {
+    let replaced = scope.is_some_and(|scope| {
+        state
+            .notice_setup
+            .as_deref()
+            .or(previous)
+            .is_some_and(|old| old != scope)
+    });
+    if replaced {
+        for entry in state.entries.values_mut() {
+            entry.notices.clear();
+            for trail in entry.trails.values_mut() {
+                trail.clear_fired();
+            }
+        }
+    }
+    let changed = scope.is_some_and(|scope| state.notice_setup.as_deref() != Some(scope));
+    if changed {
+        state.notice_setup = scope.map(str::to_owned);
+    }
+    (changed, replaced)
+}
+
+/// Resolve the pins on the same notice occurrence, not on every new directory
+/// view. A known pin survives a holder leaving; only a conflicting pin can
+/// change it. An unpinned decision waits until membership is known.
+fn reconcile_notice_pins(
+    state: &mut Saved,
+    book: &mut Book,
+    local_key: &str,
+    now: u64,
+) -> (bool, bool) {
+    if book.scope.is_none() {
+        return (false, false);
+    }
+    let mut facts = BTreeMap::<String, (String, Option<String>)>::new();
+    let local_facts = state.entries.values().flat_map(|e| &e.notices);
+    let peer_facts = book
+        .peers
+        .iter()
+        .filter(|(key, peer)| book.roster.contains_key(*key) && peer.setup == book.scope)
+        .flat_map(|(_, peer)| peer.accounts.iter().flat_map(|a| &a.notices));
+    for fact in local_facts.chain(peer_facts).filter(|f| f.current(now)) {
+        let (_, pin) = facts
+            .entry(fact.id.clone())
+            .or_insert_with(|| (fact.row.clone(), None));
+        if let Some(given) = &fact.forwarder {
+            if pin.as_ref().is_none_or(|old| given < old) {
+                *pin = Some(given.clone());
+            }
+        }
+    }
+    for (row, pin) in facts.values_mut() {
+        if pin.is_some() {
+            continue;
+        }
+        let local = state
+            .entries
+            .values()
+            .any(|entry| entry.account.row(local_key) == row.as_str())
+            .then_some(local_key);
+        let peer = book
+            .peers
+            .iter()
+            .filter(|(key, peer)| {
+                book.roster.contains_key(*key)
+                    && peer.setup == book.scope
+                    && now.saturating_sub(peer.heard) <= AWAY
+            })
+            .filter(|(key, peer)| {
+                peer.accounts
+                    .iter()
+                    .any(|account| account.row(key) == row.as_str())
+            })
+            .map(|(key, _)| key.as_str())
+            .min();
+        *pin = local.into_iter().chain(peer).min().map(str::to_owned);
+    }
+    let update = |fact: &mut Fact| {
+        let Some((_, pin)) = facts.get(&fact.id) else {
+            return false;
+        };
+        if &fact.forwarder == pin {
+            return false;
+        }
+        fact.forwarder = pin.clone();
+        true
+    };
+    let mut local_changed = false;
+    for fact in state.entries.values_mut().flat_map(|e| &mut e.notices) {
+        local_changed |= update(fact);
+    }
+    let mut peer_changed = false;
+    for (key, peer) in &mut book.peers {
+        if !book.roster.contains_key(key) || peer.setup != book.scope {
+            continue;
+        }
+        for fact in peer
+            .accounts
+            .iter_mut()
+            .flat_map(|account| &mut account.notices)
+        {
+            peer_changed |= update(fact);
+        }
+    }
+    (local_changed, peer_changed)
+}
+
 fn same_account(a: &Account, b: &Account) -> bool {
     a.service == b.service
         && a.identity
@@ -429,15 +561,34 @@ impl Service {
         }
     }
     pub fn peer_roster(&self, names: &BTreeMap<String, String>, scope: Option<&str>, now: u64) {
-        let changed = {
+        let (changed, replaced_scope) = {
+            let mut state = self.state.lock().expect("limits lock");
             let mut book = self.peer_book.lock().expect("peer limits");
-            if !book.roster(names, scope) {
-                false
-            } else {
-                self.save_peers(&book);
-                true
+            let (marker_changed, replaced_scope) =
+                update_notice_scope(&mut state, book.scope.as_deref(), scope);
+            let roster_changed = book.roster(names, scope);
+            let (local_changed, peer_changed) =
+                if marker_changed || roster_changed || replaced_scope {
+                    reconcile_notice_pins(&mut state, &mut book, &self.key, now)
+                } else {
+                    (false, false)
+                };
+            // A scope marker alone must not create an empty accepted cache
+            // before the still-admitted legacy accounts have been imported.
+            if !state.entries.is_empty() && (marker_changed || local_changed || replaced_scope) {
+                self.save_notice_entries(&state);
             }
+            if roster_changed || peer_changed {
+                self.save_peers(&book);
+            }
+            (
+                roster_changed || local_changed || peer_changed || replaced_scope,
+                replaced_scope,
+            )
         };
+        if replaced_scope {
+            self.told.lock().expect("usage notice deliveries").clear();
+        }
         if changed {
             self.replay_notices(now);
             self.changes.send_modify(|n| *n = n.wrapping_add(1));
@@ -456,11 +607,22 @@ impl Service {
     pub fn take_peer(&self, key: &str, name: &str, reading: Reading, now: u64) {
         let refresh = reading.refresh.clone();
         {
+            let has_notices = reading
+                .accounts
+                .iter()
+                .any(|account| !account.notices.is_empty());
+            let mut state = has_notices.then(|| self.state.lock().expect("limits lock"));
             let mut book = self.peer_book.lock().expect("peer limits");
             if !book.roster.contains_key(key) {
                 return;
             }
             book.take(key, name, reading, now);
+            if let Some(state) = state.as_deref_mut() {
+                let (local_changed, _) = reconcile_notice_pins(state, &mut book, &self.key, now);
+                if local_changed {
+                    self.save_notice_entries(state);
+                }
+            }
             self.save_peers(&book);
         }
         self.replay_notices(now);
@@ -498,6 +660,14 @@ impl Service {
             }
         }
         targets
+    }
+    fn save_notice_entries(&self, state: &Saved) {
+        if self.cache_error.is_none()
+            && let Ok(bytes) = serde_json::to_vec(state)
+            && let Err(error) = kuvo_store::files::write_secret(&self.file, &bytes)
+        {
+            eprintln!("Couldn't keep usage notice decisions: {error}");
+        }
     }
     fn save_peers(&self, book: &Book) {
         if let Err(error) = book.store(&self.peer_file) {
@@ -817,9 +987,11 @@ impl Service {
         let row_id = entry.account.row(&self.key);
         let mut book = self.peer_book.lock().expect("peer limits");
         for window in windows {
-            let toggles = self
-                .settings
-                .notification_milestones(entry.account.service.name(), &window);
+            let toggles = self.settings.notification_milestones(
+                entry.account.service.name(),
+                entry.account.notice_card.as_deref(),
+                &window,
+            );
             let semantic = window.limit_key();
             let shared_trail = book
                 .groups
@@ -894,6 +1066,9 @@ impl Service {
         // Keep the chosen forwarder pinned to the fact. A peer merely relaying it cannot
         // create another push or tell it again.
         for fact in &mut facts {
+            if book.scope.is_none() {
+                continue;
+            }
             let peer = book
                 .peers
                 .iter()
@@ -1296,15 +1471,14 @@ impl Service {
         let Some(checked) = peer_checked else {
             return false;
         };
-        let next = checked.saturating_add(every).saturating_add(2 * 60_000);
-        // Honor the two-minute slack only after we have agreed to defer.
-        if now.saturating_sub(checked) >= every
-            && old
-                .and_then(|entry| entry.borrowed_until)
-                .is_none_or(|at| at <= now || next <= now)
-        {
+        let Some(next) = peer_borrow_until(
+            checked,
+            now,
+            every,
+            old.and_then(|entry| entry.borrowed_until),
+        ) else {
             return false;
-        }
+        };
         if old.is_some_and(|entry| entry.borrowed_until == Some(next) && entry.account == account) {
             return true;
         }
@@ -1669,18 +1843,7 @@ impl Service {
                 || group.candidates.values().any(|c| c.len() > 1)
             {
                 let agreed = book.groups.entry(id.clone()).or_default();
-                agreed.retain(|id, _| group.candidates.contains_key(id));
-                for (id, candidates) in &mut group.candidates {
-                    candidates.sort_by_key(|t| t.current.read);
-                    for candidate in candidates {
-                        if let Some(current) = agreed.get_mut(id) {
-                            current.observe(candidate.current.clone(), &BTreeSet::new());
-                            current.merge_fired(candidate);
-                        } else {
-                            agreed.insert(id.clone(), candidate.clone());
-                        }
-                    }
-                }
+                reconcile_account_trails(agreed, &mut group.candidates);
                 group.entry.window_order = group
                     .order
                     .iter()
@@ -1696,9 +1859,7 @@ impl Service {
             self.save_peers(&book);
         }
         let pending = book
-            .roster
-            .iter()
-            .filter(|(key, _)| !book.peers.contains_key(*key))
+            .pending()
             .map(|(id, name)| json!({"id":id,"name":name}))
             .collect::<Vec<_>>();
         drop(book);
@@ -1732,7 +1893,7 @@ impl Service {
                 }
             }
             let row_allowed = allowed.get(row["id"].as_str().unwrap_or_default()).copied();
-            if let Some(extras) = row["extras"].as_array_mut() {
+            if let Some(extras) = row.get_mut("extras").and_then(Value::as_array_mut) {
                 let unread = extras
                     .iter()
                     .position(|e| e["kind"] == "unreadable" && e["id"] == "resets");
@@ -1795,7 +1956,7 @@ impl Service {
         });
         let own_notices = notices
             .iter()
-            .filter(|n| n.forwarder.as_deref().is_none_or(|id| id == self.key))
+            .filter(|n| n.forwarder.as_deref() == Some(self.key.as_str()))
             .cloned()
             .collect::<Vec<_>>();
         let rail = view::rail(&rows);
@@ -1838,6 +1999,23 @@ fn shown(window: &Window, now: u64) -> Value {
             .shift_remove("amount");
     }
     value
+}
+fn reconcile_account_trails(
+    agreed: &mut BTreeMap<String, Trail>,
+    candidates: &mut BTreeMap<String, Vec<Trail>>,
+) {
+    agreed.retain(|id, _| candidates.contains_key(id));
+    for (id, candidates) in candidates {
+        candidates.sort_by_key(|t| t.current.read);
+        for candidate in candidates {
+            if let Some(current) = agreed.get_mut(id) {
+                current.observe(candidate.current.clone(), &BTreeSet::new());
+                current.merge_fired(candidate);
+            } else {
+                agreed.insert(id.clone(), candidate.clone());
+            }
+        }
+    }
 }
 fn ordered_trails(entry: &Entry) -> Vec<&Trail> {
     let mut seen = BTreeSet::new();
@@ -2361,4 +2539,209 @@ where
                 .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     });
+}
+
+#[cfg(test)]
+mod notice_and_peer_tests {
+    use super::*;
+    use crate::usage::readings::{CardPrediction, Source};
+    const MIN: u64 = 60_000;
+    const START: u64 = 1_800_000_000_000;
+    const WEEK: u64 = 7 * 24 * 60 * MIN;
+    fn weekly(at: u64, used: f64) -> Window {
+        Window {
+            id: "seven_day".into(),
+            used,
+            minutes: Some(10080),
+            resets_at: Some(START + WEEK),
+            model: None,
+            name: None,
+            amount: None,
+            read: at,
+            source: Source::Turn,
+        }
+    }
+    fn account() -> Account {
+        Account {
+            provider: "claude-code".into(),
+            service: Provider::Claude,
+            account: Some("default".into()),
+            label: None,
+            identity: Some("abcdefabcdefabcd".into()),
+            sign_in: "fixture".into(),
+            notice_card: None,
+        }
+    }
+    #[test]
+    fn a_fresh_peer_defers_only_until_its_agreed_grace_period_ends() {
+        let every = 30 * MIN;
+        let deadline = START + 32 * MIN;
+        assert_eq!(
+            peer_borrow_until(START, START + MIN, every, None),
+            Some(deadline)
+        );
+        assert_eq!(
+            peer_borrow_until(START, START + 31 * MIN, every, None),
+            None
+        );
+        assert_eq!(
+            peer_borrow_until(START, START + 31 * MIN, every, Some(deadline)),
+            Some(deadline)
+        );
+        assert_eq!(
+            peer_borrow_until(START, deadline, every, Some(deadline)),
+            None
+        );
+        assert_eq!(
+            peer_borrow_until(START + 31 * MIN, deadline, every, Some(deadline)),
+            Some(START + 63 * MIN)
+        );
+    }
+    #[test]
+    fn parallel_notice_occurrences_reconcile_the_pin_and_keep_it_after_directory_changes() {
+        let now = START + 10 * MIN;
+        let window = weekly(now, 0.95);
+        let account = account();
+        let mut trail = Trail::new(window.clone()).unwrap();
+        trail.mark_fired_at(Milestone::UnderTenPercent, now);
+        let local = Fact::new(&account, "z", &window, Milestone::UnderTenPercent, 1);
+        let mut remote = Fact::new(&account, "a", &window, Milestone::UnderTenPercent, 1);
+        assert_eq!(local.id, remote.id);
+        assert_ne!(
+            local.id,
+            Fact::new(&account, "a", &window, Milestone::UnderTenPercent, 2).id
+        );
+        remote.forwarder = Some("a".into());
+        let mut state = Saved::default();
+        state.entries.insert(
+            account.provider.clone(),
+            Entry {
+                account: account.clone(),
+                facts: Default::default(),
+                trails: BTreeMap::from([(window.id.clone(), trail)]),
+                partial_missing: BTreeSet::new(),
+                window_order: vec![window.id.clone()],
+                notices: vec![local],
+                refusals: 0,
+                borrowed_until: None,
+            },
+        );
+        let mut book = Book::default();
+        assert_eq!(
+            reconcile_notice_pins(&mut state, &mut book, "z", now),
+            (false, false)
+        );
+        assert!(state.entries["claude-code"].notices[0].forwarder.is_none());
+        assert_eq!(
+            update_notice_scope(&mut state, None, Some("set_fixture")),
+            (true, false)
+        );
+        book.roster(
+            &BTreeMap::from([("a".into(), "Peer".into())]),
+            Some("set_fixture"),
+        );
+        assert_eq!(
+            reconcile_notice_pins(&mut state, &mut book, "z", now),
+            (true, false)
+        );
+        assert_eq!(
+            state.entries["claude-code"].notices[0].forwarder.as_deref(),
+            Some("z")
+        );
+        let incoming = Reading {
+            at: now,
+            accounts: vec![AccountMail {
+                provider: account.provider.clone(),
+                service: account.service.clone(),
+                account: account.account.clone(),
+                agent: Some(Provider::Claude),
+                identity: account.identity.clone(),
+                label: None,
+                facts: Default::default(),
+                windows: vec![window.clone()],
+                notices: vec![remote],
+                notice_state: BTreeMap::new(),
+                agents_reset: false,
+            }],
+            ask: false,
+            refresh: vec![],
+            notice_setup: Some("set_fixture".into()),
+        };
+        let admitted = Reading::from(&incoming.wire(), now, Some("set_fixture")).unwrap();
+        book.take("a", "Peer", admitted, now);
+        assert_eq!(
+            reconcile_notice_pins(&mut state, &mut book, "z", now),
+            (true, false)
+        );
+        assert_eq!(
+            state.entries["claude-code"].notices[0].forwarder.as_deref(),
+            Some("a")
+        );
+        book.roster(&BTreeMap::new(), Some("set_fixture"));
+        assert_eq!(
+            reconcile_notice_pins(&mut state, &mut book, "z", now),
+            (false, false)
+        );
+        let mut state: Saved =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            state.entries["claude-code"].notices[0].forwarder.as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            update_notice_scope(&mut state, Some("set_fixture"), Some("set_next")),
+            (true, true)
+        );
+        let kept = &state.entries["claude-code"];
+        assert!(kept.notices.is_empty());
+        assert_eq!(
+            kept.trails["seven_day"].occurrence(Milestone::UnderTenPercent),
+            0
+        );
+        assert_eq!(kept.trails["seven_day"].current, window);
+    }
+    #[test]
+    fn weekly_forecasts_combine_both_holders_and_survive_older_fallback_and_restart() {
+        let key = weekly(START, 0.42).limit_key();
+        let mut agreed = BTreeMap::new();
+        let mut candidates = vec![];
+        for hour in [0, 2, 4, 6] {
+            candidates.push(Trail::new(weekly(START + hour * 60 * MIN, 0.42)).unwrap());
+            if candidates.len() > 2 {
+                candidates.remove(0);
+            }
+            reconcile_account_trails(
+                &mut agreed,
+                &mut BTreeMap::from([(key.clone(), candidates.clone())]),
+            );
+        }
+        let now = START + 6 * 60 * MIN;
+        assert_eq!(
+            agreed[&key].card_prediction(now),
+            Some(CardPrediction::Lasts)
+        );
+        reconcile_account_trails(
+            &mut agreed,
+            &mut BTreeMap::from([(
+                key.clone(),
+                vec![Trail::new(weekly(START + 4 * 60 * MIN, 0.42)).unwrap()],
+            )]),
+        );
+        assert_eq!(agreed[&key].current.read, now);
+        assert_eq!(
+            agreed[&key].card_prediction(now),
+            Some(CardPrediction::Lasts)
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("peers.json");
+        let mut book = Book::default();
+        book.scope = Some("set_fixture".into());
+        book.groups.insert("account".into(), agreed);
+        book.store(&file).unwrap();
+        let kept = Book::read(&file).unwrap();
+        assert_eq!(
+            kept.groups["account"][&key].card_prediction(now),
+            Some(CardPrediction::Lasts)
+        );
+    }
 }
