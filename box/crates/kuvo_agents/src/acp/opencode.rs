@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::{
-    flavour::{Flavour, Launch, Mode},
+    flavour::{Flavour, Launch, Mode, OwnAnswer, OwnRequest, Question},
     local::{self, Catalog, Listed},
     wire::{Capabilities, Setup},
 };
@@ -43,6 +43,10 @@ const CATALOG: &str = "opencode";
 /// Its own mode that only plans: never offered.
 const PLAN: &str = "plan";
 const WAIT: Option<Duration> = Some(Duration::from_secs(30));
+/// OpenCode asks the box before the tools Ask First is about, and the box answers by the
+/// conversation's rules, as the engine applies them (a project's own settings can't let them
+/// through unasked). Its other tools keep OpenCode's own defaults, as on the engine.
+const ASKS: &str = r#"{"permission":{"edit":"ask","write":"ask","patch":"ask","shell":"ask","bash":"ask","webfetch":"ask","external_directory":"ask"}}"#;
 
 pub(super) struct OpenCode {
     home: Home,
@@ -174,7 +178,11 @@ impl Flavour for OpenCode {
             start: Start {
                 command: vec![program.executable.clone(), "acp".into()],
                 cwd: Some(scratch),
-                env: program.env.clone(),
+                env: {
+                    let mut env = program.env.clone();
+                    env.insert("OPENCODE_CONFIG_CONTENT".into(), ASKS.into());
+                    env
+                },
                 kind: HoldKind::JsonRpc,
                 meta: Metadata::new(),
                 limits: Limits::default(),
@@ -256,6 +264,73 @@ impl Flavour for OpenCode {
         })
     }
 
+    /// Its question tool's form (`q0`, with `q0_custom` for words of your own): its questions.
+    fn own_request(&self, method: &str, params: &Value) -> Option<OwnRequest> {
+        let fields = params["requestedSchema"]["properties"].as_object();
+        let opencode = method == "elicitation/create"
+            && params["mode"] == "form"
+            && fields.is_some_and(|fields| fields.keys().any(|key| key == "q0"));
+        if !opencode {
+            return None;
+        }
+        let questions = fields?
+            .iter()
+            .filter(|(key, _)| !key.ends_with("_custom"))
+            .map(|(key, field)| {
+                let multiple = field["type"] == "array";
+                let choices = if multiple { &field["items"]["anyOf"] } else { &field["oneOf"] };
+                Question {
+                    id: key.clone(),
+                    question: field["description"].as_str().unwrap_or_default().into(),
+                    header: field["title"].as_str().map(str::to_owned),
+                    options: choices
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|choice| {
+                            let label = choice["const"].as_str()?.to_owned();
+                            Some((label, choice["description"].as_str().map(str::to_owned)))
+                        })
+                        .collect(),
+                    multiple,
+                }
+            })
+            .collect();
+        Some(OwnRequest::Questions {
+            tool_call: params["toolCallId"].as_str().map(str::to_owned),
+            questions,
+        })
+    }
+
+    /// Your choices as its form takes them; words of your own in their `_custom` field.
+    fn answer_own(&self, request: &OwnRequest, answer: OwnAnswer) -> Value {
+        let (OwnRequest::Questions { questions, .. }, OwnAnswer::Answered(values)) = (request, answer)
+        else {
+            return json!({"action": "decline"});
+        };
+        let mut content = Map::new();
+        for question in questions {
+            let offered = |value: &Value| {
+                question.options.iter().any(|(label, _)| Some(label.as_str()) == value.as_str())
+            };
+            let (chosen, own): (Vec<Value>, Vec<Value>) = match values.get(&question.id) {
+                Some(Value::Array(list)) => list.iter().cloned().partition(offered),
+                Some(value) if !value.is_null() => [value.clone()].into_iter().partition(offered),
+                _ => continue,
+            };
+            if question.multiple {
+                content.insert(question.id.clone(), Value::Array(chosen));
+            } else if let Some(one) = chosen.into_iter().next() {
+                content.insert(question.id.clone(), one);
+            }
+            let own: Vec<&str> = own.iter().filter_map(Value::as_str).collect();
+            if !own.is_empty() {
+                content.insert(format!("{}_custom", question.id), own.join(", ").into());
+            }
+        }
+        json!({"action": "accept", "content": content})
+    }
+
     /// Keeps the models a session listed (`provider/model`), for when OpenCode isn't running.
     fn note_setup(&self, setup: &Setup, _credential: Option<&str>) {
         let Some(option) = setup.option("model", "model") else {
@@ -288,5 +363,78 @@ impl Flavour for OpenCode {
         {
             feed.emit("model.updated", json!({"program": "opencode"}));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An OpenCode agent in a home of its own, removed with the folder kept beside it.
+    fn opencode() -> (tempfile::TempDir, OpenCode) {
+        let home = tempfile::tempdir().unwrap();
+        let agent = OpenCode::new(Home::new(home.path().to_owned()).unwrap(), "opencode-agent".into(), None, None);
+        (home, agent)
+    }
+
+    /// The form OpenCode 2.2.6's question tool sends over ACP.
+    fn asked() -> Value {
+        json!({"mode": "form", "toolCallId": "call_1", "message": "Questions", "requestedSchema": {"type": "object", "properties": {
+            "q0": {"type": "string", "title": "Size", "description": "Which size?", "oneOf": [
+                {"const": "Small", "title": "Small", "description": "A little"}, {"const": "Large", "title": "Large", "description": "A lot"}]},
+            "q0_custom": {"type": "string", "title": "Size (other)", "description": "Type your own answer"},
+            "q1": {"type": "array", "title": "Colors", "description": "Which colors?", "items": {"anyOf": [
+                {"const": "Red", "title": "Red"}, {"const": "Blue", "title": "Blue"}]}},
+            "q1_custom": {"type": "string"}}, "required": []}})
+    }
+
+    #[test]
+    fn its_question_form_is_its_questions_and_your_answers_go_back_in_its_fields() {
+        let (_home, agent) = opencode();
+        let Some(request @ OwnRequest::Questions { .. }) = agent.own_request("elicitation/create", &asked()) else {
+            panic!("its questions");
+        };
+        let OwnRequest::Questions { tool_call, questions } = &request else { unreachable!() };
+        assert_eq!(tool_call.as_deref(), Some("call_1"));
+        assert_eq!(questions.len(), 2);
+        assert_eq!((questions[0].id.as_str(), questions[0].question.as_str(), questions[0].multiple), ("q0", "Which size?", false));
+        assert_eq!(questions[0].options[1], ("Large".into(), Some("A lot".into())));
+        assert!(questions[1].multiple);
+        let answers = json!({"q0": "Medium", "q1": ["Blue", "Green"]}).as_object().cloned().unwrap();
+        assert_eq!(
+            agent.answer_own(&request, OwnAnswer::Answered(answers)),
+            json!({"action": "accept", "content": {"q0_custom": "Medium", "q1": ["Blue"], "q1_custom": "Green"}})
+        );
+        assert_eq!(agent.answer_own(&request, OwnAnswer::Declined(None)), json!({"action": "decline"}));
+    }
+
+    #[test]
+    fn another_servers_form_isnt_its_question() {
+        let form = json!({"mode": "form", "requestedSchema": {"properties": {"token": {"type": "string"}}}});
+        let (_home, agent) = opencode();
+        assert!(agent.own_request("elicitation/create", &form).is_none());
+        assert!(agent.own_request("session/request_permission", &asked()).is_none());
+    }
+
+    #[test]
+    fn its_models_are_named_provider_and_model_and_one_process_carries_every_conversation() {
+        let (_home, agent) = opencode();
+        assert_eq!(agent.model_value("opencode-go", "deepseek-v4.1-flash"), "opencode-go/deepseek-v4.1-flash");
+        let (plain, approving) = (Mode::default(), Mode { approve_all: true, read_only: false });
+        assert_eq!(
+            agent.launch_key(&plain, Path::new("/a"), "x/y").unwrap(),
+            agent.launch_key(&approving, Path::new("/b"), "z/w").unwrap()
+        );
+        assert!(agent.reads_own_servers());
+    }
+
+    #[test]
+    fn it_asks_the_box_before_its_tools() {
+        let asks: Value = serde_json::from_str(ASKS).unwrap();
+        for tool in ["edit", "write", "patch", "shell", "bash", "webfetch", "external_directory"] {
+            assert_eq!(asks["permission"][tool], "ask", "{tool}");
+        }
+        // (Its subagents, questions and the rest as OpenCode has them.)
+        assert!(asks["permission"]["*"].is_null() && asks["permission"]["subagent"].is_null());
     }
 }

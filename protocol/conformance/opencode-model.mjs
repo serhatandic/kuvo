@@ -14,7 +14,11 @@ export function standInSettings(url) {
         npm: "@ai-sdk/openai-compatible",
         name: "Stand-in (labelled test model)",
         options: { baseURL: url, apiKey: "stand-in" },
-        models: { scripted: { name: "Scripted stand-in", limit: { context: 100000, output: 8000 } } },
+        models: Object.fromEntries(["scripted", "other"].map(id => [id, {
+          name: id === "scripted" ? "Scripted stand-in" : "Other stand-in",
+          attachment: true, modalities: { input: ["text", "image"], output: ["text"] },
+          limit: { context: 100000, output: 8000 },
+        }])),
       },
     },
   };
@@ -27,11 +31,18 @@ const chunk = (delta, finish = null) => ({
 
 /**
  * Starts the stand-in. `script`: steps, each `{ text }` or `{ tools: [{ name, args }] }` (or a
- * function of the request's messages returning one). A request past the script gets "Done.".
- * Each request is kept in `requests`.
+ * function of the request's messages returning one); `wait: name` holds a step until `open(name)`,
+ * and `{ hang: true }` never answers (a request closed while hanging is counted in `stopped`). A
+ * request past the script gets "Done.". Each request is kept in `requests`.
  */
 export async function standInModel(script = []) {
   const requests = [];
+  const gates = new Map();
+  const gate = name => {
+    if (!gates.has(name)) { let open; const opened = new Promise(resolve => { open = resolve; }); gates.set(name, { opened, open }); }
+    return gates.get(name);
+  };
+  const counts = { stopped: 0 };
   let next = 0;
   const server = http.createServer(async (req, res) => {
     let body = "";
@@ -44,14 +55,19 @@ export async function standInModel(script = []) {
     requests.push(asked);
     // OpenCode's own small requests (titles), which offer no tools, aren't the conversation's turns.
     const titling = !asked.tools?.length;
-    let step = titling ? { text: "Scripted title" } : script[next++] ?? { text: "Done." };
+    let step = titling ? { text: "Scripted title" } : script.shift() ?? { text: "Done." };
     if (typeof step === "function") step = step(asked.messages ?? []);
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     const send = value => res.write(`data: ${JSON.stringify(value)}\n\n`);
     send(chunk({ role: "assistant" }));
+    if (step.hang) {
+      res.on("close", () => { counts.stopped++; });
+      return;
+    }
+    if (step.wait) await gate(step.wait).opened;
     if (step.tools) {
       step.tools.forEach((tool, index) => send(chunk({ tool_calls: [{
-        index, id: `call_${next}_${index}`, type: "function",
+        index, id: `call_${++next}_${index}`, type: "function",
         function: { name: tool.name, arguments: JSON.stringify(tool.args ?? {}) },
       }] })));
       send(chunk({}, "tool_calls"));
@@ -64,5 +80,9 @@ export async function standInModel(script = []) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}/v1`;
-  return { url, requests, close: () => new Promise(resolve => server.close(resolve)) };
+  return {
+    url, requests, open: name => gate(name).open(),
+    get stopped() { return counts.stopped; },
+    close: () => { server.closeAllConnections?.(); return new Promise(resolve => server.close(resolve)); },
+  };
 }
