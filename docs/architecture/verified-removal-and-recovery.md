@@ -19,6 +19,12 @@ Run `BUN_BE_BUN=1 opencode /path/to/kuvo-link.js box backups <action>` on the ow
 - `now` takes or returns today's verified point. `points` lists points using either the current destination or supplied `destination` and `source`. `match` establishes the accepted replacement mapping where required. `restore` reads `destination`, `source`, `id`, `recoveryKey` and `confirm: true` from stdin. Stop the data writers before restoring. Keep recovery keys out of command-line arguments and logs.
 - `destination` with `enabled: false` stops new scheduled backups while keeping existing deposits. `erase` with a point `id` and `confirm: true` explicitly deletes an authorized point. Existing Relay tombstones reject delayed uploads for erased points. Retention runs when an enabled owner takes backups. Relay retention and erase require valid namespace authority, including the accepted replacement when using its matched namespace. The separate vault export and import still require the vault holder and use a distinct key.
 
+Relay backup receivers hold ciphertext, not the recovery key. A replacement can read or erase
+only its accepted source namespace and starts uploads under its own key; it cannot resume an old
+owner’s reservation. The source reports a verified point only after reading back and authenticating
+the archive. A retry can confirm a published point by checksum, and erase retires matching staging
+so a delayed commit cannot recreate it. Ordinary unlink and wipe leave external deposits intact.
+
 ## Recovery evidence
 
 New points record the source's managed attachment roots inside the encrypted archive. On restore, structured file references and attachment notes in backed-up transcripts resolve to the replacement's verified payloads. An occupied path keeps its current contents. The recovered attachment takes a distinct managed address. A known missing attachment points to an unavailable location so an unrelated file at the old address cannot satisfy it. The durable report itemizes named missing attachments, older Work Queue omissions, artifact versions without copies, and held conflicts. The archive records work present at its timestamp. It cannot enumerate work created afterward that did not reach another system.

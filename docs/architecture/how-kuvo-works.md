@@ -1,8 +1,7 @@
 # How Kuvo works
 
 Current on 22 November 2026. Paths are under `box/src/link/`
-unless otherwise stated. The [November simplicity check](../archive/simplicity-check-1122.md)
-records the earlier baseline. The remaining work is listed below.
+unless otherwise stated. The remaining work from the November simplicity check is listed below.
 
 Every computer runs the same **box**: the engine, the coding agents, their conversations, bots and
 wake-ups. Each box works on its own, with no client connected. One of them is the **main
@@ -14,16 +13,16 @@ bar) show what a box says and ask it to change things. Computers reach each othe
 
 | Concern | The one mechanism | Where |
 |---|---|---|
-| Who's the main computer | A 60-second lease at Kuvo's relay. The main renews it every 10 s. When it lapses, another computer claims it: always-on computers at once, the rest a minute later. The new main signs a certificate for the next epoch, and the rest follow. A main without a fresh lease pauses setup-wide changes and says so, unless it's alone in its setup, where nothing could take over. A new setup starts in this model, epoch 1's certificate and checkpoint signed as it's made. **Marked:** setups that haven't converted keep the old model's branches (check 9). | `relay/src/leases.ts`; `setup/relay-lease.ts`, `lease.ts`, `takeover.ts`, `leadership.ts` |
+| Who's the main computer | A 60-second lease at Kuvo's relay. The main renews it every 10 s. When it lapses, another computer claims it: always-on computers at once, the rest a minute later. The new main signs a certificate for the next epoch, and the rest follow. A main without a fresh lease pauses setup-wide changes and says so, unless it's alone in its setup, where nothing could take over. A new setup starts in this model, epoch 1's certificate and checkpoint signed as it's made. **Marked:** setups that haven't converted keep the old model's branches. | `relay/src/leases.ts`; `setup/relay-lease.ts`, `lease.ts`, `takeover.ts`, `leadership.ts` |
 | Shared data | The main saves setup-wide values alone: membership, devices, settings, personalities, labels. It publishes them as one signed copy. Members keep that copy, so whoever takes over starts from it. | `setup/shared.ts`; `box/src/shared/data-declarations.ts` |
-| Updates | The main holds the newest signed release: from the feed, from Update Now, or from what a member offers. Every computer that's on prepares it beside the version it runs, then says it's staged or why it can't be. The main switches when every computer that's on is staged, or 5 minutes after the first one is. The others switch when they see it running. Staging leaves ordinary work available. The box supplies the release status and available actions. A switch is one rename of the `bin` link, and the keeper switches back if the new version doesn't answer. It keeps a compatible engine running and waits for engine turns that a restart or bridge handover would cut. An attempt that waits five minutes defers the switch. A computer that's off catches up when it's back. The desktop app updates itself through Sparkle, as an installed app does. **Marked:** the old trial, engine swap and quiet-moment wait still run for computers whose `bin` isn't a link yet (check 8). | `updates/fleet.ts`, `update.ts`, `keep.ts`; `box/src/keeper/kuvo-start` |
+| Updates | The main holds the newest signed release: from the feed, from Update Now, or from what a member offers. Every computer that's on prepares it beside the version it runs, then says it's staged or why it can't be. The main switches when every computer that's on is staged, or 5 minutes after the first one is. The others switch when they see it running. Staging leaves ordinary work available. The box supplies the release status and available actions. A switch is one rename of the `bin` link, and the keeper switches back if the new version doesn't answer. It keeps a compatible engine running and waits for engine turns that a restart or bridge handover would cut. An attempt that waits five minutes defers the switch. A computer that's off catches up when it's back. The desktop app updates itself through Sparkle, as an installed app does. **Marked:** the old trial, engine swap and quiet-moment wait still run for computers whose `bin` isn't a link yet. | `updates/fleet.ts`, `update.ts`, `keep.ts`; `box/src/keeper/kuvo-start` |
 | Where logic lives | The box decides, and clients draw. One set of routes serves every client, and a feature list says what each box has. | `server/router.ts`, `areas/*`; `box/src/shared/features.ts`; `box/src/shared/routes`; `protocol/PROTOCOL.md` |
 | Who owns a conversation, bot or group, and how others find it | The computer it lives on. A move hands it from one computer to another, and only those two take part. "Where does this live?" is one rule, in `ownerOf`: here, if this computer has it (its session list, bots and group chats); else where this computer's move journal sent it; else the one computer that says it has it. Each computer announces every record it has (`owns`, digests of the IDs). A request that reaches the wrong computer goes on to the owner, or the client is told where the record is. **Marked:** letters and the agents list still find a peer's conversation their own way (`peerOf`, with `moved` notices). | `ownership/resolve.ts` (`ownerOf`); `moves/move.ts`, `moves/records.ts`; `peers/agents.ts`; `ownership/messages.ts` |
 | Running agents | The **engine** (opencode, unmodified, one folder per version) runs provider-model sessions. The resident starts it on demand and parks it after an idle period. The **agents bridge** runs Claude Code, Codex, Cursor, Grok and Antigravity. Each agent's process runs under a **holder** of its own. A bridge on its way out (an update, a release switch) lets go of every holder, at work or between turns, and never stops one; only the new bridge attaches, and takes each up where it is. The tools relay keeps its port and keys, so a held agent's tools keep working. The box keeps each session's queue. | `box/src/agents/` (`kuvo-agents.js`), `box/src/agents/hold/`; `engine/queue.ts` |
-| How clients reach Kuvo | One process per computer (`kuvo-link.js serve --resident`) answers three ways: the local app over loopback HTTP (password in `run/serve.json`), SSH (`bin/kuvo-start route-to`, which runs `box route-to` on the keeper's engine and passes it to that process over a private socket), and the relay (Noise sessions). All three go through one dispatcher. **Marked:** the split launch (`run` plus `serve --kept`) and the plain `box route` over SSH are still kept (check 10), with an engine-picking fallback only for older installations without the keeper launcher (check 6). | `server/resident.ts`, `serve.ts`, `ssh-pipe.ts`; `relay/host.ts`; `main.ts`; `gpui/kuvo_box/src/transport.rs`, `local.rs`, `ssh.rs` |
+| How clients reach Kuvo | One process per computer (`kuvo-link.js serve --resident`) answers three ways: the local app over loopback HTTP (password in `run/serve.json`), SSH (`bin/kuvo-start route-to`, which runs `box route-to` on the keeper's engine and passes it to that process over a private socket), and the relay (Noise sessions). All three go through one dispatcher. **Marked:** the split launch (`run` plus `serve --kept`) and the plain `box route` over SSH are still kept, with an engine-picking fallback only for older installations without the keeper launcher. | `server/resident.ts`, `serve.ts`, `ssh-pipe.ts`; `relay/host.ts`; `main.ts`; `gpui/kuvo_box/src/transport.rs`, `local.rs`, `ssh.rs` |
 | Getting between computers | Peer mail: messages encrypted with Noise between computers' keys, which the relay passes on without reading. A computer is added over SSH or with an installer code. Big things go as mail in parts: moves, and release packs when no download works. | `relay/src/relay.ts`; `peers/mail.ts`, `known.ts`, `reach.ts`; `add/` |
 | Keeping Kuvo running | The keeper, `bin/kuvo-start`, on every computer. It starts and watches the resident box and the bridge. The resident schedules wake-ups and requests engine starts. Browser clients and tools start the browser when needed. On Linux an `@reboot` line starts it. On a Mac, Kuvo Helper starts it: a signed launch agent, which also holds Keychain access. | `box/src/keeper/kuvo-start`; `add/scripts.ts`; `helper.ts`; `mac/helper/Sources/KuvoHelperKit/BoxHelper.swift` |
-| Stored data and formats | Everything is in `~/.kuvo-code`. Each kind of data is declared once, with its owner, backup and restore. Each file carries a format version. A change older builds can't read goes to a new path, so going back a version always works. **Marked:** a folder layout number, with 20 empty steps and 12 readiness checks, still sits beside this (check 11). | `box/src/shared/data-declarations.ts`, `format-version.ts`, `versioned-file.ts`, `folder-version.ts` |
+| Stored data and formats | Everything is in `~/.kuvo-code`. Each kind of data is declared once, with its owner, backup and restore. Each file carries a format version. A change older builds can't read goes to a new path, so going back a version always works. **Marked:** a folder layout number, with 20 empty steps and 12 readiness checks, still sits beside this. | `box/src/shared/data-declarations.ts`, `format-version.ts`, `versioned-file.ts`, `folder-version.ts` |
 | Backups and wipe | A daily backup, and one before a wipe, each kept 30 days, to a disk or another computer, with restore. **Unlink + wipe** is one accepted removal: access ends at once, and the computer erases only after its backup and planned moves are verified. | `backup/engine.ts`, `destination.ts`, `relay-store.ts`, `restore.ts`; `setup/removal*.ts`, `wipe.ts`, `before-wipe.ts`; `uninstall.ts` |
 | Secrets | The vault. A Mac keeps values in the Keychain, through Kuvo Helper. Linux keeps them in encrypted files, whose key is wrapped by an unlock key that only your clients hold. Coding agents keep their own sign-ins where they always do. | `vault/store.ts`; `mac/helper/Sources/KuvoHelperKit/HostKeychain.swift` |
 | The browser | Each box runs its own Chrome for Testing, kept by `kuvo-browser.js host`. Agents browse with its tools, and clients watch and use it live in the side panel. An idle tool connection lets Chrome close, and the next browser operation reopens it. | `box/src/browser/kuvo-browser.js`; `browser/install.ts`, `view.ts`; `gpui/kuvo_box/src/browser_view.rs` |
@@ -72,22 +71,25 @@ CLAUDE.md's first two rules, in full.
 
 ## Remaining work
 
-Findings 1–7 in the archived check have landed on main: box-authored removal
-choices, offline saves for a sole box, wider owner lookup, box-authored update
-and compatibility display, the keeper's SSH launcher, and current-model setup
-creation. Letters still have their own peer locator.
+Box-authored removal choices, offline saves for a sole box, wider owner lookup,
+box-authored update and compatibility display, the keeper's SSH launcher, and
+current-model setup creation have landed. Letters still have their own peer locator.
 
-- **8–12 and 14:** retire the old update path, unconverted setup authority,
-  split launch, folder layout steps, pending predecessor save formats and
-  0.7 import/compatibility paths when their supported readers and rollback
-  window allow it. Split launch has its own [step 7](one-client-process.md#remaining).
-- **13:** the phone app is retired. APNs and legacy wire routes are still
-  present. Decide separately when installed-client support can be removed.
-- **15–19:** snapshot and lease polling, the separate epoch and relay term,
-  cross-computer proofs, wipe generations and merge admission remain follow-ups.
-  The archived check records their rationale and suggested changes.
-- **20:** the protocol now starts with the current desktop and peer paths.
-  The build generates the link bundle in `box/dist/`.
+- Retire the old update path, unconverted setup authority, split launch, folder layout
+  steps, pending predecessor save formats and 0.7 import paths when supported readers
+  and rollback permit it. Freeze the folder layout at 23: incompatible new data goes
+  to a new path. Split launch has its own [step 7](one-client-process.md#remaining).
+  Whether to retain unpaired SSH aliases remains a separate decision.
+- The phone app is retired. APNs and legacy wire routes are still present. Decide
+  separately when installed-client support can be removed.
+- Reduce idle traffic by comparing the shared snapshot sequence before sending a full
+  copy, and checking the lease at renewal or takeover time rather than every two seconds.
+  Consolidate the leadership epoch and relay term when converting old setup models.
+- Simplify cross-computer proof layers to stable operation IDs and owner deduplication
+  where the trusted-computer rule permits it. Preserve the removal outcome rules:
+  access ends at once, and a verified backup and prepared moves precede erasure.
+  Revisit the generation fence by stopping writers before capturing the backup.
+  Remove the all-member merge capability check once all supported releases can merge.
 
 Sparkle updates the installed desktop client. The fleet update runs on the boxes.
 

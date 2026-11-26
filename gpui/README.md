@@ -9,9 +9,6 @@ facts and sends actions through its routes. See [How Kuvo works](../docs/archite
 - `kuvo_ui/`: the blocks, one module each: `theme`, `icon`, `button`, `text_field`,
   `chat_list`, `markdown`, `code_block`, `menu`, `row`, `small`, plus the dotted `backdrop`.
 - `gallery/`: the gallery app (`kuvo_gallery`) and the `shots` binary.
-- `notes/<block>.md` and `notes/screens-<screen>.md`: for each block and screen, what Zed does
-  (and which of its files were read), and what we take as behaviour. Zed's application code is
-  GPL-3.0 and is never copied.
 - `shots/<block>-{light,dark}.png`: each gallery page; `shots/screens-*.png`: the app's screens
   against the stand-in box. Both rendered offscreen.
 - `LICENSES-DEPS.md`: every dependency and its licence.
@@ -55,15 +52,17 @@ cd gpui
   compatibility read from the initial box. Get Started goes through Welcome,
   Agents and plans, and Where to work. A ready box can skip the sign-in step.
   When macOS permissions need attention, the desktop draws the box's request
-  and offers to open System Settings. See [launch](notes/screens-launch.md)
-  and [first run](notes/screens-first-run.md).
+  and offers to open System Settings. The permission drag tile is a GPUI popup
+  with an external drag payload for the helper bundle; only this computer can open
+  its own System Settings.
 - **Areas.** Bots (⌃1) includes conversations and group chats. Sessions (⌃2)
   shows projects and chats. Work Queue (⌃3) has filters, labels and item actions.
   Computers (⌃4) lists each box's reach, work and update state with the actions
   that box offers. Settings (⌃5) has separate device and computer pages.
   Insights (⌃6) shows usage and cost. Library (⌃7) gathers received files and
   images across your setup when the box supports it. The rail also shows
-  usage rings and waiting counts. See [the rail](notes/screens-rail.md).
+  usage rings and waiting counts. Each area keeps its view while hidden; the hidden
+  area does not draw. In narrow windows the area sidebar folds away.
 - **Computer picker.** The title bar switches the workspace to another
   computer. Settings has its own picker for a computer's settings. Computers
   supports adding, renaming, changing the main and removing computers.
@@ -76,7 +75,8 @@ cd gpui
   conversation keeps its tabs, including file tabs, terminals, browser, side
   chats and other outputs where supported. Changes shows changed lines
   under their files. In a narrow window the panel overlays the conversation.
-  See [the side panel](notes/screens-side-panel.md).
+  The divider resets on a double click; its width survives hiding the panel.
+  Tools use the conversation’s computer and worktree.
 - ⌘⇧L switches light and dark.
 
 `kuvo::stand_in` (the `stand-in` feature, left out of the app as shipped) is the made-up box: a Mac's box with sessions in a few projects and chats, one at
@@ -88,6 +88,23 @@ Shots (`gpui/shots/screens-*-{light,dark}.png`), from the stand-in at a fixed ti
 ```sh
 ../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots [-- conversation landing asking narrow empty]
 ```
+
+## Drawing contracts
+
+- Keep a single selection holder per conversation. Selectable text reports layout and paints
+  the selection; ordered message keys, content paths and byte offsets let it survive streaming
+  and paging. Copy rebuilds units from conversation data, not the visible rows, so it spans
+  offscreen messages without relayout. Chrome and controls are not selectable text.
+- The theme owns semantic tokens and text roles. The system UI font is used on macOS; GPUI’s
+  font matching needs weight 520 to select SF Medium. The proposed negative letter spacing is
+  recorded but not applied because text styles have no tracking control. Brand marks use the
+  approved maker colors (Claude orange, the other marks monochrome); changes are a brand decision.
+- Virtualized lists preserve scroll by splicing changed rows rather than resetting the list.
+  The conversation follows its tail only while the reader is at the bottom. Menus return focus
+  only if they still own it, not when their selected action intentionally moved focus.
+- Text fields handle graphemes and IME composition, retain one undo history bounded by bytes,
+  and turn pasted line breaks into spaces for single-line fields. Markdown links open only
+  supported schemes; code highlighting and line wrapping are presentation, not box rules.
 
 ## Running the gallery
 
