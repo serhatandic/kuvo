@@ -326,3 +326,80 @@ fn save(run: &Path, given: Registration, now: i64) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// A browser call that reached a closed app only retires its own registration.
+pub fn forget_tools(run: &Path, token: &str, now: i64) -> io::Result<()> {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(run.join(".app-registration.lock"))?;
+    lock.lock()?;
+    if let Some(mut record) = read(run)
+        && record
+            .tools
+            .as_ref()
+            .is_some_and(|tools| tools.token == token)
+    {
+        record.tools = None;
+        record.host = None;
+        record.at = now;
+        files::write_secret(&run.join("app.json"), &serde_json::to_vec(&record)?)?;
+    }
+    Ok(())
+}
+
+pub const NEEDS_APP: &str = "Kuvo Code on this Mac has no browser for agents yet, so this tool can't run here. Use webfetch to read a page instead, or tell the user what you'd need to do in a browser.";
+const NOT_READY: &str = "Kuvo Code was opened in the background on this Mac, but its browser wasn't ready within 30 seconds. Try again in a few minutes; if it still isn't ready, ask the user to open Kuvo Code.";
+
+pub async fn open_browser(home: &Path) -> Result<(), String> {
+    use kuvo_os::watch::{Options, WatchHub};
+    use tokio::time::{Duration, Instant};
+    let run = home.join("run");
+    let now = || jiff::Timestamp::now().as_millisecond();
+    let ready = || read(&run).is_some_and(|r| r.tools.is_some());
+    if ready() {
+        return Ok(());
+    }
+    let status = status(&run, now());
+    if let Nullable::Value(failed) = status.failed {
+        return Err(failed.message);
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let note = run.join("app-opening.json");
+    files::write_secret(
+        &note,
+        serde_json::json!({"at":now(),"by":std::process::id()})
+            .to_string()
+            .as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    let result = async {
+        if !status.updating {
+            let bundle = read(&run).and_then(|r|r.bundle).ok_or_else(|| NEEDS_APP.to_owned())?;
+            let host = crate::integrations::host::HostInterface::for_home(home, true);
+            host.open_browser_app(&bundle).await?;
+        }
+        let watch = WatchHub::default();
+        let mut changes = watch.subscribe(&run, Options::default()).await.ok();
+        while !ready() && Instant::now() < deadline {
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => break,
+                notice = async { match changes.as_mut() { Some(w) => w.recv().await, None => std::future::pending().await } } => { if notice.is_none() {changes=None;} },
+                () = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+        }
+        if ready() { Ok(()) } else { Err(NOT_READY.to_owned()) }
+    }.await;
+    if let Err(message) = &result {
+        let _ = files::write_secret(
+            &run.join("app-open-failed.json"),
+            serde_json::json!({"at":now(),"message":message})
+                .to_string()
+                .as_bytes(),
+        );
+    }
+    let _ = files::remove_file_synced(&note);
+    result
+}

@@ -1,6 +1,7 @@
 //! The built-in browser's records and routes, owned by this computer.
 mod history;
 pub mod install;
+pub mod manager;
 mod settings;
 pub mod tools;
 

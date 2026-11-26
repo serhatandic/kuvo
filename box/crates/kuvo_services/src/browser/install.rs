@@ -385,6 +385,7 @@ struct Request {
 }
 #[derive(Clone)]
 pub(super) struct Installer {
+    home: PathBuf,
     requests: mpsc::Sender<Request>,
     status: watch::Receiver<Status>,
 }
@@ -395,17 +396,27 @@ pub struct InstallTask {
 }
 impl InstallTask {
     pub fn start(home: PathBuf, mac: bool) -> io::Result<Self> {
-        let setup = Arc::new(Setup::new(home, mac)?);
+        let setup = Arc::new(Setup::new(home.clone(), mac)?);
         let record = setup.record();
         let (updates, status) = watch::channel(setup.status(&record, false));
         let (requests, inbox) = mpsc::channel(8);
         let stop = CancellationToken::new();
         let task = tokio::spawn(actor(setup, record, updates, inbox, stop.clone()));
         Ok(Self {
-            handle: Installer { requests, status },
+            handle: Installer {
+                home,
+                requests,
+                status,
+            },
             stop,
             task: Some(task),
         })
+    }
+    pub fn browser_task(
+        &self,
+        engine: kuvo_engine::Engine,
+    ) -> io::Result<super::manager::BrowserTask> {
+        super::manager::BrowserTask::start(self.handle.home.clone(), engine, self.handle.clone())
     }
     pub fn register(&self, routes: &mut Registry) {
         let read = self.handle.clone();
@@ -441,6 +452,44 @@ impl Drop for InstallTask {
     }
 }
 impl Installer {
+    pub(super) async fn ensure(&self) -> io::Result<PathBuf> {
+        let folder = self.home.join("browser");
+        if let Some((build, _)) = in_use(&folder) {
+            return Ok(build);
+        }
+        let first = self.ask(Ask::default()).await;
+        let mut status = self.status.clone();
+        if !matches!(
+            first.state,
+            Step::Checking | Step::Downloading | Step::Installing | Step::Ready
+        ) {
+            return Err(io::Error::other(
+                first
+                    .message
+                    .unwrap_or_else(|| "The browser couldn't start.".into()),
+            ));
+        }
+        tokio::time::timeout(Duration::from_secs(900), async {
+            loop {
+                if let Some((build, _)) = in_use(&folder) {
+                    return Ok(build);
+                }
+                let current = status.borrow().clone();
+                if current.state == Step::Failed {
+                    return Err(io::Error::other(
+                        current
+                            .message
+                            .unwrap_or_else(|| "The browser couldn't start.".into()),
+                    ));
+                }
+                if status.changed().await.is_err() {
+                    return Err(io::Error::other("The browser's setup stopped."));
+                }
+            }
+        })
+        .await
+        .map_err(|_| io::Error::other("The browser didn't start in time."))?
+    }
     async fn ask(&self, ask: Ask) -> Status {
         let (reply, answer) = oneshot::channel();
         if self.requests.send(Request { ask, reply }).await.is_ok() {
