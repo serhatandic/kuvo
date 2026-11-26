@@ -905,11 +905,11 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | Area | Reference | Rust | Left out |
 |---|---|---|---|
 | engine-delivery | 4/4 | 5/5 | none |
-| engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
-| engine-typed | 7/7 | 6/7 | see below |
+| engine-search | 4/4 | 4/4 | the engine's read counts; an engine whose list fails |
+| engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
-| engine-worktree | 7/7 | 5/7 | see below |
-| engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
+| engine-worktree | 7/7 | 7/7 | see below |
+| engine-sessions | 46/46 (8 skipped) | 54/54 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
@@ -921,6 +921,9 @@ Notes on each area:
 - **engine-search.** The cases seed agent conversations with their rows. The kept text is checked
   in its true order: what was said, the latest last, then the steps. (The old check that it starts
   with the latest sentence held only because the stand-in engine handed rows back newest first.)
+  The Rust box searches the coding agents' conversations as it keeps them, and the engine's only
+  while it runs (it isn't started for a search). One of OpenCode's older conversations is searched
+  once it's been opened: reading its text before then would take it in, which runs OpenCode.
 - **engine-typed.** Added: a conversation kept with an Autopilot mark opens and takes a message as
   any other (Autopilot is gone from the app). Left out:
   - "two retries recover a draft that never reached the engine before restart" and "a retry
@@ -956,36 +959,51 @@ Notes on each area:
   cancelled client leaves a worktree only if OpenCode created its conversation" (both cut
   OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
   answer to an agent start has no `worktree` field and names the branch after the title, so the
-  cases check the files and records.
+  cases check the files and records. An agent's conversation is told its worktree among Kuvo
+  Code's instructions for it before its first message, and its finished wake is kept in its notes
+  (`Engine::edit_notes`, wherever a conversation is kept). A starter kept in Plan mode starts
+  Build sessions, as Plan mode is gone.
 
 ### engine-sessions
 
 The queue, its holds, Undo, receipts, the session list and its pages, now on a coding agent's
 line. A conversation at work is one whose turn the scripted Grok holds open. The queue is read
-as the app follows it, on its line (`…/queue/events`). The reference skips 9 cases, for four
+as the app follows it, on its line (`…/queue/events`). The reference skips 8 cases, for three
 findings:
 
 - it doesn't mark a steer waiting in an agent's line as held, nor name the files on its queue
   rows (6 cases);
 - it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
-  parts vector, and the agent that takes pictures);
-- a summary turns an agent conversation read with Mark All as Read unread again (it keeps only
-  its engine's conversations read).
+  parts vector, and the agent that takes pictures).
 
-Rust's 7 failures are 4.7d step 5's:
+Rust passes every case. Where an agent's line differs from the engine's inbox:
 
-- a Steer on a stopped queue;
-- draining an unpaused saved queue after a restart;
-- a bot's sustained thinking;
-- the place Undo puts a message back;
-- the step words on an agent's rows;
-- the title of its summary;
-- Mark All as Read (`kuvo/sessions/read`) on agent conversations, and a summary keeping one read.
+- a saved queue that isn't paused goes on when the box starts, as the engine's start-up scan
+  drains its own;
+- while the box keeps a message of its own among what's queued (Undo puts one back), it hands
+  each over in its order, and the agent's line starts only what's steered by itself;
+- a turn the box stopped says so (`reason: "stopped"`): it holds the queue as any interruption
+  does, unless the queue was resumed since, when what's next goes.
 
 Kept on the engine:
 
 - "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
   passthrough stays for released 0.7.x Macs.
+
+A message a Stop held stays in a coding agent's line until it's steered: the box tells the line
+what it holds (`inboxHeld` in `agent.json`), and the line starts none of them meanwhile. One
+steered while its turn stops goes once that turn has ended. An agent's turn says on its line what it does as that changes (it reasons, writes, calls a
+tool), in the engine's words, so a bot's conversation shows it thinking after a stretch of
+reasoning, as the engine's did. An agent's transcript pages are shown as the engine's were: each step in words and its
+summaries titled (`Engine::shown_rows`). The single-row read of the step-words case is left out:
+a coding agent's conversation has no route for one message, and the app reads none.
+
+Left out, as no client marks a conversation read: "a standalone summary keeps a read
+conversation read while actual replies stay unread". The app has no Mark All as Read and never
+says it looked at a conversation (`kuvo/sessions/read` isn't served on the Rust box, for that
+reason), and a coding agent's conversation keeps no read mark there. (On the reference, a
+summary turns an agent conversation read through Mark All as Read unread again: it keeps only
+its engine's conversations read.)
 
 Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
 (agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the

@@ -674,9 +674,9 @@ async fn create_as(
         };
         let marked = if requested.is_empty() {
             false
-        } else if let Ok(mut writer) = engine.note_writer(id).await {
-            writer
-                .edit(crate::NoteEdits {
+        } else {
+            engine
+                .edit_notes(id, crate::NoteEdits {
                     kuvo: std::iter::once(("wake".to_owned(), Some(json!(requested))))
                         .chain(
                             remote
@@ -699,8 +699,6 @@ async fn create_as(
                 })
                 .await
                 .is_ok()
-        } else {
-            false
         };
         if marked {
             answer["wakes"] = json!(requested);

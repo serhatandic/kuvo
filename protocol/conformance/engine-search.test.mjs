@@ -85,7 +85,7 @@ test("search prefers conversation words and forgets a deleted conversation's kep
   assert.deepEqual(ids((await search("relevant.swift")).json.results), ["ses_older"]);
   const cached = path.join(here.home, "search", "agents.ses_newest.json");
   assert.ok(fs.existsSync(cached));
-  const deleted = await request(record, "DELETE", "kuvo/agents/api/session/ses_newest", undefined, headers);
+  const deleted = await request(record, "DELETE", "kuvo/sessions/ses_newest", undefined, headers);
   assert.ok(deleted.status < 300, deleted.text);
   assert.deepEqual(ids((await search("quartz")).json.results), ["ses_older"]);
   assert.equal(fs.existsSync(cached), false);

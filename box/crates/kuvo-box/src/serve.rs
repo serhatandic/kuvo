@@ -233,7 +233,12 @@ pub async fn run(
             .map(|(executable, env)| kuvo_agents::acp::OpenCodeProgram { executable, env }),
         sessions.clone(),
     );
-    agents::sessions::register(sessions.clone(), Some(opencode_history.clone()), &mut routes);
+    agents::sessions::register(
+        sessions.clone(),
+        Some(opencode_history.clone()),
+        engine.clone(),
+        &mut routes,
+    );
     let agent_background = sessions.background().clone();
     let shell_commands = agent_background.clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {

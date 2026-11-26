@@ -533,6 +533,25 @@ impl AgentSessionSource for Inventory {
         })
     }
 
+    fn hold_line<'a>(
+        &'a self,
+        id: &'a str,
+        held: Vec<String>,
+        in_turn: bool,
+    ) -> AgentCall<'a, bool> {
+        Box::pin(self.store.hold_line(id, held, in_turn))
+    }
+
+    fn transcript<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async move {
+            let page = self
+                .store
+                .message_page(id, None, u32::MAX, MessageOrder::OldestFirst)
+                .await?;
+            Ok(page.map(|page| page.messages))
+        })
+    }
+
     fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         let mut line = self.running.as_ref()?.events();
         let (words, heard) = broadcast::channel(256);
@@ -581,6 +600,7 @@ impl AgentSessionSource for Inventory {
 pub(crate) fn register(
     sessions: SessionStore,
     opencode: Option<OpenCodeHistory>,
+    engine: kuvo_engine::Engine,
     routes: &mut Registry,
 ) {
     let stops = sessions.clone();
@@ -619,7 +639,7 @@ pub(crate) fn register(
         }
     });
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {
-        let (sessions, opencode) = (sessions.clone(), opencode.clone());
+        let (sessions, opencode, engine) = (sessions.clone(), opencode.clone(), engine.clone());
         async move {
             let given = call.param("id").unwrap_or_default();
             let id = percent_decode_str(given)
@@ -660,7 +680,7 @@ pub(crate) fn register(
                     }
                 });
             Ok(RouteReply::json::<200>(transcript::Status200 {
-                data: page.messages,
+                data: engine.shown_rows(page.messages).await,
                 cursor: Cursor { next },
             }))
         }

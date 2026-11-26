@@ -33,13 +33,21 @@ fn restore(status: StatusCode, message: &str, text: &str) -> Refusal {
 }
 
 async fn decision(engine: &Engine, session: &str, text: &str) -> Result<Value, Refusal> {
-    // A coding agent's conversation: its agent says whether it runs, when it takes the message.
-    if engine
+    // A coding agent's conversation: sent, unless its agent needs a sign-in first.
+    if let Some((_, header)) = engine
         .agent_session(session)
         .await
         .map_err(|_| restore(StatusCode::SERVICE_UNAVAILABLE, UNAVAILABLE, text))?
-        .is_some()
     {
+        let model = header
+            .get("model")
+            .and_then(|model| serde_json::from_value::<models::ModelRef>(model.clone()).ok());
+        if let (Some(model), Some(source)) = (model, &engine.agent_models)
+            && let Ok(catalog) = source.catalog(false).await
+            && let Some(ready) = catalog.readiness(&model)
+        {
+            return Ok(refused(text, &ready));
+        }
         return Ok(json!({ "send": { "text": text, "quoted": true } }));
     }
     let lease = api::start(engine).await.map_err(|_| {
@@ -64,15 +72,20 @@ async fn decision(engine: &Engine, session: &str, text: &str) -> Result<Value, R
             }
         })?;
     if let Some(model) = models::readiness(engine, &lease, &session).await
-        && let Some(error) = model["refusal"].as_str()
+        && model["refusal"].is_string()
     {
-        let mut answer = json!({ "restore": { "text": text }, "error": error });
-        if let Some(action) = model.get("action") {
-            answer["action"] = action.clone();
-        }
-        return Ok(answer);
+        return Ok(refused(text, &model));
     }
     Ok(json!({ "send": { "text": text, "quoted": true } }))
+}
+
+/// The words kept for a model that can't run: why, and what fixes it.
+fn refused(text: &str, model: &Value) -> Value {
+    let mut answer = json!({ "restore": { "text": text }, "error": model["refusal"] });
+    if let Some(action) = model.get("action") {
+        answer["action"] = action.clone();
+    }
+    answer
 }
 
 #[derive(Default, Deserialize, Serialize)]

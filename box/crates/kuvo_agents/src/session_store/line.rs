@@ -9,6 +9,11 @@ use std::io::{self, ErrorKind};
 /// The saved line and what goes with it, read and written together.
 pub struct Line {
     pub inputs: Vec<Input>,
+    /// What the box holds (a Stop held it): it stays in line until it's steered or let go.
+    pub held: Vec<String>,
+    /// The box hands what's queued over in its own order (it keeps a message of its own among
+    /// them): after a turn only what's steered starts by itself.
+    pub in_turn: bool,
     /// Handoff tokens whose late POST must not arrive (`cancelledPromptHandoffs`).
     pub cancelled_handoffs: Map<String, Value>,
     seen: Vec<(String, String)>,
@@ -42,6 +47,20 @@ impl SessionStore {
             .await
     }
 
+    /// What the box holds in the conversation's line now, and whether it hands what's queued
+    /// over itself. False when it's not here, or nothing changed.
+    pub async fn hold_line(&self, id: &str, held: Vec<String>, in_turn: bool) -> io::Result<bool> {
+        Ok(self
+            .edit_line(id, move |line| {
+                let changed = line.held != held || line.in_turn != in_turn;
+                line.held = held;
+                line.in_turn = in_turn;
+                (changed, changed)
+            })
+            .await?
+            .unwrap_or(false))
+    }
+
     /// Change the saved line of a conversation that still exists, and write
     /// it to disk before returning when `change` says it changed.
     pub async fn edit_line<T: Send + 'static>(
@@ -66,14 +85,35 @@ impl SessionStore {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
+            let held = agent
+                .get("inboxHeld")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            let in_turn = agent.get("inboxInTurn") == Some(&Value::Bool(true));
             let mut line = Line {
                 inputs,
+                held,
+                in_turn,
                 cancelled_handoffs,
                 seen: Vec::new(),
             };
             let (value, changed) = change(&mut line);
             if changed {
                 agent.insert("inbox".into(), serde_json::to_value(&line.inputs)?);
+                if line.held.is_empty() {
+                    agent.remove("inboxHeld");
+                } else {
+                    agent.insert("inboxHeld".into(), serde_json::to_value(&line.held)?);
+                }
+                if line.in_turn {
+                    agent.insert("inboxInTurn".into(), Value::Bool(true));
+                } else {
+                    agent.remove("inboxInTurn");
+                }
                 if !line.cancelled_handoffs.is_empty() {
                     agent.insert(
                         "cancelledPromptHandoffs".into(),

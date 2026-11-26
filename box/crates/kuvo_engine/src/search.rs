@@ -1,4 +1,5 @@
-//! Search the local OpenCode transcript, with a cache keyed by the session revision.
+//! Search this computer's conversations (the engine's and the coding agents'), with a cache keyed
+//! by each one's revision.
 
 use std::{
     cmp::Ordering,
@@ -340,10 +341,41 @@ fn snippet(text: &str, at: usize, length: usize) -> String {
     )
 }
 
-async fn text_of(engine: &Engine, lease: &Lease, session: &Value) -> Option<Kept> {
+/// Where a conversation is read: the engine's server, or the coding agents.
+#[derive(Clone, Copy)]
+enum Place<'a> {
+    Engine(&'a Lease),
+    Agents(&'a dyn crate::AgentSessionSource),
+}
+
+impl Place<'_> {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Engine(_) => "engine",
+            Self::Agents(_) => "agents",
+        }
+    }
+
+    /// Its whole transcript, oldest first; none where it can't be read (or, for the coding
+    /// agents, isn't kept here yet).
+    async fn messages(self, engine: &Engine, id: &str) -> Option<Vec<Value>> {
+        match self {
+            Self::Engine(lease) => {
+                let route = format!("{}/message", sessions::path(id));
+                let mut messages = api::Scan::Messages.read(engine, lease, &route).await.ok()?;
+                messages.reverse();
+                Some(messages)
+            }
+            Self::Agents(source) => source.transcript(id).await.ok().flatten(),
+        }
+    }
+}
+
+async fn text_of(engine: &Engine, place: Place<'_>, session: &Value) -> Option<Kept> {
     let id = string(session, "id");
-    let _turn = engine.turn(&format!("search:{id}")).await;
-    let file = engine.home.join("search").join(format!("engine.{id}.json"));
+    let name = format!("{}.{id}", place.name());
+    let _turn = engine.turn(&format!("search:{name}")).await;
+    let file = engine.home.join("search").join(format!("{name}.json"));
     let revision = updated(session);
     if let Some(kept) = disk::read::<Kept>(&file).await.ok().flatten()
         && kept.version == 2
@@ -351,9 +383,7 @@ async fn text_of(engine: &Engine, lease: &Lease, session: &Value) -> Option<Kept
     {
         return Some(kept);
     }
-    let route = format!("{}/message", sessions::path(id));
-    let mut messages = api::Scan::Messages.read(engine, lease, &route).await.ok()?;
-    messages.reverse();
+    let messages = place.messages(engine, id).await?;
     let text = search_text(&messages, session);
     let kept = Kept {
         version: 2,
@@ -367,63 +397,68 @@ async fn text_of(engine: &Engine, lease: &Lease, session: &Value) -> Option<Kept
 
 async fn query(
     engine: &Engine,
-    lease: &Lease,
+    places: &[(Place<'_>, Vec<Value>)],
     words: &str,
     limit: usize,
-) -> Result<Vec<SearchResult>, Refusal> {
-    let rows = api::Scan::Sessions
-        .read(engine, lease, "api/session")
-        .await
-        .map_err(|_| {
-            Refusal::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "This computer's engine didn't answer. Search again in a moment.",
-            )
-        })?;
-    let rows: BTreeMap<_, _> = rows
-        .iter()
-        .filter_map(|row| {
+) -> Vec<SearchResult> {
+    // Each conversation once: where both list it, the copy changed last (the engine's on a tie:
+    // it reads one the coding agents haven't taken in yet).
+    let mut newest = BTreeMap::<&str, (usize, u64)>::new();
+    for (at, (_, rows)) in places.iter().enumerate() {
+        for row in rows {
             let id = string(row, "id");
-            (sessions::valid_id(id) && !hidden(row)).then_some((id, row))
-        })
-        .collect();
-    let mut conversations: BTreeMap<_, Vec<_>> = rows
-        .iter()
-        .filter(|(_, row)| string(row, "parentID").is_empty())
-        .map(|(id, _)| (*id, vec![]))
-        .collect();
-    for row in rows
-        .values()
-        .filter(|row| !string(row, "parentID").is_empty())
-    {
-        let mut at = *row;
-        for _ in 0..100 {
-            let parent = string(at, "parentID");
-            if parent.is_empty() {
-                if let Some(children) = conversations.get_mut(string(at, "id")) {
-                    children.push(*row);
-                }
-                break;
+            if newest.get(id).is_none_or(|(_, seen)| updated(row) > *seen) {
+                newest.insert(id, (at, updated(row)));
             }
-            let Some(above) = rows.get(parent) else { break };
-            at = above;
         }
     }
-    let mut conversations: Vec<_> = conversations.into_iter().collect();
-    conversations.sort_by_key(|(id, _)| std::cmp::Reverse(updated(rows[id])));
+    let mut conversations = Vec::new();
+    let mut known = BTreeSet::new();
+    for (at, (place, rows)) in places.iter().enumerate() {
+        let rows: BTreeMap<_, _> = rows
+            .iter()
+            .filter_map(|row| {
+                let id = string(row, "id");
+                (sessions::valid_id(id) && !hidden(row) && newest.get(id).is_some_and(|(from, _)| *from == at))
+                    .then_some((id, row))
+            })
+            .collect();
+        let mut tops: BTreeMap<_, Vec<_>> = rows
+            .iter()
+            .filter(|(_, row)| string(row, "parentID").is_empty())
+            .map(|(id, _)| (*id, vec![]))
+            .collect();
+        for row in rows
+            .values()
+            .filter(|row| !string(row, "parentID").is_empty())
+        {
+            let mut above = *row;
+            for _ in 0..100 {
+                let parent = string(above, "parentID");
+                if parent.is_empty() {
+                    if let Some(children) = tops.get_mut(string(above, "id")) {
+                        children.push(*row);
+                    }
+                    break;
+                }
+                let Some(next) = rows.get(parent) else { break };
+                above = next;
+            }
+        }
+        for (id, mut children) in tops {
+            children.sort_by_key(|child| std::cmp::Reverse(updated(child)));
+            known.insert(format!("{}.{id}", place.name()));
+            known.extend(children.iter().map(|child| format!("{}.{}", place.name(), string(child, "id"))));
+            conversations.push((*place, rows[id], children));
+        }
+    }
+    conversations.sort_by_key(|(_, top, _)| std::cmp::Reverse(updated(top)));
     let wanted = fold(words);
     let mut results = Vec::new();
-    let known: BTreeSet<_> = conversations
-        .iter()
-        .flat_map(|(id, children)| {
-            std::iter::once(*id).chain(children.iter().map(|child| string(child, "id")))
-        })
-        .collect();
-    for (id, children) in &mut conversations {
-        children.sort_by_key(|child| std::cmp::Reverse(updated(child)));
-        let top = rows[*id];
-        for row in std::iter::once(top).chain(children.iter().copied()) {
-            let Some(kept) = text_of(engine, lease, row).await else {
+    for (place, top, children) in &conversations {
+        let id = string(top, "id");
+        for row in std::iter::once(*top).chain(children.iter().copied()) {
+            let Some(kept) = text_of(engine, *place, row).await else {
                 continue;
             };
             let Some(at) = kept.folded.find(&wanted) else {
@@ -431,10 +466,10 @@ async fn query(
             };
             let at = kept.folded[..at].chars().count();
             results.push(SearchResult {
-                session: (*id).to_owned(),
-                info: top.clone(),
+                session: id.to_owned(),
+                info: (*top).clone(),
                 snippet: snippet(&kept.text, at, wanted.chars().count()),
-                subagent: (string(row, "id") != *id).then(|| row.clone()),
+                subagent: (string(row, "id") != id).then(|| row.clone()),
                 computer: None,
             });
             break;
@@ -443,22 +478,28 @@ async fn query(
             break;
         }
     }
+    // Only where the list was read: kept text of a conversation gone since goes.
+    let listed: Vec<_> = places.iter().map(|(place, _)| place.name()).collect();
     let cache = engine.home.join("search");
     if let Ok(mut files) = tokio::fs::read_dir(&cache).await {
         while let Ok(Some(file)) = files.next_entry().await {
-            if let Some(id) = file
-                .file_name()
+            let name = file.file_name();
+            let Some((place, id)) = name
                 .to_str()
-                .and_then(|name| name.strip_prefix("engine."))
                 .and_then(|name| name.strip_suffix(".json"))
+                .and_then(|name| name.split_once('.'))
+            else {
+                continue;
+            };
+            if listed.contains(&place)
                 && sessions::valid_id(id)
-                && !known.contains(id)
+                && !known.contains(&format!("{place}.{id}"))
             {
                 let _ = tokio::fs::remove_file(file.path()).await;
             }
         }
     }
-    Ok(results)
+    results
 }
 
 fn limit(value: Option<&str>) -> usize {
@@ -483,13 +524,35 @@ impl Engine {
         if words.is_empty() {
             return Err(missing_words());
         }
-        let lease = self.acquire(Demand::Passive).await.ok_or_else(|| {
-            Refusal::new(
+        // The engine's conversations while it runs (it isn't started for a search), and the
+        // coding agents'.
+        let lease = self.acquire(Demand::Passive).await;
+        let mut places = Vec::new();
+        if let Some(lease) = &lease {
+            let rows = api::Scan::Sessions
+                .read(self, lease, "api/session")
+                .await
+                .map_err(|_| {
+                    Refusal::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "This computer's engine didn't answer. Search again in a moment.",
+                    )
+                })?;
+            places.push((Place::Engine(lease), rows));
+        }
+        if let Some(source) = &self.agent_sessions
+            && let Ok(rows) = source.inventory().await
+        {
+            let rows = rows.into_iter().map(|row| Value::Object(row.header)).collect();
+            places.push((Place::Agents(source.as_ref()), rows));
+        }
+        if places.is_empty() {
+            return Err(Refusal::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "This computer's engine isn't running yet. Search again in a moment.",
-            )
-        })?;
-        query(self, &lease, words, limit.clamp(1, 50)).await
+            ));
+        }
+        Ok(query(self, &places, words, limit.clamp(1, 50)).await)
     }
 
     pub fn register_setup_search(&self, peers: Arc<dyn SearchPeers>, routes: &mut Registry) {

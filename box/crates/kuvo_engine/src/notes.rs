@@ -127,6 +127,39 @@ impl Engine {
         })
     }
 
+    /// Kuvo's notes on a conversation changed wherever it's kept: with the coding agents, else on
+    /// the engine. False when nothing changed.
+    pub(crate) async fn edit_notes(&self, session: &str, edits: NoteEdits) -> Result<bool, Refusal> {
+        if self.agent_sessions.is_some() {
+            let _turn = self.note_turn(session).await;
+            let _write = crate::session_move::admit(self, session, None).await?;
+            if let Some((source, header)) = self.agent_session(session).await? {
+                let mut metadata = header
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                let Some(mut patch) = edits.change(&mut metadata) else {
+                    return Ok(false);
+                };
+                let patch = crate::AgentSessionPatch {
+                    title: None,
+                    permissions: patch.get_mut("permissions").map(Value::take),
+                    metadata: patch
+                        .get_mut("metadata")
+                        .and_then(|metadata| metadata.as_object_mut().map(std::mem::take)),
+                };
+                let saved = source.update(session, patch).await.map_err(|error| {
+                    Refusal::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+                })?;
+                return saved.map(|_| true).ok_or_else(|| {
+                    Refusal::new(StatusCode::NOT_FOUND, "That conversation isn't here.")
+                });
+            }
+        }
+        self.note_writer(session).await?.edit(edits).await
+    }
+
     pub(crate) async fn note_turn(&self, session: &str) -> NoteTurn {
         let turn = self.turn(session).await;
         let run = self.home.join("run");

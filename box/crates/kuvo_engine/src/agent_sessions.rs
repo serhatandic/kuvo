@@ -200,6 +200,18 @@ pub trait AgentSessionSource: Send + Sync {
         })
     }
 
+    /// What the box holds in the conversation's line (a Stop held them): none of them starts
+    /// until it's let go. `in_turn`: the box hands what's queued over in its own order, so after
+    /// a turn only what's steered starts by itself.
+    fn hold_line<'a>(
+        &'a self,
+        _id: &'a str,
+        _held: Vec<String>,
+        _in_turn: bool,
+    ) -> AgentCall<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Take a waiting message back.
     fn take_back<'a>(&'a self, _id: &'a str, _item: &'a str) -> AgentCall<'a, AgentTakeBack> {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
@@ -219,6 +231,12 @@ pub trait AgentSessionSource: Send + Sync {
     /// The conversation's last `limit` transcript rows, newest first.
     fn recent<'a>(&'a self, _id: &'a str, _limit: u32) -> AgentCall<'a, Vec<Value>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// The conversation's whole transcript, oldest first, as kept here; `None` when it isn't
+    /// kept here (one of OpenCode's older ones before it's opened: reading never takes it in).
+    fn transcript<'a>(&'a self, _id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async { Ok(None) })
     }
 
     /// The conversations' line and turn events, in the engine's words.
@@ -241,6 +259,7 @@ pub trait AgentSessionSource: Send + Sync {
 impl crate::Engine {
     pub fn with_agent_sessions(mut self, source: Arc<dyn AgentSessionSource>) -> Self {
         let events = source.events();
+        let _ = self.queues.agents.set(source.clone());
         self.agent_sessions = Some(source);
         if let Some(events) = events {
             crate::queue::follow_agents(self.clone(), events);
