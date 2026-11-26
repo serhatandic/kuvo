@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { bench } from "./bench.mjs";
+import { boxBinary } from "./adapter.mjs";
 import { sessionOf } from "./engine.mjs";
 
 test("a start cut short and sent again makes one session, given its task once; sent again after, it says the same", { timeout: 60000 }, async t => {
@@ -86,4 +87,31 @@ test("a wake-up's command runs once for its operation: sent again it says the sa
   assert.deepEqual((await tool("schedule_wake_up", { when: "+2h", note: "Look again." }, "wake-once-1")).json, made.json);
   const listed = (await tool("list_wake_ups", {})).json.text;
   assert.equal(listed.split("\n").filter(line => line.includes("Look again.")).length, 1, listed);
+});
+
+// Row 4.11 deliberately changes the reference's delivery choice.
+test("a letter to a busy engine conversation is sent now, and an idle one starts a turn", { timeout: 60000, skip: boxBinary().typescript }, async t => {
+  const { computer } = await bench(t);
+  const lab = await computer("Lab");
+  const directory = path.join(lab.home, "..", "work");
+  for (const id of ["lead", "busy", "idle"]) lab.engine.sessions.push(sessionOf({ id: "ses_" + id, title: id, directory }));
+  lab.engine.running.add("ses_busy");
+  const ask = lab.connect(await lab.start().ready());
+  const send = (to, delivery) => ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to, text: "Check this.", ...(delivery ? { delivery } : {}) }, session: "ses_lead" });
+  const busy = await send("ses_busy");
+  assert.equal(busy.status, 200, busy.text);
+  assert.deepEqual(lab.engine.interrupted, [{ session: "ses_busy", resume: true }]);
+  assert.equal(busy.json.delivery, "steered", busy.text);
+  assert.equal(lab.engine.inboxes.get("ses_busy")[0].delivery, "steer");
+  const idle = await send("ses_idle");
+  assert.equal(idle.json.delivery, "started a turn", idle.text);
+  assert.equal(lab.engine.messages.get("ses_idle").filter(row => row.text.includes("Check this.")).length, 1);
+  const queued = await send("ses_busy", "queue");
+  assert.equal(queued.json.delivery, "queued", queued.text);
+  assert.equal(lab.engine.inboxes.get("ses_busy").at(-1).delivery, "queue");
+  assert.equal(lab.engine.interrupted.length, 1);
+  const step = await send("ses_busy", "steer");
+  assert.equal(step.json.delivery, "queued", step.text);
+  assert.equal(lab.engine.inboxes.get("ses_busy").at(-1).delivery, "steer");
+  assert.equal(lab.engine.interrupted.length, 1, "An explicit next-step message does not Send Now");
 });

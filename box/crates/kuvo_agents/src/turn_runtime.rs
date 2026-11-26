@@ -4,8 +4,8 @@ use crate::{
     foreground::Foreground,
     runtime::AdapterCall,
     session::{
-        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread, TurnEvent,
-        TurnInput,
+        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread,
+        TurnEvent, TurnInput,
     },
     turn_sink::{EventWrite, ResidentSink},
 };
@@ -49,14 +49,19 @@ pub struct RunningTurn {
 }
 
 impl RunningTurn {
-    pub(crate) fn launch(
+    pub(crate) fn launch<F, Fut>(
         thread: Arc<dyn Thread>,
         input: TurnInput,
         sink: Arc<ResidentSink>,
         writes: mpsc::Receiver<EventWrite>,
         writer: impl TurnWriter + 'static,
         foreground: Foreground,
-    ) -> Self {
+        boundary: F,
+    ) -> Self
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         let (publish, state) = watch::channel(State::Starting);
         let stop = input.start_cancel.clone();
         tokio::spawn(run(
@@ -68,6 +73,7 @@ impl RunningTurn {
             foreground,
             publish,
             stop.clone(),
+            boundary,
         ));
         Self { state, stop }
     }
@@ -148,7 +154,7 @@ impl RunningTurn {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run(
+async fn run<F, Fut>(
     thread: Arc<dyn Thread>,
     input: TurnInput,
     sink: Arc<ResidentSink>,
@@ -157,7 +163,12 @@ async fn run(
     mut foreground: Foreground,
     publish: watch::Sender<State>,
     stop: CancellationToken,
-) {
+    boundary: F,
+) where
+    F: Fn() -> Fut + Send,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let native_steer = thread.takes_steers();
     let retirement = sink.retirement();
     let start = thread.start(input, sink);
     tokio::pin!(start);
@@ -201,6 +212,7 @@ async fn run(
                     TurnEvent::Finished(result) => Some(result.outcome.clone()),
                     _ => None,
                 };
+                let step = !native_steer && matches!(&update.event.event, TurnEvent::StepBoundary);
                 foreground.heard(&update.event.event);
                 let result = writer.apply(&update.event).await;
                 let error = result.as_ref().err()
@@ -209,6 +221,7 @@ async fn run(
                 if let Some(error) = error {
                     break Err(error);
                 }
+                if step { boundary().await; }
                 if let Some(outcome) = last {
                     break Ok(Some(outcome));
                 }

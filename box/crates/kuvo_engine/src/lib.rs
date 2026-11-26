@@ -90,7 +90,9 @@ pub use search::{
     PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
 pub use session_list::{Activity, ActivityState, ArchiveRevision, LocalSessions};
-pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove};
+pub use session_move::{
+    LetterDelivery, LetterPrompt, LetterText, LetterTiming, MoveEngineError, SessionMove,
+};
 pub use start_session::{
     ParentLead, Permission as SessionPermission, RemoteLead, StartSteps, session_note,
 };
@@ -128,8 +130,6 @@ impl Engine {
         submissions::register(self, list.clone(), delivery, routes);
         let engine = self.clone();
         routes.engine(move |request, cancel| proxy::http(engine.clone(), request, cancel));
-        let engine = self.clone();
-        routes.sockets(move |request, cancel| proxy::socket(engine.clone(), request, cancel));
 
         let engine = self.clone();
         routes.register::<start::Spec, _, _>(Access::Any, move |_| {

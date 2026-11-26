@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A message from one of your agents reaches a busy conversation right away.
+
 - Kuvo stays responsive while your agents run builds.
 
 - Rust computers reuse fresh plan readings from another computer instead of asking a maker twice, keep the last successful refresh time when every read fails, and ignore corrupt saved windows instead of showing a false ring.

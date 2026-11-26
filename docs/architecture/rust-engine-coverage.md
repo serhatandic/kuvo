@@ -12,7 +12,7 @@ OpenCode 2.2.6 on macOS, Linux, WSL2 and native Windows.
 | Source | Cases | Rust coverage |
 | --- | ---: | --- |
 | `box/test/engine-lifetime.test.ts` | 1 | Cold API demand, concurrent demand, passive event/active reads, busy deferral, parking and wake. Creating a conversation through `kuvo/sessions/new` follows in 3.2. |
-| `box/test/pty-socket.test.ts` | 3 | Local password, engine password, directory and query, text and binary in both directions, client close code, and upstream refusal. |
+| `box/test/pty-socket.test.ts` | 3 | The `terminals` area (4.7c): local password, the engine's password refused, directory and query, text and binary in both directions, client close code, and refusal of a terminal that isn't there. Terminals are the box's own since 4.7c ([coverage](rust-agents-coverage.md#the-boxs-own-terminals-47c)). |
 | `box/test/engine-context.test.ts` | 1 | Latest context measurement and summary invalidation belong with session reads in 3.2. |
 | `box/test/engine-swap-inboxes.test.ts` | 2 | Pending inbox pagination, incomplete inventory and interrupted ordered transfer belong with queues in 3.2 and release recovery in 7.2. |
 | `box/test/engine-own-tools.test.ts` | 4 | Tool registration, compatibility settings, old app-folder exclusion, and generated launch tools follow in 4.1, 6.1 and 7.3. |

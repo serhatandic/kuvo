@@ -11,7 +11,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::{SinkExt, StreamExt};
+
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -32,15 +32,6 @@ use kuvo_server::{
 };
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, task::JoinHandle, time};
-use tokio_tungstenite::{
-    WebSocketStream, connect_async,
-    tungstenite::{
-        Message, Utf8Bytes,
-        client::IntoClientRequest,
-        handshake::derive_accept_key,
-        protocol::{CloseFrame, Role, frame::coding::CloseCode},
-    },
-};
 use tokio_util::sync::CancellationToken;
 
 const IDLE: Duration = Duration::from_secs(600);
@@ -211,22 +202,6 @@ impl Server {
         self.stop.cancel();
         (&mut self.task).await.unwrap().unwrap();
     }
-
-    fn socket(
-        &self,
-        path: &str,
-        authorized: bool,
-    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
-        let mut request = format!("ws://{}/{path}", self.url)
-            .into_client_request()
-            .unwrap();
-        if authorized {
-            request
-                .headers_mut()
-                .insert(header::AUTHORIZATION, auth(&self.password).parse().unwrap());
-        }
-        request
-    }
 }
 
 impl Drop for Server {
@@ -352,58 +327,6 @@ async fn scenarios() {
         "data: connected\n\n"
     );
 
-    for (path, authorized, status) in [
-        ("api/pty/term/connect", false, 401),
-        ("api/echo", true, 403),
-        ("api/pty/refused/connect", true, 502),
-    ] {
-        let error = connect_async(server.socket(path, authorized))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, tokio_tungstenite::tungstenite::Error::Http(ref reply) if reply.status() == status),
-            "{error}"
-        );
-    }
-    let mut request = server.socket("api/pty/term/connect", true);
-    request
-        .headers_mut()
-        .insert("x-kuvo-route-version", "99".parse().unwrap());
-    assert!(
-        matches!(connect_async(request).await.unwrap_err(), tokio_tungstenite::tungstenite::Error::Http(ref reply) if reply.status() == 400)
-    );
-    assert!(!work.join("socket").exists());
-    let mut request = server.socket("api/pty/term/connect?cursor=12", true);
-    request
-        .headers_mut()
-        .insert("x-opencode-directory", "%2Fhere".parse().unwrap());
-    let (mut socket, response) = connect_async(request).await.unwrap();
-    assert_eq!(response.headers()["x-kuvo-route-version"], "1");
-    assert_eq!(
-        fs::read_to_string(work.join("socket")).unwrap(),
-        "/api/pty/term/connect?cursor=12 %2Fhere"
-    );
-    let text = Message::Text(Utf8Bytes::from("é\n"));
-    let binary = Message::Binary(Bytes::from_static(&[0, 255]));
-    for message in [text, binary] {
-        socket.send(message.clone()).await.unwrap();
-        assert_eq!(socket.next().await.unwrap().unwrap(), message);
-    }
-    let close = CloseFrame {
-        code: CloseCode::Library(4012),
-        reason: "client closed".into(),
-    };
-    socket.send(Message::Close(Some(close))).await.unwrap();
-    assert!(matches!(
-        socket.next().await.unwrap().unwrap(),
-        Message::Close(_)
-    ));
-    until(|| work.join("close").exists(), "upstream close").await;
-    assert_eq!(
-        fs::read_to_string(work.join("close")).unwrap(),
-        "4012 client closed"
-    );
-
     let pairing = |current| {
         Pairing::verified([1; 32], "paired".into(), "test".into(), true, move || {
             current
@@ -467,26 +390,6 @@ async fn scenarios() {
         drop(answer);
     }
 
-    let refusal = server
-        .dispatcher
-        .open_socket(request("api/pty/term/connect", false), cancel.clone())
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(refusal.reply().status, 403);
-    let paired_cancel = CancellationToken::new();
-    let mut paired = server
-        .dispatcher
-        .open_socket(request("api/pty/term/connect", true), paired_cancel.clone())
-        .await
-        .map_err(|refusal| refusal.reply().status)
-        .unwrap();
-    let key = Message::Text("paired terminal".into());
-    paired.send.send(key.clone()).await.unwrap();
-    assert_eq!(paired.receive.recv().await, Some(key));
-    paired_cancel.cancel();
-    assert_eq!(paired.receive.recv().await, None);
-
     server.stop().await;
     assert!(ProcessIdentity::read(initial).unwrap().is_some());
     let server = Server::start(home).await;
@@ -528,7 +431,7 @@ async fn scenarios() {
 
     server.stop().await;
     drop(guard);
-    println!("cold start, proxy, PTY, adoption, busy parking and wake passed");
+    println!("cold start, proxy, adoption, busy parking and wake passed");
 }
 
 fn current(home: &Path) -> u32 {
@@ -1693,7 +1596,7 @@ async fn starter_stop_leaves_summary_out_of_queue() {
     server.stop().await;
 }
 
-async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_server::Body> {
+async fn fixture_reply(req: Request<Incoming>, auth: &str) -> Response<kuvo_server::Body> {
     let mut answer = Reply::json(StatusCode::OK, json!({"data": []}));
     if !req
         .headers()
@@ -1853,49 +1756,6 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 fs::write("busy-checked", []).unwrap();
                 answer = Reply::json(StatusCode::OK, json!({"data": [{"id": "question"}]}));
             }
-            "/api/pty/term/connect" => {
-                let directory = text("x-opencode-directory").unwrap_or_default();
-                fs::write(
-                    "socket",
-                    format!("{} {directory}", req.uri().path_and_query().unwrap()),
-                )
-                .unwrap();
-                let accept = derive_accept_key(req.headers()[header::SEC_WEBSOCKET_KEY].as_bytes());
-                let upgrade = hyper::upgrade::on(&mut req);
-                tokio::spawn(async {
-                    let mut socket = WebSocketStream::from_raw_socket(
-                        TokioIo::new(upgrade.await.unwrap()),
-                        Role::Server,
-                        None,
-                    )
-                    .await;
-                    while let Some(Ok(message)) = socket.next().await {
-                        if let Message::Close(close) = message {
-                            if let Some(close) = close {
-                                use std::io::Write;
-                                let mut record = tempfile::NamedTempFile::new_in(".").unwrap();
-                                write!(record, "{} {}", u16::from(close.code), close.reason)
-                                    .unwrap();
-                                record.persist("close").unwrap();
-                            }
-                            let _ = socket.flush().await;
-                            break;
-                        }
-                        socket.send(message).await.unwrap();
-                    }
-                });
-                answer.status = StatusCode::SWITCHING_PROTOCOLS;
-                answer
-                    .headers
-                    .insert(header::UPGRADE, "websocket".parse().unwrap());
-                answer
-                    .headers
-                    .insert(header::CONNECTION, "Upgrade".parse().unwrap());
-                answer
-                    .headers
-                    .insert(header::SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
-            }
-            "/api/pty/refused/connect" => answer.status = StatusCode::NOT_FOUND,
             _ => {}
         }
         answer
