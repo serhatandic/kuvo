@@ -223,6 +223,8 @@ struct Model<'a> {
     model: &'a str,
     tokens: u64,
     cost: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family: Option<&'a str>,
 }
 #[derive(Serialize)]
 struct WireDay<'a> {
@@ -235,7 +237,7 @@ struct WireDay<'a> {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     fallback: &'a BTreeSet<String>,
 }
-fn days(days: &Days) -> Vec<WireDay<'_>> {
+fn days<'a>(days: &'a Days, cursor: Option<&'a Pricing>) -> Vec<WireDay<'a>> {
     days.iter()
         .rev()
         .map(|(date, day)| {
@@ -246,6 +248,14 @@ fn days(days: &Days) -> Vec<WireDay<'_>> {
                     model,
                     tokens: *tokens,
                     cost: *cost,
+                    family: cursor.and_then(|pricing| {
+                        let canonical = pricing.canonical_name(model);
+                        let family = canonical
+                            .strip_suffix("-fast")
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(canonical);
+                        (family != model).then_some(family)
+                    }),
                 })
                 .collect::<Vec<_>>();
             WireDay {
@@ -561,7 +571,7 @@ pub fn view(
             })
             .collect::<Vec<_>>();
         let day = slots.days(now, &zone)?;
-        let mut row = json!({"id":id,"service":base.service,"provider":base.provider,"boxes":boxes,"days":days(&day)});
+        let mut row = json!({"id":id,"service":base.service,"provider":base.provider,"boxes":boxes,"days":days(&day,(base.service=="cursor").then_some(pricing))});
         for (name, field) in [
             ("agent", base.agent.as_ref()),
             ("account", base.account.as_ref()),
@@ -591,7 +601,8 @@ pub fn view(
     }
     let mut service_totals = BTreeMap::new();
     for (service, slots) in totals {
-        service_totals.insert(service, json!(days(&slots.days(now, &zone)?)));
+        let cursor = (service == "cursor").then_some(pricing);
+        service_totals.insert(service, json!(days(&slots.days(now, &zone)?, cursor)));
     }
     let mut data = json!({"zone":zone.iana_name().unwrap_or("UTC"),"services":SERVICES.map(|(id,_)|id),"serviceTitles":SERVICES.into_iter().collect::<BTreeMap<_,_>>(),
         "rows":rows,"totals":service_totals,"pricing":{"codex":{"fallback":fallback,"chosen":chosen,"choices":pricing.fallback_choices("codex")}}});

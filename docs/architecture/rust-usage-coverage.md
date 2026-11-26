@@ -1143,17 +1143,60 @@ Adjacent Claude turns initial 58 passing plus the prior TODO and one unrelated
 exit-127 instead of exit-1 message fixture; the exact focused retry passes,
 and its assertion now includes the fixture resident log on failure. The seeded
 differential matches 12/13 exact answers (actual scan clock only), native
-corpus 2/2. Corrected capped Linux proof to follow before the combined tip.
+corpus 2/2. Corrected capped Linux usage 116/116 applicable, including the
+unchanged-WAL revision assertion; container and scratch removed. Windows
+and WSL proof follows in the combined 23–25 run.
 Non-test size 633,641 characters without indentation (0.922× the TS baseline);
 19 A1 entries have Mac proof, 52 remain.
 
+### Slice 25: Cursor account-wide history and plan admission
+
+The actual signed-in reader now retains a hashed account identity even if the
+subscription has ended or its plan cannot be read. Two admitted computers
+with the same ended subscription converge on one account-wide row rather
+than adding its history twice. The full shared plan mapper corpus includes
+request-based team/enterprise fallback, subscription names, on-demand extras,
+credits and exact hashed identity. Cursor history exposes the model family
+using the same existing pricing catalog without altering token or cost totals.
+
+A shared exchange serves the concurrent plan and history requests; a refused
+access page renews it once. The first plan 429 without a Retry-After now holds
+for one hour and doubles on repeated refusals, while an explicit provider
+hold is respected and a successful read clears the refusal count. Actual
+account-wide history covers changed totals, incomplete or unknown days,
+partial progress at the read deadline, resuming older completed days, civil
+time zone, idle work, repricing, malformed credential writes and sign-out.
+The optional plan, exchange and history-page holds stop subsequent maker
+requests. Reader ownership, newest complete history, empty extra replacement,
+ended-plan projection and held-read retention are checked with fixed-clock
+production components. Cursor's Accounts action itself belongs to row 4.5.
+
+The common provider classifier on main now recognizes legacy native IDs;
+Insights no longer carries a duplicate alias guard. The actual portable
+backfill still counts all 50 tokens and the engine SQLite case excludes its
+portable mirror, on both boxes (focused Rust 7/7, TS 2/2).
+
+Mac Rust usage 119/119 applicable, scoped four cases 4/4, workspace and Bun
+checks clean. TS full retry 41/41 (initial 39/41: known frozen Grok cost
+variation and an overview read that raced initial index catch-up). Engine
+sessions exact full retry 81/81 (initial 80/81, project refile inventory reads
+2 rather than 1). Seeded differential exact 12/13 (actual scan clock only),
+native corpus 2/2. The civil-day test had requested a synchronous recount on
+an overview route, which in both boxes reads the existing index immediately;
+only the summary route waits for refresh=1. It now explicitly awaits the
+summary recount and verifies 1,304 counted tokens before querying the two
+zones, retaining exact daily assertions. Three runs on each box pass. The
+project-file refile test passed the exact engine suite retry and three
+focused repeats; the intermittent extra read is recorded for later (rare).
+Merged-base and combined Windows/WSL/Linux proof to follow before tip.
+Non-test size 635,823 characters without indentation (0.925× the 687,546 TS
+baseline). 21 A1 entries closed, 31 remain.
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
-- Reset spending: complete for A1. The real restart and retry paths, lost relay reply, permission convergence, account switching and pending-directory admission are proven in slice 23. The specifically deferred unusual concurrent changes are listed at their original inventory lines.
-- Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity busy-store retention and cutoff cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
-- Shared-settings migration from old kept files and preservation of newer parts/fields are now covered; unconverted peer authority is excluded by design.
+- Direct provider limits, reading admission, accepted-window display, notices, reset spending and signed settings: A1 complete. The individually deferred rare cases remain at their original inventory lines. Cursor Accounts action is owned by row 4.5.
+- Native Codex history, engine zero-billed ChatGPT and hosted history, hourly pricing, signed fallback preference propagation and history-peer identity: remaining actual-source and component cases in slice 26.
+- Insights refresh/kept summary, historical lineage and local/peer page/read/filter boundaries: remaining cases in slice 27.
 
 ### Triage after slice 17
 
@@ -1359,8 +1402,8 @@ does not block completion of the row.
 
 ### `box/test/usage/limits-sign-ins.test.ts`
 
-- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — partial — standalone fixture removes real credential file, watcher withdraws retained rows before a client reads; Accounts action route variant open.
-- L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — open.
+- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — completed by 4.5 — Accounts owns Cursor disconnect; actual reader removal withdraws the live plan and history immediately, including after restart.
+- L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — completed by 4.5 — Accounts owns Cursor key admission and refusal; resident reader tests prove refusal and removal withdraw live readings and that a standalone Cursor app sign-in is ignored.
 - L165: a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none — covered by native usage-control fixture and OAuth credential removal; explicit-only process start is deliberate work timing.
 - L186: a newly signed-in Mac Claude publishes its first reading before the next limits round — superseded — the resident admits a locally signed-in Claude account immediately but only an explicit refresh starts a plan-reading CLI, as approved in Deliberate work-timing changes; the two-account fixture proves no passive start and first explicit reading.
 - L209: what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file — duplicate — the standalone sign-out regression removes the retained credential-backed cache while no client reads, and the legacy upgrade route refuses an old reading before a different sign-in can inherit it. Resident admission is direct, not an independent bridge confirmation.
@@ -1405,7 +1448,7 @@ does not block completion of the row.
 - L838: on the route and its event: named accounts and rows, and clients told when a window starts over — covered by actual accepted Claude quota expiry over the open limits feed: named row, short ring starts over and bar changes to long, without another native probe.
 - L872: a box that reads arms a timer for the next window to start over, and stopping clears it — covered by the actual reset deadline event and resident-owned deadline task, which has no periodic wake without a deadline and ends when the resident stops.
 - L894: the agents' plan_limits tool says a window that started over isn't read since — covered by the actual Claude deadline scenario calling the agent plan_limits route after expiry: started over, not read since.
-- L905: a plan that ended is one, whatever another computer kept of it — open.
+- L905: a plan that ended is one, whatever another computer kept of it — covered by fixed-clock production merge of newest ended plan with a previous held window: no old rings, windows or level, and matching agent-tool wording.
 - L915: a newly added provider is read immediately before its first scheduled tick — superseded — the old automatic read-again after adding a native provider is replaced by explicit-only native probes; the newly admitted account gets its own reading on the first manual round, without passive CLI starts.
 
 ### `box/test/usage/native-usage.test.ts`
@@ -1511,36 +1554,36 @@ does not block completion of the row.
 
 ### `box/test/usage/usage-cursor.test.ts`
 
-- L51: ${each.fn}: ${each.name} — partial — 15 original plan corpus cases through actual Rust routes (mapUsage, grokBot, mapSummary, request-based usage); independent fallback, append-missing and plan-name variants remain open (see slice 14).
-- L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
+- L51: ${each.fn}: ${each.name} — covered by the complete shared Cursor plan corpus via actual Rust maker routes, including independent fallback, append-missing, request-based team and plan-name variants.
+- L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — covered by shared actual usage-events pages, exact day costs and tokens, model family labels and incomplete event evidence.
 - L109: a page that isn't one, or an event that isn't, as UsageKit takes them — later (rare) — deliberately malformed page envelopes and nonnumeric or missing event fields.
-- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
+- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — covered by the complete Cursor plan corpus through its own key and exact hashed identity, including JWT user case and plan/meters/credits variants.
 - L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — covered by Cursor route renewal and exact request-count fixture.
 - L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — covered by Cursor refusal, persisted 429 hold, sign-out and replacement credential route scenario.
-- L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — open.
-- L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — open.
+- L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — covered by exact uncapped extra plan corpus and production peer merge of the newest extras, including empty successful replacement.
+- L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — covered by actual resident refresh during a malformed in-progress credential write: prior plan windows and account ID remain, no new maker call.
 - L222: a request-based plan: its requests as its total, said once; the summary's on-demand — covered by the Enterprise request-based plan fixture with exact request cap and on-demand dollars.
 - L238: a test's box never asks Cursor itself, whatever sign-in its folder holds — superseded — the old TypeScript scratch-only cursorReachable path has no resident caller. Rust conformance isolates the home and enables only explicit fixture endpoints via KUVO_TEST_USAGE_BASE and KUVO_TEST_PATH_ONLY (see standalone reader construction). The real maker behavior is covered by the Cursor plan and history fixtures.
 - L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — covered by Cursor 32-day initial and two-day restart fixture.
-- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — partial — incomplete second page preserves the previous complete day; changed total and never-known day tests open.
-- L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — open.
+- L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — covered by actual history page failure, moved total and unknown-day cases: prior complete days remain and no incomplete row is accepted.
+- L325: when the time runs out, the days that came are kept, and the next read asks only for the rest — covered by actual bounded catch-up deadline with older completed days saved; restart requests the remaining days and retains the saved ones.
 - L351: out of time in the middle of a day of many pages: no page after it is asked — later (rare) — a long day with many pages hits the deadline precisely in the middle of the page walk; ordinary bounded backfill remains required.
-- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — partial — Cursor history route UTC, prior complete data retained, repricing without page reads; non-UTC and idle round scenarios open.
-- L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — open.
-- L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — open.
+- L368: on the box: Cursor's row by the day in the client's zone, by family; a read that fails keeps the last known; a round with nothing new works nothing out again — covered by actual non-UTC projection, failed page retention, retained source repricing and no new requests on unchanged idle round; shared events family labels.
+- L401: a plan Cursor can't state (no subscription): the account is still known as itself, so two computers' rows of it are one, never added up — covered by two actual admitted computers with ended subscription and identical hashed account: one account-wide row with maker tokens counted once.
+- L426: a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays — covered by resident history route with malformed credential across restart, previous complete account-wide use retained; removal withdraws it.
 - L445: signed out of Cursor here: no Cursor row from this box — duplicate — the standalone maker scenario removes Cursor’s actual credential and waits for its retained row to disappear while no client reads; the next real limits GET has no account or row.
-- L460: a row's extras are its newest reading's: one with none says there are none now, though an older box still has some — open.
-- L471: a row takes its newest box's reading, never a sum — open.
-- L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — open.
-- L515: one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over — open.
+- L460: a row's extras are its newest reading's: one with none says there are none now, though an older box still has some — covered by fixed-clock production fact merging: newest successful extras replace older extras including an empty list; failed read keeps previous extras.
+- L471: a row takes its newest box's reading, never a sum — covered by three-computer production history Book/view; newest complete account-wide answer is selected, not summed, and all holders are named.
+- L490: read on another of your computers lately: this box doesn't ask Cursor, and keeps what it had — covered by fixed-clock admitted-reader Book fixture: a recent peer observation suppresses a later holder’s read while distinct accounts remain eligible.
+- L515: one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over — covered by the production Book fixture for selected holder, exact same digest heartbeat, elapsed successful-read timeout and admitted roster removal; actual two-computer no-subscription history converges.
 - L571: a box whose reads keep failing (today's events, while older days are known) doesn't say it read the account, so another of your computers takes over — later (rare) — today’s pages keep failing despite already complete older days at the moment a different computer is eligible for takeover.
-- L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — open.
+- L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — covered by actual no-header provider response and fixed-clock production cache: first wait one hour, next doubles, explicit Retry-After honored, success clears count.
 - L597: an unknown computer does not affect which peer reads Cursor — later (rare) — an unknown computer is inserted into the account-reader directory; normal admitted-reader takeover and unknown history refusal remain required.
-- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — partial — actual plan rejection/429 shared with account-wide history across restart, including explicit refresh; history-only exchange/events hold variants remain open.
+- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — covered by existing rejected-key/restart fixture and actual shared plan/history exchange and page 429 variants; neither reader makes another held request.
 - L647: a token turned away midway whose exchange is then held off (429): no page more is sent with it; nor any once the plan's read is held off meanwhile — later (rare) — a mid-page token refusal followed by an exchange 429 or an independently held plan request.
-- L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — open.
+- L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — covered by actual optional plan 429 stopping later optional requests and history refresh, preserving complete previous windows.
 - L694: a token turned away midway whose key Cursor then turns away too: no page more is sent, and its plan isn't asked again with it — later (rare) — a mid-page token refusal followed by the replacement key also being refused.
-- L709: a token Cursor turns away midway through the history is exchanged again once, and its page asked again; two reads as the box starts share one exchange — open.
+- L709: a token Cursor turns away midway through the history is exchanged again once, and its page asked again; two reads as the box starts share one exchange — covered by actual simultaneous plan/history startup sharing exchange, one refused page renewal and exact exchange count.
 
 ### `box/test/usage/usage-grok-hosted.test.ts`
 
