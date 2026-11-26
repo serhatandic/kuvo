@@ -31,7 +31,9 @@ describe("OpenCode conversations", { skip }, () => {
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
     const program = path.join(home, "engine", version, process.platform === "win32" ? "opencode.exe" : "opencode");
     fs.mkdirSync(path.dirname(program), { recursive: true });
-    fs.symlinkSync(fs.realpathSync(pinned), program);
+    // (Windows links only with a privilege: a copy there.)
+    if (process.platform === "win32") fs.copyFileSync(fs.realpathSync(pinned), program);
+    else fs.symlinkSync(fs.realpathSync(pinned), program);
     model = await standInModel(script);
     write(path.join(home, "config", "opencode", "opencode.json"), JSON.stringify(standInSettings(model.url)));
     write(path.join(home, "box", "opencode.json"), "{}\n");
@@ -208,6 +210,9 @@ describe("OpenCode conversations", { skip }, () => {
     const stop = await call("POST", `kuvo/sessions/${id}/stop`, {});
     assert.ok(stop.status < 300, stop.text);
     await until(() => model.stopped > stopped, "The model's request was never stopped.", 30000, 100);
+    // (Sent once the turn has ended, as the app shows it stopped: one sent while it stops waits.)
+    const at = await prefix(id);
+    await until(async () => !((await call("GET", `${at}api/session/active`)).json?.data ?? {})[id], "The turn never ended.", 30000, 100);
     await send(id, "Carry on.");
     await answered(id, "Back again.");
   });

@@ -26,7 +26,9 @@ test("a real OpenCode Go turn on the OpenCode agent: the app's new conversation,
   write(path.join(home, "box", "opencode.json"), "{}\n");
   const program = path.join(home, "engine", "2.2.6", process.platform === "win32" ? "opencode.exe" : "opencode");
   fs.mkdirSync(path.dirname(program), { recursive: true });
-  fs.symlinkSync(fs.realpathSync(pinned), program);
+  // (Windows links only with a privilege: a copy there.)
+  if (process.platform === "win32") fs.copyFileSync(fs.realpathSync(pinned), program);
+  else fs.symlinkSync(fs.realpathSync(pinned), program);
   const env = isolatedEnv(root);
   const dirs = Object.fromEntries(["data", "config", "state", "cache"].map(sub => [`XDG_${sub.toUpperCase()}_HOME`, path.join(home, sub)]));
   for (const folder of Object.values(dirs)) fs.mkdirSync(folder, { recursive: true });
