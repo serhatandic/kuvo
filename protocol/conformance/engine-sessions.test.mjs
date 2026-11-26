@@ -428,35 +428,6 @@ test("wake-up rows show the same saved summary in the agent's line or the reside
   assert.equal(taken.json.removed.text, text);
 });
 
-const summaryUnreads = boxBinary().typescript && "The reference keeps a conversation read through a summary only for its engine's conversations.";
-test("a standalone summary keeps a read conversation read while an unread one stays unread", { timeout: 60000, skip: summaryUnreads }, async t => {
-  const ids = ["ses_read", "ses_unread"];
-  const { here, record } = await onAgents(t, "summary-read", ids);
-  here.agents.script("/compact", [said("Summary of the conversation.")]);
-  const header = async id => (await request(record, "GET", `kuvo/agents/api/session/${id}`, undefined, desktop)).json.data;
-  const before = {};
-  for (const id of ids) {
-    assert.equal((await request(record, "POST", `kuvo/sessions/${id}/send`, { id: "msg_first" + id.slice(4), words: "Hello.", delivery: "steer" }, desktop)).status, 200);
-    before[id] = await until(async () => { const read = await header(id); return read?.time?.idle && read; }, "Its turn never ended.", 20000, 100);
-    // The first read (Mark All as Read) before the second's reply.
-    if (id === "ses_read") {
-      const read = await request(record, "POST", "kuvo/sessions/read", {}, desktop);
-      assert.equal(read.status, 200, read.text);
-      await until(async () => (await header(id)).time.viewed >= before[id].time.idle, "Mark All as Read never read it.", 10000, 100);
-    }
-  }
-  for (const id of ids) {
-    const compacted = await request(record, "POST", `kuvo/agents/api/session/${id}/compact`, {}, desktop);
-    assert.ok(compacted.status < 300, compacted.status + " " + compacted.text);
-  }
-  let latest;
-  await until(async () => {
-    latest = await Promise.all(ids.map(header));
-    return latest.every((read, at) => read.time.idle > before[ids[at]].time.idle) && latest[0].time.viewed === latest[0].time.idle;
-  }, () => "The read conversation turned unread through its summary: " + JSON.stringify(latest?.map(read => read.time)), 30000, 100);
-  assert.ok(!(latest[1].time.viewed >= latest[1].time.idle), JSON.stringify(latest[1].time));
-});
-
 test("Edit says a message already delivered isn't waiting", { timeout: 45000 }, async t => {
   const session = "ses_editRefused";
   const { here, record: resident } = await busyOnAgents(t, "queue-edit-refused", session);

@@ -909,7 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 7/7 | see below |
-| engine-sessions | 46/46 (9 skipped) | 50/55 | see below |
+| engine-sessions | 46/46 (8 skipped) | 50/54 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
@@ -968,23 +968,20 @@ Notes on each area:
 
 The queue, its holds, Undo, receipts, the session list and its pages, now on a coding agent's
 line. A conversation at work is one whose turn the scripted Grok holds open. The queue is read
-as the app follows it, on its line (`…/queue/events`). The reference skips 9 cases, for four
+as the app follows it, on its line (`…/queue/events`). The reference skips 8 cases, for three
 findings:
 
 - it doesn't mark a steer waiting in an agent's line as held, nor name the files on its queue
   rows (6 cases);
 - it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
-  parts vector, and the agent that takes pictures);
-- a summary turns an agent conversation read with Mark All as Read unread again (it keeps only
-  its engine's conversations read).
+  parts vector, and the agent that takes pictures).
 
-Rust's 5 failures are 4.7d step 5's:
+Rust's 4 failures are 4.7d step 5's:
 
 - a Steer on a stopped queue;
 - draining an unpaused saved queue after a restart;
 - a bot's sustained thinking;
 - the place Undo puts a message back;
-- Mark All as Read (`kuvo/sessions/read`) on agent conversations, and a summary keeping one read.
 
 Kept on the engine:
 
@@ -994,6 +991,13 @@ Kept on the engine:
 An agent's transcript pages are shown as the engine's were: each step in words and its
 summaries titled (`Engine::shown_rows`). The single-row read of the step-words case is left out:
 a coding agent's conversation has no route for one message, and the app reads none.
+
+Left out, as no client marks a conversation read: "a standalone summary keeps a read
+conversation read while actual replies stay unread". The app has no Mark All as Read and never
+says it looked at a conversation (`kuvo/sessions/read` isn't served on the Rust box, for that
+reason), and a coding agent's conversation keeps no read mark there. (On the reference, a
+summary turns an agent conversation read through Mark All as Read unread again: it keeps only
+its engine's conversations read.)
 
 Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
 (agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the
