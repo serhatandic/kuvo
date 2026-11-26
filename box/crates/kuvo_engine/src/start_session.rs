@@ -449,8 +449,8 @@ async fn create_as(
     // A starter's model by name or effort, by the one rule every client's picker offers by;
     // else, a lead on another computer's own where it runs here, else this computer's default.
     let model = if (remote.is_some() || local.is_some()) && (named.is_some() || effort.is_some()) {
-        // (The engine starts for it, as a start here does: its models are read once it runs.)
-        let _running = engine.acquire(crate::lifetime::Demand::Start).await;
+        // (Its kept models stand in for OpenCode's; it starts for it only where it never ran.)
+        let _running = start_unknown(engine).await;
         let offered = engine.offered_models().await;
         let own = named.or(own_model.as_ref());
         let (chosen, variant, shown) =
@@ -463,7 +463,7 @@ async fn create_as(
         }
         Some(chosen)
     } else if let Some(lead) = remote {
-        let _running = engine.acquire(crate::lifetime::Demand::Start).await;
+        let _running = start_unknown(engine).await;
         let offered = engine.offered_models().await;
         let (kept, note) = lead_model(lead.model.as_ref(), &offered.models, here)?;
         model_note = note;
@@ -1008,6 +1008,14 @@ impl std::fmt::Display for Made {
             Self::Agents(error) => error.fmt(out),
         }
     }
+}
+
+/// OpenCode started to read its models only where none are kept (it never ran here).
+async fn start_unknown(engine: &Engine) -> Option<crate::lifetime::Lease> {
+    if crate::models::kept::known(&engine.home) {
+        return None;
+    }
+    engine.acquire(crate::lifetime::Demand::Start).await
 }
 
 pub(crate) async fn create_on_agents(

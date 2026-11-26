@@ -145,9 +145,14 @@ impl AgentModelSource for Models {
                 unavailable: Vec::new(),
                 generations: BTreeMap::new(),
             };
-            // (OpenCode's models are the picker's as OpenCode lists them.)
+            // (OpenCode's models are the picker's as OpenCode lists them; it's an agent here only
+            // where it never ran, with the one it picks itself.)
             let rows = roster.catalog(refresh).await.into_iter();
-            for row in rows.filter(|row| row.account.kind.in_accounts()) {
+            let listed = |row: &kuvo_agents::catalog::CatalogEntry| {
+                row.account.kind.in_accounts()
+                    || row.models.as_ref().is_some_and(|models| !models.models.is_empty())
+            };
+            for row in rows.filter(listed) {
                 let provider = row.account.provider().to_string();
                 let known = row.status.ok();
                 let status = known.as_ref();

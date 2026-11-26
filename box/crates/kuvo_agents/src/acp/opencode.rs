@@ -76,6 +76,15 @@ impl OpenCode {
             .filter(|program| program.executable.is_file())
     }
 
+    /// Whether the picker has OpenCode's models without it: a list the box keeps of them, or its
+    /// own data from a run before (the engine side's kept list, `kuvo_engine::models::kept`).
+    fn listed_elsewhere(&self) -> bool {
+        let data = std::env::var_os("KUVO_ENGINE_DATA")
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| self.home.engine_data(), PathBuf::from);
+        self.home.run().join("engine/catalog.json").is_file() || data.join("opencode.db").is_file()
+    }
+
     fn catalog_file(&self) -> PathBuf {
         Catalog::file(&self.home, "opencode", &self.provider)
     }
@@ -126,16 +135,15 @@ impl Flavour for OpenCode {
         })
     }
 
-    /// As its conversations last listed them: OpenCode isn't started to list them.
+    /// None of its own: its providers' models are the picker's as OpenCode lists them. Only
+    /// where it never ran (nothing of it listed), the one it picks itself, as any agent before
+    /// it has listed its models: choosing it starts OpenCode.
     fn models(&self, _refresh: bool) -> AdapterCall<'_, Models> {
         Box::pin(async move {
-            let file = self.catalog_file();
-            let catalog = tokio::task::spawn_blocking(move || Catalog::read(&file, Some(CATALOG)))
-                .await
-                .map_err(io::Error::other)?;
-            Ok(match catalog {
-                Some(catalog) => local::models(&catalog, |_| 0, str::to_owned),
-                None => Models::default(),
+            let installed = self.installed().is_some();
+            Ok(match installed && !self.listed_elsewhere() {
+                true => local::provisional("OpenCode"),
+                false => Models::default(),
             })
         })
     }
@@ -211,9 +219,12 @@ impl Flavour for OpenCode {
         true
     }
 
-    /// `provider/model`, as OpenCode lists them.
+    /// `provider/model`, as OpenCode lists them (its own default: the one it picks).
     fn model_value(&self, provider: &str, id: &str) -> String {
-        format!("{provider}/{id}")
+        match provider == AgentKind::OpenCode.provider() {
+            true => id.to_owned(),
+            false => format!("{provider}/{id}"),
+        }
     }
 
     fn reads_own_servers(&self) -> bool {
@@ -230,6 +241,9 @@ impl Flavour for OpenCode {
         _credential: Option<&'a str>,
     ) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(async move {
+            if model == local::DEFAULT_MODEL {
+                return Ok(());
+            }
             if current(setup, "model") != Some(model) {
                 Self::set_option(rpc, session, "model", model).await?;
                 setup.set("kuvoModel", model);

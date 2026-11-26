@@ -114,6 +114,23 @@ describe("OpenCode conversations", { skip }, () => {
     return rows;
   }
 
+  const offered = async () => {
+    const read = await call("GET", "kuvo/models/offered");
+    assert.equal(read.status, 200, read.text);
+    return read.json;
+  };
+  const engineStarted = () => fs.existsSync(path.join(home, "run", "engine.json")) && !binary.typescript;
+
+  test("where OpenCode never ran, the picker offers it as an agent not yet listed, and nothing starts it", {
+    timeout: 60000, skip: binary.typescript && "The reference starts OpenCode to list its models.",
+  }, async () => {
+    const answer = await offered();
+    const own = answer.models.filter(model => model.providerID === "opencode-agent");
+    assert.deepEqual(own.map(model => [model.id, model.name]), [["default", "OpenCode (its default model)"]]);
+    assert.ok(!engineStarted(), "Listing started OpenCode's server.");
+    assert.ok(!fs.existsSync(path.join(home, "run", "engine", "catalog.json")), "A list was made from nothing.");
+  });
+
   test("a new conversation's turn streams its words", { timeout: 90000 }, async () => {
     script.push({ text: "Hello from the stand-in." });
     const id = await begin();
@@ -121,6 +138,16 @@ describe("OpenCode conversations", { skip }, () => {
     const rows = await answered(id, "Hello from the stand-in.");
     const user = rows.find(row => role(row) === "user");
     assert.ok(user, "Its message isn't there.");
+  });
+
+  test("once a conversation ran, the picker lists the models OpenCode offered it, and still doesn't start it", {
+    timeout: 60000, skip: binary.typescript && "The reference starts OpenCode to list its models.",
+  }, async () => {
+    const answer = await offered();
+    const listed = answer.models.filter(model => model.side !== "agents").map(model => `${model.providerID}/${model.id}`);
+    assert.ok(listed.includes("standin/scripted") && listed.includes("standin/other"), JSON.stringify(listed));
+    assert.ok(!answer.models.some(model => model.providerID === "opencode-agent"), "Still offered as not yet listed.");
+    assert.ok(!engineStarted(), "Listing started OpenCode's server.");
   });
 
   test("a command it asks to run waits on the app's asks; Allow Once runs it", { timeout: 90000 }, async () => {
