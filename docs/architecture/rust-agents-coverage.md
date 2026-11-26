@@ -1522,3 +1522,57 @@ reference ran the shared engine, agent, tools and work scenarios and the golden
 home; new steering behavior is deliberately Rust-only. The inbox integration
 tests (28/28) and ACP projection unit tests (4/4) also passed.
 All model-facing scenarios here use stand-ins; no live sign-ins were copied.
+
+## 4.10 — Side-by-side agent updates
+
+Deliberate difference from TypeScript (Work Queue #5056): updating a coding agent never
+waits for running turns, never times out waiting for them, and never locks new turns out.
+The TypeScript box is frozen and keeps its turn-wait behaviour; side-by-side cases skip
+the TypeScript reference with a one-line reason while all shared cases remain green on
+both boxes.
+
+- **Side-by-side store (`program_updates/store.rs`).** Each discovered executable is
+  fingerprinted and staged into `<home>/run/agents/programs/<program>/v_<key>/` (standalone
+  binaries including Windows `.exe`, Unix scripts, Windows `.cmd`/`.bat` shims with sibling
+  scripts, and npm global packages; macOS `.app/Contents` bundles pass through without
+  duplicating the app). `current` records the active `v_<key>` directory.
+- **OS file leases and cleanup.** Each held child process acquires a shared OS file lock on
+  `v_<key>.lease` in `hold/worker.rs` (zero changes to `hold/1`, so resident restarts and
+  Rust-to-Rust holder adoption keep the lease on the child's own version). Staging is
+  serialized by `install.lock`; lease acquisition and retirement are serialized by
+  `leases.lock`. When the last holder for an older version exits, its lease release renames
+  the old version directory aside and deletes it (with Windows retry for transient file
+  handles). Startup sweeps unused version directories, retired/aborted staging folders,
+  orphaned lease files, and legacy `agents/program-draining` / `agents/program-installing`
+  directories.
+- **Immediate cutover per adapter.** Codex (`codex/server.rs`), Claude Code
+  (`claude/thread.rs`), and shared ACP (`acp/server.rs`, covering Grok and Antigravity
+  `agy`) start new turns and new agent processes on the newly staged version at once, while
+  existing processes with active turns retire cleanly once idle and exit so their old version
+  directory is removed. Adopted holders running a superseded staged version are marked
+  outdated and retire once their recovered turns finish. OpenCode stays pinned with each box
+  release under `<home>/engine/<version>/`; Cursor currently runs through the Bun SDK
+  (`RuntimePackages`, no installed CLI yet) and will inherit the shared staging path if a
+  CLI is added in 4.5.
+- **One update per program, one state in Settings › Accounts.** Only one update runs per
+  program at a time; concurrent asks join it. In `account_rows.rs`, only the primary account
+  row carries `latestVersion`, `outdated`, `updateCommand`, `updates`, `programUpdate`, and
+  `updateAll`, while added accounts still show `version`. The turn-wait timeout path and
+  `session_runs/programs.rs` drain gate are removed; failed installs report the installer's
+  output plainly with Retry.
+
+| Verification | Unit (`program_updates`) | `agents-updates` conformance |
+|---|---:|---:|
+| macOS (Rust) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| macOS (TypeScript reference) | — | 9/9 (5 Rust-only skipped) |
+| Linux x86-64, lokum (`--cpus=1 --memory=1g`) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| WSL2, Ubuntu 24.04 (static musl) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| Native Windows x64 (`gnullvm` + `libunwind.dll`) | 9/9 (incl. running `.exe` lock test) | 12/12 (2 skipped: TS-only wait, Unix symlink) |
+
+All four applicable agents (Codex, Claude Code, Grok, Antigravity) have side-by-side
+conformance cases verified on all four platforms using stand-ins (never running live `agy`
+or any browser-opening command). Size: `program_updates/{mod,versions,notices,store}.rs` is
+1,882 lines / 54,705 non-indent chars vs 725 lines / 33,852 non-indent chars for the four
+TypeScript files it replaces (`maintenance.ts`, `updates.ts`, `update-notices.ts`,
+`shared/agent-updates.ts`; 1.62× chars, adding side-by-side staging and OS leases while
+deleting 493 lines of drain/hold logic).

@@ -364,7 +364,7 @@ async function waitUpdated(listener, providerId, log) {
   }, () => `The update for ${providerId} never ended: ${JSON.stringify(row)}\n${log()}`, 30000);
 }
 
-test("Codex updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript, timeout: 90000 }, () =>
+test("Codex updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "2.0.0", prepare: (codex) => {
     write(path.join(codex.root, "codex-update-to"), "2.0.0");
     codex.script("hold codex", [{ until: "codex-turn-go" }, ["item/completed", { item: { type: "agentMessage", id: "a1", text: "Finished on v1." } }]]);
@@ -406,7 +406,7 @@ test("Codex updates side by side while a turn runs: new turns use the new versio
     assert.deepEqual(stagedDirs(box.codex.home, "codex"), [v2]);
   }));
 
-test("Claude Code updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript, timeout: 90000 }, async () => {
+test("Claude Code updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed", { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, async () => {
   const claude = await scriptedClaude({ nativeInstall: true });
   try {
     write(path.join(claude.env.HOME, "claude-version"), "1.0.0");
@@ -469,7 +469,7 @@ for (const { label, name, providerId, program, grokNative } of [
   { label: "Grok", name: "grok", providerId: acpProviders.grok, program: "grok", grokNative: true },
   { label: "Antigravity", name: "agy", providerId: acpProviders.agy, program: "antigravity", grokNative: false },
 ]) {
-  test(`${label} updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed`, { skip: boxBinary().typescript, timeout: 90000 }, async () => {
+  test(`${label} updates side by side while a turn runs: new turns use the new version at once, the running turn finishes on the old, then the old version is removed`, { skip: boxBinary().typescript && "Side-by-side agent updates are implemented in the Rust box only.", timeout: 90000 }, async () => {
     const acp = await scriptedAcp({ names: [name], grok: name === "grok", agy: name === "agy", grokNative });
     try {
       write(path.join(acp.root, `${name}-version`), "1.0.0");
