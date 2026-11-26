@@ -6,8 +6,6 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Rust computers run new OpenCode conversations as one more coding agent, one OpenCode for all of them, and opening the app no longer starts OpenCode. Its models are listed from what it last offered without starting it. Permission and question cards, wake-ups and Kuvo Code's tools work in every coding agent's conversations.
-
 - Rust computers keep consistent plan rings and forecasts across upgrades, group many accounts in one rail card, and show Insights bot conversations, their subagents and completed skill use without recounting older calls.
 
 - Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.
