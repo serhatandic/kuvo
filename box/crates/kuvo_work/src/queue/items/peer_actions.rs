@@ -1,15 +1,52 @@
 use super::*;
-use crate::queue::{forward::records as forward_core, peer_reads::QueueTarget};
+use crate::queue::{
+    forward::{records as forward_core, scoped},
+    peer_reads::QueueTarget,
+};
 
 // Methods for the queue Writer. Both the client entry points and the receiver use the same local
 // operations. Only the former may forward.
 
+/// Who asked for a change.
+pub(in crate::queue) enum Client {
+    /// The app on this computer.
+    Local,
+    /// A paired device, with its grant for a change kept elsewhere (none when the operation it
+    /// named can't be an operation id).
+    Paired(Option<scoped::Device>),
+    /// Anyone else: a change kept elsewhere is made there.
+    Other,
+}
+
 impl Writer {
+    /// Who `caller` is, for a change it asks of an item: its grant from what it sent, where it's
+    /// a paired device.
+    pub(in crate::queue) fn client(
+        &self,
+        caller: &kuvo_server::Caller,
+        headers: &http::HeaderMap,
+        body: Option<&Value>,
+    ) -> Client {
+        if local_work_queue_app(caller) {
+            return Client::Local;
+        }
+        let Some(pairing) = caller.pairing().filter(|pairing| pairing.is_current()) else {
+            return Client::Other;
+        };
+        let grant = self.setup.queue_setup().zip(scoped::operation(headers, body).ok());
+        Client::Paired(grant.map(|(setup, operation)| scoped::Device {
+            setup: setup.id,
+            key: pairing.key,
+            pairing: pairing.id.clone(),
+            operation,
+        }))
+    }
+
     pub(super) async fn change_for_client(
         &self,
         reference: String,
         removal: Removal,
-        local: bool,
+        client: Client,
     ) -> Result<Value, Refusal> {
         let restoring = matches!(removal, Removal::Restore);
         if let Some(target) = self
@@ -24,7 +61,7 @@ impl Writer {
             };
             let action = restoring.then(|| "restore".to_owned());
             return self
-                .forward_change(target, method, action, None, local)
+                .forward_change(target, method, action, None, client)
                 .await;
         }
         self.change(reference, removal).await
@@ -34,7 +71,7 @@ impl Writer {
         &self,
         reference: String,
         fields: Value,
-        local: bool,
+        client: Client,
     ) -> Result<Value, Refusal> {
         if let Some(target) = self.reads.forward_target(reference.clone(), false).await? {
             let allowed = [
@@ -61,11 +98,11 @@ impl Writer {
                     forward_core::Method::Patch,
                     None,
                     Some(fields.into()),
-                    local,
+                    client,
                 )
                 .await;
         }
-        self.edit(reference, fields, local).await
+        self.edit(reference, fields, matches!(client, Client::Local)).await
     }
 
     async fn forward_change(
@@ -74,14 +111,24 @@ impl Writer {
         method: forward_core::Method,
         action: Option<String>,
         mut body: Option<Value>,
-        local: bool,
+        client: Client,
     ) -> Result<Value, Refusal> {
-        if !local {
-            return Err(Refusal::json(
-                StatusCode::CONFLICT,
-                json!({"message":format!("Update {} before forwarding this operation from a paired device.", target.computer["name"].as_str().unwrap_or_default()),"computer":target.computer}),
-            ));
-        }
+        let device = match client {
+            Client::Local => None,
+            Client::Paired(Some(device)) => Some(device),
+            Client::Paired(None) => {
+                return Err(Refusal::json(
+                    StatusCode::CONFLICT,
+                    json!({"message":scoped::NO_GRANT,"computer":target.computer}),
+                ));
+            }
+            Client::Other => {
+                return Err(Refusal::json(
+                    StatusCode::CONFLICT,
+                    json!({"message":format!("Update {} before forwarding this operation from a paired device.", target.computer["name"].as_str().unwrap_or_default()),"computer":target.computer}),
+                ));
+            }
+        };
         if body
             .as_ref()
             .and_then(|body| body["files"].as_array())
@@ -134,6 +181,7 @@ impl Writer {
                 method,
                 action,
                 body,
+                device,
             )
             .await?;
         if relation && result["itemRelationApplied"] != true {
@@ -159,6 +207,66 @@ impl Writer {
             }
         }
         Ok(result)
+    }
+
+    /// A paired device's change to one of this computer's items, sent on by `peer` with the
+    /// device's grant (TypeScript `takeScopedAct`). Decided once for its operation and kept, so a
+    /// retry is answered the same. None: it isn't admitted here (the item isn't here, or the
+    /// device's access is being checked), so nothing is answered and nothing kept.
+    pub(super) async fn respond_to_scoped(
+        &self,
+        peer: &str,
+        given: scoped::Given,
+        now: i64,
+    ) -> Result<Option<forward_core::Reply>, Error> {
+        let here = self.peers.view().roster.here.map(|key| kuvo_wire::keys::encode(&key));
+        let setup = self.setup.queue_setup().map(|setup| setup.id);
+        if setup.as_deref() != Some(given.grant.setup.as_str())
+            || here.as_deref() != Some(given.owner.as_str())
+            || given.act.area.is_some()
+            || !store::item_id(&given.act.item)
+        {
+            return Ok(None);
+        }
+        async fn off<T: Send + 'static>(
+            work: impl FnOnce() -> Result<T, Error> + Send + 'static,
+        ) -> Result<T, Error> {
+            tokio::task::spawn_blocking(work).await.map_err(io::Error::other)?
+        }
+        let store = self.store.clone();
+        let id = given.act.item.clone();
+        let item = off(move || Ok(store.items()?.into_iter().find(|item| item.id == id))).await?;
+        let Some(item) = item.filter(|item| !item.saved.contains_key("handing")) else {
+            return Ok(None);
+        };
+        let run = self.store.root.parent().expect("Work Queue under run").to_owned();
+        let ledger = std::sync::Arc::new(scoped::Ledger::new(&run, &given, &item.id, &item.owner));
+        let kept = ledger.clone();
+        if let scoped::Earlier::Answer(answer) = off(move || Ok(kept.earlier()?)).await? {
+            return Ok(Some(answer));
+        }
+        let (key, pairing) = given.grant.device().expect("a read grant names its device");
+        let veto = match self.forward.pairing_state(&key, pairing) {
+            _ if given.replay_only => Some(scoped::refused(scoped::REVOKED)),
+            ownership::PairingState::Revoked => Some(scoped::refused(scoped::REVOKED)),
+            ownership::PairingState::Checking => return Ok(None),
+            ownership::PairingState::Allowed => None,
+        };
+        if veto.is_none() && self.admit(&item.owner).is_err() {
+            return Ok(None);
+        }
+        if let Some(veto) = veto.or_else(|| given.expired(now).then(scoped::expired)) {
+            let kept = ledger.clone();
+            let answer = veto.clone();
+            off(move || Ok(kept.decide(&answer, now)?)).await?;
+            return Ok(Some(veto));
+        }
+        let kept = ledger.clone();
+        off(move || Ok(kept.claim()?)).await?;
+        let answer = self.respond_to_act(peer, given.act, now).await?;
+        let decided = answer.clone();
+        off(move || Ok(ledger.decide(&decided, now)?)).await?;
+        Ok(Some(answer))
     }
 
     pub(super) async fn respond_to_act(
