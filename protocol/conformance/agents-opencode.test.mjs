@@ -88,7 +88,10 @@ describe("OpenCode conversations", { skip }, () => {
 
   /** The prefix the app reads the conversation's messages under. */
   async function prefix(id) {
-    const found = await call("GET", `kuvo/sessions/${id}/location`);
+    // (A conversation just made may not be on the list yet: it says so, and the app asks again.)
+    let found;
+    await until(async () => (found = await call("GET", `kuvo/sessions/${id}/location`)).status !== 503,
+      () => `Its location never answered: ${found?.text}`, 30000, 200);
     assert.equal(found.status, 200, found.text);
     const where = found.json.where ?? found.json.place ?? found.json;
     return JSON.stringify(where).includes("agents") ? "kuvo/agents/" : "";
