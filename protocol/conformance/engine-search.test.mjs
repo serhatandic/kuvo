@@ -1,160 +1,141 @@
-// Search real resident routes against a scratch engine with parent and child transcripts.
+// Search real resident routes over coding agents' conversations (the scripted Grok's, `acp.mjs`),
+// with parent and subagent transcripts.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { request, until, write } from "./adapter.mjs";
+import { request, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
-import { sessionOf } from "./engine.mjs";
 
-test("search finds a subagent transcript under its conversation and reuses the indexed revision", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
+const headers = { "x-kuvo-from": "app" };
+const ids = rows => rows.map(row => row.session);
+/** A finished step, as an agent's reply keeps it. */
+const tool = (id, name, input) => ({ type: "tool", id, name, state: { status: "completed", input, content: [] } });
+
+test("search finds a subagent transcript under its conversation, reuses what it kept and reads a new turn", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t, { agents: true });
   const here = await computer("engine-search");
-  const top = sessionOf({ id: "ses_search", title: "Main", directory: here.home });
-  const child = sessionOf({ id: "ses_matchingChild", title: "Child", directory: here.home, parent: top.id });
-  const hidden = { ...sessionOf({ id: "ses_hidden", title: "Internal", directory: here.home }),
-    metadata: { kuvo: { engineFor: top.id } } };
-  here.engine.sessions.push(top, child, hidden);
-  here.engine.messages.set(child.id, [{ id: "msg_match", type: "user", text: "The **Résumé** was refreshed." }]);
-  here.engine.messages.set(hidden.id, [{ id: "msg_hidden", type: "user", text: "Résumé in a hidden turn." }]);
+  const top = "ses_search", child = "ses_matchingChild", hidden = "ses_hidden";
+  here.agents.seed(top, { title: "Main", directory: here.home });
+  here.agents.seed(child, { title: "Child", directory: here.home, parent: top, messages: [{ type: "user", text: "The **Résumé** was refreshed." }] });
+  here.agents.seed(hidden, { title: "Internal", directory: here.home, metadata: { kuvo: { engineFor: top } }, messages: [{ type: "user", text: "Résumé in a hidden turn." }] });
   const record = await here.start().ready();
   const route = "kuvo/search?q=resume";
-  const result = await request(record, "GET", route);
+  const result = await request(record, "GET", route, undefined, headers);
   assert.equal(result.status, 200, result.text);
-  assert.deepEqual(result.json, { results: [
-    { session: top.id, info: top, subagent: child, snippet: "The Résumé was refreshed." },
-  ] });
-  const reads = here.engine.asked.filter(call => call.path.endsWith("/message")).length;
-  const repeated = await request(record, "GET", route);
-  assert.deepEqual(repeated.json, result.json);
-  assert.equal(here.engine.asked.filter(call => call.path.endsWith("/message")).length, reads);
-  child.time.updated++;
-  here.engine.messages.set(child.id, [{ id: "msg_replace", type: "user", text: "Another topic." }]);
-  assert.deepEqual((await request(record, "GET", route)).json, { results: [] });
+  assert.deepEqual(result.json.results.map(row => [row.session, row.info.id, row.info.title, row.subagent?.id, row.snippet]), [
+    [top, top, "Main", child, "The Résumé was refreshed."],
+  ]);
+  const cached = path.join(here.home, "search", `agents.${child}.json`);
+  const kept = fs.readFileSync(cached, "utf8");
+  const repeated = await request(record, "GET", route, undefined, headers);
+  assert.deepEqual(repeated.json.results.map(row => [row.session, row.subagent?.id, row.snippet]), [[top, child, "The Résumé was refreshed."]]);
+  assert.equal(fs.readFileSync(cached, "utf8"), kept);
+  // A turn on the conversation since: what it said is read, and found.
+  here.agents.script("Look again", [{ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Found the Zircon notes." } } }]);
+  const sent = await request(record, "POST", `kuvo/sessions/${top}/send`, { id: "msg_lookAgain", words: "Look again", delivery: "steer" }, headers);
+  assert.equal(sent.status, 200, sent.text);
+  const zircon = await until(async () => {
+    const found = await request(record, "GET", "kuvo/search?q=zircon", undefined, headers);
+    return found.json?.results?.length && found.json.results;
+  }, "The conversation's new turn was never found.", 20000, 100);
+  assert.deepEqual(zircon.map(row => [row.session, row.subagent?.id, row.snippet]), [[top, undefined, "Found the Zircon notes."]]);
+  assert.equal(fs.readFileSync(cached, "utf8"), kept);
 });
 
-test("search prefers conversation words and keeps its cache when the engine cannot list sessions", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
+test("search prefers conversation words and forgets a deleted conversation's kept text", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t, { agents: true });
   const here = await computer("search-history");
-  const newest = sessionOf({ id: "ses_newest", directory: here.home, title: "Archived" });
-  newest.time.updated = 9;
-  newest.metadata = { "kuvo.archived": true };
-  const older = sessionOf({ id: "ses_older", directory: here.home, title: "Open" });
-  const detail = sessionOf({ id: "ses_reviewPart", directory: here.home, parent: newest.id });
-  detail.metadata = { kuvo: { reviewPart: true } };
-  const seat = sessionOf({ id: "ses_seat", directory: here.home });
-  seat.metadata = { kuvo: { seat: "grp_test" } };
-  const turn = sessionOf({ id: "ses_turn", directory: here.home });
-  turn.metadata = { kuvo: { engineFor: newest.id } };
-  const seatChild = sessionOf({ id: "ses_seatChild", parent: seat.id, directory: here.home });
-  const turnChild = sessionOf({ id: "ses_turnChild", parent: turn.id, directory: here.home });
-  const widget = sessionOf({ id: "ses_widget", directory: here.home });
-  here.engine.sessions.push(newest, older, detail, seat, turn, seatChild, turnChild, widget);
-  here.engine.messages.set(newest.id, [
+  const at = { directory: here.home };
+  here.agents.seed("ses_newest", { ...at, title: "Archived", updated: 9, metadata: { "kuvo.archived": true }, messages: [
     { type: "assistant", content: [
-      { type: "tool", state: { input: { command: "find Quartz in the build log" } } },
+      tool("call_find", "bash", { command: "find Quartz in the build log" }),
       { type: "text", text: "Our Quartz result was accepted." },
     ] },
-  ]);
-  here.engine.messages.set(older.id, [
-    { type: "user", text: "An earlier Quartz result." },
-  ]);
-  here.engine.messages.set(widget.id, [
+  ] });
+  here.agents.seed("ses_older", { ...at, title: "Open", updated: 2, messages: [
+    { type: "assistant", content: [
+      tool("call_read", "read", { filePath: path.join(here.home, "Sources", "relevant.swift") }),
+      { type: "text", text: "An earlier Quartz result." },
+    ] },
+  ] });
+  here.agents.seed("ses_reviewPart", { ...at, parent: "ses_newest", metadata: { kuvo: { reviewPart: true } }, messages: [{ type: "user", text: "UnlistedReviewText" }] });
+  here.agents.seed("ses_seat", { ...at, metadata: { kuvo: { seat: "grp_test" } }, messages: [{ type: "user", text: "A HiddenQuartz result." }] });
+  here.agents.seed("ses_turn", { ...at, metadata: { kuvo: { engineFor: "ses_newest" } }, messages: [{ type: "user", text: "A HiddenQuartz result." }] });
+  here.agents.seed("ses_seatChild", { ...at, parent: "ses_seat", messages: [{ type: "user", text: "A HiddenQuartz result." }] });
+  here.agents.seed("ses_turnChild", { ...at, parent: "ses_turn", messages: [{ type: "user", text: "A HiddenQuartz result." }] });
+  here.agents.seed("ses_widget", { ...at, messages: [
     { type: "user", text: "Pick the left one.\n\n<from-widget>\nThe user sent this from a widget shown in this conversation (show_widget), titled:\nChooseAmber\n</from-widget>" },
     { type: "user", text: "[Session started] The build began without you.", metadata: { kuvo: { note: { from: "Its sessions" } } } },
-  ]);
-  here.engine.messages.set(detail.id, [{ type: "user", text: "UnlistedReviewText" }]);
-  for (const session of [seat, turn, seatChild, turnChild]) {
-    here.engine.messages.set(session.id, [{ type: "user", text: "A HiddenQuartz result." }]);
-  }
+  ] });
   const record = await here.start().ready();
-  const search = (q, limit) => request(record, "GET", "kuvo/search?" + new URLSearchParams({ q, ...(limit ? { limit } : {}) }));
+  const search = (q, limit) => request(record, "GET", "kuvo/search?" + new URLSearchParams({ q, ...(limit ? { limit } : {}) }), undefined, headers);
   const found = await search("quartz");
   assert.equal(found.status, 200, found.text);
   assert.deepEqual(found.json.results.map(row => [row.session, row.snippet]),
-    [[newest.id, "Our Quartz result was accepted."], [older.id, "An earlier Quartz result."]]);
-  assert.deepEqual((await search("UnlistedReviewText")).json, { results: [] });
+    [["ses_newest", "Our Quartz result was accepted."], ["ses_older", "An earlier Quartz result."]]);
+  assert.deepEqual((await search("UnlistedReviewText")).json.results, []);
   for (const hidden of ["HiddenQuartz", "ChooseAmber", "show_widget", "build began"]) {
     assert.deepEqual((await search(hidden)).json.results, [], hidden);
   }
-  assert.deepEqual((await search("pick the left one")).json.results.map(row => row.session), [widget.id]);
-  assert.deepEqual((await search("quartz", "1")).json.results.map(row => row.session), [newest.id]);
+  assert.deepEqual(ids((await search("pick the left one")).json.results), ["ses_widget"]);
+  assert.deepEqual(ids((await search("quartz", "1")).json.results), ["ses_newest"]);
   assert.equal((await search("")).status, 400);
-  here.engine.messages.set(older.id, [
-    { type: "assistant", content: [
-      { type: "tool", name: "read", state: { input: { filePath: path.join(here.home, "Sources", "relevant.swift") } } },
-      { type: "text", text: "An earlier Quartz result." },
-    ] },
-  ]);
-  older.time.updated++;
   for (const label of ["You", "Agent", "Asked", "Read"]) assert.deepEqual((await search(label)).json.results, [], label);
-  const fileMatch = await search("relevant.swift");
-  assert.deepEqual(fileMatch.json.results.map(row => row.session), [older.id]);
-  const cached = path.join(here.home, "search", `engine.${newest.id}.json`);
-  const original = fs.readFileSync(cached, "utf8");
-  here.engine.sessionListUnavailable = true;
-  assert.equal((await search("quartz")).status, 503);
-  assert.equal(fs.readFileSync(cached, "utf8"), original);
-  here.engine.sessionListUnavailable = false;
-  here.engine.sessions.splice(here.engine.sessions.indexOf(newest), 1);
-  assert.deepEqual((await search("quartz")).json.results.map(row => row.session), [older.id]);
+  assert.deepEqual(ids((await search("relevant.swift")).json.results), ["ses_older"]);
+  const cached = path.join(here.home, "search", "agents.ses_newest.json");
+  assert.ok(fs.existsSync(cached));
+  const deleted = await request(record, "DELETE", "kuvo/agents/api/session/ses_newest", undefined, headers);
+  assert.ok(deleted.status < 300, deleted.text);
+  assert.deepEqual(ids((await search("quartz")).json.results), ["ses_older"]);
   assert.equal(fs.existsSync(cached), false);
 });
 
-test("search reaches the oldest page and keeps conversation words ahead of tool history", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
+test("search reaches the oldest conversation and keeps conversation words ahead of tool history", { timeout: 60000 }, async t => {
+  const { computer } = await bench(t, { agents: true });
   const here = await computer("search-paged");
   const id = "ses_page129";
   const sentence = "Step 4 of 5. Change src/timer.js so the countdown pauses when the window loses focus, then run the tests again and tell me what failed.";
-  here.engine.paged = true;
-  for (let at = 0; at < 130; at++) {
-    here.engine.sessions.push(sessionOf({ id: "ses_page" + at, updated: 1000 - at, title: "Page " + at, directory: here.home }));
-  }
-  const tools = Array.from({ length: 50 }, (_, at) => ({
-    type: "tool", state: { input: { command: `run ${at} ` + "x".repeat(10_000) } },
-  }));
-  here.engine.messages.set(id, [
+  for (let at = 0; at < 129; at++) here.agents.seed("ses_page" + at, { updated: 1000 - at, title: "Page " + at, directory: here.home });
+  const tools = Array.from({ length: 50 }, (_, at) => tool(`call_${at}`, "bash", { command: `run ${at} ` + "x".repeat(10_000) }));
+  here.agents.seed(id, { updated: 1000 - 129, title: "Page 129", directory: here.home, messages: [
     { type: "assistant", content: [{ type: "text", text: "Deploy to İstanbul, then 한국어 검색 and the café ☕" }] },
     ...Array.from({ length: 445 }, (_, at) => ({ type: "assistant", content: [{ type: "text", text: "Turn " + at }] })),
     { type: "assistant", content: tools },
     { type: "user", text: sentence },
-  ]);
+  ] });
   const record = await here.start().ready();
-  const search = q => request(record, "GET", "kuvo/search?" + new URLSearchParams({ q }));
+  const search = q => request(record, "GET", "kuvo/search?" + new URLSearchParams({ q }), undefined, headers);
   const found = await search("timer");
   assert.equal(found.status, 200, found.text);
   assert.equal(found.json.results[0].session, id);
   assert.equal(found.json.results[0].info.title, "Page 129");
   const snippet = found.json.results[0].snippet;
-  assert.ok(snippet.startsWith("…") && snippet.endsWith("…"));
+  assert.ok(snippet.startsWith("…") && snippet.endsWith("…"), snippet);
   assert.ok(snippet.includes("src/timer.js"));
   for (const word of snippet.replaceAll("…", "").split(" ")) assert.ok(sentence.split(" ").includes(word), word);
   for (const word of ["istanbul", "검색", "CAFE", "☕"]) {
     const result = await search(word);
-    assert.deepEqual(result.json.results.map(row => row.session), [id], word);
+    assert.deepEqual(ids(result.json.results), [id], word);
   }
-  const file = path.join(here.home, "search", `engine.${id}.json`);
-  const retained = JSON.parse(fs.readFileSync(file, "utf8"));
+  const retained = JSON.parse(fs.readFileSync(path.join(here.home, "search", `agents.${id}.json`), "utf8"));
   assert.ok(retained.text.length <= 400_000);
-  assert.ok(retained.text.startsWith(sentence));
-  assert.equal(here.engine.asked.filter(call => call.path.endsWith(`/${id}/message`)).length, 3);
+  // (What was said, oldest first and the latest last, then the steps, in the room it leaves.)
+  const said = retained.text.indexOf(sentence);
+  assert.ok(said > 0 && retained.text.startsWith("Deploy to İstanbul"), retained.text.slice(0, 300));
+  assert.ok(retained.text.indexOf("\n\nrun ") > said, "The tool history came before what was said.");
 });
 
 test("setup search merges two residents, keeps the latest duplicate, and reports an unavailable reader", { timeout: 90000 }, async t => {
-  const { computer, leases, relay } = await bench(t);
+  const { computer, leases, relay } = await bench(t, { agents: true });
   const first = await computer("Search Main");
   const second = await computer("Search Member");
   const marker = "SearchFixtureFossil";
   const names = ["ses_searchLocal", "ses_searchRemote", "ses_searchDuplicate"];
-  const add = (here, id, updated, text, metadata) => {
-    here.engine.sessions.push({ ...sessionOf({ id, directory: here.home, updated }), ...(metadata ? { metadata } : {}) });
-    here.engine.messages.set(id, [{ id: "msg_searchExample", type: "user", text }]);
-  };
+  const add = (here, id, updated, text, metadata) =>
+    here.agents.seed(id, { directory: here.home, updated, metadata, messages: [{ id: "msg_searchExample", type: "user", text }] });
   add(first, names[0], 7, `Here: ${marker}.`);
   add(first, names[2], 8, `Older: ${marker}.`);
-  const large = "different computer ".repeat(4500);
-  add(second, names[1], 6, `Remote: ${marker}.`, { kept: large });
-  add(second, names[2], 10, `Newer: ${marker}.`);
   const main = first.connect(await first.start().ready());
   assert.ok((await main("GET", "kuvo/info")).json.features.includes("search.setup"));
   const setup = await main("GET", "kuvo/setup");
@@ -165,6 +146,10 @@ test("setup search merges two residents, keeps the latest duplicate, and reports
   await until(() => leases.leaseFor(setup.json.setup), "The searching computer did not claim its setup.");
   const joined = await second.join(invitation.json.code);
   assert.equal(joined.code, 0, joined.log);
+  // (Its conversations once it joined: a computer with conversations of its own can't join.)
+  const large = "different computer ".repeat(4500);
+  add(second, names[1], 6, `Remote: ${marker}.`, { kept: large });
+  add(second, names[2], 10, `Newer: ${marker}.`);
   const member = second.connect(await second.start().ready());
   const memberSetup = await member("GET", "kuvo/setup");
   assert.equal(memberSetup.status, 200, memberSetup.text);
@@ -183,22 +168,18 @@ test("setup search merges two residents, keeps the latest duplicate, and reports
   assert.deepEqual(merged.json.awayComputers, []);
   assert.deepEqual(merged.json.unavailableComputers, []);
 
-  assert.deepEqual((await main("GET", route + "&limit=1")).json.results.map(row => row.session), [names[2]]);
-  assert.deepEqual((await main("GET", `kuvo/search?q=${marker}`)).json.results.map(row => row.session), [names[2], names[0]]);
+  assert.deepEqual(ids((await main("GET", route + "&limit=1")).json.results), [names[2]]);
+  assert.deepEqual(ids((await main("GET", `kuvo/search?q=${marker}`)).json.results), [names[2], names[0]]);
   assert.equal((await main("GET", "kuvo/setup/search?q=" + "x".repeat(513))).status, 400);
   add(first, names[1], 50, `Stale local copy: ${marker}.`);
-  write(path.join(first.home, "run/moves/moved.json"), JSON.stringify([
+  fs.mkdirSync(path.join(first.home, "run/moves"), { recursive: true });
+  fs.writeFileSync(path.join(first.home, "run/moves/moved.json"), JSON.stringify([
     { session: names[1], key: secondKey, at: Date.now(), formatVersion: 0 },
   ]));
   const moved = await main("GET", route);
   assert.deepEqual(moved.json.results.map(row => [row.session, row.computer.id]), [
     [names[2], secondKey], [names[0], primaryKey], [names[1], secondKey],
   ]);
-  second.engine.sessionListUnavailable = true;
-  const partial = await main("GET", route);
-  assert.deepEqual(partial.json.results.map(row => row.computer.id), [primaryKey, primaryKey]);
-  assert.deepEqual(partial.json.unavailableComputers.map(computer => computer.id), [secondKey]);
-  assert.deepEqual(partial.json.awayComputers, []);
 
   // Only the read's relay frames are failed. An ordinary peer announcement
   // could legitimately change reach and would make this assertion ambiguous.
@@ -221,6 +202,7 @@ test("setup search merges two residents, keeps the latest duplicate, and reports
     const lost = await main("GET", route);
     assert.deepEqual(lost.json.unavailableComputers.map(computer => computer.id), [secondKey]);
     assert.deepEqual(lost.json.awayComputers, []);
+    assert.deepEqual(lost.json.results.map(row => row.computer.id), [primaryKey, primaryKey]);
     assert.equal(kept(), beforeReach);
   } finally {
     watchRead();

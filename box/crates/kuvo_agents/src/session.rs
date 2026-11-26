@@ -552,4 +552,10 @@ pub trait TurnSink: Send + Sync {
     /// Withdraw an ask the vendor cancelled. The matching future resolves as
     /// a rejection or dismissal. Calling again after resolution is harmless.
     fn cancel_ask<'a>(&'a self, id: &'a str) -> AdapterCall<'a, ()>;
+
+    /// Withdraw every ask still waiting as the turn stops: each resolves as a rejection or
+    /// dismissal, as `cancel_ask`'s.
+    fn cancel_asks(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }

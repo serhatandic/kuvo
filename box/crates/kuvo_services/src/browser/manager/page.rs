@@ -36,7 +36,7 @@ fn integer(value: &Value) -> Option<i64> {
 fn empty(url: &str) -> bool {
     url.is_empty() || url == "about:blank"
 }
-fn host_of(address: &str) -> Option<String> {
+pub(super) fn host_of(address: &str) -> Option<String> {
     let url = Url::parse(address).ok()?;
     if url.scheme() == "file" {
         return Some("a file on this machine".into());
@@ -485,14 +485,27 @@ impl<'a> Context<'a> {
                 "\n… (cut; scroll or use browser_text for more)",
             )
         };
+        let passkey = self
+            .live
+            .tabs
+            .lock()
+            .await
+            .passkeys
+            .get(&self.p.target)
+            .is_some_and(|host| Some(host) == host_of(words(&result["url"])).as_ref());
         format!(
-            "Page: {}\nURL: {}\nScroll: {above} px above, {below} px below{}\nInteractive elements are numbered like [3]; use the number with browser_click, browser_type and browser_select.\n\n{body}",
+            "Page: {}\nURL: {}\nScroll: {above} px above, {below} px below{}\n{}Interactive elements are numbered like [3]; use the number with browser_click, browser_type and browser_select.\n\n{body}",
             words(&result["title"]),
             words(&result["url"]),
             if below > 1200 {
                 " (browser_text reads all of it at once)"
             } else {
                 ""
+            },
+            if passkey {
+                format!("{}\n", super::passkeys::NOTE)
+            } else {
+                String::new()
             }
         )
     }

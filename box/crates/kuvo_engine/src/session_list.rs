@@ -179,6 +179,7 @@ impl LocalSessions {
         );
         let known_asks = ask_changes.clone();
         let mut external = engine.external_asks.as_ref().map(|source| source.waiting());
+        let mut agent_asks = engine.agent_sessions.as_ref().and_then(|source| source.waiting());
         let mut agent_runs = engine
             .agent_sessions
             .as_ref()
@@ -299,6 +300,14 @@ impl LocalSessions {
                     } => {
                         if changed.is_err() { external = None; }
                     },
+                    changed = async {
+                        match &mut agent_asks {
+                            Some(asks) => asks.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if changed.is_err() { agent_asks = None; }
+                    },
                     changed = state.changed() => {
                         if changed.is_err() { break; }
                         refresh_agents(&engine, &mut agents, &agent_revision).await;
@@ -353,6 +362,9 @@ impl LocalSessions {
                 let mut book = ask_changes.borrow_and_update().clone();
                 if let Some(external) = &external {
                     crate::asks::include_external(Arc::make_mut(&mut book), &external.borrow());
+                }
+                if let Some(asks) = &agent_asks {
+                    crate::asks::include_agents(Arc::make_mut(&mut book), &asks.borrow());
                 }
                 let (projects, worktrees) = tokio::join!(
                     read_projects(&engine.home),

@@ -13,9 +13,11 @@ use kuvo_agents::{
     session_runs::{Cancelled, SessionRuns},
     session_store::{MessageOrder, SessionStore},
 };
+use kuvo_agents::live_asks::Ask;
 use kuvo_engine::{
-    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentSessionPatch, AgentSessionRead,
-    AgentSessionRow, AgentSessionSource, AgentTakeBack, NewAgentSession,
+    AgentAsk, AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentSessionPatch,
+    AgentSessionRead, AgentSessionRow, AgentSessionSource, AgentTakeBack, AgentWaiting,
+    NewAgentSession,
 };
 use kuvo_protocol::routes::{
     delete_kuvo_agents_api_session_id_background as stop_background,
@@ -111,6 +113,32 @@ impl Inventory {
     }
 }
 
+/// The asks waiting now, each with when it was first heard (`heard`, kept across calls).
+fn waiting_now(
+    pending: &std::collections::BTreeMap<AskKey, Ask>,
+    heard: &mut std::collections::BTreeMap<AskKey, u64>,
+    now: u64,
+) -> Vec<AgentWaiting> {
+    heard.retain(|key, _| pending.contains_key(key));
+    pending
+        .iter()
+        .map(|(key, ask)| {
+            let at = *heard.entry(key.clone()).or_insert(now);
+            let (id, ask) = match ask {
+                Ask::Permission(permission) => (
+                    key.client_id(false),
+                    AgentAsk::Permission {
+                        action: permission.action.clone(),
+                        resources: permission.resources.clone(),
+                    },
+                ),
+                Ask::Question(_) => (key.client_id(true), AgentAsk::Question),
+            };
+            AgentWaiting { id, session: key.session.clone(), at, ask }
+        })
+        .collect()
+}
+
 fn no_model() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -172,6 +200,29 @@ impl AgentSessionSource for Inventory {
 
     fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
         self.running.as_ref().map(SessionRuns::changes)
+    }
+
+    fn waiting(&self) -> Option<watch::Receiver<Arc<Vec<AgentWaiting>>>> {
+        let mut pending = self.running.as_ref()?.asks().pending();
+        let mut heard = std::collections::BTreeMap::new();
+        let (tell, waiting) = watch::channel(Arc::new(waiting_now(&pending.borrow_and_update(), &mut heard, kuvo_agents::background::now())));
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = pending.changed() => if changed.is_err() { return; },
+                    () = tell.closed() => return,
+                }
+                let next = waiting_now(&pending.borrow_and_update(), &mut heard, kuvo_agents::background::now());
+                tell.send_if_modified(|current| {
+                    let changed = **current != next;
+                    if changed {
+                        *current = Arc::new(next);
+                    }
+                    changed
+                });
+            }
+        });
+        Some(waiting)
     }
 
     fn session<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {

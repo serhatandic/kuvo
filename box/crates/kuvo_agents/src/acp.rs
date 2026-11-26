@@ -291,7 +291,7 @@ impl Adoption for Acp {
                 self.shared.discard(controller).await;
                 return Ok(());
             }
-            self.shared.adopt(controller).await?;
+            self.shared.adopt(controller, &record.program).await?;
             Ok(())
         })
     }

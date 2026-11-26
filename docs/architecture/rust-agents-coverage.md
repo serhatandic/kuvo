@@ -894,6 +894,195 @@ Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on t
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
 sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
+## The engine areas on agent conversations (4.7g)
+
+The `engine-*` conformance areas tested conversations on a stand-in engine. They now test a
+coding agent's conversations (the scripted Grok of `acp.mjs`; `bench.mjs` with `agents: true`
+gives each computer one, and the reference its bridge), so they run on both boxes once the
+engine's place is gone. Cases that test only how OpenCode's server works are left out, each with
+its reason. Rust's failures here are what 4.7d step 5 makes pass.
+
+| Area | Reference | Rust | Left out |
+|---|---|---|---|
+| engine-delivery | 4/4 | 5/5 | none |
+| engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
+| engine-typed | 7/7 | 6/7 | see below |
+| engine-asks | 6/6 | 5/6 | see below |
+| engine-worktree | 7/7 | 5/7 | see below |
+| engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
+| engine-live | runs only on Rust | 1/1, live | see below |
+
+Notes on each area:
+
+- **engine-delivery.** A draft waits on a computer only while its conversation's computer is
+  away: an agent's conversation takes a message at once. So the take-back and Steer/Send Now
+  cases run on two computers with the owner stopped. A draft to an agent's conversation no longer
+  asks the engine whether it may go (`typed.rs`).
+- **engine-search.** The cases seed agent conversations with their rows. The kept text is checked
+  in its true order: what was said, the latest last, then the steps. (The old check that it starts
+  with the latest sentence held only because the stand-in engine handed rows back newest first.)
+- **engine-typed.** Added: a conversation kept with an Autopilot mark opens and takes a message as
+  any other (Autopilot is gone from the app). Left out:
+  - "two retries recover a draft that never reached the engine before restart" and "a retry
+    waiting for the original draft leaves other requests responsive": both hold OpenCode's prompt
+    before it takes it, and an agent's line is the box's own;
+  - the explicit empty default and an unavailable engine catalog, since an agent's conversation
+    always has its model;
+  - the busy engine's uncertain answer.
+- **engine-asks.** The asks are the agent's own: its permission requests and Grok's questions.
+  Left out:
+  - "OpenCode permission cards preserve the shared Always button words": OpenCode's save patterns
+    and project-wide Always; an agent's Always is for its conversation, checked on its cards;
+  - "an MCP form goes to the first conversation waiting on its server…": OpenCode's folder-wide
+    MCP forms;
+  - the engine's own reply refusal and a busy engine;
+  - the raw `api/…/permission/…/reply` route, the engine passthrough's;
+  - the child-question and child-archive parts: ACP agents have no child conversations.
+
+  "A live permission read can expire an ask or discover a new local Block" is folded into the
+  Block case. Archiving stops a conversation whose turn waits on an ask, and leaves a busy one
+  running, as it did on the engine; a stopping turn's asks are withdrawn, so the agent hears each
+  was cancelled and a second archive finds nothing to stop. An agent's
+  asks count among what waits on you (`kuvo/waiting`, the asks line) through the agents' own
+  list of waiting asks (`AgentSessionSource::waiting`).
+- **engine-live.** A real model's question holds a queue through edits, delivery, a restart and
+  Stop, now on the OpenCode agent with OpenCode Go, as the app starts it. It runs only on the Rust
+  box: the reference starts an OpenCode model's conversation on its engine. On an agent's
+  conversation OpenCode runs under its computer, so a restart ends its turn: the question no
+  longer outlives one, and the restart part checks the saved draft and its delivery sent again.
+  Left out: the engine's own inbox (`api/session/…/inbox`) beside the queue. Passed once on the
+  Mac with a real OpenCode Go turn.
+- **engine-worktree.** Left out: "an interrupted start removes an unused worktree…" and "a
+  cancelled client leaves a worktree only if OpenCode created its conversation" (both cut
+  OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
+  answer to an agent start has no `worktree` field and names the branch after the title, so the
+  cases check the files and records.
+
+### engine-sessions
+
+The queue, its holds, Undo, receipts, the session list and its pages, now on a coding agent's
+line. A conversation at work is one whose turn the scripted Grok holds open. The queue is read
+as the app follows it, on its line (`…/queue/events`). The reference skips 9 cases, for four
+findings:
+
+- it doesn't mark a steer waiting in an agent's line as held, nor name the files on its queue
+  rows (6 cases);
+- it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
+  parts vector, and the agent that takes pictures);
+- a summary turns an agent conversation read with Mark All as Read unread again (it keeps only
+  its engine's conversations read).
+
+Rust's 7 failures are 4.7d step 5's:
+
+- a Steer on a stopped queue;
+- draining an unpaused saved queue after a restart;
+- a bot's sustained thinking;
+- the place Undo puts a message back;
+- the step words on an agent's rows;
+- the title of its summary;
+- Mark All as Read (`kuvo/sessions/read`) on agent conversations, and a summary keeping one read.
+
+Kept on the engine:
+
+- "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
+  passthrough stays for released 0.7.x Macs.
+
+Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
+(agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the
+engine's previous turn to settle" (now "the next queued message waits for the agent's turn to
+end").
+
+Left out, as only OpenCode's server works that way:
+
+- **OpenCode's handoff confirmation**, where its prompt was held, refused or unconfirmed:
+  - "Send Now keeps the waiting payload until OpenCode confirms the exact message" (what holds
+    for agents is now "Send Now on a stopped queue hands its agent the saved message…");
+  - "Edit protects a queued handoff until OpenCode replies and confirms the inbox";
+  - "Edit requires the exact message lookup after a refused queued handoff";
+  - "a native Send Now keeps settling the handoff after the client waits thirty seconds";
+  - "a delivered message leaves the displayed queue while its handoff backup survives";
+  - "Send Now recovers a confirmed message after the queue index fails to save";
+  - "Stop records messages on their way while it waits for a send in flight";
+  - "Stop holds a named send before its composed attachment reaches OpenCode";
+  - the "before acceptance" and "in the inbox" stages of "the same desktop send recovers a reply
+    lost …".
+- **OpenCode's inbox faults:**
+  - "Edit recovers an inbox draft after the inbox read fails" and "…after the transcript read
+    fails";
+  - "Edit refuses an inbox draft when delivery wins and the exact lookup fails";
+  - the refused-removal part of "Edit distinguishes an already delivered message…" (now "Edit
+    says a message already delivered isn't waiting");
+  - the unreadable-inbox parts of "queue reads keep the last complete inbox…" (now "the queue
+    line follows its agent's line…");
+  - "a limit reset waits for an unfinished removal before advancing the queue";
+  - "Stop only holds the messages still in the inbox after changing delivery".
+- **What OpenCode's own clients and server do:**
+  - "an external Stop holds the queue unless the conversation started again";
+  - "a quick Resume supersedes the external Stop before its delayed hold";
+  - "an idle inbox arrival advances after the grace period unless paused";
+  - "a failed turn drops its waiting summary and a failed summary lets the queue advance"
+    (OpenCode's summary as an inbox item);
+  - "a process exit releases its queue live and again after a resident restart";
+  - "queue recovery leaves an unknown turn alone and resumes an open turn on a replacement
+    engine";
+  - "a timed usage limit retries sending the first waiting message at reset" (an agent's limit
+    says only words; one that says when is "a usage limit that says when it resets shows the
+    time…").
+- **The engine's start-up queue scan** (`run/queues-scanned.json`): "a restart beside the same
+  engine scans its queues and preserves an explicit stop", and the scan part of the limit case
+  (now "a usage limit stops the queue until Resume, which a restart keeps").
+- **The engine's list and its reads:**
+  - "a session list saved before Needs you is read while OpenCode catches up";
+  - "a subagent changes only its own row and the parent whose list was reordered" (OpenCode's
+    subagent events; ACP agents have none);
+  - "the first inventory never publishes a conversation deleted while its page was held";
+  - "an earlier session read cannot bring back an old name or undo a pin or deletion";
+  - the "pending engine" snapshot of the list cursors case;
+  - the read counts of "a project file change refiles the saved inventory…";
+  - the removed worktree read from OpenCode's own database (now "linked worktrees and their
+    subfolders are filed under their project").
+- **Other engine-only parts:**
+  - "a raw session patch waits for the conversation's resident writer" (the passthrough);
+  - "Delete with an earlier revision refuses a session that vanishes during the request" (now a
+    stale revision);
+  - the held and failed writes of the note-writing case;
+  - OpenCode's own archive time in the actions case;
+  - the engine's refusal and slow lookup in the send and Add cases;
+  - the summary's live-line part.
+- **Engine-only by nature:** the running steps of the words fixture (a step still running when its
+  turn ended is cut short on an agent).
+
+### engine-models
+
+Cases 1–2 (stars and speeds) don't touch conversations and run as they were. The others test
+OpenCode's model catalog as its server served it. What the app still shows for OpenCode moves to
+the OpenCode agent's catalog (the pinned OpenCode, with a stand-in for deterministic runs), and
+never starts OpenCode just to list models. What is only the engine's plumbing is left out.
+
+| Case | What the user sees | Outcome | Reason |
+|---|---|---|---|
+| the model picker offers models that run and chooses a supported starting model | OpenCode's runnable models, retiring ones, efforts, Free, the starting model | moved | shown for OpenCode's models; the engine-conversation note goes, as OpenCode's conversations are an agent's |
+| the picker distinguishes free access from zero pricing and supplies an unnamed provider’s id | the Free label; a provider named by its id; "Choose a Model" when none runs | moved | shown in the picker |
+| the picker falls back from a signed-out default and says none when nothing runs | the starting model; none when nothing runs | moved | shown in the picker |
+| catalog reads are reused until a credential change publishes the new picker | a key added shows its models without a restart | moved | Settings › Accounts and the picker; the engine-bot note goes, as those bots run on the agent |
+| the engine's catalog distinguishes a working model, an account key and no default | "Example needs an OpenAI key…", Add Key, the plan hint | moved | the composer's refusal and action |
+| only known folders use a project’s models, and session readiness uses its own folder | a project's own models in its pickers | moved | shown per project and worktree |
+| session readiness retries a default the engine could not answer | nothing | left out | the engine's transient default |
+| an unloaded model catalog leaves session readiness and the picker start unknown | no refusal before the list is known | covered | agents-opencode "where OpenCode never ran, the picker offers it as an agent not yet listed, and nothing starts it" |
+| session readiness distinguishes sign-in, project credentials, and a model turned off | each provider's refusal words (key, sign-in, plan, gone) | moved | the composer's refusal and action |
+| a model removed from a catalog keeps the name the box last knew | "Model One is no longer available" | moved | the composer's refusal |
+| a model missing from a signed-in provider is marked gone while later models remain available | "… is no longer among Anthropic’s models" | moved | the composer's refusal |
+| provider refresh holds folders with active work and settles them after the work ends | Refresh Models brings new models | moved | the Settings action; holding busy folders on the engine's server goes |
+| a replacement engine clears an older pending provider refresh without closing a folder | nothing | left out | the engine's server restarting |
+| the picker settles a folder that finishes before its deferred GitLab refresh is saved | nothing | left out | the engine's folders closing |
+| overlapping picker refreshes share the release of a quiet folder and keep the busy one | nothing | left out | the engine's folders closing |
+| an engine-wide refresh checks new work and locations reopened while it closes them | nothing | left out | the engine's folders closing |
+| provider refresh refuses unavailable catalogs and engines without closing a folder | "refreshes by itself", "isn't on this computer" | moved | the Settings action's refusals; the engine's folders go |
+
+Counts: 11 moved, 1 covered, 5 left out. The moved cases are the area agents-opencode-models (8
+cases on the pinned OpenCode: the reference 8/8, Rust 0/8 until 4.7d step 5 gives the OpenCode
+agent's catalog what the engine's showed). Cases 1–2 run as they were.
+
 ## OpenCode's older conversations and bots (4.7d, in progress)
 
 Conversations made on the engine before OpenCode was a coding agent here, and bots on OpenCode's
@@ -1522,3 +1711,57 @@ reference ran the shared engine, agent, tools and work scenarios and the golden
 home; new steering behavior is deliberately Rust-only. The inbox integration
 tests (28/28) and ACP projection unit tests (4/4) also passed.
 All model-facing scenarios here use stand-ins; no live sign-ins were copied.
+
+## 4.10 — Side-by-side agent updates
+
+Deliberate difference from TypeScript (Work Queue #5056): updating a coding agent never
+waits for running turns, never times out waiting for them, and never locks new turns out.
+The TypeScript box is frozen and keeps its turn-wait behaviour; side-by-side cases skip
+the TypeScript reference with a one-line reason while all shared cases remain green on
+both boxes.
+
+- **Side-by-side store (`program_updates/store.rs`).** Each discovered executable is
+  fingerprinted and staged into `<home>/run/agents/programs/<program>/v_<key>/` (standalone
+  binaries including Windows `.exe`, Unix scripts, Windows `.cmd`/`.bat` shims with sibling
+  scripts, and npm global packages; macOS `.app/Contents` bundles pass through without
+  duplicating the app). `current` records the active `v_<key>` directory.
+- **OS file leases and cleanup.** Each held child process acquires a shared OS file lock on
+  `v_<key>.lease` in `hold/worker.rs` (zero changes to `hold/1`, so resident restarts and
+  Rust-to-Rust holder adoption keep the lease on the child's own version). Staging is
+  serialized by `install.lock`; lease acquisition and retirement are serialized by
+  `leases.lock`. When the last holder for an older version exits, its lease release renames
+  the old version directory aside and deletes it (with Windows retry for transient file
+  handles). Startup sweeps unused version directories, retired/aborted staging folders,
+  orphaned lease files, and legacy `agents/program-draining` / `agents/program-installing`
+  directories.
+- **Immediate cutover per adapter.** Codex (`codex/server.rs`), Claude Code
+  (`claude/thread.rs`), and shared ACP (`acp/server.rs`, covering Grok and Antigravity
+  `agy`) start new turns and new agent processes on the newly staged version at once, while
+  existing processes with active turns retire cleanly once idle and exit so their old version
+  directory is removed. Adopted holders running a superseded staged version are marked
+  outdated and retire once their recovered turns finish. OpenCode stays pinned with each box
+  release under `<home>/engine/<version>/`; Cursor currently runs through the Bun SDK
+  (`RuntimePackages`, no installed CLI yet) and will inherit the shared staging path if a
+  CLI is added in 4.5.
+- **One update per program, one state in Settings › Accounts.** Only one update runs per
+  program at a time; concurrent asks join it. In `account_rows.rs`, only the primary account
+  row carries `latestVersion`, `outdated`, `updateCommand`, `updates`, `programUpdate`, and
+  `updateAll`, while added accounts still show `version`. The turn-wait timeout path and
+  `session_runs/programs.rs` drain gate are removed; failed installs report the installer's
+  output plainly with Retry.
+
+| Verification | Unit (`program_updates`) | `agents-updates` conformance |
+|---|---:|---:|
+| macOS (Rust) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| macOS (TypeScript reference) | — | 9/9 (5 Rust-only skipped) |
+| Linux x86-64, lokum (`--cpus=1 --memory=1g`) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| WSL2, Ubuntu 24.04 (static musl) | 12/12 | 13/13 (1 TS-only wait skipped) |
+| Native Windows x64 (`gnullvm` + `libunwind.dll`) | 9/9 (incl. running `.exe` lock test) | 12/12 (2 skipped: TS-only wait, Unix symlink) |
+
+All four applicable agents (Codex, Claude Code, Grok, Antigravity) have side-by-side
+conformance cases verified on all four platforms using stand-ins (never running live `agy`
+or any browser-opening command). Size: `program_updates/{mod,versions,notices,store}.rs` is
+1,882 lines / 54,705 non-indent chars vs 725 lines / 33,852 non-indent chars for the four
+TypeScript files it replaces (`maintenance.ts`, `updates.ts`, `update-notices.ts`,
+`shared/agent-updates.ts`; 1.62× chars, adding side-by-side staging and OS leases while
+deleting 493 lines of drain/hold logic).

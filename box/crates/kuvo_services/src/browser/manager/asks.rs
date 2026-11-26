@@ -8,7 +8,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{broadcast, oneshot};
+use tokio::{
+    sync::{broadcast, oneshot},
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
 struct Pending {
@@ -19,14 +22,19 @@ struct Pending {
 pub struct BrowserAsks(Arc<Inner>);
 struct Inner {
     run: PathBuf,
-    waiting: Mutex<HashMap<String, Pending>>,
+    state: Mutex<State>,
     events: broadcast::Sender<Value>,
+}
+#[derive(Default)]
+struct State {
+    waiting: HashMap<String, Pending>,
+    sites: HashMap<String, Instant>,
 }
 impl BrowserAsks {
     pub(super) fn new(run: PathBuf, events: broadcast::Sender<Value>) -> Self {
         Self(Arc::new(Inner {
             run,
-            waiting: Mutex::default(),
+            state: Mutex::default(),
             events,
         }))
     }
@@ -41,29 +49,44 @@ impl BrowserAsks {
     }
     pub(super) fn pending(&self) -> Vec<Value> {
         self.0
-            .waiting
+            .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .waiting
             .values()
             .map(|a| a.params.clone())
             .collect()
     }
     pub fn answer(&self, id: &str, given: Value) -> bool {
-        let mut waiting = self.0.waiting.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(ask) = waiting.remove(id) else {
+        let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(ask) = state.waiting.remove(id) else {
             return false;
         };
-        self.record(&waiting);
+        self.record(&state.waiting);
         let _ = self
             .0
             .events
             .send(json!({"method":"Kuvo.askClosed","params":{"id":id}}));
         ask.reply.send(given).is_ok()
     }
+    pub(super) fn mark_passkey(&self, host: &str) {
+        let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .sites
+            .retain(|_, at| at.elapsed() < Duration::from_secs(600));
+        state.sites.insert(host.into(), Instant::now());
+        for ask in state.waiting.values_mut() {
+            if ask.params["host"] == host {
+                ask.params["passkey"] = json!(true);
+            }
+        }
+        self.record(&state.waiting);
+    }
     pub(super) fn clear(&self) {
-        let mut waiting = self.0.waiting.lock().unwrap_or_else(|e| e.into_inner());
-        waiting.clear();
-        self.record(&waiting);
+        let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.waiting.clear();
+        state.sites.clear();
+        self.record(&state.waiting);
     }
     pub(super) async fn ask(&self, mut params: Value, cancel: &CancellationToken) -> Value {
         if cancel.is_cancelled() {
@@ -75,20 +98,28 @@ impl BrowserAsks {
         params["id"] = json!(id);
         let (reply, answer) = oneshot::channel();
         {
-            let mut waiting = self.0.waiting.lock().unwrap_or_else(|e| e.into_inner());
-            waiting.insert(
+            let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+            if params["host"].as_str().is_some_and(|host| {
+                state
+                    .sites
+                    .get(host)
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(600))
+            }) {
+                params["passkey"] = json!(true);
+            }
+            state.waiting.insert(
                 id.clone(),
                 Pending {
                     params: params.clone(),
                     reply,
                 },
             );
-            self.record(&waiting);
+            self.record(&state.waiting);
+            let _ = self
+                .0
+                .events
+                .send(json!({"method":"Kuvo.asked","params":params}));
         }
-        let _ = self
-            .0
-            .events
-            .send(json!({"method":"Kuvo.asked","params":params}));
         let _guard = Guard {
             asks: self.clone(),
             id,
@@ -106,14 +137,9 @@ struct Guard {
 }
 impl Drop for Guard {
     fn drop(&mut self) {
-        let mut waiting = self
-            .asks
-            .0
-            .waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if waiting.remove(&self.id).is_some() {
-            self.asks.record(&waiting);
+        let mut state = self.asks.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.waiting.remove(&self.id).is_some() {
+            self.asks.record(&state.waiting);
             let _ = self
                 .asks
                 .0

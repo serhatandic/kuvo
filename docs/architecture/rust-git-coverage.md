@@ -346,3 +346,17 @@ The first native test package also lacked the cross compiler's runtime DLL;
 including the matching x64 `libunwind.dll` resolved its loader error. The
 corrected worktree area passed 22/22 on all four platforms; all test homes,
 processes and the capped test container were cleaned up.
+
+After merging local main `df3f3bcec` (4.7g), the macOS worktree, Git, files,
+agent-tools and agents areas passed again on Rust and on the TS reference
+(the reference's one documented agent-tools skip remains). The engine-worktree
+area now exercises coding-agent conversations as well as the two retained
+OpenCode create/cancel cases: TS 9/9, Rust 8/9 (the already known finished-notice
+mark on an agent start). Its native header explicitly reports Build, rather
+than the absent agent field of OpenCode's create reply. The changed
+engine-sessions area is TS 46 passed, 9 documented skips; Rust 48/55, with
+exactly the seven pre-existing failures listed under 4.7g in
+[rust-agents-coverage.md](rust-agents-coverage.md#the-engine-areas-on-agent-conversations-47g).
+Those failures remain owned by 4.7c+d step 5, not by the worktree port.
+The workspace and Bun checks are clean; no Windows path handling changed in
+the merge resolution.

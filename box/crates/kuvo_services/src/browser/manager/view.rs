@@ -354,7 +354,7 @@ async fn serve(
     let status = json!({"working":!workers.is_empty(),"pages":tabs.working.keys().collect::<Vec<_>>(),"workers":workers});
     let hello = event(
         "Kuvo.hello",
-        json!({"targetId":tabs.active,"status":status,"version":"dev","keeper":51,"build":"native","idleStop":true,"asks":live.asks.pending(),"viewers":tabs.viewers,"held":tabs.held.keys().collect::<Vec<_>>(),"holdMacs":tabs.hold_macs,"passkeys":{}}),
+        json!({"targetId":tabs.active,"status":status,"version":"dev","keeper":51,"build":"native","idleStop":true,"asks":live.asks.pending(),"viewers":tabs.viewers,"held":tabs.held.keys().collect::<Vec<_>>(),"holdMacs":tabs.hold_macs,"passkeys":tabs.passkeys}),
     );
     let count = tabs.viewers;
     drop(tabs);

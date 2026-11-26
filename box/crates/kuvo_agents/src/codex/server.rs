@@ -141,6 +141,8 @@ pub(super) struct Route {
 #[derive(Default)]
 struct Slot {
     server: Option<Arc<Server>>,
+    /// Older app-servers finishing turns after a program update; each stops once quiet.
+    retired: Vec<Arc<Server>>,
     /// Stopped this many times: one stopped while starting isn't kept.
     stops: u64,
     /// The one still running with what changed since it started.
@@ -260,6 +262,17 @@ impl Shared {
             .filter(|server| !server.closed())
     }
 
+    /// Every app-server running now (the active one plus any retired servers finishing turns).
+    pub async fn all_running(&self) -> Vec<Arc<Server>> {
+        let slot = self.slot.lock().await;
+        slot.server
+            .iter()
+            .chain(slot.retired.iter())
+            .filter(|server| !server.closed())
+            .cloned()
+            .collect()
+    }
+
     async fn start(
         self: &Arc<Self>,
         compaction: &str,
@@ -269,7 +282,7 @@ impl Shared {
     ) -> io::Result<Arc<Server>> {
         let mut halted = self.shutdowns.subscribe();
         let program = self.program.clone();
-        let launch = {
+        let (launch, _staged) = {
             let compaction = compaction.to_owned();
             tokio::task::spawn_blocking(move || program.launch(&compaction)).await??
         };
@@ -281,6 +294,7 @@ impl Shared {
                 }
             })
             .await?;
+        drop(_staged);
         let server = self.serve(
             controller,
             compaction.to_owned(),
@@ -334,8 +348,14 @@ impl Shared {
     }
 
     /// An app-server an earlier resident left held, this resident's own again as it is
-    /// (initialized already: Codex refuses a second time).
-    pub async fn adopt(self: &Arc<Self>, controller: Controller) -> io::Result<Arc<Server>> {
+    /// (initialized already: Codex refuses a second time). One running an older staged version
+    /// (or beside an active one) is adopted as retired so its turns finish while new turns use
+    /// the current version.
+    pub async fn adopt(
+        self: &Arc<Self>,
+        controller: Controller,
+        program_path: &std::path::Path,
+    ) -> io::Result<Arc<Server>> {
         let meta = controller.welcome.meta.clone();
         // (Its own IDs past those any earlier resident sent it.)
         let first = controller
@@ -355,25 +375,28 @@ impl Shared {
             .cloned()
             .unwrap_or_default();
         let server = self.serve(controller, compaction, identity, first, turns);
+        let outdated = crate::program_updates::store::is_outdated_executable(
+            self.program.home.root(),
+            "codex",
+            program_path,
+        );
         let mut slot = self.slot.lock().await;
-        if slot
+        let has_active = slot
             .server
             .as_ref()
-            .is_some_and(|running| !running.closed())
-        {
-            drop(slot);
-            server.rpc.stop().await;
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Codex has an app-server running already.",
-            ));
+            .is_some_and(|running| !running.closed());
+        if outdated || has_active {
+            slot.retired.push(server.clone());
+        } else {
+            slot.server = Some(server.clone());
+            slot.last_use = Some(Instant::now());
         }
-        slot.server = Some(server.clone());
-        slot.last_use = Some(Instant::now());
         drop(slot);
         self.watch_idle();
         self.note_activity();
-        self.refresh_catalog(server.clone());
+        if !outdated {
+            self.refresh_catalog(server.clone());
+        }
         Ok(server)
     }
 
@@ -526,6 +549,7 @@ impl Shared {
                     {
                         slot.server = None;
                     }
+                    slot.retired.retain(|retired| retired.id != server.id);
                 }
                 self.account.server_stopped(server.id);
                 self.note_activity();
@@ -572,6 +596,30 @@ impl Shared {
         self.stopped(id);
     }
 
+    /// Stop any retired app-servers that no longer have busy turns.
+    async fn stop_quiet_retired(&self) {
+        let stopping = {
+            let mut slot = self.slot.lock().await;
+            let mut stopping = Vec::new();
+            slot.retired.retain(|server| {
+                if server.closed() {
+                    false
+                } else if !self.busy(server.id) {
+                    stopping.push(server.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            stopping
+        };
+        for server in stopping {
+            eprintln!("Stopping Codex app-server: outdated");
+            server.rpc.stop().await;
+            self.stopped(server.id);
+        }
+    }
+
     /// Sleep to the actual idle deadline; a busy or attached server has no idle timer.
     fn watch_idle(self: &Arc<Self>) {
         if self.idle_check.swap(true, Ordering::Relaxed) { return; }
@@ -582,6 +630,7 @@ impl Shared {
             loop {
                 let Some(here) = shared.upgrade() else { return; };
                 here.restart_if_quiet(None, None).await;
+                here.stop_quiet_retired().await;
                 let (due, stop) = {
                     let mut slot = here.slot.lock().await;
                     if let Some(server) = slot.server.clone() {
@@ -630,18 +679,22 @@ impl Shared {
         self.shutdowns.send_modify(|count| *count += 1);
     }
 
-    /// Stops the app-server (and one starting: its start then fails).
+    /// Stops the app-server (and any retired servers or one starting: its start then fails).
     pub async fn shutdown(&self) {
         self.halt();
         // A start under way ends first, and stops what it started: a holder isn't left starting
         // as the resident goes.
         let _ = tokio::time::timeout(ENDS, self.starting.lock()).await;
-        let server = {
+        let servers = {
             let mut slot = self.slot.lock().await;
             slot.stops += 1;
-            slot.server.take()
+            let mut all = std::mem::take(&mut slot.retired);
+            if let Some(server) = slot.server.take() {
+                all.push(server);
+            }
+            all
         };
-        if let Some(server) = server {
+        for server in servers {
             eprintln!("Stopping Codex app-server: shutdown");
             server.rpc.stop().await;
             server.rpc.ended(ENDS).await;
@@ -652,52 +705,58 @@ impl Shared {
     /// A turn taken up that no conversation here goes on with: stopped in Codex, and the lines of
     /// the others come.
     pub async fn let_go(&self, turn: &crate::hold::TurnNote) -> io::Result<()> {
-        let Some(server) = self.current().await else {
-            return Ok(());
-        };
-        let thread = lock(&server.turns)
-            .iter()
-            .find(|(_, note)| note["session"] == turn.session.as_str())
-            .map(|(thread, _)| thread.clone());
-        let Some(thread) = thread else { return Ok(()) };
-        server.note_turn(&thread, None).await;
-        if let Some(codex) = turn
-            .state
-            .as_ref()
-            .and_then(|state| state["codexTurn"].as_str())
-        {
-            let _ = server
-                .rpc
-                .request(
-                    "turn/interrupt",
-                    Some(json!({ "threadId": thread, "turnId": codex })),
-                    Some(Duration::from_secs(30)),
-                )
-                .await;
+        for server in self.all_running().await {
+            let thread = lock(&server.turns)
+                .iter()
+                .find(|(_, note)| note["session"] == turn.session.as_str())
+                .map(|(thread, _)| thread.clone());
+            let Some(thread) = thread else { continue };
+            server.note_turn(&thread, None).await;
+            if let Some(codex) = turn
+                .state
+                .as_ref()
+                .and_then(|state| state["codexTurn"].as_str())
+            {
+                let _ = server
+                    .rpc
+                    .request(
+                        "turn/interrupt",
+                        Some(json!({ "threadId": thread, "turnId": codex })),
+                        Some(Duration::from_secs(30)),
+                    )
+                    .await;
+            }
+            server.ready(&thread);
         }
-        server.ready(&thread);
         Ok(())
     }
 
-    /// Its program was updated: the app-server on the old one (or starting on it now) starts
-    /// again once nothing uses it, and what it listed is asked anew.
+    /// Its program was updated: the active app-server on the old version is retired so new turns
+    /// start on the new version at once while running turns finish undisturbed, and idle ones stop
+    /// immediately.
     pub async fn program_updated(&self) {
         self.account.forget_models();
         let starting = self.starting.lock().await;
         {
             let mut slot = self.slot.lock().await;
-            if let Some(server) = slot.server.clone() {
-                mark(&mut slot, server.id, "program");
+            slot.outdated = None;
+            if let Some(server) = slot.server.take() {
+                slot.stops += 1;
+                slot.retired.push(server);
             }
         }
         drop(starting);
-        self.restart_if_quiet(None, None).await;
+        self.stop_quiet_retired().await;
+        self.note_activity();
     }
 
-    /// Lets go of the app-server for the next resident, as it is.
+    /// Lets go of the app-server (and any retired servers) for the next resident, as they are.
     pub async fn detach(&self) {
         self.shutdowns.send_modify(|count| *count += 1);
-        self.slot.lock().await.server.take();
+        let mut slot = self.slot.lock().await;
+        slot.server.take();
+        slot.retired.clear();
+        drop(slot);
         self.note_activity();
     }
 }

@@ -137,6 +137,10 @@ impl TurnSink for ResidentSink {
     fn cancel_ask<'a>(&'a self, id: &'a str) -> AdapterCall<'a, ()> {
         Box::pin(self.asks.cancel(id))
     }
+
+    fn cancel_asks(&self) -> AdapterCall<'_, ()> {
+        Box::pin(self.asks.cancel_all())
+    }
 }
 
 fn closed() -> io::Error {

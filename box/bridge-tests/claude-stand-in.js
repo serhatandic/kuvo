@@ -14,8 +14,8 @@ const boxModules = fileURLToPath(new URL("../node_modules", import.meta.url));
 
 /** The stand-in in `root`'s `.local/bin`, and the SDK in the bridge's `agents` folder: the folder to
  * put first on the bridge's PATH. */
-export function standInClaude({ root, agents, stands = "opus", signedIn = true, catalog, turns = false, authMethod = "claude.ai" }) {
-  const bin = path.join(root, ".local", "bin");
+export function standInClaude({ root, agents, stands = "opus", signedIn = true, catalog, turns = false, authMethod = "claude.ai", nativeInstall = false }) {
+  const bin = nativeInstall ? path.join(root, ".local", "share", "claude", "bin") : path.join(root, ".local", "bin");
   fs.mkdirSync(bin, { recursive: true });
   const named = { opus: "Opus 5.5", sonnet: "Sonnet 5.5" };
   const models = catalog ?? [
@@ -33,6 +33,22 @@ const signIn = paths.join(recordHome, "fixture-signed-in");
 const credential = paths.join(credentialHome, ".credentials.json");
 const record = paths.join(recordHome, ".claude.json");
 fs.appendFileSync(paths.join(${JSON.stringify(root)}, "claude-processes.jsonl"), JSON.stringify({pid:process.pid,args}) + String.fromCharCode(10));
+const versionFile = paths.join(${JSON.stringify(root)}, "claude-version");
+const currentVersion = () => fs.existsSync(versionFile) ? fs.readFileSync(versionFile, "utf8").trim() : "1.0.0";
+if (args[0] === "--version") {
+  process.stdout.write(currentVersion() + " (Claude Code)\\n");
+  process.exit(0);
+}
+if (args[0] === "update") {
+  const toFile = paths.join(${JSON.stringify(root)}, "claude-update-to");
+  fs.appendFileSync(paths.join(${JSON.stringify(root)}, "claude-processes.jsonl"), JSON.stringify({pid:process.pid,update:true}) + String.fromCharCode(10));
+  if (fs.existsSync(toFile)) {
+    fs.writeFileSync(versionFile, fs.readFileSync(toFile, "utf8").trim());
+    const exe = paths.join(paths.dirname(process.argv[1]), process.platform === "win32" ? "claude.cmd" : "claude");
+    fs.appendFileSync(exe, process.platform === "win32" ? "\\r\\n" : "\\n");
+  }
+  process.exit(0);
+}
 if (args[0] === "auth") {
   if (args[1] === "login") {
     console.log("Open https://claude.example.test/sign-in");
@@ -71,7 +87,7 @@ const scriptFile = ${JSON.stringify(path.join(root, "claude-script.json"))};
 const heard = ${JSON.stringify(path.join(root, "claude-heard.jsonl"))};
 const hear = value => { if (scriptedTurns) fs.appendFileSync(heard, JSON.stringify({ pid: process.pid, ...value }) + "\\n"); };
 // Its arguments, and what the box set for it (a secret's only that it's set).
-hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
+hear({ argv: args, script: process.argv[1], startedVersion: currentVersion(), cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
   .filter(([name]) => /^(CLAUDE_|DISABLE_|ANTHROPIC_|KUVO_)/.test(name))
   .map(([name, value]) => [name, /TOKEN|KEY|SECRET|PASSWORD/.test(name) ? "<set>" : value])) });
 // Something it leaves running that holds its error output open: it says \`stderr\` once

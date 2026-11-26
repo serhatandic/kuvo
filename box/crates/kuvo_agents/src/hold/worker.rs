@@ -82,6 +82,7 @@ pub(super) async fn run(
     let program = command
         .next()
         .ok_or_else(|| invalid("Missing agent program"))?;
+    let program_lease = crate::program_updates::store::Lease::acquire_for_executable(&program);
     let executable = which(program.as_os_str(), &env, &[]).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -155,7 +156,9 @@ pub(super) async fn run(
     {
         return Err(error);
     }
-    state.serve(listener, child, stopping).await
+    let result = state.serve(listener, child, stopping).await;
+    drop(program_lease);
+    result
 }
 
 fn duration(ms: Option<u64>) -> Duration {
