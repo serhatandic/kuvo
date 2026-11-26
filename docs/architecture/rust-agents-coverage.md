@@ -907,7 +907,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-delivery | 4/4 | 5/5 | none |
 | engine-search | 4/4 | 0/4 | the engine's read counts; an engine whose list fails |
 | engine-typed | 7/7 | 6/7 | see below |
-| engine-asks | 5/5 (1 skipped) | 4/6 | see below |
+| engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 5/7 | see below |
 | engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
@@ -940,8 +940,9 @@ Notes on each area:
   - the child-question and child-archive parts: ACP agents have no child conversations.
 
   "A live permission read can expire an ask or discover a new local Block" is folded into the
-  Block case. Archiving doesn't stop an agent's run on either box; that is a bug, fixed on the
-  Rust box in 4.7d step 5 (the reference is frozen, so its case stays skipped there). An agent's
+  Block case. Archiving stops a conversation whose turn waits on an ask, and leaves a busy one
+  running, as it did on the engine; a stopping turn's asks are withdrawn, so the agent hears each
+  was cancelled and a second archive finds nothing to stop. An agent's
   asks count among what waits on you (`kuvo/waiting`, the asks line) through the agents' own
   list of waiting asks (`AgentSessionSource::waiting`).
 - **engine-live.** A real model's question holds a queue through edits, delivery, a restart and

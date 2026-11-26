@@ -161,27 +161,30 @@ test("a question changes the conversation's asks and the waiting counts on the l
   assert.deepEqual(answers(), [{ outcome: "accepted", answers: { "Which language?": ["Rust"] } }]);
 });
 
-// (The reference saves an agent conversation's archive mark without stopping its run.)
-const keepsRunning = boxBinary().typescript && "The reference doesn't stop a coding agent's run when its conversation is archived.";
-test("archiving stops a conversation's run, while an unrelated run keeps going", { timeout: 60000, skip: keepsRunning }, async t => {
+test("archiving stops a conversation that asks, while an unrelated run keeps going", { timeout: 60000 }, async t => {
   const [parent, busy] = ["ses_archived", "ses_busy"];
-  const hang = [words("Working"), "hang"];
-  const { here, record, go } = await asking(t, "engine-archive-waiting", { [parent]: { steps: hang }, [busy]: { steps: hang } });
+  const asked = { id: "next", question: "Go on?", options: [{ label: "Yes" }] };
+  const { here, record, go, card } = await asking(t, "engine-archive-waiting", {
+    [parent]: { steps: [question("q1", asked), words("Going on.")] },
+    [busy]: { steps: [words("Working"), "hang"] },
+  });
   for (const id of [parent, busy]) await go(id);
   const runs = () => here.agents.sent("session/prompt").map(message => message.params.sessionId);
   await until(() => runs().length === 2, "Both turns never started.", 20000);
   const native = Object.fromEntries([parent, busy].map(id => [id, runs()[here.agents.prompts().findIndex(text => text.includes(id))]]));
+  await card(parent, ask => ask.kind === "question", "It never asked.");
   const cancelled = () => here.agents.sent("session/cancel").map(message => message.params.sessionId);
   const archive = (id, archived) => request(record, "POST", `kuvo/sessions/${id}/archive`, { archived }, headers);
-  const archived = await archive(parent, true);
-  assert.equal(archived.status, 200, archived.text);
-  await until(() => cancelled().includes(native[parent]), "Archiving didn't stop its run.", 20000);
+  for (const id of [parent, busy]) {
+    const archived = await archive(id, true);
+    assert.equal(archived.status, 200, archived.text);
+  }
+  await until(() => cancelled().includes(native[parent]), "Archiving didn't stop the conversation that asks.", 20000);
   assert.equal((await archive(parent, false)).status, 200);
   assert.equal((await archive(parent, true)).status, 200);
   assert.deepEqual(cancelled(), [native[parent]]);
-  const listed = await request(record, "GET", "kuvo/sessions/list", undefined, headers);
-  assert.ok(JSON.stringify(listed.json).includes(busy), listed.text);
-  assert.equal(cancelled().includes(native[busy]), false);
+  const active = await request(record, "GET", "kuvo/agents/api/session/active", undefined, headers);
+  assert.ok(JSON.stringify(active.json).includes(busy), active.text);
 });
 
 test("waiting counts include a bot’s delegated ask and open Work Queue items once each", { timeout: 60000 }, async t => {

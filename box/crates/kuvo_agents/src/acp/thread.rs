@@ -1815,7 +1815,8 @@ impl Actor {
             .await
     }
 
-    /// Stop: it's told to cancel; a turn that hasn't ended a while later ends as stopped.
+    /// Stop: what it asks is withdrawn (it hears each was cancelled) and it's told to cancel; a
+    /// turn that hasn't ended a while later ends as stopped.
     async fn interrupt(&mut self, turn: &str) -> io::Result<()> {
         let restarts = self.shared.flavour.restarts_after_stop();
         let Some(active) = self.active.as_mut().filter(|active| active.id == turn) else {
@@ -1829,6 +1830,7 @@ impl Actor {
             self.stale = true;
             active.process.retire();
         }
+        let _ = active.sink.cancel_asks().await;
         self.cancel_native().await;
         Ok(())
     }

@@ -191,6 +191,14 @@ impl TurnAsks {
             .await
     }
 
+    /// Withdraw every ask of the turn still waiting (it's stopping), keeping the turn open for
+    /// what its agent says as it stops.
+    pub async fn cancel_all(&self) -> io::Result<()> {
+        self.book
+            .call(|reply| Command::End(self.session.clone(), self.turn.clone(), reply))
+            .await
+    }
+
     pub async fn end(&self) -> io::Result<()> {
         self.ended.store(true, Ordering::Release);
         self.book
