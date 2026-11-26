@@ -46,6 +46,7 @@ pub(crate) struct Projection {
     /// A summary you asked for: its row (the turn's own ID) says how it went,
     /// and the conversation's last outcome stays as it was.
     summary: bool,
+    own: bool,
     summary_started: Option<u64>,
     limits: Arc<dyn PlanLimits>,
 }
@@ -92,6 +93,7 @@ impl Projection {
             prior,
             spent: Usage::default(),
             summary: false,
+            own: matches!(input.kind, TurnKind::AgentStarted),
             summary_started: None,
             limits: Arc::new(Unheard),
         };
@@ -518,6 +520,17 @@ impl TurnWriter for Projection {
                 self.drop_unreplayed().await?;
             }
             let rows = self.rows(&event.event);
+            if let TurnEvent::Finished(result) = &event.event
+                && !self.summary
+                && !self.own
+                && let Some(last) = rows.last().and_then(|row| row["id"].as_str())
+            {
+                // Keep native progress before the idle row becomes visible. A crash between
+                // these writes leaves an absent cursor, which safely hands the history again.
+                self.store
+                    .note_seen(&self.session, &self.model.provider, &self.turn, last, result)
+                    .await?;
+            }
             self.write(rows).await?;
             self.update_header(&event.event).await
         })

@@ -43,6 +43,7 @@ pub struct ResidentSink {
     /// The agent whose slot its checkpoints write.
     provider: String,
     store: SessionStore,
+    roster: Option<Arc<crate::roster::Roster>>,
     asks: TurnAsks,
     policy: Arc<dyn TurnPolicy>,
     events: mpsc::Sender<EventWrite>,
@@ -53,6 +54,7 @@ impl ResidentSink {
         session: String,
         provider: String,
         store: SessionStore,
+        roster: Option<Arc<crate::roster::Roster>>,
         asks: TurnAsks,
         policy: Arc<dyn TurnPolicy>,
     ) -> (Arc<Self>, mpsc::Receiver<EventWrite>) {
@@ -61,6 +63,7 @@ impl ResidentSink {
             session,
             provider,
             store,
+            roster,
             asks,
             policy,
             events,
@@ -103,6 +106,10 @@ impl TurnSink for ResidentSink {
                 Err(closed())
             }
         })
+    }
+
+    fn handover<'a>(&'a self, prompt: &'a str, fresh: bool) -> AdapterCall<'a, Option<String>> {
+        Box::pin(self.store.handover(&self.session, &self.provider, prompt, fresh, self.roster.as_deref()))
     }
 
     fn preflight(&self, ask: PermissionAsk, native_plan: bool) -> AdapterCall<'_, Preflight> {

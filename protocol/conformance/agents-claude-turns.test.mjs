@@ -507,12 +507,7 @@ describe("summarizing when you ask (/compact)", { skip }, () => {
     assert.match(answer.text, /There's nothing to summarize yet: Claude Code hasn't started on this conversation\./);
   });
 
-  // The reference bridge counts a conversation as started once its agent has seen it (the
-  // handover's `seen` cursor); the Rust resident, without that cursor yet, by the agent's saved
-  // state. 4.6 brings the cursor and turns this into a passing case.
-  test("one whose agent has a conversation saved but hasn't seen this one is refused, saying why", {
-    todo: boxBinary().typescript ? false : "4.6: the handover's seen cursor",
-  }, async () => {
+  test("one whose agent has a conversation saved but hasn't seen this one is refused, saying why", async () => {
     const { id } = box.next({ slot: true });
     const answer = await box.claude.compact(id);
     assert.equal(answer.status, 400, answer.text);

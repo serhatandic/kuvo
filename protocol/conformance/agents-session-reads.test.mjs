@@ -3,9 +3,11 @@
 // (`kuvo/agents/api/session/:id`), and its model (`POST …/:id/model`). Real: each box and its
 // sessions. Stand-in: Codex.
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, openLine, request, until } from "./adapter.mjs";
-import { askFirst } from "./claude.mjs";
+import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
+import { askFirst, scriptedClaude } from "./claude.mjs";
+import { providers, scriptedAcp } from "./acp.mjs";
 import { provider, scriptedCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
@@ -127,3 +129,139 @@ test("a conversation's changes reach a client following the agents' feed on the 
       line.close();
     }
   }));
+
+test("a new agent is told what came before, but its next message is just the user's words", { skip, timeout: 60000 }, () =>
+  withCodex((codex) => {
+    codex.seed("ses_carried");
+    write(path.join(codex.home, "agents/sessions/ses_carried/messages.json"), JSON.stringify([
+      { type: "user", id: "msg_old", time: { created: 1 }, text: "Please explain the parser." },
+      { type: "assistant", id: "msg_reply", time: { created: 2, completed: 3 }, agent: "build", model: { providerID: "claude-code", id: "haiku" }, content: [
+        { type: "text", id: "part_old", text: "The parser reads a token." },
+        { type: "tool", id: "call_old", name: "edit", state: { status: "completed", input: { path: "src/parser.ts" }, content: [] } },
+      ] },
+      { type: "idle", id: "msg_idle", outcome: "succeeded", time: { created: 4 } },
+    ]));
+  }, async (codex) => {
+    await codex.prompt("ses_carried", "What about the lexer?");
+    await codex.idles("ses_carried", 2);
+    const words = (sent) => sent.params.input[0].text.split("\n\n<from-phone>")[0];
+    const first = words(codex.sent("turn/start")[0]);
+    assert.match(first, /This conversation began with another agent/);
+    assert.match(first, /Please explain the parser\./);
+    assert.match(first, /The parser reads a token\./);
+    assert.match(first, /\[File change\]\nsrc\/parser\.ts/);
+    assert.ok(first.indexOf("The parser reads a token.") < first.indexOf("src/parser.ts"));
+    assert.ok(first.endsWith("User message:\nWhat about the lexer?"), first);
+    const rows = await codex.rows("ses_carried");
+    assert.equal(rows.filter((row) => row.type === "user").at(-1).text.split("\n\n<from-phone>")[0], "What about the lexer?");
+    await codex.prompt("ses_carried", "And its output?");
+    await codex.idles("ses_carried", 3);
+    const next = words(codex.sent("turn/start")[1]);
+    assert.equal(next, "And its output?");
+  }));
+
+test("a missing native conversation starts over with its transcript, not just the next question", { skip, timeout: 60000 }, () =>
+  withCodex((codex) => {
+    const native = "0199a000-0000-7000-8000-000000000001";
+    codex.seed("ses_missing_native", { state: { codexThread: native } });
+    const folder = path.join(codex.home, "agents/sessions/ses_missing_native");
+    write(path.join(folder, "agent.json"), JSON.stringify({
+      threads: { [provider]: { state: { codexThread: native }, seen: "msg_idle" } },
+    }));
+    write(path.join(folder, "messages.json"), JSON.stringify([
+      { type: "user", id: "msg_old", time: { created: 1 }, text: "Remember the first question." },
+      { type: "assistant", id: "msg_answer", time: { created: 2, completed: 3 }, agent: "build", model: { providerID: provider, id: "gpt-test" }, content: [
+        { type: "text", id: "part_answer", text: "Here is the first answer." },
+      ] },
+      { type: "idle", id: "msg_idle", outcome: "succeeded", time: { created: 4 } },
+    ]));
+    write(path.join(codex.root, "codex-gone.json"), JSON.stringify([native]));
+  }, async (codex) => {
+    await codex.prompt("ses_missing_native", "Continue from there.");
+    await codex.idles("ses_missing_native", 2);
+    const prompt = codex.sent("turn/start")[0].params.input[0].text;
+    assert.match(prompt, /Remember the first question\./);
+    assert.match(prompt, /Here is the first answer\./);
+    assert.match(prompt, /User message:\nContinue from there\./);
+    assert.equal(codex.sent("thread/start").length, 1);
+  }));
+
+test("returning to an earlier agent tells it only what happened since its last turn", { skip, timeout: 60000 }, () =>
+  withCodex((codex) => {
+    const native = "0199a000-0000-7000-8000-000000000003";
+    codex.seed("ses_back");
+    const folder = path.join(codex.home, "agents/sessions/ses_back");
+    write(path.join(folder, "agent.json"), JSON.stringify({
+      threads: { [provider]: { state: { codexThread: native }, seen: "msg_seen" } },
+    }));
+    const reply = (id, maker, model, text, created) => ({
+      type: "assistant", id, time: { created, completed: created }, agent: "build",
+      model: { providerID: maker, id: model }, content: [{ type: "text", id: id + "_part", text }],
+    });
+    write(path.join(folder, "messages.json"), JSON.stringify([
+      { type: "user", id: "msg_first", time: { created: 1 }, text: "First question, already seen." },
+      reply("msg_first_answer", provider, "gpt-test", "First answer, already seen.", 2),
+      { type: "idle", id: "msg_seen", outcome: "succeeded", time: { created: 3 } },
+      { type: "user", id: "msg_second", time: { created: 4 }, text: "New work for the other agent." },
+      reply("msg_second_answer", "claude-code", "haiku", "Unseen answer.", 5),
+      { type: "idle", id: "msg_second_done", outcome: "succeeded", time: { created: 6 } },
+    ]));
+  }, async (codex) => {
+    await codex.prompt("ses_back", "Check the new work.");
+    await codex.idles("ses_back", 3);
+    const prompt = codex.sent("turn/start")[0].params.input[0].text;
+    assert.doesNotMatch(prompt, /already seen/);
+    assert.match(prompt, /New work for the other agent\./);
+    assert.match(prompt, /Unseen answer\./);
+    assert.match(prompt, /User message:\nCheck the new work\./);
+    assert.equal(codex.sent("thread/start").length, 0);
+    assert.equal(codex.sent("thread/resume").length, 1);
+  }));
+
+// The shared history cursor is used by the other resident adapters too. The stand-ins
+// answer with no tools; we check the words actually received, not their canned replies.
+for (const [name, make, seed, prompts] of [
+  ["Claude Code", scriptedClaude,
+    (agent, id) => agent.seed(id),
+    (agent) => agent.heard().filter((line) => line.type === "user").map((line) =>
+      line.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"))],
+  ...[["Grok", "grok", providers.grok], ["Antigravity", "agy", providers.agy]].map(([name, cli, provider]) => [
+    name, () => scriptedAcp({ names: [cli], grok: cli === "grok", agy: cli === "agy" }),
+    (agent, id) => agent.seed(id, provider),
+    (agent) => agent.sent("session/prompt").map((line) =>
+      line.params.prompt.filter((part) => part.type === "text").map((part) => part.text).join("\n")),
+  ]),
+]) {
+  test(`${name} receives the previous agent's history once`, { skip, timeout: 60000 }, async () => {
+    const agent = await make();
+    const id = "ses_carried";
+    try {
+      seed(agent, id);
+      write(path.join(agent.home, "agents/sessions", id, "messages.json"), JSON.stringify([
+        { type: "user", id: "msg_old", time: { created: 1 }, text: "Earlier project question." },
+        { type: "assistant", id: "msg_reply", time: { created: 2, completed: 3 }, agent: "build", model: { providerID: provider, id: "gpt-test" }, content: [
+          { type: "text", id: "part_old", text: "Earlier project answer." },
+        ] },
+        { type: "idle", id: "msg_idle", outcome: "succeeded", time: { created: 4 } },
+      ]));
+      await agent.start();
+      await agent.prompt(id, "What is next?");
+      await agent.idles(id, 2);
+      const first = prompts(agent).find((text) => text.includes("What is next?"));
+      assert.match(first, /Earlier project question\./);
+      assert.match(first, /Earlier project answer\./);
+      assert.match(first, /User message:\nWhat is next\?/);
+      await agent.stop();
+      await agent.start();
+      await agent.prompt(id, "And then?");
+      await agent.idles(id, 3);
+      const next = prompts(agent).find((text) => text.includes("And then?"));
+      assert.ok(next, JSON.stringify(prompts(agent)));
+      assert.doesNotMatch(next, /Earlier project question|User message:/);
+    } catch (error) {
+      throw new Error([error.message, agent.log()].join("\n"), { cause: error });
+    } finally {
+      await agent.close();
+    }
+  });
+}
