@@ -1,183 +1,138 @@
-// An OpenCode question comes from a child, reaches the line, and accepts the child's answer.
+// What a coding agent asks (the scripted Grok, `acp.mjs`): its cards, the answers that reach it, the
+// Blocks they honor, and the waiting counts they change.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, request, until, write } from "./adapter.mjs";
+import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
-import { sessionOf } from "./engine.mjs";
+import { askFirst } from "./claude.mjs";
 
-test("ask cards use first observation order and show the subagent’s whole command", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-ask-cards");
-  const parent = sessionOf({ id: "ses_parent", directory: here.home });
-  const child = sessionOf({ id: "ses_child", directory: here.home, parent: parent.id });
-  here.engine.sessions.push(parent, child);
-  const outside = { id: "per_out", sessionID: parent.id, action: "external_directory",
-    resources: [path.join(here.home, "..", "account") + "/notes/*"] };
-  const file = here.home + "/src/app.txt";
-  const patch = { file, patch: "@@ -1 +1 @@\n-a\n+b\n", additions: 1, deletions: 1, status: "modified" };
-  const edit = { id: "per_edit", sessionID: parent.id, action: "edit", time: { created: 1 },
-    resources: [file, "b.txt", "c.txt"], save: ["*"], metadata: { files: [patch] } };
-  const shell = { id: "per_shell", sessionID: child.id, action: "shell", time: { created: 3 },
-    resources: ["git status --short"], save: ["git status *"], source: { type: "tool", id: "call_shell" },
-    message: "It wants to check the working tree." };
-  const question = { id: "que_color", sessionID: parent.id, title: "Pick", metadata: { kind: "question" },
-    time: { created: 2 }, fields: [{ key: "color", type: "string", title: "Color", description: "Which color?",
-      required: true, options: [{ value: "blue", label: "Blue", description: "Calm" }] }] };
-  const other = { id: "frm_other", sessionID: parent.id, title: "Repository",
-    metadata: { kind: "mcp-elicitation", server: "example", message: "Which repository?" },
-    fields: [{ key: "repo", type: "number" }] };
-  here.engine.permissions.set(parent.id, [edit, outside]);
-  here.engine.permissions.set(child.id, [shell]);
-  here.engine.forms.set(parent.id, [question, other]);
-  here.engine.messages.set(child.id, [{ id: "msg_shell", type: "assistant",
-    content: [{ id: "call_shell", type: "tool", name: "shell",
-      state: { status: "running", input: { command: "cd app && git status --short" } } }] }]);
+const headers = { "x-kuvo-from": "app" };
+const words = text => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
+const options = [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "always", kind: "allow_always", name: "Always" }, { optionId: "no", kind: "reject_once", name: "No" }];
+/** Its turn asking to edit `file`. */
+const editing = (id, file) => [
+  { update: { sessionUpdate: "tool_call", toolCallId: id, kind: "edit", title: "Edit " + path.basename(file), status: "pending",
+    locations: [{ path: file }], rawInput: { file_path: file, old_string: "a", new_string: "b" },
+    content: [{ type: "diff", path: file, oldText: "a\n", newText: "b\n" }] } },
+  { ask: ["session/request_permission", { toolCall: { toolCallId: id }, options }] },
+];
+const running = (id, command, title) => [
+  { update: { sessionUpdate: "tool_call", toolCallId: id, kind: "execute", title, status: "pending", rawInput: { command } } },
+  { ask: ["session/request_permission", { toolCall: { toolCallId: id }, options }] },
+];
+const question = (id, asked) => ({ ask: ["_x.ai/ask_user_question", { toolCallId: id, questions: [asked] }] });
 
-  const record = await here.start().ready();
-  await until(() => here.engine.subscribers() > 0, "the resident to follow asks");
-  const saved = path.join(here.home, "run", "glance", "asks.json");
-  for (const ask of [other, question, shell, edit]) {
-    here.engine.emit(ask.action ? { type: "permission.asked", data: ask } : { type: "form.created", data: { form: ask } });
-    await until(() => fs.existsSync(saved) && JSON.parse(fs.readFileSync(saved, "utf8")).asks[ask.id], "the resident to record " + ask.id);
+/** A computer whose conversations ask first, each one's message playing its steps. */
+async function asking(t, name, conversations) {
+  const { computer } = await bench(t, { agents: true });
+  const here = await computer(name);
+  for (const [id, { steps, ...options }] of Object.entries(conversations)) {
+    here.agents.seed(id, { directory: here.home, permissions: askFirst, ...options });
+    if (steps) here.agents.script(`go ${id}`, steps);
   }
-  const route = `kuvo/sessions/${parent.id}/asks`;
-  const listed = await request(record, "GET", route);
-  assert.equal(listed.status, 200, listed.text);
-  const [out, pick, command, change, dismiss] = listed.json.asks;
-  assert.deepEqual(listed.json.asks.map(ask => ask.id), [outside.id, question.id, shell.id, edit.id, other.id]);
-  assert.equal(out.title, "Allow working outside the project?");
-  assert.deepEqual(out.resources, ["~/notes"]);
-  assert.deepEqual(pick.questions, [{ key: "color", title: "Color", question: "Which color?",
-    options: [{ value: "blue", label: "Blue", description: "Calm" }], multiple: false, custom: false, required: true }]);
-  assert.equal(command.session, child.id);
+  const record = await here.start().ready();
+  const go = async id => {
+    const sent = await request(record, "POST", `kuvo/sessions/${id}/send`, { id: `msg_go${id.slice(4)}`, words: `go ${id}`, delivery: "steer" }, headers);
+    assert.equal(sent.status, 200, sent.text);
+  };
+  const asks = async id => {
+    const read = await request(record, "GET", `kuvo/sessions/${id}/asks`, undefined, headers);
+    assert.equal(read.status, 200, read.text);
+    return read.json.asks;
+  };
+  const card = (id, which, why) => until(async () => (await asks(id)).find(which), why, 20000, 50);
+  const answer = (id, ask, body) => request(record, "POST", `kuvo/sessions/${id}/asks/${encodeURIComponent(ask)}`, body, headers);
+  /** What the box answered the agent's asks, oldest first. */
+  const answers = () => here.agents.heard().filter(line => line.answer).map(line => line.answer.result);
+  return { here, record, go, asks, card, answer, answers };
+}
+
+test("ask cards show the files it edits, its whole command and its question, and take only fitting answers", { timeout: 60000 }, async t => {
+  const id = "ses_cards";
+  const asked = { id: "color", question: "Which color?", options: [{ label: "Blue", description: "Calm" }] };
+  const { here, go, card, asks, answer, answers } = await asking(t, "engine-ask-cards", { [id]: {} });
+  // (The file it edits, in its folder.)
+  const file = path.join(here.home, "src", "app.txt");
+  here.agents.script(`go ${id}`, [...editing("t1", file), ...running("t2", "cd app && git status --short", "Run `git status`"), question("q1", asked), words("Done.")]);
+  await go(id);
+  const change = await card(id, ask => ask.kind === "permission", "No card for the edit.");
+  assert.equal(change.title, "Allow editing src/app.txt?");
+  assert.deepEqual(change.resources, ["src/app.txt"]);
+  assert.deepEqual(change.files.map(each => [each.file, each.additions, each.deletions, each.status]), [[file, 1, 1, "modified"]]);
+  assert.deepEqual(change.choices.map(choice => choice.answer), ["once", "always", "reject", "instead"]);
+  assert.deepEqual(change.choices[1], { answer: "always", title: "Always Allow Edits", named: null, placeholder: null,
+    help: "Don’t ask again before changing files in this conversation", spoken: "Always allow edits in this conversation" });
+  assert.equal((await answer(id, change.id, { answer: "once" })).status, 200);
+
+  const command = await card(id, ask => ask.kind === "permission" && ask.id !== change.id, "No card for the command.");
+  assert.equal(command.session, id);
   assert.equal(command.title, "Allow running this command?");
-  assert.equal(command.message, shell.message);
+  assert.equal(command.message, "Run `git status`");
   assert.equal(command.command, "cd app && git status --short");
   assert.deepEqual(command.choices[1], { answer: "always", title: "Always Allow", named: "git status", placeholder: null,
-    help: "Don’t ask again before running git status commands in this project", spoken: "Always allow git status commands" });
-  assert.equal(change.title, "Allow editing src/app.txt and 2 more?");
-  assert.deepEqual(change.resources, ["src/app.txt", "b.txt", "c.txt"]);
-  assert.deepEqual(change.files, [patch]);
-  assert.deepEqual(dismiss, { id: other.id, session: parent.id, kind: "other",
-    title: other.title, message: "Which repository?", dismiss: true });
+    help: "Don’t ask again before running git status commands in this conversation", spoken: "Always allow git status commands" });
+  assert.equal((await answer(id, command.id, { answer: "once" })).status, 200);
 
-  const answer = (id, body) => request(record, "POST", route + "/" + id, body, { "x-kuvo-from": "app" });
-  assert.equal((await answer(other.id, { answers: { repo: 1 } })).status, 400);
-  assert.equal((await answer(other.id, { dismiss: true })).status, 200);
-  assert.deepEqual(here.engine.asked.filter(row => row.method !== "GET" && row.path.includes(other.id)),
-    [{ method: "DELETE", path: `/api/session/${parent.id}/form/${other.id}`, json: {} }]);
+  const pick = await card(id, ask => ask.kind === "question", "No card for the question.");
+  assert.deepEqual(pick.questions, [{ key: "color", title: "Question 1", question: "Which color?",
+    options: [{ value: "Blue", label: "Blue", description: "Calm" }], multiple: false, custom: true, required: true }]);
+  const wrong = await answer(id, pick.id, { answers: { color: 7 } });
+  assert.equal(wrong.status, 400, wrong.text);
+  assert.equal((await answer(id, pick.id, { dismiss: true })).status, 200);
+  await until(() => answers().length === 3, () => "The dismissed question never reached the agent: " + JSON.stringify(answers()), 20000);
+  assert.deepEqual(answers(), [
+    { outcome: { outcome: "selected", optionId: "yes" } },
+    { outcome: { outcome: "selected", optionId: "yes" } },
+    { outcome: "cancelled" },
+  ]);
+  await until(async () => (await asks(id)).length === 0, "The asks stayed.", 20000);
 });
 
-test("asks report a missing conversation, a busy engine, and the engine’s own reply refusal", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-ask-errors");
-  const parent = sessionOf({ id: "ses_parent", directory: here.home });
-  here.engine.sessions.push(parent);
-  const ask = { id: "per_edit", sessionID: parent.id, action: "edit", resources: ["example.txt"] };
-  here.engine.permissions.set(parent.id, [ask]);
-  const record = await here.start().ready();
-  const read = id => request(record, "GET", `kuvo/sessions/${id}/asks`);
-  assert.equal((await read("ses_missing")).status, 404);
-  here.engine.unavailableSession = parent.id;
-  assert.equal((await read(parent.id)).status, 503);
-  here.engine.unavailableSession = null;
-  here.engine.sessionListUnavailable = true;
-  const busy = await read(parent.id);
-  assert.equal(busy.status, 503, busy.text);
-  assert.match(busy.json.message, /isn't answering/);
-  here.engine.sessionListUnavailable = false;
-  here.engine.refusedAsk = ask.id;
-  const refused = await request(record, "POST", `kuvo/sessions/${parent.id}/asks/${ask.id}`,
-    { answer: "once" }, { "x-kuvo-from": "app" });
-  assert.equal(refused.status, 502, refused.text);
-  assert.deepEqual(refused.json, { message: "It can't take that now." });
-  assert.deepEqual((await read(parent.id)).json.asks.map(item => item.id), [ask.id]);
+test("asks report a missing conversation, and an answer to an ask no longer waiting", { timeout: 45000 }, async t => {
+  const id = "ses_errors";
+  const { record, go, card, answer } = await asking(t, "engine-ask-errors", { [id]: { steps: [...running("t1", "make", "Run `make`"), words("Made.")] } });
+  assert.equal((await request(record, "GET", "kuvo/sessions/ses_missing/asks", undefined, headers)).status, 404);
+  await go(id);
+  const ask = await card(id, each => each.kind === "permission", "No card for the command.");
+  assert.equal((await answer(id, ask.id, { answer: "once" })).status, 200);
+  const late = await answer(id, ask.id, { answer: "once" });
+  assert.equal(late.status, 404, late.text);
+  assert.equal((await answer(id, "per_missing", { answer: "once" })).status, 404);
 });
 
-test("OpenCode permission cards preserve the shared Always button words", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-ask-words");
-  const session = sessionOf({ id: "ses_words", directory: here.home });
-  const account = path.join(here.home, "..", "account");
-  const fixture = JSON.parse(fs.readFileSync(new URL("../../box/test/fixtures/always-words.json", import.meta.url)));
-  const cases = fixture.cases.map(({ action, save, resources, home, plain, help, spoken }, index) => {
-    const useAccount = words => words.map(word => home && word.startsWith(home + "/") ? account + word.slice(home.length) : word);
-    return { ask: { id: "per_words_" + index, sessionID: session.id, action,
-      ...(save ? { save: useAccount(save) } : {}), resources: useAccount(resources) }, plain, help, spoken };
-  });
-  here.engine.sessions.push(session);
-  here.engine.permissions.set(session.id, cases.map(each => each.ask));
-  const resident = await here.start().ready();
-  const reply = await request(resident, "GET", `kuvo/sessions/${session.id}/asks`);
-  assert.equal(reply.status, 200, reply.text);
-  const cards = new Map(reply.json.asks.map(ask => [ask.id, ask]));
-  for (const { ask, plain, help, spoken } of cases) {
-    const choice = cards.get(ask.id)?.choices.find(choice => choice.answer === "always");
-    assert.ok(choice, JSON.stringify(ask));
-    assert.deepEqual({
-      plain: choice.named === null ? choice.title : choice.title + " " + choice.named,
-      help: choice.help, spoken: choice.spoken,
-    }, { plain, help, spoken }, JSON.stringify(ask));
-  }
+test("an answer on its card honors a Block saved after the ask arrived", { timeout: 60000 }, async t => {
+  const id = "ses_consent";
+  const { here, go, card, answer, answers } = await asking(t, "engine-consent", { [id]: {} });
+  here.agents.script(`go ${id}`, [...editing("t1", path.join(here.home, "testing", "private.txt")), words("Edited.")]);
+  await go(id);
+  const ask = await card(id, each => each.kind === "permission", "No card for the edit.");
+  const settings = path.join(here.home, "box", "opencode.json");
+  const rules = permissions => write(settings, JSON.stringify({ permissions }));
+  // (An agent's edit is matched by the file's whole path.)
+  rules([{ action: "edit", resource: path.join(here.home, "testing", "private.*"), effect: "deny" }]);
+  const refused = await answer(id, ask.id, { answer: "once" });
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json.message, "This computer’s permissions no longer allow that action.");
+  rules([{ action: "edit", resource: path.join(here.home, "unrelated", "*"), effect: "deny" }]);
+  const always = await answer(id, ask.id, { answer: "always" });
+  assert.equal(always.status, 403, always.text);
+  assert.equal(always.json.message, "An Always answer could override a local restriction for this tool. Use Allow Once for this request.");
+  assert.deepEqual(answers(), []);
+  assert.equal((await answer(id, ask.id, { answer: "once" })).status, 200);
+  assert.equal((await answer(id, ask.id, { answer: "once" })).status, 404);
+  await until(() => answers().length === 1, "The answer never reached the agent.", 20000);
+  assert.deepEqual(answers(), [{ outcome: { outcome: "selected", optionId: "yes" } }]);
 });
 
-test("a live permission read can expire an ask or discover a new local Block", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-ask-consent");
-  const session = sessionOf({ id: "ses_consent", directory: here.home });
-  const ask = { id: "per_edit", sessionID: session.id, action: "edit", resources: ["notes.txt"] };
-  here.engine.sessions.push(session);
-  here.engine.permissions.set(session.id, [ask]);
-  const record = await here.start().ready();
-  const raw = `api/session/${session.id}/permission/${ask.id}/reply`;
-  const card = `kuvo/sessions/${session.id}/asks/${ask.id}`;
-  const headers = { "x-kuvo-from": "app" };
-  const grant = route => request(record, "POST", route,
-    route === raw ? { decision: "once" } : { answer: "once" }, headers);
-  const sent = () => here.engine.asked.filter(row => row.method === "POST" && row.path === "/" + raw);
-  here.engine.beforeLivePermission = () => here.engine.permissions.set(session.id, []);
-  const ended = await grant(raw);
-  assert.equal(ended.status, 404, ended.text);
-  assert.deepEqual(sent(), []);
-
-  here.engine.permissions.set(session.id, [ask]);
-  const config = path.join(here.home, "box", "opencode.json");
-  here.engine.beforeLivePermission = () => write(config,
-    JSON.stringify({ permissions: [{ action: "edit", resource: "*", effect: "deny" }] }));
-  for (const route of [card, raw]) {
-    const blocked = await grant(route);
-    assert.equal(blocked.status, 403, blocked.text);
-  }
-  assert.deepEqual(sent(), []);
-
-  here.engine.beforeLivePermission = null;
-  fs.rmSync(config);
-  const allowed = await grant(card);
-  assert.equal(allowed.status, 200, allowed.text);
-  assert.equal(sent().length, 1);
-  assert.equal((await grant(card)).status, 404);
-  assert.equal(sent().length, 1);
-});
-
-test("a child question changes the parent’s asks and waiting counts through the resident", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-asks");
-  const parent = sessionOf({ id: "ses_parent", title: "Main", directory: here.home });
-  const child = sessionOf({ id: "ses_child", title: "Child", directory: here.home, parent: parent.id });
-  here.engine.sessions.push(parent, child);
-  const base = "kuvo/sessions/" + parent.id + "/asks";
-  const resident = await here.start().ready();
-  const initial = await request(resident, "GET", base);
-  assert.equal(initial.status, 200, initial.text);
-  assert.deepEqual(initial.json, { asks: [] });
-
-  const watch = Buffer.from(JSON.stringify({
-    asks: base + "/events",
-    counts: "kuvo/waiting/events",
-  })).toString("base64url");
-  const line = await openLine(resident, "?watch=" + watch);
+test("a question changes the conversation's asks and the waiting counts on the line", { timeout: 60000 }, async t => {
+  const id = "ses_asking";
+  const asked = { id: "language", question: "Which language?", options: [{ label: "Rust" }] };
+  const { record, go, answer, answers } = await asking(t, "engine-asks", { [id]: { steps: [question("q1", asked), words("Rust it is.")] } });
+  const base = `kuvo/sessions/${id}/asks`;
+  assert.deepEqual((await request(record, "GET", base, undefined, headers)).json, { asks: [] });
+  const watch = Buffer.from(JSON.stringify({ asks: base + "/events", counts: "kuvo/waiting/events" })).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch, undefined, headers);
   t.after(() => line.close());
   const frames = line.frames();
   const saved = [];
@@ -194,166 +149,80 @@ test("a child question changes the parent’s asks and waiting counts through th
     }
   };
   await next(frame => frame.t === "counts" && frame.d?.sessions === 0, "zero waiting sessions");
-  await until(() => here.engine.subscribers() > 0, () => "The resident did not follow the engine’s events.");
-  const form = {
-    id: "form_child", sessionID: child.id, title: "Pick next step", metadata: { kind: "question" },
-    fields: [
-      { key: "language", type: "string", title: "Language", required: true, options: [{ value: "rust", label: "Rust" }] },
-      { key: "scope", type: "string", hidden: true, default: "local" },
-    ],
-  };
-  here.engine.forms.set(child.id, [form]);
-  here.engine.emit({ type: "form.created", data: { form } });
+  await go(id);
   const asks = await next(frame => frame.t === "asks" && frame.d?.asks?.length > 0, "the question");
-  assert.deepEqual(asks.asks[0], {
-    id: form.id, kind: "question", session: child.id, title: form.title,
-    questions: [{
-      key: "language", title: "Language", question: "Language",
-      options: [{ value: "rust", label: "Rust", description: null }],
-      multiple: false, custom: false, required: true,
-    }],
-  });
+  assert.deepEqual(asks.asks.map(ask => [ask.kind, ask.session, ask.questions.map(each => each.question)]), [["question", id, ["Which language?"]]]);
   assert.deepEqual(await next(frame => frame.t === "counts" && frame.d?.sessions === 1, "one waiting session"),
     { sessions: 1, bots: 0, queue: 0 });
-  const answered = base + "/" + form.id;
-  const header = { "x-kuvo-from": "app" };
-  const refused = await request(resident, "POST", answered, { answers: { language: "python" } }, header);
-  assert.equal(refused.status, 400, refused.text);
-  const accepted = await request(resident, "POST", answered, { answers: { language: "rust" } }, header);
+  const accepted = await answer(id, asks.asks[0].id, { answers: { [asks.asks[0].questions[0].key]: "Rust" } });
   assert.equal(accepted.status, 200, accepted.text);
-  assert.deepEqual(here.engine.asked.find(row => row.path.endsWith("/form/form_child/reply")), {
-    method: "POST", path: "/api/session/ses_child/form/form_child/reply",
-    json: { answer: { language: "rust", scope: "local" } },
-  });
   await next(frame => frame.t === "asks" && frame.d?.asks?.length === 0, "the answered question");
   await next(frame => frame.t === "counts" && frame.d?.sessions === 0, "zero waiting sessions");
-  assert.deepEqual((await request(resident, "GET", base)).json, { asks: [] });
+  assert.deepEqual(answers(), [{ outcome: "accepted", answers: { "Which language?": ["Rust"] } }]);
 });
 
-test("archiving stops a conversation and the child that asks, while an unrelated run keeps going", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-archive-waiting");
-  const parent = sessionOf({ id: "ses_parent", title: "Main", directory: here.home });
-  const child = sessionOf({ id: "ses_child", title: "Child", directory: here.home, parent: parent.id });
-  const busy = sessionOf({ id: "ses_busy", title: "Busy", directory: here.home });
-  here.engine.sessions.push(parent, child, busy);
-  here.engine.forms.set(child.id, [{ id: "form_child", title: "Question", fields: [] }]);
-  const resident = await here.start().ready();
-  const patch = (session, archived, pinned = false) => request(resident, "PATCH", "api/session/" + session, {
-    metadata: { "kuvo.archived": archived, ...(pinned ? { "kuvo.pinned": true } : {}) },
+test("archiving stops a conversation that asks, while an unrelated run keeps going", { timeout: 60000 }, async t => {
+  const [parent, busy] = ["ses_archived", "ses_busy"];
+  const asked = { id: "next", question: "Go on?", options: [{ label: "Yes" }] };
+  const { here, record, go, card } = await asking(t, "engine-archive-waiting", {
+    [parent]: { steps: [question("q1", asked), words("Going on.")] },
+    [busy]: { steps: [words("Working"), "hang"] },
   });
-  assert.equal((await patch(parent.id, true)).status, 200);
-  assert.equal((await patch(busy.id, true)).status, 200);
-  assert.equal((await patch(parent.id, true, true)).status, 200);
-  assert.equal((await patch(parent.id, false)).status, 200);
-  assert.deepEqual(here.engine.interrupted.map(row => row.session), [parent.id, child.id]);
-
-  const typed = await request(resident, "POST", "kuvo/sessions/" + parent.id + "/archive", { archived: true });
-  assert.equal(typed.status, 200, typed.text);
-  assert.deepEqual(here.engine.interrupted.map(row => row.session), [parent.id, child.id, parent.id, child.id]);
-});
-
-test("an MCP form goes to the first conversation waiting on its server and is dismissed in its folder", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-shared-form");
-  const parent = sessionOf({ id: "ses_main", directory: here.home });
-  const child = sessionOf({ id: "ses_child", directory: here.home, parent: parent.id });
-  const another = sessionOf({ id: "ses_other", directory: here.home });
-  here.engine.sessions.push(parent, child, another);
-  const form = { id: "frm_issue", sessionID: "global", title: "New issue",
-    metadata: { kind: "mcp-elicitation", server: "issue-tracker", message: "Which repository?" } };
-  here.engine.globalForms.set(here.home, [form]);
-  const record = await here.start().ready();
-  const asks = session => `kuvo/sessions/${session.id}/asks`;
-  assert.deepEqual((await request(record, "GET", asks(parent))).json, { asks: [] });
-  for (const session of [child, another]) {
-    here.engine.running.add(session.id);
-    here.engine.messages.set(session.id, [{ id: "msg_issue", type: "assistant",
-      content: [{ type: "tool", name: "issue-tracker_create", state: { status: "running" } }] }]);
+  for (const id of [parent, busy]) await go(id);
+  const runs = () => here.agents.sent("session/prompt").map(message => message.params.sessionId);
+  await until(() => runs().length === 2, "Both turns never started.", 20000);
+  const native = Object.fromEntries([parent, busy].map(id => [id, runs()[here.agents.prompts().findIndex(text => text.includes(id))]]));
+  await card(parent, ask => ask.kind === "question", "It never asked.");
+  const cancelled = () => here.agents.sent("session/cancel").map(message => message.params.sessionId);
+  const archive = (id, archived) => request(record, "POST", `kuvo/sessions/${id}/archive`, { archived }, headers);
+  for (const id of [parent, busy]) {
+    const archived = await archive(id, true);
+    assert.equal(archived.status, 200, archived.text);
   }
-  const expected = { id: form.id, kind: "other", session: parent.id, title: form.title,
-    message: form.metadata.message, dismiss: true };
-  assert.deepEqual((await request(record, "GET", asks(parent))).json, { asks: [expected] });
-  assert.deepEqual((await request(record, "GET", asks(another))).json, { asks: [] });
-  const reply = asks(parent) + "/" + form.id;
-  const refused = await request(record, "POST", reply, { answers: { repo: "example" } }, { "x-kuvo-from": "app" });
-  assert.equal(refused.status, 400, refused.text);
-  const dismissed = await request(record, "POST", reply, { dismiss: true }, { "x-kuvo-from": "app" });
-  assert.equal(dismissed.status, 200, dismissed.text);
-  assert.deepEqual(here.engine.dismissedGlobalForms, [{ id: form.id, folder: here.home }]);
-  assert.deepEqual((await request(record, "GET", asks(parent))).json, { asks: [] });
+  await until(() => cancelled().includes(native[parent]), "Archiving didn't stop the conversation that asks.", 20000);
+  assert.equal((await archive(parent, false)).status, 200);
+  assert.equal((await archive(parent, true)).status, 200);
+  assert.deepEqual(cancelled(), [native[parent]]);
+  const active = await request(record, "GET", "kuvo/agents/api/session/active", undefined, headers);
+  assert.ok(JSON.stringify(active.json).includes(busy), active.text);
 });
 
-test("waiting counts include a bot’s delegated ask and open Work Queue items once each", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-waiting-work");
+test("waiting counts include a bot’s delegated ask and open Work Queue items once each", { timeout: 60000 }, async t => {
   const bot = "bot_scout";
+  const { computer } = await bench(t, { agents: true });
+  const here = await computer("engine-waiting-work");
   const folder = path.join(here.home, "bots", bot);
-  const root = sessionOf({ id: "ses_root", directory: folder });
-  const work = sessionOf({ id: "ses_work", directory: here.home });
-  work.metadata = { kuvo: { startedBy: root.id, line: [root.id] } };
-  here.engine.sessions.push(root, work);
+  const [root, work] = ["ses_root", "ses_work"];
+  here.agents.seed(root, { directory: folder });
+  here.agents.seed(work, { directory: here.home, metadata: { kuvo: { startedBy: root, line: [root] } } });
+  here.agents.script("Ask about it", [question("q1", { id: "step", question: "Choose next step", options: [{ label: "Ship" }] }), words("Shipping.")]);
   write(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Scout" }));
-  write(path.join(folder, "session"), root.id);
+  write(path.join(folder, "session"), root);
   const queue = (owner, items) => write(path.join(here.home, "run", "work-queue", "queues", owner + ".json"),
     JSON.stringify({ formatVersion: 1, items }));
   const item = (letter, status, extra = {}) => ({ id: "wqi_" + letter.repeat(20), title: letter, status, ...extra });
-  const linked = item("l", "todo", { sessions: [{ session: work.id }], updated: { at: 2 } });
+  const linked = item("l", "todo", { sessions: [{ session: work }], updated: { at: 2 } });
   queue("usr_you", [
-    item("a", "needs-you"), item("b", "needs-you", { sessions: [{ session: work.id }] }),
+    item("a", "needs-you"), item("b", "needs-you", { sessions: [{ session: work }] }),
     item("r", "needs-you", { removed: { at: 1 } }), linked,
   ]);
-  queue("ses_root", [
-    item("d", "done", { sessions: [{ session: work.id }] }),
-    item("c", "canceled", { sessions: [{ session: work.id }] }),
+  queue(root, [
+    item("d", "done", { sessions: [{ session: work }] }),
+    item("c", "canceled", { sessions: [{ session: work }] }),
     { ...linked, updated: { at: 1 } },
   ]);
   const record = await here.start().ready();
-  const counts = async () => (await request(record, "GET", "kuvo/waiting")).json;
+  const counts = async () => (await request(record, "GET", "kuvo/waiting", undefined, headers)).json;
   await until(async () => (await counts()).queue === 2, "the saved Needs you items");
   assert.deepEqual(await counts(), { sessions: 0, bots: 0, queue: 2 });
-  assert.equal((await request(record, "POST", "kuvo/waiting", {})).status, 405);
-  await until(() => here.engine.subscribers() > 0, "the resident to follow asks");
-  const form = { id: "form_scoutextra", sessionID: work.id, title: "Choose next step", fields: [] };
-  here.engine.forms.set(work.id, [form]);
-  here.engine.emit({ type: "form.created", data: { form } });
-  await until(async () => (await counts()).sessions === 1, "the session to ask");
+  assert.equal((await request(record, "POST", "kuvo/waiting", {}, headers)).status, 405);
+  const sent = await request(record, "POST", `kuvo/sessions/${work}/send`, { id: "msg_askAbout", words: "Ask about it", delivery: "steer" }, headers);
+  assert.equal(sent.status, 200, sent.text);
+  await until(async () => (await counts()).sessions === 1, "the session to ask", 20000, 100);
   assert.deepEqual(await counts(), { sessions: 1, bots: 1, queue: 3 });
-  const dismissed = await request(record, "POST", `kuvo/sessions/${work.id}/asks/${form.id}`,
-    { dismiss: true }, { "x-kuvo-from": "app" });
+  const form = (await request(record, "GET", `kuvo/sessions/${work}/asks`, undefined, headers)).json.asks[0];
+  const dismissed = await request(record, "POST", `kuvo/sessions/${work}/asks/${form.id}`, { dismiss: true }, headers);
   assert.equal(dismissed.status, 200, dismissed.text);
-  await until(async () => (await counts()).sessions === 0, "the dismissed ask to stop counting");
+  await until(async () => (await counts()).sessions === 0, "the dismissed ask to stop counting", 20000, 100);
   assert.deepEqual(await counts(), { sessions: 0, bots: 0, queue: 2 });
-});
-
-test("raw and card permission replies honor a Block saved after the ask arrived", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-consent");
-  const session = sessionOf({ id: "ses_consent", directory: here.home });
-  const ask = { id: "per_edit", action: "edit", resources: ["testing/private.txt"] };
-  here.engine.sessions.push(session);
-  here.engine.permissions.set(session.id, [ask]);
-  const record = await here.start().ready();
-  const card = `kuvo/sessions/${session.id}/asks/${ask.id}`;
-  const raw = `api/session/${session.id}/permission/${ask.id}/reply`;
-  const settings = path.join(here.home, "box", "opencode.json");
-  const rules = permissions => write(settings, JSON.stringify({ permissions }));
-  const header = { "x-kuvo-from": "app" };
-  assert.equal((await request(record, "GET", `kuvo/sessions/${session.id}/asks`)).json.asks[0].id, ask.id);
-  rules([{ action: "write", resource: "testing/private.*", effect: "deny" }]);
-  const rawRefused = await request(record, "POST", raw, { decision: "once" }, header);
-  const cardRefused = await request(record, "POST", card, { answer: "once" }, header);
-  for (const reply of [rawRefused, cardRefused]) {
-    assert.equal(reply.status, 403, reply.text);
-    assert.equal(reply.json.message, "This computer’s permissions no longer allow that action.");
-  }
-  assert.deepEqual(here.engine.permissions.get(session.id), [ask]);
-  assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path === "/" + raw).length, 0);
-  rules([{ action: "write", resource: "unrelated/*", effect: "deny" }]);
-  const always = await request(record, "POST", card, { answer: "always" }, header);
-  assert.equal(always.status, 403, always.text);
-  assert.equal(always.json.message, "An Always answer could override a local restriction for this tool. Use Allow Once for this request.");
-  assert.equal((await request(record, "POST", card, { answer: "once" }, header)).status, 200);
-  assert.equal((await request(record, "POST", raw, { decision: "once" }, header)).status, 404);
-  assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path === "/" + raw).length, 1);
 });

@@ -1109,10 +1109,20 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             // (A coding agent keeps what Always allows itself.)
             if matches!(found.answer, Answer::Permission)
                 && let Some(decision) = body.as_ref().and_then(|body| body["decision"].as_str())
-                && let Target::Engine(lease) = target
             {
-                crate::consent::grant(&here, lease, &found.session, &ask, decision, &headers)
-                    .await?;
+                match &target {
+                    Target::Engine(lease) => {
+                        crate::consent::grant(&here, lease, &found.session, &ask, decision, &headers)
+                            .await?;
+                    }
+                    Target::Agents(..) => {
+                        let route = format!("api/session/{}/permission?live=1", api::segment(&found.session));
+                        let pending = target.call::<Vec<Value>>(&here, &route).await.map_err(|_| {
+                            Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "This computer couldn’t verify the live permission.")
+                        })?;
+                        crate::consent::allowed(&here, &pending, &ask, decision).await?;
+                    }
+                }
                 crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
             }
             target
@@ -1147,6 +1157,31 @@ pub(crate) struct Words {
 }
 
 pub(crate) type Book = std::collections::BTreeMap<String, Pending>;
+
+/// The coding agents' asks waiting on you, beside the engine's.
+pub(crate) fn include_agents(book: &mut Book, asks: &[crate::AgentWaiting]) {
+    for ask in asks {
+        let (kind, summary) = match &ask.ask {
+            crate::AgentAsk::Permission { action, resources } => {
+                let files = resources.iter().map(String::as_str).collect::<Vec<_>>();
+                ("permission", action_words(Some(action), &files))
+            }
+            crate::AgentAsk::Question => ("question", "has a question for you".into()),
+        };
+        book.insert(
+            format!("agents:{}", ask.id),
+            Pending {
+                session: ask.session.clone(),
+                at: ask.at,
+                place: "agents".into(),
+                asks: Words {
+                    kind: kind.into(),
+                    summary,
+                },
+            },
+        );
+    }
+}
 
 pub(crate) fn include_external(book: &mut Book, asks: &[crate::ExternalWaiting]) {
     for ask in asks {
@@ -1283,7 +1318,11 @@ fn permission_words(item: &Value) -> String {
         .flatten()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
-    let file = match files.as_slice() {
+    action_words(item["action"].as_str(), &files)
+}
+
+fn action_words(action: Option<&str>, files: &[&str]) -> String {
+    let file = match files {
         [] => "a file".to_owned(),
         [file] => clip(
             file.trim_end_matches('/')
@@ -1294,7 +1333,7 @@ fn permission_words(item: &Value) -> String {
         ),
         _ => format!("{} files", files.len()),
     };
-    match item["action"].as_str() {
+    match action {
         Some("edit" | "patch" | "write") => format!("asks to edit {file}"),
         Some("read") => format!("asks to read {file}"),
         Some("shell" | "bash") => "asks to run a command".into(),

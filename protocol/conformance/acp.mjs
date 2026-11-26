@@ -20,7 +20,8 @@ export const providers = { grok: "grok-cli", agy: "antigravity" };
  * `{opens: url}` (a command of its own opens a page: through `$BROWSER` where it's set, and
  * writing it to `$TMPDIR/url`), `{say: line}` (a line of its own on stdout, not ACP) or `{wait:
  * ms}`. As `agy`, its models have a `<model>-<level>` entry for each thinking level, as agy's do.
- * What it reads it keeps in `acp-heard.jsonl`.
+ * What it reads it keeps in `acp-heard.jsonl`. `acp-capabilities.json` adds to what it says it can do
+ * (`{ promptCapabilities: { image: true } }`).
  */
 const PROGRAM = String.raw`
 const fs = require("node:fs");
@@ -144,7 +145,7 @@ process.stdin.on("data", (chunk) => {
     if (method === undefined) { waiting.get(id)?.(message); waiting.delete(id); continue; }
     const answer = (result) => send({ id, result });
     const refuse = (code, words) => send({ id, error: { code, message: words } });
-    if (method === "initialize") answer({ protocolVersion: 1, authMethods: name === "grok" ? [{ id: "cached_token" }, { id: "xai.api_key" }] : [{ id: "oauth-personal" }], agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true }, auth: { logout: name === "agy" } } });
+    if (method === "initialize") answer({ protocolVersion: 1, authMethods: name === "grok" ? [{ id: "cached_token" }, { id: "xai.api_key" }] : [{ id: "oauth-personal" }], agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true }, auth: { logout: name === "agy" }, ...read("acp-capabilities.json", {}) } });
     else if (method === "authenticate") signedIn() ? answer({}) : refuse(-32000, "Authentication required");
     else if (method === "logout") { fs.rmSync(path.join(process.env.GEMINI_HOME, "agy-signed-in"), { force: true }); answer({}); }
     else if (method === "session/new") signedIn() ? answer(setup("acp-" + process.pid + "-" + ++made)) : refuse(-32000, "Authentication required");
@@ -196,14 +197,68 @@ export function seedAgyAuth(home, { listed = true } = {}) {
   }
 }
 
-export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state } = {}) {
-  write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "ACP fixture", projectID: "fixture", agent: "build", ...(permissions && { permissions }),
+/**
+ * A conversation on `provider`'s agent, as the box keeps it: its header and, with `messages`, its
+ * rows (`{ type: "user", text }`, `{ type: "assistant", content }`; IDs are given where missing).
+ */
+export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state, title = "ACP fixture", parent, metadata, updated = 1, messages, agent = "build" } = {}) {
+  const folder = path.join(home, "agents/sessions", id);
+  write(path.join(folder, "session.json"), JSON.stringify({
+    id, title, projectID: "fixture", agent, ...(permissions && { permissions }),
+    ...(parent && { parentID: parent }), ...(metadata && { metadata }),
     location: { directory }, model: { providerID: provider, id: model, ...(variant && { variant }) },
-    time: { created: 1, updated: 1 }, cost: 0,
+    time: { created: 1, updated }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }));
+  if (messages) {
+    // (An agent's reply names the model and agent it ran on.)
+    const rows = messages.map((row, at) => ({
+      id: `msg_${id.replace(/^ses_/, "")}${String(at).padStart(4, "0")}`, time: { created: at + 1 },
+      ...(row.type === "assistant" && { agent: "build", model: { providerID: provider, id: model } }), ...row,
+    }));
+    write(path.join(folder, "messages.json"), JSON.stringify(rows));
+  }
   if (state) write(path.join(home, "agents/sessions", id, "agent.json"), JSON.stringify({ threads: { [provider]: { state } } }));
+}
+
+/**
+ * The scripted Grok on a computer whose `env` and `home` a harness of its own makes (`bench.mjs`):
+ * what to add to its environment, and its script, gates and what it heard.
+ */
+export function agentsOn(home, env) {
+  const root = env.HOME;
+  const bin = standInAcp(root, ["grok"]);
+  const grokHome = path.join(root, ".grok");
+  seedGrokAuth(grokHome);
+  const system = process.platform === "win32" ? path.join(env.SystemRoot, "System32") : "/usr/bin:/bin";
+  const heardFile = path.join(root, "acp-heard.jsonl");
+  const scripts = {};
+  const agents = {
+    root,
+    env: { GROK_HOME: grokHome, KUVO_ACP_ROOT: root, KUVO_TEST_PATH_ONLY: "1", KUVO_TEST_PRICE_FEEDS: "off", PATH: [bin, system].join(path.delimiter) },
+    /** A conversation on Grok, in `directory`. */
+    seed: (id, options) => seedAcpSession(home, id, providers.grok, options),
+    script(text, steps) {
+      scripts[text] = steps;
+      write(path.join(root, "acp-script.json"), JSON.stringify(scripts));
+    },
+    go: (name) => write(path.join(root, name), ""),
+    /** What it says it can do besides, from its next start (`{ promptCapabilities: { image: true } }`). */
+    can: (capabilities) => write(path.join(root, "acp-capabilities.json"), JSON.stringify(capabilities)),
+    heard: () => fs.existsSync(heardFile)
+      ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
+    sent: (method) => agents.heard().filter((line) => line.message?.method === method).map((line) => line.message),
+    /** The words of each prompt the agent was handed, in order. */
+    prompts: () => agents.sent("session/prompt").map((message) => message.params.prompt.filter((part) => part.type === "text").map((part) => part.text).join("\n")),
+    started: () => agents.heard().filter((line) => line.argv && line.argv[0] !== "models"),
+    /** The conversation's rows as `listener` shows them, oldest first. */
+    rows: (listener, id) => transcript(listener, `kuvo/agents/api/session/${id}`),
+    /** The IDs of its messages from the user, in order. */
+    async users(listener, id) {
+      return (await agents.rows(listener, id)).filter((row) => row.type === "user").map((row) => row.id);
+    },
+  };
+  return agents;
 }
 
 /** One resident (and, for the reference, its bridge) on the scripted ACP agents. */

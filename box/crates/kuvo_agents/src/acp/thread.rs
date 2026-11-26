@@ -796,7 +796,10 @@ impl Actor {
         }
         let compact = matches!(input.kind, TurnKind::Compact);
         let (content, instructed) = match &input.kind {
-            TurnKind::Prompt(prompt) => self.prompt_content(prompt, &input.instructions).await,
+            TurnKind::Prompt(prompt) => {
+                let images = process.capabilities().images;
+                self.prompt_content(prompt, &input.instructions, images).await
+            }
             _ => (vec![json!({"type": "text", "text": "/compact"})], None),
         };
         sink.event(envelope(TurnEvent::StepStarted {
@@ -817,16 +820,18 @@ impl Actor {
     }
 
     /// The prompt a message makes: its words (with the app's instructions when they're new or
-    /// changed), its pictures, and the paths of its other files.
+    /// changed), its pictures (to an agent that takes them), and the paths of its other files.
     async fn prompt_content(
         &mut self,
         prompt: &Prompt,
         instructions: &str,
+        images: bool,
     ) -> (Vec<Value>, Option<String>) {
         let mut content = Vec::new();
         let mut others = Vec::new();
         for file in &prompt.files {
-            if let Some(data) = picture(file).await {
+            let data = if images { picture(file).await } else { None };
+            if let Some(data) = data {
                 content.push(json!({"type": "image", "data": data, "mimeType": file.mime}));
             } else if let Some(path) = &file.path {
                 others.push(path.to_string_lossy().into_owned());
@@ -1810,7 +1815,8 @@ impl Actor {
             .await
     }
 
-    /// Stop: it's told to cancel; a turn that hasn't ended a while later ends as stopped.
+    /// Stop: what it asks is withdrawn (it hears each was cancelled) and it's told to cancel; a
+    /// turn that hasn't ended a while later ends as stopped.
     async fn interrupt(&mut self, turn: &str) -> io::Result<()> {
         let restarts = self.shared.flavour.restarts_after_stop();
         let Some(active) = self.active.as_mut().filter(|active| active.id == turn) else {
@@ -1824,6 +1830,7 @@ impl Actor {
             self.stale = true;
             active.process.retire();
         }
+        let _ = active.sink.cancel_asks().await;
         self.cancel_native().await;
         Ok(())
     }
