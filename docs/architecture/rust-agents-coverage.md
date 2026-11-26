@@ -908,7 +908,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-search | 4/4 | 4/4 | the engine's read counts; an engine whose list fails |
 | engine-typed | 7/7 | 6/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
-| engine-worktree | 7/7 | 5/7 | see below |
+| engine-worktree | 7/7 | 7/7 | see below |
 | engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
@@ -959,7 +959,10 @@ Notes on each area:
   cancelled client leaves a worktree only if OpenCode created its conversation" (both cut
   OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
   answer to an agent start has no `worktree` field and names the branch after the title, so the
-  cases check the files and records.
+  cases check the files and records. An agent's conversation is told its worktree among Kuvo
+  Code's instructions for it before its first message, and its finished wake is kept in its notes
+  (`Engine::edit_notes`, wherever a conversation is kept). A starter kept in Plan mode starts
+  Build sessions, as Plan mode is gone.
 
 ### engine-sessions
 

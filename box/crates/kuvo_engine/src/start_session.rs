@@ -617,6 +617,11 @@ async fn create_as(
     if let Some(steps) = steps {
         steps.made(id);
     }
+    // (The engine's are told their worktree as it says they're made; an agent's, before its
+    // first message.)
+    if agents.is_some() {
+        let _ = engine.tell_worktree(id).await;
+    }
     if parent.is_none() && requested.is_some() {
         let _turn = engine.turn("approval-settings").await;
         if let Ok(latest) = disk::read::<Value>(&approval_file).await {
@@ -671,9 +676,9 @@ async fn create_as(
         };
         let marked = if requested.is_empty() {
             false
-        } else if let Ok(mut writer) = engine.note_writer(id).await {
-            writer
-                .edit(crate::NoteEdits {
+        } else {
+            engine
+                .edit_notes(id, crate::NoteEdits {
                     kuvo: std::iter::once(("wake".to_owned(), Some(json!(requested))))
                         .chain(
                             remote
@@ -696,8 +701,6 @@ async fn create_as(
                 })
                 .await
                 .is_ok()
-        } else {
-            false
         };
         if marked {
             answer["wakes"] = json!(requested);

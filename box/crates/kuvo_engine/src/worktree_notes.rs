@@ -159,6 +159,24 @@ impl Engine {
         if saved.active.is_empty() {
             return Ok(false);
         }
+        let note = |tree: &Worktree, branch: &str| format!(
+            "You work in a git worktree of this project, on the branch {branch}, so your changes stay apart from the user's own checkout at {} until they merge them. Make your changes here, not there.",
+            tree.project
+        );
+        // (A coding agent's conversation is told among Kuvo Code's instructions for it.)
+        if let Ok(Some((source, header))) = self.agent_session(session).await {
+            let Ok(found) = serde_json::from_value::<sessions::Session>(Value::Object(header)) else {
+                return Ok(false);
+            };
+            let Some((tree, branch)) = saved.active.iter().find_map(|tree| {
+                (tree.folder() == found.directory()).then_some((tree, tree.branch.as_deref()?))
+            }) else {
+                return Ok(false);
+            };
+            return source
+                .set_instruction(session, "kuvo.worktree", Some(note(tree, branch)))
+                .await;
+        }
         let Some(lease) = self.acquire(Demand::Passive).await else {
             return Ok(false);
         };
@@ -174,10 +192,7 @@ impl Engine {
         }) else {
             return Ok(false);
         };
-        let note = format!(
-            "You work in a git worktree of this project, on the branch {branch}, so your changes stay apart from the user's own checkout at {} until they merge them. Make your changes here, not there.",
-            tree.project
-        );
+        let note = note(tree, branch);
         let address = api::segment(session);
         let route =
             format!("api/experimental/session/{address}/instructions/entries/kuvo.worktree");
