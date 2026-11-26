@@ -58,6 +58,10 @@ docker compose build relay && docker compose up -d --no-deps --force-recreate --
 
 ## Limits
 
+The relay checks each connection every 30 seconds. A connection that has sent neither a pong
+nor a message for at least 90 seconds is dropped at the next check. A connection whose reads the
+relay itself has paused is not expired; its activity window begins again when reads resume.
+
 A device sending faster than 500 messages a second on average, or faster than the device it
 sends to takes them in, is held back (the relay stops reading from it for a moment) rather
 than cut off; one that keeps on regardless is closed (4003). A device that takes nothing in

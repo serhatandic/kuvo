@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, before, test } from 'node:test';
+import { after, before, test, type TestContext } from 'node:test';
 import { WebSocket as Client } from 'ws';
 import { addressOf, createRelay, type PushSender } from '../src/relay.ts';
 import { Registrations, parseRegistration } from '../src/registrations.ts';
@@ -494,19 +495,102 @@ test('a device that left is unreachable, and stops counting', async () => {
   phone.socket.close();
 });
 
-test('a device that stops answering pings is dropped', async () => {
-  const { relay: small, url } = await smallRelay({ pingIntervalMs: 50 });
+// The relay's clock is advanced explicitly; the WebSocket traffic still goes over loopback.
+async function pingAfter(t: TestContext, socket: Client, closed: Promise<number>, elapsed = 100) {
+  const pinged = once(socket, 'ping').then(() => true);
+  t.mock.timers.tick(elapsed);
+  assert.equal(await Promise.race([pinged, closed.then(() => false)]), true, 'the relay closed before its grace expired');
+}
+
+async function selfEcho(socket: Client, address: Buffer, closed: Promise<number>) {
+  const message = once(socket, 'message').then(([data]) => data);
+  socket.send(bytes([2], address));
+  assert.deepEqual(await Promise.race([message, closed.then(() => null)]), bytes([2], address));
+}
+
+test('a pong arriving after one missed ping window keeps the connection', { timeout: 4000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 0 });
+  const { relay: small, url } = await smallRelay({ pingIntervalMs: 100, pingClock: Date.now });
   try {
-    // Gone without a word (a phone out of signal): its socket never answers.
-    const gone = new Client(url, { autoPong: false });
-    await hello(gone);
-    const answering = new Client(url);
-    await hello(answering);
-    assert.equal(small.connections(), 2);
-    await closeCode(gone);
-    for (let i = 0; i < 50 && small.connections() === 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const client = new Client(url, { autoPong: false });
+    const closed = closeCode(client);
+    await hello(client);
+    await pingAfter(t, client, closed); // No pong in this window.
+    await pingAfter(t, client, closed);
+    // A late pong is activity. Fence it with a client ping and its automatic server pong.
+    const acknowledged = once(client, 'pong');
+    client.pong();
+    client.ping();
+    await acknowledged;
+    await pingAfter(t, client, closed);
+    await pingAfter(t, client, closed);
     assert.equal(small.connections(), 1);
-    answering.close();
+  } finally {
+    await small.close();
+  }
+});
+
+test('a device that stops answering pings is dropped after three quiet windows', { timeout: 4000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 0 });
+  const { relay: small, url } = await smallRelay({ pingIntervalMs: 100, pingClock: Date.now });
+  try {
+    const gone = new Client(url, { autoPong: false });
+    const closed = closeCode(gone);
+    await hello(gone);
+    await pingAfter(t, gone, closed);
+    await pingAfter(t, gone, closed);
+    t.mock.timers.tick(100);
+    assert.equal(await closed, 1006);
+    assert.equal(small.connections(), 0);
+  } finally {
+    await small.close();
+  }
+});
+
+test('the relay does not expire a connection while it holds back its reading', { timeout: 4000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 0 });
+  const { relay: small, url } = await smallRelay({ pingIntervalMs: 100, pingClock: Date.now, messagesPerSecond: 1 });
+  try {
+    const client = new Client(url, { autoPong: false });
+    const closed = closeCode(client);
+    const secret = randomBytes(32);
+    await hello(client, secret);
+    const address = addressOf(secret);
+    // The token bucket starts with two messages. The second one pauses the relay's reads.
+    await selfEcho(client, address, closed);
+    await selfEcho(client, address, closed);
+    for (let window = 0; window < 6; window++) await pingAfter(t, client, closed);
+    assert.equal(small.connections(), 1);
+    // The refill at one second lets the queued request pass, on the same socket.
+    const resumed = selfEcho(client, address, closed);
+    t.mock.timers.tick(450);
+    await resumed;
+    assert.equal(small.connections(), 1);
+  } finally {
+    await small.close();
+  }
+});
+
+test('both computer heartbeat cadences keep their connections even without pongs', { timeout: 4000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 0 });
+  const { relay: small, url } = await smallRelay({ pingIntervalMs: 100, pingClock: Date.now });
+  try {
+    const clients = await Promise.all([[99, 201, 301, 401], [33, 66, 99, 132, 165, 198, 231, 264, 297, 330, 363, 396]].map(async times => {
+      const socket = new Client(url, { autoPong: false });
+      const closed = closeCode(socket);
+      const secret = randomBytes(32);
+      await hello(socket, secret);
+      return { socket, closed, address: addressOf(secret), times };
+    }));
+    // The first client echoes every relay interval, with a little timing variation around a
+    // watchdog tick. The second echoes three times per interval. Neither needs a timely pong.
+    let previous = 0;
+    for (const at of [...new Set(clients.flatMap(client => client.times))].sort((a, b) => a - b)) {
+      t.mock.timers.tick(at - previous);
+      previous = at;
+      for (const client of clients) if (client.times.includes(at)) await selfEcho(client.socket, client.address, client.closed);
+    }
+    assert.equal(small.connections(), 2);
   } finally {
     await small.close();
   }

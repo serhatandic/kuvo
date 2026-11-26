@@ -56,6 +56,8 @@ export interface RelayOptions {
   listenersPerConnection?: number;
   targetsPerConnection?: number;
   pingIntervalMs?: number;
+  // Monotonic milliseconds for connection activity (the relay tests advance this clock).
+  pingClock?: () => number;
   // Where it says what's worth a look on the host (Apple refusing pushes, a token from the other
   // environment): never a token, an address or anything sent.
   log?: (line: string) => void;
@@ -148,14 +150,22 @@ export function createRelay(options: RelayOptions): { server: Server; connection
   // ---- Keeping connections honest: pings, and a token bucket per device ----
   // A connection is there while it answers pings, or sends: a phone sending a picture on a slow
   // connection has its pong behind it, later than the next ping (#144).
-  const alive = new WeakSet<WebSocket>();
+  const pingInterval = options.pingIntervalMs ?? 30_000;
+  const pingClock = options.pingClock ?? (() => performance.now());
+  const lastActivity = new WeakMap<WebSocket, number>();
+  const noteActivity = (socket: WebSocket) => lastActivity.set(socket, pingClock());
   const pinger = setInterval(() => {
+    const now = pingClock();
     for (const socket of sockets.clients) {
-      if (!alive.has(socket)) { socket.terminate(); continue; }
-      alive.delete(socket);
+      // A single late pong or binary heartbeat is not a lost connection. Reading we have
+      // paused ourselves is not missing activity, either.
+      if (!socket.isPaused && now - (lastActivity.get(socket) ?? now) >= 3 * pingInterval) {
+        socket.terminate();
+        continue;
+      }
       socket.ping();
     }
-  }, options.pingIntervalMs ?? 30_000);
+  }, pingInterval);
   pinger.unref();
 
   function refill(device: Device) {
@@ -181,6 +191,8 @@ export function createRelay(options: RelayOptions): { server: Server; connection
       if (device.socket.readyState !== device.socket.OPEN) return;
       if (blocked(device)) { device.held = setTimeout(check, 20); return; }
       device.held = undefined;
+      // Give the socket a full activity window after we start reading it again.
+      noteActivity(device.socket);
       device.socket.resume();
     };
     device.held = setTimeout(check, 20);
@@ -201,13 +213,13 @@ export function createRelay(options: RelayOptions): { server: Server; connection
       uncount();
       return socket.close(Close.TooMany, 'too many connections');
     }
-    alive.add(socket);
-    socket.on('pong', () => alive.add(socket));
+    noteActivity(socket);
+    socket.on('pong', () => noteActivity(socket));
     let device: Device | undefined;
     const helloTimer = setTimeout(() => socket.close(Close.Malformed, 'hello first'), options.helloTimeoutMs ?? 10_000);
 
     socket.on('message', (data, isBinary) => {
-      alive.add(socket);
+      noteActivity(socket);
       const message = Buffer.isBuffer(data) ? data : Buffer.concat(data as Buffer[]);
       if (!isBinary || message.length === 0) return socket.close(Close.Malformed, 'binary only');
       const kind = message[0];
