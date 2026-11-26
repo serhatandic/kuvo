@@ -1154,3 +1154,282 @@ test("Storage Refresh measures again, saying so at once", async t => {
   assert.equal(row(refreshed.json,"used").busy,"Measuring…");
   await until(async()=>row(await page(),"used").parts?.find(p=>p.id==="browser").value>=400000,"Refresh did not measure again.");
 });
+
+// Settings › Vault, on a machine's own vault made with a client's signed key request.
+const VAULT_SECRET="hunter2-correct-horse";
+const vaultHere=process.platform==="darwin"?"this Mac":"this computer";
+const CONFIRMS={"x-kuvo-from":"app","x-kuvo-confirms-you":"1"};
+const vaultBox=async(t,name,{env,bots={}}={})=>{
+  const {computer}=await bench(t);
+  const {randomBytes,generateKeyPairSync,sign}=await import("node:crypto");
+  const box=await computer(name,boxBinary(),env);
+  const signing=generateKeyPairSync("ed25519");
+  const mac=randomBytes(32).toString("base64url"),id=randomBytes(12).toString("hex");
+  const linkFile=path.join(box.home,"run/link.json");
+  write(linkFile,JSON.stringify({...JSON.parse(readFileSync(linkFile,"utf8")),id,macs:[mac],
+    macSigns:{[mac]:signing.publicKey.export({type:"spki",format:"der"}).subarray(-32).toString("base64url")}}));
+  const at=new Date().toISOString();
+  for (const [bid,bname] of Object.entries(bots)) {
+    write(path.join(box.home,"bots",bid,"bot.json"),JSON.stringify({kuvo:1,id:bid,name:bname,look:{color:"sky",shape:"gem",face:"wink"},created:at,updated:at}));
+    write(path.join(box.home,"bots",bid,"session"),`ses_${bid}`);
+  }
+  let proc=box.start();
+  let record=await proc.ready();
+  let plain=box.connect(record);
+  const v={box,client:{"x-kuvo-from":"app"}};
+  v.record=()=>record;
+  v.ask=(method,route,body,headers=v.client)=>plain(method,route,body,headers);
+  v.make=async()=>{
+    const at=Date.now(),nonce=randomBytes(20).toString("base64url");
+    const proof=sign(null,Buffer.from(`kuvo-vault-key\0${id}\0${at}\0${nonce}`),signing.privateKey).toString("base64url");
+    const made=await v.ask("POST","kuvo/vault/key",{mac,at,nonce,proof});
+    assert.equal(made.status,200,made.text);
+    return made.json.key;
+  };
+  v.add=async item=>{const r=await v.ask("POST","kuvo/vault/items",item);assert.equal(r.status,200,r.text);return r.json.item;};
+  v.github=async()=>{await v.make();return v.add({kind:"login",name:"GitHub",sites:["github.com"],username:"octo",values:{password:VAULT_SECRET},signInOnly:true});};
+  v.page=async()=>{const r=await v.ask("GET","kuvo/settings/vault");assert.equal(r.status,200,r.text);assert.ok(!r.text.includes(VAULT_SECRET));return r.json;};
+  v.act=(r,id,values,was=action(r,id)?.form?.revision??r.revision)=>v.ask("POST",`kuvo/settings/vault/${encodeURIComponent(r.id)}/${id}`,{was,...(values===undefined?{}:{values})});
+  v.check=(r,id,values)=>v.ask("POST",`kuvo/settings/vault/${encodeURIComponent(r.id)}/${id}/check`,{was:action(r,id).form.revision,values});
+  v.change=(r,value)=>v.ask("PATCH","kuvo/settings/vault",{row:r.id,value,was:r.revision});
+  v.items=async()=>(await v.ask("GET","kuvo/vault")).json.items;
+  v.activity=async()=>(await v.ask("GET","kuvo/vault/activity")).json;
+  v.restart=async()=>{await proc.stop();proc=box.start();record=await proc.ready();plain=box.connect(record);};
+  return v;
+};
+const opened=(r,id)=>Object.fromEntries(action(r,id).form.fields.filter(f=>"value" in f).map(f=>[f.id,f.value]));
+const masked=text=>"•".repeat(Array.from(text).length);
+
+test("Vault before there's one says where its first item is added, then lists items by what they are, never a value", async t => {
+  const v=await vaultBox(t,"Vault List",{bots:{bot_scout:"Scout"}});
+  const listed=(await v.ask("GET","kuvo/settings")).json.sections.find(s=>s.id==="vault");
+  assert.deepEqual([listed.title,listed.group,listed.icon],["Vault","Agents & Tools","shield"]);
+  let shown=await v.page();
+  let items=row(shown,"items");
+  assert.deepEqual([items.kind,items.items,items.empty],["list",[],"Nothing yet. Add a sign-in, a key, a file or a note for your agents to use."]);
+  assert.equal(items.add.can.why,`There’s no vault on ${vaultHere} yet. This app can’t make one: it doesn’t keep the key that unlocks a vault after its computer restarts.`);
+  assert.equal(row(shown,"pause"),undefined);
+  assert.equal((await v.act(items,"add",{kind:"note",name:"Contact",text:"Call me maybe"})).status,403);
+  const github=await v.github();
+  assert.equal((await v.ask("POST","kuvo/vault/grants",{item:github.id,who:{bot:"bot_scout"},how:"own"},CONFIRMS)).status,200);
+  await v.add({kind:"key",name:"App Store",sites:[],values:{value:"key-value-1",issuer_id:"issuer-1"}});
+  await v.add({kind:"note",name:"Contact",values:{text:"a note to read"},readable:true});
+  shown=await v.page();
+  items=row(shown,"items");
+  assert.deepEqual(items.items.map(i=>[i.title,i.line,i.badge?.words??null]),[
+    ["App Store","API Key · issuer_id, value",null],["Contact","Note · Bots may read it",null],["GitHub","Sign-in · octo · github.com","On its own"]]);
+  assert.deepEqual(items.items[2].actions.map(a=>a.title),["Edit…","Who Can Use It…","Delete…"]);
+  assert.match(shown.groups.find(g=>g.id==="items").note,/encrypted, with a key only the Kuvo that made it keeps/);
+  const pause=row(shown,"pause");
+  assert.deepEqual([pause.kind,pause.value,pause.can],["switch",false,true]);
+  for (const secret of ["key-value-1","issuer-1","a note to read"]) assert.ok(!JSON.stringify(shown).includes(secret));
+  // The activity says what this client did plainly.
+  assert.equal((await v.ask("GET",`kuvo/vault/items/${github.id}/values`)).status,200);
+  assert.ok(row(await v.page(),"activity").items.some(i=>i.title==="Looked at “GitHub”"));
+});
+
+test("Vault Add Item checks without the values themselves, refuses in the same words, and adds sign-ins, keys and files", async t => {
+  const v=await vaultBox(t,"Vault Add");
+  await v.github();
+  const items=row(await v.page(),"items");
+  assert.deepEqual(action(items,"add").form.fields.map(f=>[f.id,f.kind,f.shown?.is??null]),[
+    ["kind","choice",null],["name","text",null],["site","text",["login"]],["username","text",["login"]],["password","secret",["login"]],["signInOnly","switch",["login"]],
+    ["hosts","text",["key"]],["value","secret",["key"]],["more","pairs",["key"]],["file","file",["file"]],["text","secret",["note"]],["readable","switch",["note"]]]);
+  const open=opened(items,"add");
+  const has=(c,id,words,tone)=>c.fields.some(f=>f.id===id&&f.words===words&&f.tone===tone);
+  let checked=(await v.check(items,"add",{...open,name:"github",site:"github.com",password:masked("abc")})).json;
+  assert.equal(checked.ready,false);
+  assert.ok(has(checked,"name","There’s an item called “github” already.","warning"),JSON.stringify(checked));
+  assert.ok(has(checked,"password","A value needs at least 4 characters, so it can be hidden from agents.","warning"));
+  checked=(await v.check(items,"add",{...open,name:"Linear",site:"not a site!",password:""})).json;
+  assert.ok(has(checked,"site","“site!” isn’t a site.","warning"),JSON.stringify(checked));
+  assert.ok(has(checked,"password","Its password.","quiet"));
+  assert.deepEqual((await v.check(items,"add",{...open,name:"Linear",site:"linear.app",password:masked("linear-pass")})).json,{fields:[],ready:true});
+  const refused=await v.act(items,"add",{...open,name:"Linear",site:"linear.app",password:"abc"});
+  assert.equal(refused.status,400);
+  assert.equal(refused.json.message,"A value needs at least 4 characters, so it can be hidden from agents.");
+  assert.ok(!refused.text.includes('"abc"'));
+  const added=await v.act(items,"add",{...open,name:"Linear",site:"https://linear.app/login",username:"me",password:VAULT_SECRET});
+  assert.equal(added.status,200,added.text);
+  assert.ok(!added.text.includes(VAULT_SECRET));
+  const linear=(await v.items()).find(i=>i.name==="Linear");
+  assert.deepEqual([linear.kind,linear.sites,linear.username,linear.fields,linear.signInOnly],["login",["linear.app"],"me",["password"],true]);
+  assert.deepEqual((await v.ask("POST",`kuvo/vault/items/${linear.id}/same`,{values:{password:VAULT_SECRET}})).json,{same:true});
+  assert.ok(!JSON.stringify(await v.activity()).includes(VAULT_SECRET));
+  const more=await v.act(row(await v.page(),"items"),"add",{...open,kind:"key",name:"Store Key",hosts:"api.example.com",value:"the-key-value",more:[{key:"Issuer ID",value:"issuer-value"}]});
+  assert.equal(more.status,200,more.text);
+  const key=(await v.items()).find(i=>i.name==="Store Key");
+  assert.deepEqual([key.sites,key.fields],[["api.example.com"],["issuer_id","value"]]);
+  const big=(await v.check(row(await v.page(),"items"),"add",{...open,kind:"file",name:"Big",file:{name:"big.p8",size:900000}})).json;
+  assert.ok(has(big,"file","That file is too big for the vault (at most about 700 KB).","warning"),JSON.stringify(big));
+  const sizeOnly=await v.act(row(await v.page(),"items"),"add",{...open,kind:"file",name:"Signing Key",file:{name:"AuthKey.p8",size:1234}});
+  assert.equal(sizeOnly.status,400);
+  const file=await v.act(row(await v.page(),"items"),"add",{...open,kind:"file",name:"Signing Key",file:{name:"AuthKey.p8",data:Buffer.from("-----BEGIN KEY-----").toString("base64")}});
+  assert.equal(file.status,200,file.text);
+  const kept=(await v.items()).find(i=>i.name==="Signing Key");
+  assert.deepEqual([kept.fileName,kept.fields],["AuthKey.p8",["file"]]);
+  assert.equal(item(file.json,`item-${kept.id}`).line,"File · AuthKey.p8");
+});
+
+test("Vault Edit opens empty for each value, saves only what changed, goes stale, and takes a key's other field away", async t => {
+  const v=await vaultBox(t,"Vault Edit");
+  const github=await v.github();
+  let r=item(await v.page(),`item-${github.id}`);
+  const password=action(r,"edit").form.fields.find(f=>f.id==="password");
+  assert.deepEqual(password,{id:"password",title:"Password",kind:"secret",placeholder:"Unchanged",shows:{route:`kuvo/vault/items/${github.id}/values`,field:"password"}});
+  assert.deepEqual(action(r,"edit").form.fields.map(f=>f.id),["name","site","username","password","signInOnly"]);
+  const shown=await v.ask("GET",password.shows.route);
+  assert.equal(shown.json.values.password,VAULT_SECRET);
+  const count=JSON.stringify(await v.activity()).length;
+  const changed=(await v.items())[0].changed;
+  assert.equal((await v.act(r,"edit",{...opened(r,"edit"),password:""})).status,200);
+  assert.equal((await v.act(r,"edit",{...opened(r,"edit"),password:VAULT_SECRET})).status,200);
+  assert.equal(JSON.stringify(await v.activity()).length,count);
+  assert.equal((await v.items())[0].changed,changed);
+  const saved=await v.act(r,"edit",{...opened(r,"edit"),username:"octocat",password:"new-password-1"});
+  assert.equal(saved.status,200,saved.text);
+  const now=(await v.items())[0];
+  assert.deepEqual([now.username,now.sites,now.signInOnly],["octocat",["github.com"],true]);
+  assert.deepEqual((await v.ask("POST",`kuvo/vault/items/${github.id}/same`,{values:{password:"new-password-1"}})).json,{same:true});
+  const stale=await v.act(r,"edit",{...opened(r,"edit"),name:"GitHub 2"});
+  assert.equal(stale.status,409);
+  assert.equal(item(stale.json.page,`item-${github.id}`).title,"GitHub");
+  r=item(await v.page(),`item-${github.id}`);
+  await v.add({kind:"note",name:"Other",values:{text:"other note"}});
+  assert.equal((await v.act(r,"edit",{...opened(r,"edit"),name:"GitHub Work"})).status,200);
+  assert.equal((await v.items()).find(i=>i.id===github.id).name,"GitHub Work");
+  const key=await v.add({kind:"key",name:"Store Key",sites:[],values:{value:"the-key-value",isuer_id:"typo-value"}});
+  r=item(await v.page(),`item-${key.id}`);
+  const remove=action(r,"edit").form.fields.find(f=>f.id==="remove");
+  assert.deepEqual([remove.kind,remove.value,remove.choices],["choice","none",[{id:"none",title:"None"},{id:"isuer_id",title:"Isuer Id"}]]);
+  assert.equal((await v.act(r,"edit",{...opened(r,"edit"),remove:"isuer_id"})).status,200);
+  assert.deepEqual((await v.items()).find(i=>i.id===key.id).fields,["value"]);
+  // Delete… takes the item away.
+  r=item(await v.page(),`item-${github.id}`);
+  const del=action(r,"delete");
+  assert.deepEqual([del.style,del.confirm.title,del.confirm.button],["destructive","Delete “GitHub Work” from the vault?","Delete"]);
+  const done=await v.act(r,"delete");
+  assert.equal(done.status,200,done.text);
+  assert.equal(item(done.json,`item-${github.id}`),undefined);
+  assert.equal((await v.items()).some(i=>i.id===github.id),false);
+});
+
+test("Vault Who Can Use It takes access away from any client and gives more only from one that makes sure it's you", async t => {
+  const v=await vaultBox(t,"Vault Who",{bots:{bot_scout:"Scout",bot_ranger:"Ranger"}});
+  const github=await v.github();
+  assert.equal((await v.ask("POST","kuvo/vault/grants",{item:github.id,who:{bot:"bot_scout"},how:"ask"},CONFIRMS)).status,200);
+  const why="This needs Touch ID or your Mac’s password. Update Kuvo to do it here.";
+  let r=item(await v.page(),`item-${github.id}`);
+  let who=action(r,"who").form;
+  assert.deepEqual(who.fields.map(f=>[f.id,f.value,f.choices.map(c=>c.id),f.can?.why??null]),[
+    ["bot-bot_scout","ask",["ask","no"],null],["everyone","no",["no"],why],["add-bot","none",["none","bot_ranger"],why]]);
+  assert.equal(who.note,"Only on github.com. Agents never see the password: Kuvo fills it in.");
+  assert.equal((await v.act(r,"who",{...opened(r,"who"),"bot-bot_scout":"own"})).json.message,why);
+  assert.equal((await v.act(r,"who",{...opened(r,"who"),"add-bot":"bot_ranger"})).status,403);
+  const grants=async()=>(await v.ask("GET","kuvo/vault/grants")).json.grants;
+  assert.deepEqual((await grants()).map(g=>[g.who,g.how]),[[{bot:"bot_scout"},"ask"]]);
+  assert.equal((await v.act(r,"who",{...opened(r,"who"),"bot-bot_scout":"no"})).status,200);
+  assert.deepEqual(await grants(),[]);
+  v.client=CONFIRMS;
+  r=item(await v.page(),`item-${github.id}`);
+  who=action(r,"who").form;
+  assert.deepEqual(who.fields.map(f=>[f.id,f.title,f.can??null,f.choices.map(c=>[c.id,c.verified??false])]),[
+    ["everyone","Every agent",null,[["own",true],["ask",true],["no",false]]],
+    ["add-bot","Let a Bot Use It",null,[["none",false],["bot_ranger",true],["bot_scout",true]]]]);
+  assert.deepEqual(who.fields[1].choices.map(c=>c.title),["No One Else","Ranger","Scout"]);
+  assert.equal((await v.act(r,"who",{...opened(r,"who"),"add-bot":"bot_scout"})).status,200);
+  r=item(await v.page(),`item-${github.id}`);
+  assert.deepEqual(r.badge,{words:"Asks",tone:"quiet"});
+  assert.equal((await v.act(r,"who",{...opened(r,"who"),"bot-bot_scout":"own"})).status,200);
+  assert.deepEqual((await grants()).map(g=>[g.who,g.how]),[[{bot:"bot_scout"},"own"]]);
+  r=item(await v.page(),`item-${github.id}`);
+  assert.equal((await v.act(r,"who",{everyone:"always"})).status,400);
+});
+
+test("Vault Pause stops every agent's use and lets a paused bot go on; the page follows without a value", async t => {
+  const v=await vaultBox(t,"Vault Pause",{bots:{bot_scout:"Scout"}});
+  const github=await v.github();
+  assert.equal((await v.ask("POST","kuvo/vault/pause",{paused:true,bot:"bot_scout"})).status,200);
+  let shown=await v.page();
+  const paused=item(shown,"paused-bot_scout");
+  assert.deepEqual([paused.title,paused.actions.map(a=>[a.id,a.title])],["Scout is paused",[["go-on","Let Go On"]]]);
+  shown=(await v.change(row(shown,"pause"),true)).json;
+  assert.equal(row(shown,"pause").value,true);
+  assert.equal((await v.ask("GET","kuvo/vault")).json.state.paused,true);
+  shown=(await v.act(item(shown,"paused-bot_scout"),"go-on")).json;
+  assert.equal(item(shown,"paused-bot_scout"),undefined);
+  assert.deepEqual((await v.ask("GET","kuvo/vault")).json.state.pausedBots??{},{});
+  const titles=row(shown,"activity").items.map(i=>i.title);
+  assert.deepEqual(titles.slice(0,2),["Scout’s use of the vault goes on again","The vault was paused"]);
+  const lines=await openLine(v.record(),"","kuvo/settings/vault/events",{"x-kuvo-from":"app"});
+  try {
+    const frames=lines.frames();
+    const first=(await frames.next()).value;
+    const r=item(first,`item-${github.id}`);
+    assert.equal(r.title,"GitHub");
+    assert.equal((await v.act(r,"edit",{...opened(r,"edit"),name:"GitHub Work",password:"another-secret-9"})).status,200);
+    let next;
+    do { next=(await frames.next()).value; } while(item(next,`item-${github.id}`).title!=="GitHub Work");
+    assert.ok(!JSON.stringify(next).includes("another-secret-9"));
+  } finally { lines.close(); }
+});
+
+test("Vault locked after a restart says so and shows nothing; a request that isn't a client's reads nothing; no form carries a value", async t => {
+  const v=await vaultBox(t,"Vault Locked",{bots:{bot_scout:"Scout"}});
+  await v.github();
+  v.client=CONFIRMS;
+  const listed=(await v.ask("GET","kuvo/settings")).json;
+  for (const section of listed.sections) {
+    const shown=(await v.ask("GET",`kuvo/settings/${section.id}`)).json;
+    const rows=(shown.groups??[]).flatMap(g=>g.rows.flatMap(r=>[r,...(r.items??[])]));
+    const forms=rows.flatMap(r=>[...(r.actions??[]),...(r.add?[r.add]:[]),...(r.flow?.actions??[])]).flatMap(a=>a.form?[a.form]:[]);
+    for (const field of forms.flatMap(f=>f.fields)) {
+      if (field.kind==="secret") assert.equal("value" in field,false,section.id);
+      if (field.kind==="pairs"&&field.secret) assert.ok((field.value??[]).every(p=>p.value===""));
+      if (field.kind==="file") assert.ok(Object.keys(field.value??{}).every(k=>k==="name"));
+      if (field.shows) assert.match(field.shows.route,/^kuvo\/vault\/items\/v_[a-z0-9]{10}\/values$/);
+    }
+    assert.ok(!JSON.stringify(shown).includes(VAULT_SECRET),section.id);
+  }
+  const outside=(await v.ask("GET","kuvo/settings/vault",undefined,{})).json;
+  assert.deepEqual(outside.groups,[]);
+  // (Named as this computer goes by: TypeScript says its host name, Rust its name in the setup.)
+  assert.match(outside.notes[0].words,/^Only Kuvo on your devices can open .+’s vault\.$/);
+  await v.restart();
+  v.client={"x-kuvo-from":"app"};
+  const locked=await v.page();
+  assert.deepEqual(locked.groups,[]);
+  assert.deepEqual(locked.notes,[{words:`${vaultHere[0].toUpperCase()+vaultHere.slice(1)}’s vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.`,tone:"warning"}]);
+});
+
+test("Vault answers what agents wait on you for from the page: once from any client, from now on only from one that makes sure it's you", {skip:process.platform==="win32"}, async t => {
+  const v=await vaultBox(t,"Vault Asks",{env:()=>({KUVO_VAULT_AGENTS:"1",KUVO_TEST_LOGIN_ENV:"off"})});
+  const github=await v.github();
+  const project=path.join(v.box.home,"project");
+  mkdirSync(project,{recursive:true});
+  const session=sessionOf({id:"ses_asker",title:"Release",directory:project});
+  v.box.engine.sessions.push(session);
+  const args={need:"an npm token",why:"To publish"};
+  v.box.engine.messages.set(session.id,[{id:"msg_vault",content:[{type:"tool",name:"vault_ask",callID:"call_ask",state:{status:"running",input:args}}]}]);
+  const waiting=v.ask("POST","kuvo/vault/tools",{session:session.id,name:"vault_ask",arguments:args});
+  const why="This needs Touch ID or your Mac’s password. Update Kuvo to do it here.";
+  const shown=await until(async()=>{const p=await v.page();return p.groups[0]?.id!=="items"&&p.groups[0]?.rows?.length&&p;},"The ask must be on the page.");
+  const group=shown.groups[0];
+  assert.equal(group.title,"Waiting for You");
+  const asked=group.rows[0];
+  assert.match(asked.title,/needs an npm token$/);
+  assert.equal(asked.line,"To publish");
+  assert.deepEqual(asked.actions.map(a=>a.title),["Don’t Allow","Give…"]);
+  const how=action(asked,"give").form.fields.find(f=>f.id==="how");
+  assert.deepEqual(how.can,{why});
+  assert.equal((await v.act(asked,"give",{item:github.id,how:"always"})).status,403);
+  v.client=CONFIRMS;
+  const offered=item(await v.page(),asked.id);
+  assert.deepEqual(action(offered,"give").form.fields.map(f=>[f.id,f.value,f.choices.map(c=>c.verified??false)]),[["item","",[false]],["how","once",[false,true]]]);
+  assert.equal((await v.act(offered,"give",{item:github.id,how:"once"})).status,200);
+  const supplied=await waiting;
+  assert.equal(supplied.json.isError,false,supplied.text);
+  assert.equal(item(await v.page(),asked.id),undefined);
+  // One answered elsewhere meanwhile is gone from the page: refused, nothing answered.
+  assert.equal((await v.act(offered,"give",{item:github.id,how:"once"})).status,404);
+});
