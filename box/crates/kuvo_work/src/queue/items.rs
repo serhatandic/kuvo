@@ -193,12 +193,9 @@ pub(super) fn register(
                     .await?,
                 );
             }
+            let client = here.client(&call.request.caller, &call.request.headers, Some(&body));
             typed(
-                here.change_for_client(
-                    name,
-                    Removal::Delete,
-                    local_work_queue_app(&call.request.caller),
-                )
+                here.change_for_client(name, Removal::Delete, client)
                 .await?,
             )
         }
@@ -211,12 +208,10 @@ pub(super) fn register(
             if !work_queue_client(&call.request.caller) {
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
             }
+            let body: Value = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+            let client = here.client(&call.request.caller, &call.request.headers, Some(&body));
             typed(
-                here.change_for_client(
-                    name,
-                    Removal::Restore,
-                    local_work_queue_app(&call.request.caller),
-                )
+                here.change_for_client(name, Removal::Restore, client)
                 .await?,
             )
         }
@@ -412,6 +407,33 @@ impl Writer {
                 json!({"acted":{"id":id,"status":answer.status,"value":answer.value}}),
                 now,
             ) {
+                for mail in mails {
+                    let _ = relay.sender.mail(peer.clone(), mail).await;
+                }
+            }
+        }
+        if let Some(given) = queue.get("scopedAct")
+            && self.forward.admits(*key)
+            && let Some(given) = super::forward::scoped::Given::read(given)
+        {
+            let id = given.act.id.clone();
+            let answer = match self.respond_to_scoped(&by, given, now).await {
+                Ok(answer) => answer,
+                Err(error) => {
+                    eprintln!("Work Queue forwarded action: {error}");
+                    Some(super::forward::records::Reply {
+                        status: 503,
+                        value: json!({"message":"This computer couldn't confirm the forwarded operation. Check its result before retrying."}),
+                    })
+                }
+            };
+            // (One that isn't admitted here yet is left unanswered, and the member asks again.)
+            if let Some(answer) = answer
+                && let Some(mails) = kuvo_peers::work_queue_mails(
+                    json!({"acted":{"id":id,"status":answer.status,"value":answer.value}}),
+                    now,
+                )
+            {
                 for mail in mails {
                     let _ = relay.sender.mail(peer.clone(), mail).await;
                 }

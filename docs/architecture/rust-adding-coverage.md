@@ -48,6 +48,7 @@ the races that span removal, backup, moves, and an authority change.
 | C38 | [A rename on a beta.1 machine is handed to the Mac that keeps its records](../../protocol/conformance/compat.test.mjs) | A stand-in beta.1 Mac on the relay seals its mail with the release wire format. A rename of the Mac itself is refused, a Mac without `computers.manage` is asked to update, and once it announces the feature the rename travels to it and its answer comes back. Nothing is saved on the machine. |
 | C39 | [A conversation on another computer is read live, and from its last copy while that computer is away](../../protocol/conformance/two-boxes.test.mjs) | Both boxes follow another computer's conversation over peer mail: where it is, the conversation itself and its newest page come from the computer that owns it, and that computer reads its own the same way. Once it stops, the newest page is answered from the copy kept as it was carried, marked away. A follow listens only while someone follows. |
 | C40 | [Uninstall from a saved SSH address commits a signed wipe and waits for confirmation](../../protocol/conformance/ssh-adding.test.mjs) | The member has never been heard from: both boxes list it as away with Remove. Once its SSH address is saved, both offer Unlink and wipe with the same confirmation, and that action completes. |
+| C41 | [A paired device changes an item another computer keeps, decided once for each operation](../../protocol/conformance/work-queue.test.mjs) | A desktop paired with Studio changes an item Lab keeps. Studio sends it with the device's grant, and Lab, a member that never had a first run, applies it and keeps its decision under `run/owned-data/mutations`, in the form moves carry. The same operation again is answered from that decision without a second change; the same operation for another change is refused on Studio before it's sent. A delete that names no operation goes as its own. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -330,6 +331,52 @@ Each has no caller that can reach a Rust box.
   remote path of its own. The row leaves it out, so no action leads nowhere: a
   member that's down still offers Remove, and Unlink and wipe once its address
   is saved (C40).
+
+## Scoped forwarding (`data.scoped-forward`)
+
+The desktop app reaches every computer but its own over the relay as a paired
+device (`gpui/kuvo_box/src/boxes.rs`), and a computer's window lists every
+computer's Work Queue items, sending each change to the box that window shows.
+A change to an item another computer keeps goes on to its keeper with the
+device's grant: the setup, the device (`{kind: "paired", key, pairing}`) and an
+operation id (the client's `x-kuvo-operation`, else the act's own id). The keeper
+checks the device's pairing, decides once for each operation and keeps the
+decision in `run/owned-data/mutations/<sha256(["scoped-forward", setup,
+operation])>.json`, so a retry is answered the same, even after the device lost
+access. A member sending for a revoked device sends only a replay.
+
+Rust says `data.scoped-forward` only once every area takes it, so before then a
+paired device's change for another computer is refused with "Update … before
+forwarding this operation from a paired device." Nobody runs the Rust box before
+0.8, and the areas below land before it. Tests set `KUVO_TEST_SCOPED_FORWARD` to
+say it now.
+
+1. **Queue items (done, C41).** `kuvo_work` `queue/forward/scoped.rs`: the
+   member's grant and pin (`pinForward`), the keeper's admission and ledger
+   (`takeScopedAct`, `runForwardDecision`). Still open here: the device revoked
+   between sending and deciding (the replay-only path and the 409 "The submitting
+   device no longer has access" decision are in place, unproved), a decision
+   begun and cut short by a restart (TypeScript's `orphaned` settling; Rust
+   answers "The owner has claimed this operation"), and the lock TypeScript
+   takes around the pin.
+2. **Ownership writes and devices.** TypeScript sends scoped acts from
+   `areas/work-queue.ts` (owner writes, `area: "ownership"`: archived
+   conversations, session settings) and `areas/phones.ts` (a device removed
+   through a member, `area: "devices"`). Rust's archive forward takes only the
+   local app today (`kuvo_work` `queue/forward.rs` `ArchiveForward::write`);
+   check the devices route the same way. On the keeper, the record each act names comes from
+   `ownership/write.ts` `ownerWrite` (owner writes) or is `membershipAndAccess`
+   (devices); admission is `acceptsMutation("ownerWrite", ref)`. Reuse the
+   ledger and grant in `scoped.rs`. The ledger's `forward.kind` follows the
+   record's owner (`forwardedPrimaryDecisions`, `forwardedSessionDecisions`,
+   …), as `kuvo_peers` `moves/forward_evidence.rs` checks.
+3. **Setup handover and computers, then say the feature.** `areas/setup.ts`
+   (handover, `area: "setup"`, record `setupLeadership`) and `areas/computers.ts`
+   (rename and removal, `area: "computers"`). Rust's setup actor already takes a
+   scoped unlink (`kuvo_setup` `actor/computer_requests.rs`
+   `receive_forwarded_unlink`) without a ledger; move it onto the shared one.
+   Then add `data.scoped-forward` to `kuvo_peers` `View::features`, remove
+   `KUVO_TEST_SCOPED_FORWARD` entirely (no test switch stays in the product) and close the Work Queue map's `setup-handover-access` row.
 
 ## Home inventory verdicts
 

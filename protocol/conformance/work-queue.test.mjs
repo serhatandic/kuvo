@@ -12,6 +12,7 @@ import { bench } from "./bench.mjs";
 import { recordRelayLease } from "../../box/bridge-tests/relay-lease-stand-in.js";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
+import { hasWire, relayDesktop } from "./paired.mjs";
 
 async function withQueue(run) {
   const root = scratch();
@@ -643,6 +644,70 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   assert.equal(onKeeper.status, 200, onKeeper.text);
   assert.equal(onKeeper.json.item.priority, "high");
   assert.deepEqual(onKeeper.json.item.events.slice(-2).map(event => event.kind), ["deleted", "restored"]);
+});
+
+test("a paired device changes an item another computer keeps, decided once for each operation", {
+  timeout: 150000, skip: !hasWire() && "Build the reference Noise fixture",
+}, async t => {
+  const { computer, leases, relay } = await bench(t);
+  // (Rust says it takes these only once every area does; the test lets it say so now.)
+  const scoped = () => ({ KUVO_TEST_SCOPED_FORWARD: "1" });
+  const studio = await computer("Studio", boxBinary(), scoped);
+  const lab = await computer("Lab", boxBinary(), scoped);
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  const app = { "x-kuvo-from": "app" };
+  const enrollment = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(enrollment.status, 201, enrollment.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
+  const joined = await lab.join(enrollment.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const items = "kuvo/work-queue/items";
+  const added = await member("POST", items, { operation: "kept-on-lab", title: "Lab's own item" }, app);
+  assert.equal(added.status, 200, added.text);
+  const id = added.json.item.id;
+  const route = `${items}/${id}`;
+  await until(async () => (await main("GET", "kuvo/work-queue?owner=all&glance=1&counts=1")).json.items?.some(item => item.id === id),
+    "Studio did not receive the Lab queue.", 30000);
+  const labKey = (await member("GET", "kuvo/setup")).json.you.key;
+  await until(async () => {
+    const row = (await main("GET", "kuvo/computers")).json.computers.find(each => each.key === labKey);
+    return ["work-queue.forward", "data.scoped-forward"].every(feature => row?.features?.includes(feature));
+  }, "Studio did not hear that Lab takes forwarded changes.", 30000);
+  // The app on another computer reaches Studio as a paired device.
+  const laptop = await relayDesktop(t, relay, studio, main, Buffer.alloc(32, 91), 414, "Laptop");
+  // (Lab checks the device's access itself, once it has heard of the pairing.)
+  await until(async () => (await member("GET", "kuvo/phones")).json.phones
+    ?.some(phone => phone.key === laptop.key && phone.pairing === laptop.pairing), "Lab did not hear of the paired desktop.", 30000);
+  const operation = { "x-kuvo-operation": "laptop-priority" };
+  const changed = await laptop.ask("PATCH", route, { priority: "high" }, operation);
+  assert.equal(changed.status, 200, JSON.stringify(changed.json));
+  assert.equal(changed.json.item.priority, "high");
+  const kept = async () => (await member("GET", route)).json.item;
+  assert.equal((await kept()).priority, "high");
+  const events = (await kept()).events.length;
+  // The same operation again: answered as it was decided, and done once.
+  const again = await laptop.ask("PATCH", route, { priority: "high" }, operation);
+  assert.equal(again.status, 200, JSON.stringify(again.json));
+  assert.equal(again.json.item.priority, "high");
+  assert.equal((await kept()).events.length, events);
+  // The same operation for another change is refused before it's sent.
+  const other = await laptop.ask("PATCH", route, { priority: "low" }, operation);
+  assert.equal(other.status, 409, JSON.stringify(other.json));
+  assert.equal(other.json.message, "That operation id is already bound to another change or owner.");
+  assert.equal((await kept()).priority, "high");
+  // Lab keeps its decision where a move carries it.
+  const file = createHash("sha256").update(JSON.stringify(["scoped-forward", setup.json.setup, "laptop-priority"])).digest("base64url") + ".json";
+  const decision = JSON.parse(readFileSync(path.join(lab.home, "run", "owned-data", "mutations", file), "utf8"));
+  assert.equal(decision.forward.kind, "forwardedQueueDecisions");
+  assert.deepEqual(decision.forward.submitter, { kind: "paired", key: laptop.key, pairing: laptop.pairing });
+  assert.deepEqual(decision.forward.ref, { kind: "queueItems", id, queue: added.json.item.owner });
+  assert.equal(decision.answer.status, 200);
+  // A change named by nothing goes as its own operation.
+  const deleted = await laptop.ask("DELETE", route);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.json));
+  await until(async () => (await member("GET", route)).json.item?.removed, "Lab did not delete its item.", 15000);
 });
 
 test("closed Work Queue counts include items older than the peer's recent list", {

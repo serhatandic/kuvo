@@ -1132,7 +1132,9 @@ fn make_view(
             grants_disabled: access.disabled,
             // After restart, a member waits for this process to observe the
             // current setup holder instead of authorizing from a stale lease.
-            grants_current: setup.role == Role::Primary || (welcomed && lease.holds(link)),
+            // (Whether anyone had the first run here has nothing to do with it:
+            // a headless member never does.)
+            grants_current: setup.role == Role::Primary || lease.holds(link),
         }
     } else {
         kuvo_peers::ownership::SetupState::default()

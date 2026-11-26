@@ -1,4 +1,5 @@
 pub(super) mod records;
+pub(super) mod scoped;
 
 use super::{
     routes::{internal, storage_refusal},
@@ -29,6 +30,8 @@ struct Outgoing {
     id: Option<String>,
     agent: Option<records::Agent>,
     released: bool,
+    /// The paired device it's for, sent with its grant.
+    device: Option<scoped::Device>,
 }
 
 pub(super) struct CallAgent {
@@ -68,6 +71,7 @@ impl Forward {
         method: Method,
         action: Option<String>,
         body: Option<Value>,
+        device: Option<scoped::Device>,
     ) -> Result<Value, Refusal> {
         self.request(
             target.key,
@@ -82,6 +86,7 @@ impl Forward {
                 id: None,
                 agent: None,
                 released: false,
+                device,
             },
         )
         .await
@@ -106,6 +111,7 @@ impl Forward {
                 id: None,
                 agent: None,
                 released: false,
+                device: None,
             },
         )
         .await
@@ -144,6 +150,7 @@ impl Forward {
                 id: None,
                 agent: None,
                 released: false,
+                device: None,
             },
         )
         .await
@@ -183,6 +190,7 @@ impl Forward {
                 id,
                 agent: Some(agent),
                 released: false,
+                device: None,
             },
         )
         .await
@@ -228,6 +236,7 @@ impl Forward {
                 id: None,
                 agent: None,
                 released: true,
+                device: None,
             },
         )
         .await
@@ -268,6 +277,7 @@ impl Forward {
             id,
             agent,
             released,
+            device,
         } = outgoing;
         let display = computer["name"].as_str().unwrap_or_default();
         let named = named.as_deref().unwrap_or(&item);
@@ -288,6 +298,12 @@ impl Forward {
             return Err(failed(
                 StatusCode::CONFLICT,
                 format!("{named} is on {display}: change it there."),
+            ));
+        }
+        if device.is_some() && !view.advertises(&peer, scoped::FEATURE) {
+            return Err(failed(
+                StatusCode::CONFLICT,
+                format!("Update {display} before forwarding this operation from a paired device."),
             ));
         }
         let away = || {
@@ -338,13 +354,41 @@ impl Forward {
                 agent,
             },
         };
-        let payload = json!({"act":spool.act});
-        let mails = work_queue_mails(payload, at).ok_or_else(|| {
+        let too_big = || {
             failed(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("That change is too big to send to {display}."),
             )
-        })?;
+        };
+        // A paired device's change goes with its grant, and only as a replay of what was decided
+        // once the device lost access here.
+        // A paired device's change goes with its grant, and only as a replay of what was decided
+        // once the device lost access here. Each send is new mail, as the keeper may not have taken
+        // the last one in yet (it was still checking the device).
+        let (mails, scoped) = match &device {
+            None => (work_queue_mails(json!({"act":spool.act}), at).ok_or_else(too_big)?, None),
+            Some(device) => {
+                let scoped = |replay: bool| json!({"scopedAct":{
+                    "act":spool.act,"grant":device.grant(&id),"owner":spool.to,"replayOnly":replay,
+                }});
+                work_queue_mails(scoped(false), at).ok_or_else(too_big)?;
+                (Vec::new(), Some((scoped(false), scoped(true))))
+            }
+        };
+        if let Some(device) = device.as_ref().filter(|device| device.operation.is_some()) {
+            let run = self.store.root.parent().expect("Work Queue under run").to_owned();
+            let grant = device.grant(&id);
+            let to = spool.to.clone();
+            let listed_by = view.roster.here.map(|key| kuvo_wire::keys::encode(&key)).unwrap_or_default();
+            let act = serde_json::to_value(&spool.act).map_err(internal)?;
+            let pinned = tokio::task::spawn_blocking(move || scoped::pin(&run, &grant, &to, &listed_by, act))
+                .await
+                .map_err(internal)?
+                .map_err(|_| failed(StatusCode::SERVICE_UNAVAILABLE, format!("{} couldn't send it to {display}. Try again in a moment.", view.roster.name)))?;
+            if !pinned {
+                return Err(failed(StatusCode::CONFLICT, scoped::BOUND.to_owned()));
+            }
+        }
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || spool.write(&store))
             .await
@@ -365,7 +409,15 @@ impl Forward {
                 }
                 _ = retry.tick() => {
                     if self.destination(peer, released).is_err() { return Err(away()); }
-                    for mail in &mails { if relay.sender.mail(host.clone(), mail.clone()).await.is_err() { break; } }
+                    let sending = match (&device, &scoped) {
+                        (Some(device), Some((live, replay))) => match self.owners.current_pairing(&device.key, &device.pairing) {
+                            ownership::PairingState::Allowed => work_queue_mails(live.clone(), jiff::Timestamp::now().as_millisecond()),
+                            ownership::PairingState::Revoked => work_queue_mails(replay.clone(), jiff::Timestamp::now().as_millisecond()),
+                            ownership::PairingState::Checking => None,
+                        },
+                        _ => Some(mails.clone()),
+                    };
+                    for mail in sending.iter().flatten() { if relay.sender.mail(host.clone(), mail.clone()).await.is_err() { break; } }
                 }
                 event = events.recv() => match event {
                     Ok(event) => match event.as_ref() {
@@ -439,3 +491,4 @@ impl kuvo_services::settings::ArchiveForward for Forward {
         })
     }
 }
+
