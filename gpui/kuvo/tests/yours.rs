@@ -70,8 +70,12 @@ fn shown(cx: &mut VisualTestContext, selector: &str) -> bool {
     bounds(cx, selector).is_some()
 }
 
+/// The settings on screen: your own in Settings, or a computer's under Computers › that computer.
 fn settings(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<SettingsView> {
-    workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned()).expect("Settings"))
+    workspace.read_with(cx, |workspace, cx| {
+        let area = if workspace.area() == Area::Computers { Area::Computers } else { Area::Settings };
+        workspace.area_view(area).and_then(|view| view.read(cx).settings().cloned())
+    }).expect("Settings")
 }
 
 fn title(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
@@ -498,6 +502,8 @@ fn privacy_rows_and_usage_preference_persist(cx: &mut TestAppContext) {
     assert!(!next_run(&path).privacy.share_anonymous_usage);
     click(cx, "row-privacy-vault");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Vault"));
+    // A computer's settings live under Computers › that computer now.
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Computers);
     assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.side()), Side::Computer);
 }
 
