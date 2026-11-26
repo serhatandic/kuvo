@@ -98,14 +98,14 @@ function hooks(state: Record<string, unknown>): TurnHooks {
 }
 
 /** A session on one of Cursor's models, against `sdk`, in a folder of its own. */
-function cursorSession(sdk: ReturnType<typeof fakeSDK>, permissions?: PermissionRule[]) {
+function cursorSession(sdk: ReturnType<typeof fakeSDK>, permissions?: PermissionRule[], metadata?: Record<string, unknown>) {
   const home = mkdtempSync(join(tmpdir(), "kuvo-cursor-"))
   folders.push(home)
   process.env.CURSOR_API_KEY = "key_test"
   const agent = new TestCursor({ home, temporary: home, deps: { ensure: async () => home, load: async () => sdk } as any })
   const opened = new Sessions(new Store(join(home, "sessions")), { find: (id: string | undefined) => (id === agent.providerID ? agent : undefined) } as unknown as Roster, new Auto(home))
   sessions = opened
-  const id = opened.create({ model: { providerID: agent.providerID, id: "composer-2" }, location: { directory: home }, permissions }).id
+  const id = opened.create({ model: { providerID: agent.providerID, id: "composer-2" }, location: { directory: home }, permissions, metadata }).id
   return { sessions: opened, id, home }
 }
 
@@ -476,9 +476,9 @@ describe("Cursor's approvals", () => {
     ])
   })
 
-  test("Plan: it plans in its sandbox, with nothing said", async () => {
+  test("Plan, which a seat in a group chat is put in: it plans in its sandbox, with nothing said", async () => {
     const sdk = fakeSDK([{ type: "text-delta", text: "Here's the plan." }])
-    const { sessions, id } = cursorSession(sdk)
+    const { sessions, id } = cursorSession(sdk, undefined, { kuvo: { seat: { group: "grp_a" } } })
     sessions.selectAgent(id, "plan")
     await send(sessions, id)
     expect(sdk.made.at(-1)).toMatchObject({ mode: "plan", local: { autoReview: true, sandboxOptions: { enabled: true } } })

@@ -21,7 +21,6 @@ timers! {
     BackupDaily => "backup.daily",
     BackupPrune => "backup.engine-copy-expiry",
     EngineHealth => "engine.health",
-    VaultAutopilot => "vault.autopilot-question",
     WireSse => "wire.agent-sse",
     WireHttp => "wire.http-processing",
     WireLine => "wire.line-heartbeat",

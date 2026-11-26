@@ -814,13 +814,14 @@ describe("Claude Code ended between turns, with work in the background (#262)", 
     expect(sessions.inbox(id)).toHaveLength(0)
   })
 
-  test("an update lets a slash command go through while the background tests keep running", async () => {
+  test("an update lets a message that starts with / go through as text while the background tests keep running", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     await waiting(id)
     claude.programUpdated()
     sessions.prompt(id, { id: "msg_claude_lost_004", text: "/review", files: [], delivery: "steer" })
     await until(() => fake.sent.length === 2)
     expect(String(fake.sent[1].message.content.find?.((part: any) => part.type === "text")?.text ?? fake.sent[1].message.content)).toBe("/review")
+    expect(fake.sent[1].client_composed).toBe(true)
     expect(fake.closed).toBe(false)
     expect(sessions.background()[id]?.commands.map(job => job.command)).toEqual(["scripts/test.sh"])
     expect(sessions.inbox(id)).toEqual([])
@@ -2421,26 +2422,6 @@ describe("Claude Code's permissions", () => {
     expect(sessions.permissions(id)).toHaveLength(0)
   })
 
-  test("plan mode is Claude Code's own: it writes its plan to its file even under Ask First, other edits are refused, and Build takes it out", async () => {
-    const { id, first } = await begin({ permissions: askFirst, agent: "plan" })
-    expect(fake.options.permissionMode).toBe("plan")
-    const plan = { file_path: join(homedir(), ".claude", "plans", "a-plan.md"), content: "# The plan" }
-    const written = await fake.hook("Write", plan, "toolu_1")
-    expect(written.decision).toBeUndefined()
-    const edit = { file_path: join(root, "a.ts"), old_string: "1", new_string: "2" }
-    expect(await fake.canUse("Edit", edit, "toolu_2")).toMatchObject({ behavior: "deny" })
-    // Done planning: told to wait for you, who builds it when you're ready.
-    expect(await fake.canUse("ExitPlanMode", { plan: "# The plan" }, "toolu_3")).toMatchObject({ behavior: "deny", message: expect.stringContaining("wait") })
-    expect(sessions.permissions(id)).toHaveLength(0)
-    fake.say("Here's the plan.", [first])
-    fake.result([first])
-    await until(() => idles(id).length === 1)
-    sessions.selectAgent(id, "build")
-    sessions.prompt(id, { id: "msg_claude_build_01", text: "build it", files: [], delivery: "steer" })
-    await until(() => fake.sent.length === 2)
-    expect(fake.modes).toEqual(["default"])
-  })
-
   test("in Build, a plan mode it went into on its own it leaves when its plan is done, and carries on", async () => {
     const { id } = await begin()
     expect(fake.options.permissionMode).toBe("default")
@@ -2467,9 +2448,9 @@ describe("Claude Code's permissions", () => {
     await until(() => sessions.forms(id).length === 1)
     // (As the box does: the bridge's own route.)
     const answer = handler({ sessions, password: "pw" } as any)
-    const route = `http://box/api/session/${id}/form/${sessions.forms(id)[0].id}?message=${encodeURIComponent("This is on Autopilot: leave it.")}`
+    const route = `http://box/api/session/${id}/form/${sessions.forms(id)[0].id}?message=${encodeURIComponent("Leave it for now.")}`
     expect((await answer(new Request(route, { method: "DELETE", headers: { authorization: "Basic " + btoa("opencode:pw") } }))).status).toBe(200)
-    expect(await left).toMatchObject({ behavior: "deny", message: "This is on Autopilot: leave it." })
+    expect(await left).toMatchObject({ behavior: "deny", message: "Leave it for now." })
   })
 })
 
@@ -2596,11 +2577,25 @@ describe("summarizing when you ask (/compact)", () => {
     return id
   }
 
-  test("it's typed as you would, and ends on its first result: the row shows it, the conversation stays as it was", async () => {
+  test("a message of yours that starts with /compact reaches Claude Code as the words you wrote: it's not a command, and nothing is summarized", async () => {
+    const id = await afterATurn()
+    sessions.prompt(id, { id: "msg_claude_compact2", text: "/compact please", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+    expect(fake.sent[1].message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("")).toBe("/compact please")
+    expect(fake.sent[1].client_composed).toBe(true)
+    fake.streams([fake.sent[1].uuid], [{ type: "text", text: "Sure." }])
+    fake.result([fake.sent[1].uuid])
+    await until(() => idles(id).length === 2)
+    expect(sessions.messages(id).some((message) => message.type === "compaction")).toBe(false)
+    expect(sessions.messages(id).filter((message) => message.type === "user").map((message: any) => message.text)).toEqual(["remember the word", "/compact please"])
+  })
+
+  test("Kuvo's own summarizing is typed as you would, and ends on its first result: the row shows it, the conversation stays as it was", async () => {
     const id = await afterATurn()
     expect(sessions.compact(id).state).toBe("compacting")
     await until(() => fake.sent.length === 2)
     expect(fake.sent[1].message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("")).toBe("/compact")
+    expect(fake.sent[1].client_composed).toBeUndefined()
     compacts(fake)
     await until(() => idles(id).length === 2)
     expect(idles(id)[1].outcome).toBe("succeeded")
@@ -2844,7 +2839,7 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
     expect(lastSent()).toBe("third")
   })
 
-  test("changed while Claude Code runs: a command you type goes as typed, and the next message says what changed", async () => {
+  test("changed while Claude Code runs: a message that starts with / is told what changed too, as ordinary words", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     await answered(id, "first", 1)
     // Its worktree changed: it starts again, going on with the same conversation.
@@ -2852,10 +2847,12 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
     fake.out = new Queue<any>()
     await answered(id, "/review", 2)
     expect(fake.options.resume).toBeTruthy()
-    expect(lastSent()).toBe("/review")
-    await answered(id, "go on", 3)
     expect(lastSent()).toContain("You work in the worktree at /a/tree.")
-    expect(lastSent().endsWith("\n\ngo on")).toBe(true)
+    expect(lastSent().endsWith("\n\n/review")).toBe(true)
+    // (It starts with the note, not with the slash: nothing to ask Claude Code to leave alone.)
+    expect(fake.sent.at(-1).client_composed).toBeUndefined()
+    await answered(id, "go on", 3)
+    expect(lastSent()).toBe("go on")
   })
 
   test("a message Claude Code never took: what changed goes with the next; one it took and failed on isn't said again", async () => {
@@ -2888,8 +2885,8 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
     await answered(id, "first", 1)
     sessions.setInstruction(id, "kuvo.worktree", "You work in the worktree at /b/tree.")
     fake.out = new Queue<any>()
-    // Your command, as typed, and Claude Code summarizes.
-    sessions.prompt(id, { id: "msg_claude_told_c", text: "/compact", files: [], delivery: "steer" })
+    // Kuvo summarizes it (its own /compact, typed to Claude Code).
+    expect(sessions.compact(id).state).toBe("compacting")
     await until(() => fake.sent.length === 2)
     expect(lastSent()).toBe("/compact")
     fake.out.push({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 100 }, parent_tool_use_id: null })

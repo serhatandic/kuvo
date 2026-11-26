@@ -318,12 +318,12 @@ test("the box still forwards the routes the 0.7 Mac client answers", () => {
   ];
   assert.deepEqual(answered.filter(route => !link.macAppAnswers(route.endsWith("/") ? `${route}x` : route)), []);
   // And nothing more: everything else is the box's, the link's own and a session's among them.
-  for (const route of ["kuvo/info", "kuvo/link/config", "kuvo/projects", "kuvo/sessions/ses_1/agents", "kuvo/sessions/ses_1/autopilot", "kuvo/personalities", "kuvo/update", "kuvo/sessions/ses_1/branch", "kuvo/machinesx"]) {
+  for (const route of ["kuvo/info", "kuvo/link/config", "kuvo/projects", "kuvo/sessions/ses_1/agents", "kuvo/personalities", "kuvo/update", "kuvo/sessions/ses_1/branch", "kuvo/machinesx"]) {
     assert.equal(link.macAppAnswers(route), false, route);
   }
 });
 
-test("a phone moving a conversation to the coding agents, or reading its Autopilot, is answered by this Mac's box, whether the app answers or not", async () => {
+test("a phone moving a conversation to the coding agents, is answered by this Mac's box, whether the app answers or not", async () => {
   const { it } = await paired();
   const asked = app.asked.length;
   const codex = { model: { id: "gpt-5.5", providerID: "codex-cli" } };
@@ -333,8 +333,6 @@ test("a phone moving a conversation to the coding agents, or reading its Autopil
       // (No engine runs in this test: the box says so, as a machine's does.)
       const moved = await it.request("POST", "kuvo/sessions/ses_older/agents", codex);
       assert.deepEqual([moved.status, JSON.parse(moved.body).message], [503, "The engine isn’t running."], away ? "the app away" : "the app there");
-      const autopilot = await it.request("GET", "kuvo/sessions/ses_older/autopilot");
-      assert.deepEqual([autopilot.status, JSON.parse(autopilot.body).message], [503, "The engine isn't running."]);
     } finally {
       app.away = false;
     }
@@ -357,7 +355,7 @@ test("a phone asking what this Mac is hears it from its box, the app away too: a
       assert.equal(typeof said.integrations, "object");
       assert.equal(said.running, undefined, "a machine's alone");
       assert.deepEqual(said.features, link.macFeatures());
-      for (const feature of ["machines", "hosts", "mac", "claude-code", "usage.history", "accounts.ended", "autopilot", "sessions.agents", "work.elsewhere"]) assert.ok(said.features.includes(feature), feature);
+      for (const feature of ["machines", "hosts", "mac", "claude-code", "usage.history", "accounts.ended", "sessions.agents", "work.elsewhere"]) assert.ok(said.features.includes(feature), feature);
       for (const feature of ["update", "engine.start"]) assert.ok(!said.features.includes(feature), `${feature} is a machine's`);
       // A route no box has is the box's to say so, as a machine's does.
       const none = await it.request("GET", "kuvo/nothing-here");

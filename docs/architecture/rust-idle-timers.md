@@ -85,10 +85,8 @@ not background idle scanning. They must not be removed by an idle optimization.
   actual turns, pending calls or an active terminal where the agent has no
   ended-list push. ACP's actual record completion deadline and Claude's command
   output reads are separate adapter constraints, not idle work.
-- Vault autopilot recheck is within an outstanding approval of a compatibility
-  engine/bridge identity; the external reader has no subscribed identity stream.
-  It ends with the approval, not at resident startup. Vault ask patience is a
-  real request deadline. The authorization decision is unchanged.
+- Vault ask patience is a real request deadline, ending with the approval, not at resident startup.
+  The authorization decision is unchanged.
 - Work catch-up performs bounded recovery for unread persisted work at startup;
   holding/settling a real child turn, late prompt receipt and engine background
   age boundaries are actual work. WatchHub's 500 ms grace expires a released

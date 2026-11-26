@@ -159,18 +159,6 @@ fn writing_names_a_bot_with_and_its_list_offers_the_chats_bots(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn what_the_box_turns_down_stays_in_the_composer_with_its_words(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    let chat = chat(&workspace, cx, "grp_planning");
-    cx.simulate_input("/compact");
-    cx.simulate_keystrokes("enter");
-    cx.run_until_parked();
-    assert_eq!(typed(&chat, cx), "/compact");
-    let error = chat.read_with(cx, |chat, cx| chat.composer().read(cx).field().read(cx).error().map(|error| error.to_string()));
-    assert_eq!(error.as_deref(), Some("A group chat has no one conversation to compact."));
-}
-
-#[gpui::test]
 fn a_reply_that_comes_in_shows_under_its_bots_name(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

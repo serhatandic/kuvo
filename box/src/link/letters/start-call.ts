@@ -3,7 +3,7 @@ import { ToolCallPending, toolProgress } from "../server/tool-call";
 import { messageReached } from "../engine/queue";
 // Work on another of your computers (PROTOCOL.md, "Peers", `call`, start_session): a lead starts a
 // session on another box as if it lived there, and reads the models and projects there first. It
-// goes there as a call. Who's calling, with what approval, mode and rules (`as.start`), is filled
+// goes there as a call. Who's calling, with what approval and rules (`as.start`), is filled
 // in by the lead's own box from its own record, never from the agent's words; the box it's for
 // takes it only while you let your other computers start work there (its switch), and starts it as
 // its own start_session does, held to no more than the lead has there and no more than this box
@@ -27,7 +27,6 @@ import { computerName } from "../peers/computer-name";
 import { ownKey, peersOf } from "../peers/known";
 import { macLink, readLink } from "../state";
 import { approvalOf, isApproval, otherComputersAllowed } from "../work/approval";
-import { isAutopilot } from "../work/autopilot";
 import { homesOf, noteHomes } from "../work/homes";
 import { noteStartedOn } from "../work/elsewhere";
 import { botLimits, limitsFrom } from "../work/limits";
@@ -48,7 +47,7 @@ import type { MadeTree, Making, RemoteLead, Starter, StartGiven, StartPlace } fr
 import type { ToolAnswer, ToolPlace } from "./tools";
 
 /** What a start's call asks for, as start_session takes it, without its destination. */
-export const START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review", "item"] as const;
+export const START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "approval", "wake", "wait", "review", "item"] as const;
 
 /** What a box's agents' mail says when it takes starts, and reads of its models and projects, from
  * your other computers (`kuvo/info`'s `features` too). */
@@ -57,15 +56,13 @@ export const START_FEATURE = "work.elsewhere.start";
 export const OPEN_TOOLS = ["start_session", "list_models", "list_projects"] as const;
 
 /** What a start's call carries of its lead (`as.start`), as the lead's own box knows it: its
- * approval as it comes to there now, its Don't Allows there (`held`), its mode, model and Autopilot,
+ * approval as it comes to there now, its Don't Allows there (`held`), its model,
  * the bot its work is for (`own`: the lead is that bot), the new session's depth and line, the limits
  * you set for that bot, and where each of the line's conversations lives, as the lead's box knows. */
 export interface StartAs {
   approval: Approval;
   held: KitRule[];
-  agent: "plan" | null;
   model: { providerID: string; id: string; variant?: string } | null;
-  autopilot: boolean;
   works: WorksFor | null;
   own: boolean;
   depth: number;
@@ -98,7 +95,7 @@ export function startAsOfMail(given: unknown): StartAs | null {
   const homes: Record<string, string> = {};
   if (isObject(given.homes)) for (const [session, key] of Object.entries(given.homes).slice(0, 20)) if (SESSION.test(session) && typeof key === "string" && key.length <= 100) homes[session] = key;
   return {
-    approval: given.approval, held: held as KitRule[], agent: given.agent === "plan" ? "plan" : null, model, autopilot: given.autopilot === true,
+    approval: given.approval, held: held as KitRule[], model,
     works, own: given.own === true && works !== null, depth, line, limits: limitsFrom(given.limits), homes,
   };
 }
@@ -169,8 +166,6 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
   const data = caller.place.data;
   const ownBot = botOfConversation(caller.session);
   const bot = ownBot ?? worksFor(data);
-  if (args.mode !== undefined && args.mode !== null && args.mode !== "build" && args.mode !== "plan") return no("mode is build or plan.");
-  if (args.mode === "build" && data.agent === "plan") return no("This conversation is in Plan mode, so the sessions it starts plan too. Start it in plan mode, or ask the user to switch to Build.");
   if (args.approval !== undefined && args.approval !== null && !isApproval(args.approval)) return no("approval is askFirst, acceptEdits, auto or fullAccess.");
   // (A folder here means nothing there.)
   const named = args.chat === true || (typeof args.project === "string" && args.project.trim()) || (typeof args.folder === "string" && args.folder.trim());
@@ -208,9 +203,9 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
   const own = ownKey(link ?? {});
   const line = [...lineOf(data), caller.session].slice(-20);
   const start: StartAs = {
-    approval, held, agent: data.agent === "plan" ? "plan" : null,
+    approval, held,
     model: data.model?.providerID && data.model.id ? { providerID: data.model.providerID, id: data.model.id, ...(data.model.variant ? { variant: data.model.variant } : {}) } : null,
-    autopilot: isAutopilot(data), works: bot, own: Boolean(ownBot), depth, line, limits,
+    works: bot, own: Boolean(ownBot), depth, line, limits,
     homes: Object.fromEntries(line.flatMap(session => { const at = homes.get(session) ?? own; return at ? [[session, at]] : []; })),
   };
   const sent: Record<string, unknown> = {};
@@ -424,8 +419,8 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     return { text: words.text, refused: words.isError };
   }
   const remote: RemoteLead = {
-    call: journal.id, computer: journal.computer, key: journal.sender, approval: journal.start.approval, held: journal.start.held, agent: journal.start.agent,
-    model: journal.start.model, autopilot: journal.start.autopilot, works: journal.start.works, own: journal.start.own, depth: journal.start.depth,
+    call: journal.id, computer: journal.computer, key: journal.sender, approval: journal.start.approval, held: journal.start.held,
+    model: journal.start.model, works: journal.start.works, own: journal.start.own, depth: journal.start.depth,
     line: journal.start.line, limits: journal.start.limits,
   };
   const outcome = await startSession(journal.given as StartGiven, { session: journal.from, place: null, name: journal.name, remote }, {

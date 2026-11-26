@@ -1071,10 +1071,9 @@ class ClaudeThread implements Thread {
       this.lastHooks = hooks
       // A conversation it goes on with keeps the instructions it started with (until it's
       // summarized): what changed in them since is said ahead of the message, once. Not ahead of
-      // a command (its /compact, a skill's), which goes as typed: the next message says it.
-      const command = input.compact || input.text.trimStart().startsWith("/")
-      const note = command ? undefined : instructionsNote(toldOf(this.state, "claudeTold"), append)
-      const message = userMessage(note ? { ...input, text: `${note}\n\n${input.text}` } : input, this.copies())
+      // Kuvo's own /compact, which goes as typed: the next message says it.
+      const note = input.compact ? undefined : instructionsNote(toldOf(this.state, "claudeTold"), append)
+      const message = userMessage(note ? { ...input, text: `${note}\n\n${input.text}` } : input, this.copies(), !input.compact)
       let active: Active | undefined
       const answered = (result: RunResult) => {
         // (Said once it took the message, not one it never got to.)
@@ -2784,7 +2783,12 @@ function reason(result: any): string {
 }
 
 /** A message of yours, with the files you attach as Claude Code reaches them (`copy`: run whole in the box's sandbox, copies it reads). */
-function userMessage(input: Pick<RunInput, "text" | "files">, copy: (path: string) => string = (path) => path): any {
+/**
+ * `typed`: the words are the user's, so one that starts with "/" is delivered as written
+ * (`client_composed`: Claude Code runs no command of its own on it) rather than run as its /compact
+ * or a skill's. Kuvo's own /compact is not typed, and is run as the command it is.
+ */
+function userMessage(input: Pick<RunInput, "text" | "files">, copy: (path: string) => string = (path) => path, typed = true): any {
   const content: any[] = []
   const others: string[] = []
   for (const file of input.files) {
@@ -2796,7 +2800,7 @@ function userMessage(input: Pick<RunInput, "text" | "files">, copy: (path: strin
   let text = input.text
   if (others.length) text += `\n\nAttached files:\n${others.map((path) => `- ${path}`).join("\n")}`
   content.push({ type: "text", text })
-  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID() }
+  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID(), ...(typed && text.trimStart().startsWith("/") ? { client_composed: true } : {}) }
 }
 
 function safeBase64(path: string): string | undefined {

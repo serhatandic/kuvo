@@ -148,7 +148,7 @@ beforeEach(async () => {
 let ids = 0;
 const callID = () => `cal_start${String(++ids).padStart(12, "0")}`;
 // What a lead's computer says of it: Foreman, a bot, in Full Access as it comes to there, with no rules.
-const startAs = (more = {}) => ({ approval: "fullAccess", held: [], agent: null, model: { providerID: "p", id: "m1" }, autopilot: false, works: by, own: true, depth: 1, line: ["ses_lead"], limits: null, homes: { ses_lead: mini.pub }, ...more });
+const startAs = (more = {}) => ({ approval: "fullAccess", held: [], model: { providerID: "p", id: "m1" }, works: by, own: true, depth: 1, line: ["ses_lead"], limits: null, homes: { ses_lead: mini.pub }, ...more });
 const startCall = (args = {}, start = {}, extra = {}) => ({ id: callID(), from: "ses_lead", tool: "start_session", args: { task: "Fix the sign-in.", project: "api", title: "Sign-in", ...args }, as: { name: "Foreman", bot: by, rules: [], free: true, start: startAs(start) }, made: Date.now(), at: Date.now(), ...extra });
 async function take(call, sender = mini.peer, agents = null) {
   const said = [];
@@ -234,15 +234,10 @@ test("in the lead's mode, with no more approval than the lead has nor more than 
   // A lead in Accept Edits asking for Full Access gets Accept Edits.
   const edits = await kuvoOf({ approval: "fullAccess" }, { approval: "acceptEdits" });
   assert.deepEqual([edits.kuvo.approval, edits.kuvo.applied], ["acceptEdits", "acceptEdits"]);
-  // A lead that plans starts sessions that plan, and can't start one in Build.
-  const plans = await kuvoOf({}, { agent: "plan" });
-  assert.equal(plans.agent, "plan");
-  const made = eng.seen.made.length;
-  const build = startCall({ mode: "build" }, { agent: "plan" });
-  await take(build);
-  assert.equal(answerOf(build).refused, true);
-  assert.match(answerOf(build).note.words, /This conversation is in Plan mode/);
-  assert.equal(eng.seen.made.length, made);
+  // A lead from before Plan mode went, that says it plans, starts a session in Build.
+  const plans = await kuvoOf({}, { agent: "plan", autopilot: true });
+  assert.equal(plans.agent, undefined);
+  assert.equal(plans.kuvo.autopilot, undefined);
   // Its model has no account here: on this computer's default, and it's told.
   const other = await kuvoOf({}, { model: { providerID: "q", id: "elsewhere" } });
   assert.equal(eng.seen.made.at(-1).model, undefined);
@@ -473,7 +468,7 @@ const tool = (name, args, signal) => link.agentTool(name, args, "ses_lead", { re
 
 test("a start goes out with who's calling as this computer knows it, never as the agent says; its answer comes back to the tool", async () => {
   leadHere();
-  const going = tool("start_session", { computer: "Mini", project: "api", task: "Fix the sign-in.", approval: "fullAccess", mode: "plan" });
+  const going = tool("start_session", { computer: "Mini", project: "api", task: "Fix the sign-in.", approval: "fullAccess" });
   // The call, as it's left for mini.
   let call;
   while (!(call = sending().map(name => ({ name, ...read(path.join(run, "outbox", "sending", name)) })).find(each => each.call?.tool === "start_session"))) await new Promise(resolve => setTimeout(resolve, 5));
@@ -483,7 +478,7 @@ test("a start goes out with who's calling as this computer knows it, never as th
   assert.deepEqual([start.works, start.own, start.depth, start.line], [by, true, 1, ["ses_lead"]]);
   assert.deepEqual(start.model, { providerID: "p", id: "m1" });
   assert.equal(call.peer, mini.pub);
-  assert.deepEqual(call.call.args, { task: "Fix the sign-in.", project: "api", approval: "fullAccess", mode: "plan" }, "the agent's words go as what it asks for, and no more");
+  assert.deepEqual(call.call.args, { task: "Fix the sign-in.", project: "api", approval: "fullAccess" }, "the agent's words go as what it asks for, and no more");
   // Mini answers.
   const id = call.name.slice(0, -5);
   write(path.join(run, "replies", `${id}.json`), { note: "[On mini] Started \"Sign-in\" in api (address ses_far): Plan. It's on it now." });

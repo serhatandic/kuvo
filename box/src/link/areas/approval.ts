@@ -64,7 +64,8 @@ function shown(at: Found): SessionApproval {
   return {
     approval, effective, stored,
     ...(held ? { held } : {}),
-    plan: at.data.agent === "plan",
+    // (Always false: Plan mode is gone; the field stays for an older app.)
+    plan: false,
     options: APPROVALS.map(each => {
       const not = unavailable(each, where);
       return { approval: each, ...APPROVAL_WORDS[each], ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };

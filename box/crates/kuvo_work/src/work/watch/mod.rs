@@ -538,7 +538,7 @@ impl Watcher {
         else {
             return;
         };
-        // (What an MCP server asks is filed under no session: Autopilot's to decline.)
+        // (What an MCP server asks is filed under no session.)
         if !EVENTS.contains(&event.kind.as_str()) || id == "global" {
             return;
         }

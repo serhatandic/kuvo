@@ -597,13 +597,6 @@ test("a Mac's files for a machine take the phone's path: kept on the machine's b
   assert.equal(lines[7], "</attached-files>");
   assert.equal(lines.length, 8);
 
-  // A command with files, as a message has them.
-  await ask("api/session/ses_mac1/command", { name: "review", text: "this", files });
-  const command = prompted["/api/session/ses_mac1/command"];
-  assert.equal(command.files, undefined);
-  assert.equal(command.name, "review");
-  assert.ok(command.text.startsWith("this\n\n<attached-files>\nOpen these attached files with your tools if you need them:\n"), command.text);
-
   // A session the coding agents run gets them through the agents' bridge, the same way.
   delete prompted["/api/session/ses_mac1/prompt"];
   await ask("kuvo/agents/api/session/ses_mac1/prompt", { id: "msg_2", text: "Read it", files });
@@ -1587,7 +1580,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     asks: ["GET", "kuvo/asks"],
     attention: ["GET", "kuvo/attention"],
     "auto.lists": ["GET", "kuvo/agents/api/kuvo/auto"],
-    autopilot: ["GET", "kuvo/sessions/ses_none/autopilot"],
     bots: ["GET", "kuvo/bots"],
     "bots.deletes": ["GET", "kuvo/bots"],
     // (Held for the computer it lives on, from a client of yours: an unknown caller is refused.)
@@ -1726,7 +1718,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Its turns for chats on other computers, which kuvo/groups/joinable shows from theirs.)
     "groups.seats": ["GET", "kuvo/groups/joinable"],
     "groups.task-title": ["GET", "kuvo/groups"],
-    handoff: ["POST", "kuvo/agents/api/kuvo/handoff/ses_none"],
     info: ["GET", "kuvo/info"],
     integrations: ["GET", "kuvo/integrations"],
     keys: ["GET", "kuvo/keys"],
@@ -1816,10 +1807,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "queue.steer": ["POST", "kuvo/sessions/ses_none/queue/msg_none/steer"],
     "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],
     "queue.waits": ["POST", "kuvo/sessions/ses_none/queue/add"],
-    reviews: ["GET", "kuvo/agents/api/kuvo/reviews"],
-    "reviews.parts": ["GET", "kuvo/agents/api/kuvo/reviews"],
-    // (What a review's routes take besides, on the coding agents' bridge.)
-    "reviews.scopes": ["GET", "kuvo/agents/api/kuvo/reviews"],
     sandbox: ["GET", "kuvo/sandbox"],
     "sandbox.asks": ["GET", "kuvo/sandbox/allowed"],
     "sandbox.check": ["POST", "kuvo/sandbox/check"],

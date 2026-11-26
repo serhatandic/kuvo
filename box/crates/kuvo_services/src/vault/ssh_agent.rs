@@ -614,7 +614,6 @@ impl Source {
             // keys granted to everyone and ask without inheriting its identity.
             who = Identity {
                 session: who.session,
-                autopilot: who.autopilot,
                 ..Identity::default()
             };
         }
@@ -639,9 +638,6 @@ impl Source {
                     )
                 })?;
                 Ok(true)
-            }
-            Err(super::broker::UseDenied::Autopilot) => {
-                Err(super::Error::refused(403, super::broker::LEFT_UNDONE))
             }
             Err(super::broker::UseDenied::Refused(_)) => Ok(false),
         }

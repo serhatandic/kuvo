@@ -19,11 +19,10 @@ import { NOTE_MEMORY, placeOfSession } from "../letters/letter";
 import { tellMovedAway } from "../letters/outbox";
 import { frozen } from "../moves/records";
 import { isPutAway, type PutAwayable } from "../peers/directory";
-import { describeForm, describePermission, stillAsked } from "../notices/news";
+import { describeForm, describePermission } from "../notices/news";
 import { noteOversight } from "./oversight";
 import { noteWorkChanged, WORK_FOLDER } from "./changes";
 import { asksIn } from "./answers";
-import { catchUpAutopilot, declineSharedOnAutopilot, goAheadOnAutopilot, goAheadOnQuestion, isAutopilot } from "./autopilot";
 import { awaitedBy } from "./awaited";
 import { tellLateAnswers } from "./asks";
 import { errorOf, failedOn, followUnanswering, holdWords, turnError } from "./unanswering";
@@ -795,8 +794,6 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
         noteTold(data.id, { ask: permission.id });
       }
       for (const question of questions.filter(each => !was.asks?.includes(each.id))) {
-        // On Autopilot nothing waits: it goes ahead here, as one heard as it's asked does.
-        if (isAutopilot(data) && await goAheadOnQuestion(source, data, question).catch(() => null)) continue;
         tell(starter, `[Session asks] "${data.title || "New Session"}" (address ${data.id}) asks: ${question.text} (ask ${question.id}). Answer with answer_ask (answer), or tell the user in a line and carry on.`, true);
         noteTold(data.id, { ask: question.id });
       }
@@ -833,18 +830,13 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
     if (line) tell(starter, line, false);
     noteTold(data.id, { reply, turn: last.turn });
   };
-  // (Questions its conversations on Autopilot asked meanwhile go ahead first, however many tries it
-  // takes to list them: no one is told of those. One it can't get through doesn't hold up telling
-  // starters of the rest: it's looked at again a few times, and the box's next start looks again
-  // after that.)
+  // (One it can't get through doesn't hold up telling starters of the rest: it's looked at again
+  // a few times, and the box's next start looks again after that.)
   let startersTold = false;
-  let looksAgain = 0;
   const catchingUp = async (): Promise<void> => {
     if (signal?.aborted) return;
     let again = false;
     try {
-      again = !await catchUpAutopilot(source, undefined, signal) && ++looksAgain < CATCH_UP_TRIES;
-      if (signal?.aborted) return;
       if (!startersTold) await catchUp();
       startersTold = true;
     } catch {
@@ -878,7 +870,7 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
     const id = event.data?.sessionID ?? event.data?.form?.sessionID;
     if (typeof id !== "string" || !["session.inbox.delivered", "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "permission.asked", "form.created", "permission.replied", "form.replied"].includes(event.type)) return Promise.resolve();
     // What an MCP server asks is filed under no session.
-    if (id === "global") return event.data?.form ? declineSharedOnAutopilot(source, event.data.form as unknown as Record<string, unknown>, event.location?.directory).then(() => {}, () => {}) : undefined;
+    if (id === "global") return Promise.resolve();
     return (async () => {
       // A subagent's ask is its conversation's.
       let session = await sessionOf(id);
@@ -913,14 +905,6 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
           return await settle(session.id);
         }
         if (summary?.status === "completed" && event.type === "session.execution.succeeded") return await settle(session.id);
-      }
-      // On Autopilot nothing waits: a question goes ahead on the choice it marks, or comes back declined.
-      const form = event.type === "form.created" ? event.data?.form ?? event.data as unknown as EngineForm : null;
-      if (form && isAutopilot(session)) {
-        const asked = { ...form, sessionID: form.sessionID ?? id };
-        if (await goAheadOnAutopilot(source, session, asked).catch(() => null)) return;
-        // Gone before it could be answered (you got there first): nothing to put to anyone.
-        if (!await stillAsked(asked, route => engineGet(source, route))) return;
       }
       // (One starting or stopped is its bot's work changing, for clients to read: nothing to tell.)
       const kind = event.type === "session.execution.succeeded" || event.type === "session.execution.failed" ? "finished" : event.type.endsWith(".asked") || event.type === "form.created" ? "asks" : null;

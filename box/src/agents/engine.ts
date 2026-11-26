@@ -90,7 +90,7 @@ export class EngineLink {
   async request<T = any>(method: string, path: string, body?: unknown, timeout = 30_000, directory?: string, alreadyAdmitted = false): Promise<T> {
     // (A conversation on the engine's models, a review, a seat in a group chat: each waits for the
     // new engine rather than starting on the one being stopped, bounded as that hold is.)
-    if (this.beforeTurn && method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command|shell|compact|summarize)$/.test(path)) await this.beforeTurn(alreadyAdmitted)
+    if (this.beforeTurn && method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|compact|summarize)$/.test(path)) await this.beforeTurn(alreadyAdmitted)
     if (!this.url) throw new Error("The engine isn't running.")
     const response = await fetch(this.url + path, {
       method,

@@ -197,11 +197,6 @@ const DEFINED: Tool[] = [
         type: "string",
         description: "A full path: this conversation's folder by default. With project: a folder in it or one of its worktrees, else it's refused.",
       },
-      mode: {
-        type: "string",
-        description: "plan: it plans first and changes nothing until it's told to go on. build by default.",
-        enum: ["build", "plan"],
-      },
       model: { type: "string", description: "provider/model from list_models: yours by default." },
       project: { type: "string", description: "One of the user's projects, by name or folder." },
       review: {

@@ -1,14 +1,11 @@
 //! Authorization and consent shared by fills, tools and SSH.
-use kuvo_os::timer_fires::{self, Timer};
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use serde::Serialize;
-use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -21,8 +18,6 @@ use super::{
 };
 
 const ONCE_FOR: u64 = 30 * 60_000;
-const AUTOPILOT_LOOK: Duration = Duration::from_secs(5);
-pub(super) const LEFT_UNDONE: &str = "This is on Autopilot: nothing was put to the user, and nothing was chosen for you. If your own research settles it, decide it, say in a line what you chose and why, and go on. If only the user can do it (paying, signing in, making an account, handing over a key, or anything destructive that can't be undone), don't decide it, do it or ask again: leave that step undone, carry on with everything else, and list what's left for them in your final reply.";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,7 +39,6 @@ impl Allowed {
 
 pub(super) enum UseDenied {
     Refused(String),
-    Autopilot,
 }
 
 #[derive(Clone, Default)]
@@ -171,30 +165,10 @@ impl Broker {
 
     pub async fn wait(
         &self,
-        caller: &Identity,
         question: Question,
         cancel: &CancellationToken,
-    ) -> Result<Option<Answer>> {
-        if caller.autopilot {
-            return Ok(None);
-        }
-        let wait = self.asks.ask(question, cancel);
-        tokio::pin!(wait);
-        if caller.session.is_empty() {
-            return wait.await.map(Some);
-        }
-        let check = async {
-            let mut clock =
-                timer_fires::interval_at(Timer::VaultAutopilot, time::Instant::now() + AUTOPILOT_LOOK, AUTOPILOT_LOOK);
-            clock.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-            loop {
-                clock.tick().await;
-                if self.reader.caller(&caller.session).await.autopilot {
-                    break;
-                }
-            }
-        };
-        tokio::select! { value = &mut wait => value.map(Some), () = check => Ok(None) }
+    ) -> Result<Answer> {
+        self.asks.ask(question, cancel).await
     }
 }
 
@@ -243,9 +217,7 @@ impl Resident {
                     item.name
                 )))));
             }
-            if !caller.autopilot {
-                local.note_agent(Action::Asked, Some(item), caller, place, None, None)?;
-            }
+            local.note_agent(Action::Asked, Some(item), caller, place, None, None)?;
             Ok(None)
         })?;
         if let Some(authorization) = authorization {
@@ -257,19 +229,8 @@ impl Resident {
         question.item_name = Some(item.name.clone());
         question.site = place.site.clone();
         question.why = place.why.clone();
-        let answer = self.broker.wait(caller, question, cancel).await?;
+        let answer = self.broker.wait(question, cancel).await?;
         self.block(|local| {
-            let Some(answer) = answer else {
-                local.note_agent(
-                    Action::Refused,
-                    Some(item),
-                    caller,
-                    place,
-                    Some("autopilot"),
-                    None,
-                )?;
-                return Ok(Err(UseDenied::Autopilot));
-            };
             if answer.decision == Decision::No {
                 local.note_agent(
                     Action::Declined,
@@ -341,7 +302,6 @@ impl From<UseDenied> for Error {
     fn from(denied: UseDenied) -> Self {
         match denied {
             UseDenied::Refused(why) => Self::refused(403, why),
-            UseDenied::Autopilot => Self::refused(403, LEFT_UNDONE),
         }
     }
 }

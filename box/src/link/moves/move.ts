@@ -48,7 +48,6 @@ import { moveReference } from "../ownership/resolve";
 import { workAsks } from "../work/asks";
 import { ofBot, under, workSessions } from "../work/tree";
 import { readBackground } from "../work/background";
-import { decidedOf, forgetDecided, isAutopilot, keepDecided, tellAutopilot } from "../work/autopilot";
 import { isChatsFolder } from "../engine/chats";
 import type { EngineSession } from "../engine/sessions";
 import { CHATS, engineWait, MOST_BUNDLE, NotTaken, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, toTrash } from "./bundle";
@@ -737,8 +736,6 @@ async function carryOn(id: string): Promise<void> {
     // A conversation you stopped goes stopped, with what waits for it, here and in the engine.
     queues = await queuesOf(target, record.sessions, record.name);
     if (Object.keys(queues).length) contents.queues = queues;
-    const decided = decidedOf(record.sessions);
-    if (Object.keys(decided).length) contents.decided = decided;
     // Its conversations' Work Queues.
     contents.sessionNotes = await packSessionNotes(record.sessions);
     if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
@@ -984,7 +981,6 @@ async function finish(id: string, verifiedPayloads = false): Promise<void> {
       }
       for (const session of [...record.sessions].reverse()) {
         await deleteSession(engine, session);
-        forgetDecided(session);
       }
       for (const session of record.sessions) forgetQueue(session);
       await queueMoveDisk.run("forgetWorkQueues", record.sessions);
@@ -1379,15 +1375,10 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     try { await placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
     catch (error) { throw new NotTaken((error as Error).message); }
   }
-  // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
-  keepDecided(contents.decided, sessions);
   // Its conversations' Work Queues, with their files.
   if (contents.workQueue !== undefined) {
     await queueMoveDisk.run("placeMoveWorkQueues", record.id, contents.workQueue, sessions, opened, record.verifyPayloads, payloads);
     noteQueuesChanged();
-  }
-  for (const info of infos) {
-    if (isAutopilot(info)) await tellAutopilot(engine, info.id, true, signal).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
   }
   // A bot from a box that still gave bots keys of their own: its folder's settings name them where
   // it was. Those servers go (it uses this box's integrations, and is told of one that isn't
@@ -1655,7 +1646,6 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       for (const session of [...created].reverse()) await deleteSession(engine, session);
     }
     for (const session of created) {
-      forgetDecided(session);
       forgetQueue(session);
     }
     await forgetSessionNotes(record.sessions, importReceipt(record));

@@ -14,9 +14,8 @@ import { homeFolder, IS_MAC, RUN } from "../home";
 import { ask } from "./asks";
 import { type Hidden, maskValues } from "./mask";
 import { itemNamed, noteUsed, readItems, setGrant, siteOf, valuesOf, VaultRefusal } from "./store";
-import { LEFT_UNDONE_WORDS } from "../work/autopilot";
-import { type Caller, grantFor, untilOnAutopilot } from "./who";
-import { allowOnce, AUTOPILOT_HOW, alwaysFor, mayUse, noteUse } from "./use";
+import { type Caller, grantFor } from "./who";
+import { allowOnce, alwaysFor, mayUse, noteUse } from "./use";
 import { note } from "./activity";
 import { commandReceipt, runToolCommand } from "../tool-command";
 import { askedEnv, runCommand } from "../run-command";
@@ -113,13 +112,8 @@ async function askForItem(caller: Caller, args: Record<string, unknown>, signal?
   if (!need || !why) return failed("Say what you need and why.");
   const site = siteOf(args.site) ?? undefined;
   const asker = { ...(caller.bot ? { bot: caller.bot, botName: caller.botName } : {}), ...(caller.root ? { session: caller.root, sessionName: caller.sessionName } : {}) };
-  const leftUndone = (): ToolAnswer => {
-    note({ what: "refused", ...asker, why: `${need}: ${why}`, ...(site ? { site } : {}), how: AUTOPILOT_HOW });
-    return { text: LEFT_UNDONE_WORDS, isError: false };
-  };
-  if (caller.autopilot) return leftUndone();
   note({ what: "asked", ...asker, why: `${need}: ${why}`, ...(site ? { site } : {}) });
-  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.session, signal, stops => ask({
+  const answered = await ask({
     kind: "item",
     need,
     why,
@@ -128,8 +122,7 @@ async function askForItem(caller: Caller, args: Record<string, unknown>, signal?
     ...(site ? { site } : {}),
     ...asker,
     ...(IS_MAC ? {} : { machine: os.hostname() }),
-  }, stops));
-  if (onAutopilot) return leftUndone();
+  }, signal);
   const item = answered.item ? readItems().find(each => each.id === answered.item) : undefined;
   if (answered.answer === "no" || !item) return { text: "The user didn't give you anything for this. Go on without it, or say what's missing in your report.", isError: false };
   // Given always: this bot's (or project's) to use on its own; given once: its next use goes ahead.
@@ -196,8 +189,7 @@ async function runWith(caller: Caller, args: Record<string, unknown>, signal?: A
   for (const { item } of wanted) {
     if (allowed.has(item.id)) continue;
     const may = await mayUse(item, caller, { program, why, askWithout: true, signal });
-    // (What Autopilot leaves undone isn't a failed command.)
-    if (!may.ok) return may.leftUndone ? { text: may.message, isError: false } : failed(may.message);
+    if (!may.ok) return failed(may.message);
     allowed.set(item.id, may.how);
   }
   let handedOff = false;

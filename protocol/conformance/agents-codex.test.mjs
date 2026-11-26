@@ -142,17 +142,17 @@ describe("Codex's account and models", { skip }, () => {
 
 /** One resident for a describe's cases, with sessions seeded before it starts. */
 function resident(fixture = {}) {
-  const pool = { plain: [], ask: [], plan: [], kept: [], started: [], botWork: [] };
+  const pool = { plain: [], ask: [], kept: [], started: [], botWork: [] };
   const box = {};
   before(async () => {
     if (skip) return;
     box.codex = await scriptedCodex(fixture);
-    for (const [kind, permissions, agent] of [["plain"], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
+    for (const [kind, permissions] of [["plain"], ["ask", askFirst]]) {
       for (let index = 1; index <= 36; index++) {
         const id = `ses_codex_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.codex.home, "projects", id);
         write(path.join(folder, ".keep"), "");
-        box.codex.seed(id, { directory: folder, permissions, agent });
+        box.codex.seed(id, { directory: folder, permissions });
         pool[kind].push({ id, folder });
       }
     }
@@ -187,8 +187,8 @@ function resident(fixture = {}) {
     await box.codex.start();
   });
   after(async () => box.codex?.close());
-  box.next = ({ ask = false, plan = false, kept = false, started = false, botWork = false } = {}) => {
-    const session = pool[botWork ? "botWork" : started ? "started" : kept ? "kept" : plan ? "plan" : ask ? "ask" : "plain"].shift();
+  box.next = ({ ask = false, kept = false, started = false, botWork = false } = {}) => {
+    const session = pool[botWork ? "botWork" : started ? "started" : kept ? "kept" : ask ? "ask" : "plain"].shift();
     assert.ok(session, "Seed more sessions.");
     return session;
   };
@@ -610,17 +610,6 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
     await box.codex.idles(id);
     const turn = box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
     assertMatch(turn.params, { approvalPolicy: "untrusted", sandboxPolicy: { type: "workspaceWrite", networkAccess: true }, collaborationMode: { mode: "default" } });
-  });
-
-  test("Plan: it can only read, and a change it asks to make anyway is declined without asking you", { timeout: 60000 }, async () => {
-    const { id } = await box.begin([
-      item("item/started", { type: "fileChange", id: "p1", changes: [change("a.ts", "@@ -1 +1 @@\n-a\n+b\n")] }),
-      { ask: ["item/fileChange/requestApproval", { itemId: "p1" }] },
-    ], { plan: true });
-    assert.deepEqual((await box.codex.answeredFor("p1")).result, { decision: "decline" });
-    await box.codex.idles(id);
-    const turn = box.codex.sent("turn/start").find((message) => message.params.input[0].text.includes(`go ${id}`));
-    assertMatch(turn.params, { approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: true }, collaborationMode: { mode: "plan" } });
   });
 
   test("how full it is, as its last request was, against the window Codex says its model has; and what a turn used, each model call once", { timeout: 60000 }, async () => {
@@ -1102,7 +1091,7 @@ test("an app-server its resident left as it was starting, never initialized, is 
 
 describe("What Codex asks, turned down, typed over and told again", { skip }, () => {
   const box = resident();
-  const autopilot = "This is on Autopilot: leave it.";
+  const leftIt = "Leave it for now.";
   /** Its question (request_user_input_async): accepted at once, the turn going on. */
   const asking = (n) => [
     item("item/completed", { type: "functionCall", id: `f-${n}`, name: "request_user_input_async", namespace: null, arguments: "{}" }),
@@ -1118,28 +1107,28 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
     const forms = await box.codex.forms(id);
     return forms.length === count && forms;
   }, "Its question's card never showed.");
-  const turnDown = async (id, form, words = autopilot) => {
+  const turnDown = async (id, form, words = leftIt) => {
     const answer = await request(box.codex.listener, "DELETE", `${box.codex.route(id)}/form/${form}?message=${encodeURIComponent(words)}`, undefined, headers, 20000);
     assert.equal(answer.status, 200, answer.text);
   };
 
-  test("turned down by its box with words (Autopilot): Codex hears them and goes on", { timeout: 60000 }, async () => {
+  test("turned down by its box with words: Codex hears them and goes on", { timeout: 60000 }, async () => {
     const session = box.next();
     const { id } = session;
-    box.codex.script(`${autopilot} ${id}`, answered("tw1"));
+    box.codex.script(`${leftIt} ${id}`, answered("tw1"));
     await box.begin(asking("tw1"), undefined, session);
     const [form] = await card(id);
-    await turnDown(id, form.id, `${autopilot} ${id}`);
+    await turnDown(id, form.id, `${leftIt} ${id}`);
     await box.codex.idles(id, 1);
     await until(() => starts(id).length === 2, () => JSON.stringify(starts(id)));
-    assert.deepEqual(starts(id), ["go", autopilot]);
+    assert.deepEqual(starts(id), ["go", leftIt]);
   });
 
   test("asking again and again, each turned down by its box with words, its turn ends", { timeout: 60000 }, async () => {
     const session = box.next();
     const { id } = session;
     // (Each turn's question its own item, as Codex's are.)
-    const turnedDown = (n) => `${autopilot} (${n})`;
+    const turnedDown = (n) => `${leftIt} (${n})`;
     box.codex.script(`${turnedDown(1)} ${id}`, asking("aa2"));
     box.codex.script(`${turnedDown(2)} ${id}`, asking("aa3"));
     await box.begin(asking("aa1"), undefined, session);
@@ -1161,14 +1150,6 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
     const told = box.codex.sent("thread/start").find((message) => message.params.cwd.endsWith(id)).params.developerInstructions;
     assert.ok(told.includes("request_user_input_async"), told);
     assert.match(told, /new user message/);
-  });
-
-  test("what it asks in Plan, turned down by its box with words, gets those words as its answer", { timeout: 60000 }, async () => {
-    const { id } = await box.begin([{ ask: ["item/tool/requestUserInput", { itemId: "pq1", questions: [{ id: "which", header: "Which", question: "Which one?", options: [{ label: "A" }] }, { id: "key", header: "Key", question: "Your key?", isSecret: true }] }] }], { plan: true });
-    const [form] = await card(id);
-    await turnDown(id, form.id);
-    await box.codex.idles(id);
-    assert.deepEqual((await box.codex.answeredFor("pq1")).result, { answers: { which: { answers: [autopilot] }, key: { answers: [] } } });
   });
 
   const thinking = (n) => ["item/started", { item: { type: "reasoning", id: `r-${n}`, summary: [], content: [] } }];
@@ -1196,13 +1177,13 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
     assert.ok((await said(id)).includes("Writing it in Turkish."));
   });
 
-  test("turned down by its box with words (Autopilot) while it sleeps on it: it hears them, the sleep ends and its turn goes on", { timeout: 60000 }, async () => {
+  test("turned down by its box with words while it sleeps on it: it hears them, the sleep ends and its turn goes on", { timeout: 60000 }, async () => {
     const { id } = await box.begin([...asking("s2"), { sleeps: true }, ...answered("s2")]);
     await asleep(id);
     const [form] = await card(id);
     await turnDown(id, form.id);
     await ends(id);
-    assert.deepEqual(steered(id), [autopilot]);
+    assert.deepEqual(steered(id), [leftIt]);
     assert.deepEqual(starts(id), ["go"]);
   });
 
@@ -1428,7 +1409,7 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
     const rounds = [1, 2, 3, 4, 5, 6, 7, 8].flatMap((n) => [askedAway("e7", n), { untilTold: true }]);
     const { id } = await box.begin([...rounds, "stop"]);
     await turnDownUntilEnded(id);
-    assert.ok(steered(id).every((text) => text.includes(autopilot)), JSON.stringify(steered(id)));
+    assert.ok(steered(id).every((text) => text.includes(leftIt)), JSON.stringify(steered(id)));
     assert.ok(stoppedIt(id), "Its turn wasn't stopped.");
     assert.equal(idles(await box.codex.rows(id))[0].outcome, "succeeded");
   });
@@ -1501,20 +1482,9 @@ describe("Codex in the session's modes, and MCP asks", { skip }, () => {
     await box.codex.idles(id);
   });
 
-  test("Plan: another server's MCP tool, which may change things, still waits for your yes", { timeout: 60000 }, async () => {
-    const { id } = await box.begin([mcpAsk("pl1", "docs", "write_page")], { plan: true });
-    // (In Plan it's the server's own question: a yes or no, its words as the server put them.)
-    const form = await until(async () => (await box.codex.forms(id))[0], "Nothing asked about the tool.");
-    assertMatch(form, { title: "docs asks", fields: [{ key: "ok", title: 'Allow the docs MCP server to run tool "write_page"?', type: "boolean" }] });
-    assert.deepEqual(await box.codex.permissions(id), []);
-    assert.equal((await box.codex.replyForm(id, form.id, { ok: true })).status, 200);
-    assertMatch((await box.codex.answeredFor("pl1")).result, { action: "accept" });
-    await box.codex.idles(id);
-  });
-
   test("what an MCP server asks is its form, and the answers go back typed as it asked", { timeout: 60000 }, async () => {
     const { id } = await box.begin([{ ask: ["mcpServer/elicitation/request", { itemId: "fm1", serverName: "tickets", message: "Which ticket?", mode: "form",
-      requestedSchema: { type: "object", required: ["number"], properties: { number: { type: "integer", title: "Number" }, urgent: { type: "boolean", title: "Urgent" } } } }] }], { plan: true });
+      requestedSchema: { type: "object", required: ["number"], properties: { number: { type: "integer", title: "Number" }, urgent: { type: "boolean", title: "Urgent" } } } }] }]);
     const form = await until(async () => (await box.codex.forms(id))[0], "No form.");
     assertMatch(form, { title: "tickets asks", metadata: { kind: "mcp-elicitation", server: "tickets" } });
     assertMatch(form.fields[0], { key: "number", title: "Number", description: "Which ticket?", required: true });

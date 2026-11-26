@@ -23,7 +23,7 @@ use super::{Work, watch::tools::refusal_words};
 
 /// What a start's call may ask for, as start_session takes it here.
 const FIELDS: &[&str] = &[
-    "task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode",
+    "task", "title", "project", "folder", "chat", "worktree", "model", "effort",
     "approval", "wake", "wait", "review", "item",
 ];
 const APPROVALS: &[&str] = &["askFirst", "acceptEdits", "auto", "fullAccess"];
@@ -179,8 +179,8 @@ fn start_of(given: &Value, from: &str) -> Option<Value> {
         })
         .collect();
     Some(json!({
-        "approval": approval, "held": held, "agent": if given["agent"] == "plan" { json!("plan") } else { Value::Null },
-        "model": model, "autopilot": given["autopilot"] == true, "own": given["own"] == true && works.is_some(),
+        "approval": approval, "held": held,
+        "model": model, "own": given["own"] == true && works.is_some(),
         "works": works, "depth": depth, "line": line, "homes": homes,
         "limits": if limits.is_empty() { Value::Null } else { Value::Object(limits) },
     }))
@@ -364,9 +364,7 @@ impl Work {
             key: journal.sender.clone(),
             approval: start["approval"].clone(),
             held: start["held"].as_array().cloned().unwrap_or_default(),
-            agent: start["agent"].as_str().map(str::to_owned),
             model: Some(start["model"].clone()).filter(|model| model.is_object()),
-            autopilot: start["autopilot"] == true,
             works: Some(start["works"].clone()).filter(|works| works.is_object()),
             own: start["own"] == true,
             depth: start["depth"].as_u64().unwrap_or(1),

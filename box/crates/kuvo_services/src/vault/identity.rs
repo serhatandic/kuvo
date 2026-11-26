@@ -19,7 +19,6 @@ pub(super) struct Identity {
     pub bot: Option<Bot>,
     pub seat: bool,
     pub group: Option<String>,
-    pub autopilot: bool,
 }
 
 pub(super) struct Bot {
@@ -208,10 +207,6 @@ impl Reader {
             .and_then(|by| by.get("bot"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let autopilot = kuvo
-            .and_then(|notes| notes.get("autopilot"))
-            .and_then(Value::as_bool)
-            == Some(true);
         let bots = self.bots.clone();
         let root = session.id.clone();
         let is_seat = seat.is_some();
@@ -243,7 +238,6 @@ impl Reader {
             bot,
             seat: is_seat || unsure,
             group,
-            autopilot,
         }
     }
 

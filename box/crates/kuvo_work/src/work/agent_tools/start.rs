@@ -26,7 +26,7 @@ use crate::{
 
 /// A start's fields a call carries to another computer (the item, too, apart).
 const START_FIELDS: &[&str] = &[
-    "task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode",
+    "task", "title", "project", "folder", "chat", "worktree", "model", "effort",
     "approval", "wake", "review",
 ];
 /// The most rules a start carries.
@@ -312,14 +312,6 @@ impl Work {
         }
         let data = &caller.data;
         let given = |field: &str| args.get(field).filter(|value| !value.is_null());
-        if given("mode").is_some_and(|mode| mode != "build" && mode != "plan") {
-            return refused("mode is build or plan.");
-        }
-        if given("mode").is_some_and(|mode| mode == "build") && data["agent"] == "plan" {
-            return refused(
-                "This conversation is in Plan mode, so the sessions it starts plan too. Start it in plan mode, or ask the user to switch to Build.",
-            );
-        }
         if given("approval").is_some_and(|approval| Approval::of(approval).is_none()) {
             return refused("approval is askFirst, acceptEdits, auto or fullAccess.");
         }
@@ -407,9 +399,8 @@ impl Work {
                 limits_from(here.described.get("work")?.get("limits"))
             })
             .or(limits);
-        let plan = (data["agent"] == "plan").then_some("plan");
         let start = json!({
-            "approval": approval, "held": held, "agent": plan, "model": model, "autopilot": data["metadata"]["kuvo"]["autopilot"] == true,
+            "approval": approval, "held": held, "model": model,
             "works": bot, "own": caller.bot.is_some(), "depth": depth, "line": line, "limits": limits, "homes": homes,
         });
         let mut sent: Map<String, Value> = START_FIELDS

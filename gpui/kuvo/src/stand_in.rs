@@ -3100,37 +3100,6 @@ impl StandIn {
                 state.told(&asking, Followed::Asks);
                 answer(200, json!({}))
             }
-            ("POST", ["api", "session", session, "shell"]) | ("POST", ["kuvo", "agents", "api", "session", session, "shell"]) => {
-                let Some(facts) = state.sessions.get(*session) else {
-                    return answer(404, json!({ "message": "There's no such session." }));
-                };
-                if State::is_subagent(facts) {
-                    return answer(400, json!({ "message": "This subagent works for the conversation that started it: run it there." }));
-                }
-                if state.sends_fail {
-                    return answer(503, json!({ "message": "The engine isn't answering. Try again in a moment." }));
-                }
-                let command = body["command"].as_str().unwrap_or("").trim();
-                if command.is_empty() {
-                    return answer(400, json!({ "message": "Type a command after the !." }));
-                }
-                let shell = state.id("shl");
-                let id = state.id("msg");
-                let now = now_ms();
-                state.emit("session.shell.started", json!({ "sessionID": session, "shell": { "id": shell, "command": command, "status": "running" } }));
-                // A fixture, never executed: the stand-in touches no process or filesystem.
-                let output = json!({ "output": "src/\nCargo.toml\nREADME.md\n", "truncated": false });
-                state.messages.entry((*session).to_owned()).or_default().push(json!({
-                    "type": "shell", "id": id, "time": { "created": now, "completed": now },
-                    "shellID": shell, "command": command, "status": "completed", "exit": 0, "output": output
-                }));
-                state.emit("session.shell.ended", json!({ "sessionID": session, "shell": { "id": shell, "command": command, "status": "completed", "exit": 0 }, "output": output }));
-                if let Some(facts) = state.sessions.get_mut(*session) {
-                    facts["updated"] = json!(now);
-                }
-                state.list_changed();
-                answer(200, json!({}))
-            }
             ("POST", ["kuvo", "sessions", session, "send"]) => {
                 let session = (*session).to_owned();
                 if !state.sessions.contains_key(&session) {
@@ -3834,43 +3803,8 @@ impl Transport for StandIn {
 }
 
 #[cfg(test)]
-mod shell_tests {
+mod compact_tests {
     use super::*;
-
-    #[test]
-    fn shell_joins_history_without_waking_agent_and_emits_lifecycle() {
-        let stand_in = StandIn::new(Replies::Never);
-        let (sender, receiver) = channel();
-        stand_in.state().events.insert(999, sender);
-        let before = stand_in.state().messages.get("ses_dark").map_or(0, Vec::len);
-        let response = stand_in.route(&Request::post("api/session/ses_dark/shell", json!({ "command": "  ls  " }))).unwrap();
-        assert_eq!(response.status, 200);
-        let state = stand_in.state();
-        let messages = &state.messages["ses_dark"];
-        assert_eq!(messages.len(), before + 1);
-        let shell = messages.last().unwrap();
-        assert_eq!(shell["type"], "shell");
-        assert_eq!(shell["command"], "ls");
-        assert_eq!(shell["status"], "completed");
-        assert_eq!(shell["exit"], 0);
-        assert!(!state.running.contains("ses_dark"));
-        let started: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
-        let ended: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
-        assert_eq!(started["type"], "session.shell.started");
-        assert_eq!(ended["type"], "session.shell.ended");
-        assert_eq!(started["data"]["shell"]["id"], shell["shellID"]);
-        assert_eq!(ended["data"]["output"], shell["output"]);
-    }
-
-    #[test]
-    fn shell_refusals_do_not_add_messages() {
-        let stand_in = StandIn::new(Replies::Never);
-        let before = stand_in.state().messages.get("ses_dark").map_or(0, Vec::len);
-        for (session, command, status) in [("missing", "ls", 404), ("ses_dark", "  ", 400), ("ses_sub", "ls", 400)] {
-            assert_eq!(stand_in.route(&Request::post(format!("api/session/{session}/shell"), json!({ "command": command }))).unwrap().status, status);
-        }
-        assert_eq!(stand_in.state().messages.get("ses_dark").map_or(0, Vec::len), before);
-    }
 
     #[test]
     fn compact_waits_mid_turn_and_completes_at_rest() {
