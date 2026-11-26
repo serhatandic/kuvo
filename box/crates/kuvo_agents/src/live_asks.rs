@@ -149,6 +149,8 @@ pub struct TurnAsks {
 }
 
 impl TurnAsks {
+    pub(crate) fn turn(&self) -> &str { &self.turn }
+
     pub(crate) fn is_ended(&self) -> bool {
         self.ended.load(Ordering::Acquire)
     }

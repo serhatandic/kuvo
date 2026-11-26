@@ -80,4 +80,6 @@ Counts: 19 cases, all covered. Added since: names in other scripts and folder er
   paths are joined part by part, as `path.join` writes them; suggested folders drop Windows'
   verbatim prefix (`\\?\`), as Node's `realpath` does. The bench makes each box's home private
   on Windows (owned by the user, nothing inherited), which the Rust box requires there, and the
-  cases skip, with their reason, what Windows can't name or set. Linux is left.
+  cases skip, with their reason, what Windows can't name or set. Row 6.3d
+  closes the remaining Linux proof: files 16/16 on capped Linux musl (lokum)
+  and WSL2 musl.

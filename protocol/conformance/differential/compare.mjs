@@ -261,7 +261,10 @@ async function run(binary, home, sequence, relay, peerSeed, claude) {
     for (const [id, options] of Object.entries(claude.sessions ?? {})) seedSession(home, id, { model: "default", ...options });
     write(path.join(env.HOME, "claude-script.json"), JSON.stringify(claude.script ?? {}));
   }
-  const engine = await standInEngine(path.dirname(home), env);
+  // Worktree runs keep their made checkouts inside the compared fixture so their
+  // Git records and their files are included in the home inventory.
+  const hasWorktrees = sequence.some(step => step.path.startsWith("kuvo/worktrees"));
+  const engine = await standInEngine(path.dirname(home), env, hasWorktrees ? { worktreeRoot: path.join(home, "worktrees") } : {});
   const engineFile = path.join(home, "run", "engine.json");
   let box, peer, peerEngine, bridge;
   const answers = [];

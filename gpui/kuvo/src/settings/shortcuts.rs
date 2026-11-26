@@ -37,6 +37,7 @@ pub fn standard(name: &str) -> bool {
 pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
         "kuvo::NewSession" => ("General", "New session"),
+        "kuvo::OpenFolder" => ("General", "Open a folder"),
         "kuvo::ToggleAppearance" => ("General", "Switch light and dark"),
         "kuvo::Quit" => ("General", "Quit Kuvo"),
         "kuvo::TogglePanel" => ("General", "Show or hide the side panel"),
@@ -50,6 +51,8 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
         "area::ShowSessions" => ("Navigation", "Show Sessions"),
         "area::ShowComputers" => ("Navigation", "Show Computers"),
         "area::ShowUsage" => ("Navigation", "Show Insights"),
+        "area::ShowLibrary" => ("Navigation", "Show Library"),
+        "area::ShowMarketplace" => ("Navigation", "Show Marketplace"),
         "area::Back" => ("Navigation", "Go back"),
         "area::Forward" => ("Navigation", "Go forward"),
         "app_menu::Hide" => ("App menu", "Hide Kuvo"),

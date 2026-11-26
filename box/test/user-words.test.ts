@@ -24,7 +24,9 @@ test("box messages call the setup's leading computer the main computer", () => {
     const visit = (node: ts.Node) => {
       if ((ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)) && !wireTerms.has(node.text)) {
         let words = node.text;
-        if (relative === "usage/insights-store.ts") words = words.replace(/\bPRIMARY KEY\b/g, "");
+        // (SQL's, and the ownership rules' own role names: never words a person reads.)
+        words = words.replace(/\bPRIMARY KEY\b/g, "");
+        if (relative === path.join("shared", "mutation-declarations.ts")) words = words.replace(/^current primary$/, "");
         if (relative === "browser/tools.ts") words = words.replace("class primary for the main one", "");
         if (/\bprimary\b/i.test(words)) {
           const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));

@@ -98,7 +98,7 @@ owners on the same case each own the part described by their phase.
   an accepted handoff with its reply lost, and the receipt and queue routes on
   retry. The scoped and addressed variants have separate ownership and recovery cases.
 - The worktree failure scenario checks both sides of the engine's create response.
-  Its transport-close counterpart and independently managed worktree routes remain open.
+  Its transport-close counterpart is covered by the cancelled-client case; the independently managed worktree routes are in the 6.3d [Git coverage map](rust-git-coverage.md).
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
@@ -122,10 +122,10 @@ owners on the same case each own the part described by their phase.
 | `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | 1–6 | 7–9 | 10–11 | 5.1 · 8–10<br>5.2 · 7<br>5.3 · 11<br>6.1 · 7<br>6.4 · 7 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
-| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 6.3 · 1–6 |
+| `box/test/projects-worktrees.test.ts` (6) | 1, 3–5 | — | 2, 6 | C: unreachable events and postponed Auto reviewer; [6.3d map](rust-git-coverage.md) |
 | `box/test/start-cancelled-worktree.test.ts` (2) | 1–2 | — | — | — |
-| `box/bridge-tests/worktrees.test.js` (32) | 8 | 1, 9, 13–14, 17–18, 24–30 | 2–7, 10–12, 15–16, 19–23, 31–32 | 4.1 · 12, 30<br>6.3 · 1–7, 9–32<br>7.3 · 15–16 |
-| `box/bridge-tests/worktrees-where.test.js` (12) | — | — | 1–12 | 6.3 · 1–11<br>5.5 · 12 |
+| `box/bridge-tests/worktrees.test.js` (32) | 1–2, 4–5, 8–12, 14–28, 31–32 | 3, 6–7, 13, 29 | 30 | B: deferred uncommon cases; C: integrated holder inventory; [6.3d map](rust-git-coverage.md) |
+| `box/bridge-tests/worktrees-where.test.js` (12) | 1–6, 8–11 | 7 | 12 | B: deep same-name parents; C: programs (5.5); [6.3d map](rust-git-coverage.md) |
 
 ### Additional 3.2b reference cases
 
@@ -244,8 +244,7 @@ reads the asks and vault holder in the same resident and returns 503 when
 OpenCode is unavailable. The sandbox and vault process paths stay with 6.1
 and 6.2. Local bot activity includes delegation
 and the Work Queue counts newer copies once; `PeerWaiting` takes the live
-peer-activity snapshot from 5.1. The wake pause route and project removal
-remain in 5.1 and 6.3. A worktree whose session creation gets a failure
+peer-activity snapshot from 5.1. The wake pause route belongs to 5.1; project removal is covered in 6.3d. A worktree whose session creation gets a failure
 response is removed only after a complete inventory shows no conversation
 using it. The client can disconnect during creation and the resident still
 settles the worktree from OpenCode's result. Ambiguous transport failures
@@ -325,7 +324,7 @@ The worktree owner can call `Engine::tell_worktree` after recording a rename.
 Session Delete and Delete All read the live and restorable records, check
 which independent conversations use each tree, and tell the client what
 goes with their sessions. Delete checks the same confirmation inside its
-note turn. Phase 6.3 owns naming, removal, restore and project discovery.
+note turn. Phase 6.3 owns naming, removal, restore and project discovery; see the [6.3d case map](rust-git-coverage.md).
 Its `Engine::worktree_inventory` input exposes all local OpenCode
 conversations with directories, archive and activity state. It refuses an
 incomplete inventory. The resident test checks active and archived rows,
@@ -435,7 +434,7 @@ records or runtime endpoint they hold.
 | `bots`, `run/bots-seen`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json`, `wakes` | 5.1 | Bots, wakes, work activity and notices |
 | `box/approval.json` | 6.1 | TypeScript's `approvalsSince` reads the differing `since` field to distinguish old and new sessions during approval adoption. Rust session start reads the shared `last` and `fullAccess` values. |
 | `chats` | 1.4 | TypeScript creates the folder on the first `kuvo/info` request. Rust creates it while preparing the resident's info response. |
-| `box/found-folders.json` | 6.3 | First-seen project folders |
+| `box/found-folders.json` | Auto reviewer (post-0.8, 6.1) | First-seen project folders; its only consumer is the postponed reviewer. |
 | `config`, `config/opencode`, `config/opencode/plugins`, `config/opencode/plugins/kuvo-defaults.js`, `run/fence`, `run/fence/agents.md` | 6.1 | Engine configuration and the sandbox instructions |
 | `run/.queue-handoffs` | Unread outside the old lock | `rg -n -F .queue-handoffs box/src box/crates` finds only the TypeScript per-item lock in `engine/queue.ts`. Rust uses the session turn. |
 | `run/glance`, `run/glance/asks.json` | Identical | Both writers publish the `asks` object that the TypeScript reader in `glance/asked.ts` consumes. |

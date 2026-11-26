@@ -34,7 +34,7 @@ use crate::{
     session::{
         ActiveTurn, Delivery, EventEnvelope, ModelRef, Outcome, Position, Prompt, SessionContext,
         Steer, SteerReceipt, Thread, TurnError, TurnEvent, TurnInput, TurnKind, TurnResult,
-        TurnSink, VendorState,
+        TurnSink, ToolState, VendorState,
     },
     told::instructions_note,
 };
@@ -497,6 +497,7 @@ struct Running {
     plan: bool,
     sink: Arc<dyn TurnSink>,
     projection: Projection,
+    children: HashMap<String, ChildLane>,
     note: TurnNote,
     steered: Vec<Steered>,
     explicit_compaction: bool,
@@ -504,6 +505,13 @@ struct Running {
     stopping: bool,
     /// The instructions said ahead of its message, kept as told once it took it.
     told: Option<String>,
+}
+
+struct ChildLane {
+    handle: crate::subagent::ChildTurn,
+    projection: Projection,
+    state: VendorState,
+    noticed: HashSet<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -724,6 +732,7 @@ impl Actor {
                 plan,
                 sink,
                 projection,
+                children: HashMap::new(),
                 note: saved,
                 steered,
                 explicit_compaction,
@@ -818,6 +827,11 @@ impl Actor {
         let mut told = None;
         let message = match prompt {
             Some(mut prompt) => {
+                let fresh = state_before.get("claudeStarted") != Some(&Value::Bool(true))
+                    || state_before.get("claudeSession").and_then(Value::as_str).is_none_or(|id| !is_uuid(id));
+                if let Some(history) = sink.handover(&prompt.id, fresh).await? {
+                    prompt.text = format!("{history}\n\nUser message:\n{}", prompt.text);
+                }
                 if let Some(said) = instructions_note(
                     self.state.get("claudeTold").and_then(Value::as_str),
                     &input.instructions,
@@ -853,6 +867,7 @@ impl Actor {
             plan,
             sink,
             projection,
+            children: HashMap::new(),
             note,
             steered: Vec::new(),
             explicit_compaction,
@@ -1216,6 +1231,16 @@ impl Actor {
         let Some(turn) = &mut self.running else {
             return Ok(());
         };
+        if let Some(call) = message["parent_tool_use_id"].as_str() {
+            if let Some(child) = turn.children.get_mut(call) {
+                let mut frame = message.clone();
+                frame["parent_tool_use_id"] = Value::Null;
+                for event in child.projection.frame(&frame, &turn.model, &mut child.state, &mut child.noticed) {
+                    child.handle.event(event).await?;
+                }
+            }
+            return Ok(());
+        }
         let delivery = if replay {
             Delivery::Replay
         } else {
@@ -1275,7 +1300,34 @@ impl Actor {
             _ => true,
         });
         let count = events.len() as u32;
-        for (ordinal, event) in events.into_iter().enumerate() {
+        for (ordinal, mut event) in events.into_iter().enumerate() {
+            if let TurnEvent::Tool { id, name, state, metadata } = &mut event
+                && name == "subagent"
+            {
+                if let ToolState::Running { input } = state
+                    && !turn.children.contains_key(id)
+                    && !turn.projection.child_is_background(id)
+                {
+                    let handle = turn.sink.subagent(crate::subagent::Task {
+                        call: id.clone(),
+                        title: input["description"].as_str().unwrap_or("A subagent's task").into(),
+                        prompt: input["prompt"].as_str().map(str::to_owned),
+                        agent: input["agent"].as_str().map(str::to_owned),
+                        model: turn.model.clone(),
+                        background: false,
+                        messages: crate::subagent::Messages::unavailable(&turn.model.provider),
+                    }).await?;
+                    turn.children.insert(id.clone(), ChildLane { handle, projection: Projection::new(false, false), state: Default::default(), noticed: Default::default() });
+                }
+                if let Some(child) = turn.children.get(id) {
+                    metadata.insert("sessionID".into(), json!(child.handle.id()));
+                    match state {
+                        ToolState::Completed { .. } => child.handle.finish(Outcome::Succeeded).await?,
+                        ToolState::Failed { error, .. } => child.handle.finish(Outcome::Failed(error.clone())).await?,
+                        _ => {}
+                    }
+                }
+            }
             turn.sink
                 .event(envelope(
                     Some(Position {
@@ -1402,6 +1454,9 @@ impl Actor {
         let Some(turn) = self.running.take() else {
             return Ok(());
         };
+        for child in turn.children.values() {
+            child.handle.finish(Outcome::Interrupted).await?;
+        }
         let missed: Vec<_> = turn.steered.into_iter().map(|sent| sent.kuvo).collect();
         // Claude turned its sign-in away: the next message starts a Claude Code that reads the
         // sign-in as it is then.

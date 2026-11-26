@@ -141,7 +141,9 @@ async fn the_turn_sink_waits_for_a_checkpoint_and_saves_the_native_conversation(
         "ses_saved".into(),
         "codex-cli".into(),
         store.clone(),
+        None,
         asks.for_turn("ses_saved".into(), "turn_1".into()),
+        None,
         Arc::new(Policy),
     );
     let mut pending = asks.pending();

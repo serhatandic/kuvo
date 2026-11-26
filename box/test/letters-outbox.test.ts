@@ -158,6 +158,8 @@ test("one for a chat that moved here since, that it doesn't take: the same notic
   } })
   fs.writeFileSync(path.join(RUN, "engine.json"), JSON.stringify({ port: server.port, password: "pw" }))
   fs.writeFileSync(path.join(RUN, "agents.json"), JSON.stringify({ machine: "here", agents: [{ session: "ses_target", name: "Planning", machine: "here" }] }))
+  // (Moved here: the computer it left no longer lists it. One that still did would have it.)
+  fs.writeFileSync(path.join(RUN, "peer-agents.json"), JSON.stringify({ [key]: { at: now, list: [] } }))
   write({ peer: own, sentTo: key })
   try {
     await sendOutbox(host, readLink(), now)

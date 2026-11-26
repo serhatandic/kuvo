@@ -672,8 +672,8 @@ impl Service {
                     }
                 }
                 read.commit()?;
-            } else if let Some(text) = kuvo_store::files::text_of(&folder.join("messages.json")) {
-                for message in serde_json::from_str::<Vec<Value>>(&text)? {
+            } else {
+                for message in kuvo_agents::session_store::legacy_insight(&folder.join("messages.json"))? {
                     accept(message)?;
                     decoded += 1;
                 }
@@ -2353,6 +2353,9 @@ mod lineage_repair_tests {
         // observation of the retained call and must not replace its origin.
         db.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?)",params!["old","work",at,at,"assistant",json!({"model":{"providerID":"claude","id":"claude-opus-4-6"},"time":{"completed":at,"origin":"first"},"tokens":{"input":9999,"output":50,"cache":{"read":500,"write":2}}}).to_string()]).unwrap();
         drop(db);
+        // As the box names it (engine_index::databases): its real path, as a temporary
+        // folder may be behind a link (/var on a Mac).
+        let maker = maker.canonicalize().unwrap();
         let bot = service.home.join("bots/bot_lead");
         std::fs::create_dir_all(&bot).unwrap();
         std::fs::write(

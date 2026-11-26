@@ -360,14 +360,8 @@ impl Service {
                 "{name} can't summarize on request: it does so by itself when the conversation fills up."
             ));
         }
-        // (An agent that has its conversation keeps something of it in its slot.)
-        let started = self
-            .store
-            .context(session, provider)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|context| !context.state.is_empty());
+        // Its native state alone doesn't say whether it has seen this conversation.
+        let started = self.store.has_seen(session, provider).await.unwrap_or(false);
         if !working && !started {
             return Some(format!(
                 "There's nothing to summarize yet: {name} hasn't started on this conversation."
@@ -394,6 +388,13 @@ impl Service {
     ) -> io::Result<()> {
         if state.conversation(session).retired {
             return Err(missing(session));
+        }
+        if let Some(header) = self.store.read(session).await? {
+            if header.parent().is_some() {
+                let fields = header.into_fields();
+                let route = &fields["metadata"]["kuvo"]["messages"];
+                return Err(refused(route["note"].as_str().unwrap_or("This agent can't take messages for its subagents.")));
+            }
         }
         let id = input.id.clone();
         let line = self

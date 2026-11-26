@@ -160,6 +160,10 @@ impl Projection {
         out
     }
 
+    pub fn child_is_background(&self, id: &str) -> bool {
+        self.calls.get(id).is_some_and(|call| call.raw["run_in_background"] == true)
+    }
+
     /// Why the turn the `result` ends failed, or none: it went through.
     /// The model the conversation's last request ran on, as Claude Code said.
     pub fn context_model(&self) -> Option<&str> {

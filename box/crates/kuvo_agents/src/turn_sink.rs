@@ -43,7 +43,9 @@ pub struct ResidentSink {
     /// The agent whose slot its checkpoints write.
     provider: String,
     store: SessionStore,
+    roster: Option<Arc<crate::roster::Roster>>,
     asks: TurnAsks,
+    feed: Option<crate::feed::Feed>,
     policy: Arc<dyn TurnPolicy>,
     events: mpsc::Sender<EventWrite>,
 }
@@ -53,7 +55,9 @@ impl ResidentSink {
         session: String,
         provider: String,
         store: SessionStore,
+        roster: Option<Arc<crate::roster::Roster>>,
         asks: TurnAsks,
+        feed: Option<crate::feed::Feed>,
         policy: Arc<dyn TurnPolicy>,
     ) -> (Arc<Self>, mpsc::Receiver<EventWrite>) {
         let (events, writes) = mpsc::channel(32);
@@ -61,7 +65,9 @@ impl ResidentSink {
             session,
             provider,
             store,
+            roster,
             asks,
+            feed,
             policy,
             events,
         };
@@ -103,6 +109,14 @@ impl TurnSink for ResidentSink {
                 Err(closed())
             }
         })
+    }
+
+    fn handover<'a>(&'a self, prompt: &'a str, fresh: bool) -> AdapterCall<'a, Option<String>> {
+        Box::pin(self.store.handover(&self.session, &self.provider, prompt, fresh, self.roster.as_deref()))
+    }
+
+    fn subagent(&self, task: crate::subagent::Task) -> AdapterCall<'_, crate::subagent::ChildTurn> {
+        Box::pin(crate::subagent::ChildTurn::start(self.store.clone(), self.feed.clone(), &self.session, self.asks.turn(), task))
     }
 
     fn preflight(&self, ask: PermissionAsk, native_plan: bool) -> AdapterCall<'_, Preflight> {

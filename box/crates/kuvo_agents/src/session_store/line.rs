@@ -36,7 +36,7 @@ impl Line {
     /// The agent took this one partway through its turn (`seenSteers`), so
     /// a handover later doesn't give it the message again.
     pub fn note_seen_steer(&mut self, provider: &str, id: &str) {
-        self.seen.push((provider.to_owned(), id.to_owned()));
+        self.seen.push((crate::accounts::Provider::slot(provider), id.to_owned()));
     }
 }
 

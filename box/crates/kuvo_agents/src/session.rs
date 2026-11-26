@@ -538,6 +538,15 @@ pub trait TurnSink: Send + Sync {
     /// native conversation.
     fn save_state(&self, state: VendorState) -> AdapterCall<'_, ()>;
 
+    /// The prior conversation this agent hasn't seen; a fresh native thread sees none of it yet.
+    fn handover<'a>(&'a self, _prompt: &'a str, _fresh: bool) -> AdapterCall<'a, Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn subagent(&self, _task: crate::subagent::Task) -> AdapterCall<'_, crate::subagent::ChildTurn> {
+        Box::pin(async { Err(std::io::ErrorKind::Unsupported.into()) })
+    }
+
     /// Apply resident policy before the adapter applies its native policy.
     /// This never creates an interactive ask. Set `native_plan` if the
     /// adapter enforces plan mode on its own.

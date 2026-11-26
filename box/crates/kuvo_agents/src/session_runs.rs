@@ -179,6 +179,7 @@ pub struct SessionRuns {
     store: SessionStore,
     commands: mpsc::Sender<Command>,
     running: watch::Receiver<Arc<BTreeSet<String>>>,
+    parents: watch::Receiver<Arc<BTreeSet<String>>>,
     events: broadcast::Sender<InboxEvent>,
     restoring: Arc<update::Restorings>,
 }
@@ -244,7 +245,25 @@ impl SessionRuns {
                 let _ = offer.taken.send(taken);
             }
         });
-        let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
+        let (identities, parent_watch) = watch::channel(Arc::new(BTreeSet::new()));
+        let mut parents = parent_watch.clone();
+        let (active, running) = watch::channel(Arc::new(BTreeSet::new()));
+        let background = store.background().clone();
+        let mut changes = background.changes();
+        tokio::spawn(async move {
+            loop {
+                let mut all = (**parents.borrow_and_update()).clone();
+                all.extend(background.child_ids());
+                active.send_if_modified(|old| {
+                    if **old == all { false } else { *old = Arc::new(all); true }
+                });
+                tokio::select! {
+                    result = parents.changed() => if result.is_err() { break; },
+                    result = changes.changed() => if result.is_err() { break; },
+                    () = active.closed() => break,
+                }
+            }
+        });
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
         let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
@@ -266,6 +285,7 @@ impl SessionRuns {
             store,
             commands,
             running,
+            parents: parent_watch,
             events,
             restoring,
         }
@@ -373,7 +393,13 @@ impl SessionRuns {
     }
 
     pub fn running(&self) -> Arc<BTreeSet<String>> {
-        self.running.borrow().clone()
+        let parents = self.parents.borrow();
+        let children = self.store.background().child_ids();
+        if children.is_empty() { parents.clone() } else {
+            let mut all = (**parents).clone();
+            all.extend(children);
+            Arc::new(all)
+        }
     }
 
     pub fn changes(&self) -> watch::Receiver<Arc<BTreeSet<String>>> {
@@ -565,6 +591,7 @@ impl SessionRuns {
     /// Stop the turn under way. `resume`: what you steered goes next (Send
     /// Now); with nothing running, it starts now.
     pub async fn interrupt_and(&self, session: String, resume: bool) -> io::Result<bool> {
+        if self.store.background().stop_child(&session) { return Ok(true); }
         let stopping = self
             .line(|reply| line::Request::Interrupt {
                 session,
@@ -590,6 +617,15 @@ impl SessionRuns {
     }
 
     async fn delete_retired(&self, session: String) -> io::Result<bool> {
+        let mut changed = self.store.background().changes();
+        if self.store.background().stop_child(&session) {
+            let stopped = async {
+                while self.store.background().child_ids().contains(&session) {
+                    if changed.changed().await.is_err() { break; }
+                }
+            };
+            let _ = tokio::time::timeout(self.stop_grace, stopped).await;
+        }
         let live = self
             .call(|reply| Command::Retire {
                 session: session.clone(),
@@ -1076,7 +1112,9 @@ impl Service {
             session.into(),
             provider.clone(),
             self.store.clone(),
+            Some(self.agents.roster()),
             asks,
+            Some(self.agents.feed().clone()),
             policy.clone(),
         );
         let id = input.id.clone();

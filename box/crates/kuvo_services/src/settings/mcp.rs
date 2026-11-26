@@ -134,6 +134,13 @@ pub async fn read(ctx: &Context) -> Value {
             json!({"id":"servers","title":"Servers","kind":"list","items":items,"empty":"None yet.","add":{"id":"add","title":"Add Server…","form":form(&known,None,&json!({}))}}),
         ],
     );
+    // How a server is doing changes from moment to moment, so what follows from it is outside
+    // its revision: a switch read a moment before still holds.
+    for item in card["rows"][0]["items"].as_array_mut().into_iter().flatten() {
+        if item["value"] == true && item["badge"]["tone"] == "failed" {
+            item["actions"].as_array_mut().unwrap().insert(0, json!({"id":"try-again","title":"Try Again"}));
+        }
+    }
     card["title"] = json!("Servers");
     card["note"] = json!(format!(
         "A server on {where_} runs a command; one on the web is a URL."
@@ -325,8 +332,15 @@ async fn checked(
                     .ask(Method::GET, &format!("kuvo/programs?name={name}"), None)
                     .await
                 {
+                    let program = str_of(&found["name"]);
                     if found["path"].is_string() {
-                        fields.push(json!({"id":"command","words":format!("{} is on {}.",str_of(&found["name"]),known.where_),"tone":"good"}));
+                        fields.push(json!({"id":"command","words":format!("{program} is on {}.",known.where_),"tone":"good"}));
+                    } else if found["unknown"] != true && !program.is_empty() {
+                        let fix = match source_of(program) {
+                            Some(source) => format!(". It comes with {source}: install that there first."),
+                            None => ". Install it there first, or use a command it has.".into(),
+                        };
+                        fields.push(json!({"id":"command","words":format!("{program} isn’t on {}{fix}",known.where_),"tone":"warning"}));
                     }
                 }
             }
@@ -387,6 +401,18 @@ async fn checked(
         entry: Value::Object(entry),
         id,
     }
+}
+/// What a missing program comes with, for the ones servers' READMEs use most.
+fn source_of(program: &str) -> Option<&'static str> {
+    Some(match program.rsplit('/').next().unwrap_or(program) {
+        "npx" | "npm" | "node" => "Node.js",
+        "uvx" | "uv" => "uv",
+        "docker" => "Docker",
+        "python" | "python3" | "pip" | "pip3" => "Python",
+        "bun" | "bunx" => "Bun",
+        "deno" => "Deno",
+        _ => return None,
+    })
 }
 pub async fn check(ctx: &Context, at: &Value, action: &Value, values: &Value) -> Value {
     let Ok(known) = facts(ctx).await else {
@@ -459,16 +485,14 @@ pub async fn act(ctx: &Context, at: &Value, action: &Value, values: &Value) -> R
     let id = str_of(&at["id"]);
     let action = str_of(&action["id"]);
     if let Some(name) = id.strip_prefix("popular-").filter(|_| action == "add") {
-        ctx.ask(
-            Method::POST,
-            &format!(
-                "kuvo/mcp/catalog/{}",
-                percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC)
-            ),
-            None,
-        )
-        .await?;
-        return Ok(());
+        let route = format!(
+            "kuvo/mcp/catalog/{}",
+            percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC)
+        );
+        return match ctx.ask(Method::POST, &route, None).await {
+            Err(e) if e.status() == StatusCode::NOT_FOUND => Err(stale(read(ctx).await)),
+            other => other.map(drop),
+        };
     }
     let name = id.strip_prefix("server-");
     let before = name
@@ -480,6 +504,15 @@ pub async fn act(ctx: &Context, at: &Value, action: &Value, values: &Value) -> R
             return Err(stale(read(ctx).await));
         }
         return write(ctx, vec!["mcp", "servers", name], Value::Null, before).await;
+    }
+    if action == "try-again" {
+        let name = name.ok_or_else(no_action)?;
+        let engine = crate::integrations::routes::EngineClient::for_home(&ctx.settings.home);
+        let Some(target) = engine.target() else {
+            return Err(refused(StatusCode::SERVICE_UNAVAILABLE, format!("The engine isn’t running on {}. Try again once it’s started.", known.where_)));
+        };
+        engine.reconnect_everywhere(&target, name).await;
+        return Ok(());
     }
     if (id == "servers" && action == "add") || name.is_some() && action == "edit" {
         let checked = checked(ctx, &known, name, values, before).await;
@@ -496,7 +529,15 @@ pub async fn act(ctx: &Context, at: &Value, action: &Value, values: &Value) -> R
                 json!({"message":words,"fields":checked.answer["fields"]}),
             ));
         }
-        let name = name.or(checked.id.as_deref()).ok_or_else(no_action)?;
+        let Some(name) = name else {
+            let id = checked.id.ok_or_else(no_action)?;
+            // Added by someone else since the check: a name taken, not a stale page.
+            return write(ctx, vec!["mcp", "servers", &id], checked.entry, before).await.map_err(|e| {
+                if e.status() != StatusCode::CONFLICT { return e; }
+                let words = format!("There's a server called {id} already.");
+                Refusal::json(StatusCode::BAD_REQUEST, json!({"message":words,"fields":[{"id":"name","words":words,"tone":"warning"}]}))
+            });
+        };
         return write(ctx, vec!["mcp", "servers", name], checked.entry, before).await;
     }
     Err(no_action())

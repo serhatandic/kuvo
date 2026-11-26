@@ -20,8 +20,8 @@ async fn changes_to_an_added_account_leave_the_default_and_other_accounts_in_pla
     )
     .unwrap();
     let before = index.all().await.unwrap();
-    assert_eq!(before.len(), 6);
-    let providers: Vec<_> = before[..5]
+    assert_eq!(before.len(), 7);
+    let providers: Vec<_> = before[..6]
         .iter()
         .map(|account| account.provider().to_string())
         .collect();
@@ -32,12 +32,13 @@ async fn changes_to_an_added_account_leave_the_default_and_other_accounts_in_pla
             "codex-cli",
             "cursor",
             "grok-cli",
-            "antigravity"
+            "antigravity",
+            "opencode-agent"
         ]
     );
     assert!(index.home(&before[0]).is_none());
     assert_eq!(
-        index.home(&before[5]).unwrap(),
+        index.home(&before[6]).unwrap(),
         home.root().join("agents/claude/earlier")
     );
     let added = index
@@ -53,7 +54,7 @@ async fn changes_to_an_added_account_leave_the_default_and_other_accounts_in_pla
         .unwrap();
     let reopened = Accounts::for_home(&home);
     let accounts = reopened.all().await.unwrap();
-    assert_eq!(accounts[6].label.as_deref(), Some("Office"));
+    assert_eq!(accounts[7].label.as_deref(), Some("Office"));
     let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved[0], json!({"formatVersion":1}));
     assert_eq!(saved[1]["futureField"], true);

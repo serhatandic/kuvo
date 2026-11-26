@@ -761,10 +761,11 @@ describe.skipIf(!canFence)("Cursor in the box's sandbox", () => {
     expect(words(opened, id)).toBe("elsewhere=noelsewhere=yes")
   })
 
-  test("if its process stops, the turn fails with what it said, and the next message starts it again", async () => {
+  test("if its process stops, the turn is interrupted (the queue can go on), and the next message starts it again", async () => {
     const { opened, id } = session({ crash: ["crash", ""] })
     await send(opened, id)
-    expect(idles(opened, id).at(-1)).toMatchObject({ outcome: "failed", error: { message: expect.stringContaining("Cursor fell over.") } })
+    // (As any coding agent's process stopping mid-turn: interrupted, not failed.)
+    expect(idles(opened, id).at(-1)).toMatchObject({ outcome: "interrupted", reason: "agent-exit" })
     writeFileSync(join(runtime, "tries.json"), JSON.stringify({ project: ["write", join(project, "made.txt")] }))
     await send(opened, id, "again")
     expect(idles(opened, id).at(-1)?.outcome).toBe("succeeded")

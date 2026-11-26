@@ -134,7 +134,7 @@ impl OpenCodeHistory {
         state.insert("acpSession".into(), id.into());
         self.0
             .store
-            .save_state(id, AgentKind::OpenCode.provider(), state)
+            .save_imported_state(id, AgentKind::OpenCode.provider(), state)
             .await?;
         Ok(true)
     }

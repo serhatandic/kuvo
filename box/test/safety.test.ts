@@ -181,7 +181,8 @@ test("every box test file loads test/safety.ts before anything else", () => {
   const missing = files.filter(name => {
     const first = readFileSync(join(box, name), "utf8").split("\n").find(line => line.trim() && !line.startsWith("//"))
     const safety = relative(dirname(join(box, name)), join(box, "test", "safety"))
-    return first !== `import "${safety.startsWith(".") ? safety : `./${safety}`}"`
+    // (With or without its semicolon.)
+    return first?.replace(/;\s*$/, "") !== `import "${safety.startsWith(".") ? safety : `./${safety}`}"`
   })
   expect(missing).toEqual([])
 })

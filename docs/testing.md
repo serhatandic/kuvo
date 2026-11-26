@@ -116,6 +116,8 @@ through `scripts/heavy.sh` (the scripts below take its slots). Linux checks run 
 `scripts/lokum-bridge-check.sh`), never hetzner; Windows checks with `scripts/windows-box-check.sh`
 and `scripts/windows-bridge-check.sh`.
 
+Windows PC and WSL runs go through `scripts/heavy.sh pc …`; lokum runs through `scripts/heavy.sh lokum …` (one container, `--cpus=1 --memory=1g --rm`).
+
 ```sh
 scripts/cargo-box.sh test -p kuvo-box --test info      # Rust box
 scripts/test-box.sh box test/conversation.test.ts      # box

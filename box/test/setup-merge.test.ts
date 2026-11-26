@@ -84,9 +84,10 @@ describe("merging setups", () => {
     };
     const [files] = recordReferences("agents/sessions/" + session + "/session.json", (_root, id) => id);
     expect(local.macMoved).toEqual([{ session, key: retainedKey }]);
-    expect(acceptedOwner(local, files!)).toBe(retainedKey);
+    // (Who has a record is no longer read from membership's moved list, since b584bfd7f: here,
+    // the move journal, then who says it has it. So the list decides no owner of its own.)
+    expect(acceptedOwner(local, files!)).toBeUndefined();
     expect(mayActivate({ kind: "conversations", id: session }, { link: local })).toBe(true);
-    expect(mayActivate(files!, { link: local, origin: joiningKey })).toBe(true);
     expect(sessionsFencedHere({ link: local, origin: joiningKey })).not.toContain(session);
   });
 });

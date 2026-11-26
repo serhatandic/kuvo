@@ -97,6 +97,9 @@ pub enum AgentAsk {
 pub trait AgentSessionSource: Send + Sync {
     fn inventory(&self) -> AgentSessionRead<'_>;
 
+    /// A removal needs authoritative run state, including turns still in a holder.
+    fn worktree_inventory(&self) -> AgentSessionRead<'_> { self.inventory() }
+
     fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
         None
     }

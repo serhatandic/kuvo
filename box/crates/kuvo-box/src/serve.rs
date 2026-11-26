@@ -45,7 +45,7 @@ pub async fn run(
         home.to_owned(),
         std::env::vars_os().collect(),
         Timing::default(),
-    )?;
+    )?.with_worktree_git(Arc::new(kuvo_services::git::WorktreeGit));
     let kind = if kuvo_setup::is_mac_home(home)? {
         ComputerKind::Mac
     } else {
@@ -443,7 +443,7 @@ pub async fn run(
             platform: kuvo_os::platform::Platform::current(),
         },
     );
-    kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
+    kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac, engine.clone(), account.clone());
     kuvo_services::terminals::register(&mut routes, home);
     kuvo_services::programs::register(&mut routes, account.clone());
     kuvo_services::browser::register(&mut routes, home);

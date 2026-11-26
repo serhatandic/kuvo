@@ -1783,3 +1783,60 @@ or any browser-opening command). Size: `program_updates/{mod,versions,notices,st
 TypeScript files it replaces (`maintenance.ts`, `updates.ts`, `update-notices.ts`,
 `shared/agent-updates.ts`; 1.62× chars, adding side-by-side staging and OS leases while
 deleting 493 lines of drain/hold logic).
+
+## 4.6 — Conversation continuity (in progress)
+
+This section separates completed or exercised cases from normal-use cases still
+to port. The conversation handoff and Kuvo reviews were removed; the history
+prefix in `agents/handover.ts` is a different feature and remains.
+
+| TypeScript source scenario | Class | Rust boundary / remaining work |
+|---|---|---|
+| `sessions.test.ts`: moving between agents — the next sees its missed history, the original agent sees only the intervening turns; a same-agent model change doesn't repeat history | A | `agents-session-reads` carries a seeded conversation to a new agent, sends a second turn, returns to a previously used Codex thread, and checks native prompt text separately from the saved user row. Claude, Codex, Grok and Antigravity stand-ins exercise the shared history cursor. Cursor still needs its adapter call after 4.5. |
+| `sessions.test.ts`: a conversation the agent couldn't pick up again is handed all of it | A | `agents-session-reads` refuses the old Codex native thread and checks the replacement's received history. |
+| `sessions.test.ts`: old single-agent state remembers the conversation | A | `saved_sessions` migrates the old top-level native state into its owning slot, including the last seen transcript row. |
+| `bridge.test.ts`: the words preceding a file change stay before it; messages sent during another agent's turn are still requests | A | `agents-session-reads` checks word/file order at the native prompt; `handover.rs` integration test checks the partial turn, earlier cursor, and late messages already taken by the next agent. |
+| `sessions.test.ts`: a session whose agent hasn't seen it cannot be summarized | A | The former 4.6 TODO in `agents-claude-turns` now tests the cursor rather than presence of vendor state. |
+| `sessions.test.ts`: agent stopped or failed, messages missed during steering, native turns begun on their own, Auto retry in a partially completed turn, switching model mid-turn, branch from a message | A, remaining | Cursor writes distinguish failed starts and missed messages. More scenario coverage and the Auto/branch paths remain. |
+| `sessions.test.ts`: a conversation from the engine carries on with all its history | C (old engine place) | OpenCode's import path in `acp/opencode_history.rs` keeps the native ID and records its imported history as already seen. `agents-opencode-history` exercises listing, reading and continuing it. |
+| `transcript-storage.test.ts`: opening legacy chat retains its pictures; save only new or changed messages; usage and artifact projection survives migration | A, partial | `saved_sessions` covers legacy/SQLite pagination and incremental message updates; `library` proves backfill reads the current artifacts projection even with an old rollback JSON copy beside it. Picture retention and the complete end-to-end map remain. |
+| `transcript-memory.test.ts`: listing doesn't parse pictures; Insights doesn't decode huge tool bodies | A, partial | Header-only inventory and SQLite projections are already present; bounded legacy pagination now deserializes one row at a time and skips rows beyond an oldest-first page. `saved_sessions` exercises the narrow legacy Insights reader on a 48 MiB tool output, including a stopped streaming input and a completed skill with escaped Unicode. The full inventory memory measurement remains. |
+| `subagents.test.ts` (all 5); adapter tests' "Your subagents" sections (Claude, Codex, Cursor, ACP) | A, remaining | Custom definitions, model selection, account-specific rules and adapter-native configuration still to port. |
+| `sessions.test.ts` subagents: a child's task, own steps and finish, parent linkage and deletion; Stop | A, partial | `agents-subagents` exercises an ACP Grok child with its own text, tool call, active row, disabled messages, parent linkage, eventual finish and deletion; a second case stops the child without ending the parent, and discards late frames. A Claude foreground Task has its own transcript, and completion keeps the link. All three failed with the earlier Rust binary and pass with the reference and Rust. |
+| Claude's background and message forwarding cases; Codex spawned-agent cases; concurrent ACP/Antigravity and Cursor child cases | A, remaining | Background and resumed child lanes, permissions and native message routing, nested children, native Stop where supported, and holder recovery still need porting. An unknown ACP child is associated only with a single unambiguous active parent, never guessed among concurrent parents. |
+| `keywords.test.ts` side questions, follow-ups, threads/events, attachments, restart, conversation deletion | A, remaining | One-off generation, side-question routes and durable side threads are absent. |
+| `sessions.test.ts` Undo, undo carefully, and Undo/Stop/file-keeping races | A, remaining | Repository snapshots, staged Undo/Redo, and finalization are not implemented. |
+| `carry-agents.test.ts` (both tests); `moves-lanes.test.js` and `moves-lanes-races.test.js`; Claude native conversation and memory move cases | A, remaining | Native lane manifest, packing, placement, verification, rollback and retained copies still to port. |
+| Kuvo reviews and conversation handoff | C | Removed on purpose; only readers of old stored marks remain. |
+
+The history cursor lives beside each account's native state in the same
+`agent.json` slot as TypeScript. The sink gives adapters a prepared history
+prefix after they know whether the native conversation resumed or started
+over; the original prompt is the one projected into the transcript. This
+keeps adapter protocols separate from the history renderer. The SQLite query
+reads only rows after the cursor; a successful turn advances it to the known
+final row ID before showing the idle row, without decoding its outputs again.
+New ACP sessions checkpoint their native identity before the prompt even
+when there are no instructions to save. Legacy slot migration records the
+cursor before the next user row is written. Model names are resolved only
+for the history actually read, with a bounded lookup per provider.
+
+The existing legacy array page reader used to retain every message, including
+pictures and tool outputs. It now keeps a bounded page window and does not
+allocate unused rows after reaching an oldest-first page limit. Full history
+when changing agents still reads the unseen rows; this is a further opportunity
+for a bounded history-specific projection.
+
+Library and artifact citation scanning now use the current `messages-v1.sqlite` artifacts
+column and its WAL stamp rather than the obsolete database name or stale rollback array.
+Legacy Insights reads just its own fields with serde, skipping unrelated tool bodies before
+allocating them. The same narrow projection that writes new transcript rows filters its
+selected data.
+
+
+Child transcripts use a resident-owned writer per spawned call, with a stable
+child ID from the parent, turn and native call. The adapter projects a child's
+frames separately rather than mixing its text into the parent's answer.
+The activity handle owns cancellation and removal from the active list; a
+completed child discards late writes. The parent tool retains its task and
+child ID as it completes. This adds no native process for a spawned child.
