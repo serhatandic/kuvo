@@ -695,6 +695,57 @@ Cumulative non-test size: 568,146 new-module characters plus 39,805 added
 existing production characters (607,951 total, 0.884× the 687,546 TS
 characters).
 
+## Fourteenth slice: display, notice visibility and maker edge corpus
+
+The production display component is exercised at a fixed clock for all seven
+display matrices: named/time-window/model meters, distinct source computers,
+expired sidebar rings versus historical meters, fresh/failed/away intervals,
+plain status words, capped credits and extras, and elapsed-time countdown
+labels across DST. These checks do not read provider credentials or logs.
+
+A hidden provider/metric is not the same thing as a visible metric whose
+alert toggles are off. The old box replayed a crossing when the provider was
+shown again (new route fixture failed 1 vs 0). Hidden trails now retain their
+actual readings and occurrence counts, but their notice baseline is dormant
+until the first visible accepted read. This state survives restart. The
+production projection is also exercised with fixed current-window samples
+through healthy, close and running-out states, including stale input refusal.
+The missing Spark, Copilot premium, OpenRouter key and Z.ai metric aliases
+are mapped like TS. The exact secondary Claude card identity still needs
+its independently derived card key; the existing hashed plan identity is
+not sufficient to reconstruct it.
+
+The shared Cursor plan corpus is read through the actual provider reader and
+usage route with loopback fixture responses (7 `mapUsage`, 3 `grokBot`, 3
+`mapSummary`, 2 `mapRequestBasedUsage` cases). The route removes the duplicate
+Requests line under Total usage, as TS does. Fixture dates are moved into a
+current window. The mapper's four fallback-routing and six plan-name pairs,
+and the standalone append-missing-on-demand fixture, remain open.
+
+An accepted warning whose receipt was not kept must catch up after restart;
+the prior Rust route failed this case. The notice journal keeps the maker's
+time rather than the new process time. Sign-ins are confirmed before replay,
+only current accepted facts from this computer's pinned forwarder are
+eligible, and no provider read is needed. On a later accepted observation or
+peer admission the same fact is retried if keeping the history failed;
+successes are remembered in a short-lived resident map to avoid repeatedly
+opening the journal. A source's notice is visible from the existing merged
+notice feed; a nonforwarder does not make a redundant local copy. The
+expired/old retained-fact and retry cases are in the same route fixture.
+
+Usage conformance: Rust 73/73 applicable on Mac, Lokum (musl in one capped
+container), WSL and native Windows; TS 24/24 applicable on Mac from a fresh
+reference build. The Unix synthetic process fixture and native Windows
+process-ownership fixture skip on their respective other platforms. Display
+component 7/7, accepted-reading component 8/8, engine-sessions 81/81,
+workspace test check and Bun check clean. The exact expanded seeded
+differential matches 12/13 answers (only the actual `coverage[0].scanned`
+time differs), and the native corpus both answers. All scratch and cross
+target directories were removed; no test processes remained.
+Cumulative non-test size: 570,538 new-module characters plus 40,355 added
+existing production characters (610,893 total, 0.889× the 687,546 TS
+characters).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -788,14 +839,14 @@ characters).
 
 ### `box/test/usage/limit-display.test.ts`
 
-- L24: Usage names windows, supplies their used percentages and lists a shared source once — partial — accepted pace/card route verifies used meter and title; multi-source meter choice remains open.
-- L44: Usage dates each merged meter by its own reading and names the computer that supplied it — open.
-- L56: Usage marks an overdue reset and leaves the historical value intact independently of the sidebar — open.
-- L65: Usage ages readings by their own time and marks away or failed sources old immediately — open.
-- L77: Usage gives plain next steps instead of exposing the provider’s error — open.
-- L93: Usage draws capped credit balances and extras even without normal windows — open.
-- L113: Reset labels round up across hour and day boundaries, by elapsed time across DST — open.
-- L142: Limits include the check time for an ended plan without meters — open.
+- L24: Usage names windows, supplies their used percentages and lists a shared source once — covered by fixed-clock production display matrix and accepted pace/card route.
+- L44: Usage dates each merged meter by its own reading and names the computer that supplied it — covered by distinct accepted source-meter component test; existing peer route exercises accepted merge.
+- L56: Usage marks an overdue reset and leaves the historical value intact independently of the sidebar — covered by same-entry meter/sidebar projection test.
+- L65: Usage ages readings by their own time and marks away or failed sources old immediately — covered by fixed-clock 29/30/31-minute and away/failed member matrix.
+- L77: Usage gives plain next steps instead of exposing the provider’s error — covered by exact status word matrix including no/ended plan and private error.
+- L93: Usage draws capped credit balances and extras even without normal windows — covered by credit/extras meter and sidebar level component test.
+- L113: Reset labels round up across hour and day boundaries, by elapsed time across DST — covered by fixed-clock exact label and DST matrix.
+- L142: Limits include the check time for an ended plan without meters — partial — display component preserves `updatedAt` on ended plan; actual global completion field case open.
 - L154: A delayed provider leaves refresh pending and sends an update when the new snapshot is ready — covered by slow maker/limits events route fixture.
 - L189: A failed provider refresh keeps the prior successful completion time — covered by mixed/wholly failed refresh route fixture.
 
@@ -1016,7 +1067,7 @@ characters).
 
 ### `box/test/usage/usage-cursor.test.ts`
 
-- L51: ${each.fn}: ${each.name} — open.
+- L51: ${each.fn}: ${each.name} — partial — 15 original plan corpus cases through actual Rust routes (mapUsage, grokBot, mapSummary, request-based usage); independent fallback, append-missing and plan-name variants remain open (see slice 14).
 - L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
 - L109: a page that isn't one, or an event that isn't, as UsageKit takes them — open.
 - L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
@@ -1065,11 +1116,11 @@ characters).
 
 ### `box/test/usage/usage-notices.test.ts`
 
-- L22: healthy to close fires once — open.
-- L23: close to running out — open.
+- L22: healthy to close fires once — covered by fixed-clock accepted current-window projection crossing test (#990 current-window rather than old elapsed-window projection).
+- L23: close to running out — covered by the same healthy/close/critical sample matrix.
 - L24: healthy straight to red fires only critical — open.
 - L25: under ten once per window — open.
-- L26: cold start records bad baseline — open.
+- L26: cold start records bad baseline — covered by cold almost-out/unknown-cadence accepted reading test.
 - L27: reset rollover re-arms — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L28: reset jitter does not re-arm — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L29: recovery then worsening re-fires — covered by scoped accepted-reading test with corroborated recovery.
@@ -1085,24 +1136,24 @@ characters).
 - L51: evaluator jitter and restart do not duplicate — open.
 - L52: evaluator all toggles off — open.
 - L53: evaluator per trigger off — open.
-- L54: evaluator disabled provider prunes baseline — open.
+- L54: evaluator disabled provider prunes baseline — covered by provider hide/re-enable route regression and dormant baseline state.
 - L55: evaluator remaining threshold uses remaining regardless display mode — open.
-- L56: client delivery failure leaves fact available for retry — open.
+- L56: client delivery failure leaves fact available for retry — covered by retained-fact missing receipt / restart and later observation retry scenario.
 - L57: failed read cannot create notices or cache zero — open.
-- L58: hidden metric prunes baseline — open.
+- L58: hidden metric prunes baseline — covered by empty layout hide/show route and dormant fixed-clock trail test.
 - L59: pace near empty and projection gate — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L60: notices go only to peers in the setup — open.
 - L71: large notice history cannot evict the current limits account from peer mail — open.
 - L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — open.
-- L96: visibility mappings cover model-specific Codex and Antigravity windows — open.
+- L96: visibility mappings cover model-specific Codex and Antigravity windows — partial — corrected Spark alias and existing Antigravity mappings; exact multi-window layout fixture open.
 - L102: exact ten percent remaining does not trigger Almost Out — open.
 - L108: parallel readers use the same occurrence IDs and recovery receives a new one — partial — scoped test checks the distinct rearmed occurrence; simultaneous parallel readers open.
 - L116: peer handoff timestamps are normalized to the receiver clock — open.
 - L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
-- L142: provider hide and re-enable resets baseline but preserves occurrence counters — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L142: provider hide and re-enable resets baseline but preserves occurrence counters — covered by dormant accepted trail restart and unique second occurrence test, plus route hide/show scenario.
 - L152: notice facts stay in their setup — open.
 - L173: setup changes invalidate notice caches while preserving ordinary limit readings — open.
-- L185: catch-up is short and warnings disappear when their reset passes — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L185: catch-up is short and warnings disappear when their reset passes — covered by retained current/old/expired warning catch-up route scenario.
 - L198: without layout settings only default meters can decide notices — open.
 - L208: a decision waits for the directory and pins a forwarder only once — open.
 - L224: ordinary turn readings keep the thirty-second disk throttle while new notices persist immediately — open.
@@ -1158,8 +1209,8 @@ characters).
 - L24: queue acceptance is not delivery; a later successful hold send consumes the id — open.
 - L42: an unsent fact can retry on the next minute without being marked delivered — open.
 - L51: a queued notice does not push after its reset passes — open.
-- L63: peer notice is kept for Mac without pushing; source can still push once — open.
-- L74: catch-up keeps maker time, has a short age limit, and drops reset windows — open.
+- L63: peer notice is kept for Mac without pushing; source can still push once — covered by existing merged notice feed route scenario: exactly one source notice visible on the other computer and no redundant local copy. The Rust merged history avoids duplicating the source's receipt.
+- L74: catch-up keeps maker time, has a short age limit, and drops reset windows — covered by retained warning receipt restart, maker timestamp, old/expired refusal and idempotent replay fixture.
 - L90: Mac before its hold is ready leaves usage eligible; deliberately disabled phone link consumes it — open.
 - L105: partial delivery to two phones retries only the phone whose send failed — open.
 - L122: journal write failure retains in-memory marks and retries persistence without throwing — open.

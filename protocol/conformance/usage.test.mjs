@@ -97,7 +97,10 @@ async function noticeFixture(t) {
       return ring?.used===used/100 && data;
     },'The accepted sample did not reach the limits route');
   };
-  return {read,sample,reset};
+  const setting=async value=>{
+    const response=await request(listener,'PUT',route,value);assert.equal(response.status,200,response.text);
+  };
+  return {read,sample,reset,setting,codex};
 }
 test('a crossing of ten percent remaining is told only once in its current window (Rust correction)',async t=>{
   if(boxBinary().typescript)return t.skip('Repeated crossing correction is Rust-only.');
@@ -123,6 +126,57 @@ test('usage warnings arrive through the existing in-app notice history (Rust cor
   assert.equal(notice.notice.category,'usage');
   assert.equal(notice.notice.title,'Almost Out');
 });
+test('a hidden limit learns a new baseline without a stale warning when shown again',async t=>{
+  if(boxBinary().typescript)return t.skip('The Rust fixture uses accepted Codex turn samples.');
+  const layout=placed=>({layout:{placed,providerOrder:[],metricOrder:{},pinned:[],expanded:[],expandOnEnable:[],seeded:[]}});
+  for(const [hide,show] of [[{providers:{known:['codex'],enabled:[]}},{providers:{known:['codex'],enabled:['codex']}}],[layout([]),layout(['codex.session'])]]){
+    const {sample,setting,codex}=await noticeFixture(t);
+    await sample(89);
+    await setting(hide);
+    assert.equal((await sample(91)).notices.length,0);
+    await setting(show);
+    assert.equal((await sample(92)).notices.length,0);
+    await codex.stop();
+  }
+});
+test('a retained usage alert catches up after restart with the maker time, not the restart time',async t=>{
+  if(boxBinary().typescript)return t.skip('The fixture exercises the Rust retained facts and shared notice history.');
+  const fs=await import('node:fs');
+  const {sample,codex}=await noticeFixture(t);
+  await sample(89);
+  const journal=path.join(codex.home,'run','notices','told.json');
+  fs.rmSync(journal,{force:true});
+  fs.mkdirSync(journal,{recursive:true}); // The fixture makes only this derived journal unwritable.
+  const data=await sample(91);
+  const fact=data.notices.find(n=>n.milestone==='underTenPercent');assert.ok(fact);
+  fs.rmSync(journal,{recursive:true});
+  await sample(92);
+  const retry=await until(async()=>{
+    const result=await request(codex.listener,'GET','kuvo/notices');
+    return result.json.notices.find(n=>n.notice.data?.notice===fact.id);
+  },'A failed in-app receipt was not retried on the next observation');
+  assert.equal(retry.at,fact.at);
+  await codex.stop();
+  const cache=path.join(codex.home,'agents','usage','accepted-limits.json');
+  const kept=JSON.parse(fs.readFileSync(cache,'utf8'));
+  const at=Date.now()-120000;
+  for(const entry of Object.values(kept.entries))for(const notice of entry.notices??[])if(notice.id===fact.id){
+    notice.at=at;
+    entry.notices.push({...notice,id:'fixture-old-alert',at:Date.now()-660000},{...notice,id:'fixture-expired-alert',resetsAt:Date.now()-1});
+    break;
+  }
+  write(cache,JSON.stringify(kept));
+  // A crash or failed journal write may leave the accepted fact without its
+  // in-app receipt. Restart must catch up that still-current fact once.
+  fs.rmSync(journal,{force:true});
+  let listener=await codex.start();
+  const read=async()=>{const result=await request(listener,'GET','kuvo/notices');assert.equal(result.status,200,result.text);return result.json.notices.filter(n=>n.notice.data?.notice===fact.id);};
+  const caught=await until(async()=>{const notices=await read();return notices.length&&notices;},'A retained usage alert did not reach the notice history after restart');
+  assert.equal(caught.length,1);assert.equal(caught[0].at,at);assert.equal(caught[0].notice.data.at,String(at));
+  const all=(await request(listener,'GET','kuvo/notices')).json.notices;
+  assert.equal(all.some(n=>['fixture-old-alert','fixture-expired-alert'].includes(n.notice.data?.notice)),false);
+  await codex.stop();listener=await codex.start();assert.equal((await read()).length,1);
+});
 test('the Helper menu and warning facts use the same accepted reading (Rust correction)',async t=>{
   if(boxBinary().typescript)return t.skip('The common reading correction is Rust-only.');
   const {sample,read}=await noticeFixture(t);
@@ -133,6 +187,48 @@ test('the Helper menu and warning facts use the same accepted reading (Rust corr
   assert.equal(ring.used,crossed.rows.find(r=>r.service==='codex').rings.short.used);
   assert.equal(Math.round((1-ring.used)*100),Math.round(crossed.notices.find(n=>n.milestone==='underTenPercent').remaining*100));
   assert.equal(ring.level,'over');
+});
+test('a remote usage warning is visible in the existing merged notice feed without a second local copy',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('The reference scratch resident disables provider reads.');
+  const http=await import('node:http');
+  const {openLine}=await import('./adapter.mjs');
+  const now=Date.now(),reset=Math.floor(now/1000)+7200;
+  let used=89;
+  const maker=http.createServer((req,res)=>{
+    assert.equal(req.headers.authorization,'Bearer fixture-notice-holder');
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({plan_type:'plus',rate_limit:{primary_window:{used_percent:used,limit_window_seconds:18000,reset_at:reset}}}));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer,leases}=await bench(t);
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  const studio=await computer('NoticeStudio',undefined,env),lab=await computer('NoticeLab',undefined,env);
+  studio.engine.credentials=[{integrationID:'openai',active:true,value:{type:'oauth',access:'fixture-notice-holder',expires:now+3600000,metadata:{accountID:'fixture-notice-owner'}}}];
+  const main=studio.connect(await studio.start().ready()),base='kuvo/agents/api/kuvo/limits';
+  assert.equal((await main('PUT',route,{notifications:{underTenPercent:true,healthyToClose:false,closeToRunningOut:false}})).status,200);
+  const refresh=async value=>{
+    assert.equal((await main('POST',base+'/refresh',{})).status,200);
+    return until(async()=>{const data=(await main('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='openai')?.rings.short?.used===value&&data;},'Notice maker reading did not settle');
+  };
+  await refresh(.89);
+  const setup=await main('GET','kuvo/setup');
+  const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'NoticeStudio did not claim its relay lease');
+  const joined=await lab.join(invite.json.code);assert.equal(joined.code,0,joined.log);
+  const listener=await lab.start().ready(),other=lab.connect(listener);
+  await until(async()=>{const data=(await other('GET',base)).json.data;return data.rows.find(r=>r.provider==='openai')?.rings.short?.used===.89;},'Lab did not learn the source account',30000,100);
+  const line=await openLine(listener,'','kuvo/setup/notices/events',{},30000);
+  try{
+    assert.equal(line.status,200);
+    used=91;const crossed=await refresh(.91);const fact=crossed.notices.find(n=>n.milestone==='underTenPercent');assert.ok(fact);
+    let found;
+    for await(const frame of line.frames()){
+      const matches=(frame.notices??[]).filter(n=>n.notice?.data?.notice===fact.id);
+      if(matches.length){found=matches;break;}
+    }
+    assert.equal(found?.length,1);assert.equal(found[0].computer.name,'NoticeStudio');assert.equal(found[0].at,fact.at);
+    assert.ok(!(await other('GET','kuvo/notices')).json.notices.some(n=>n.notice.data?.notice===fact.id));
+  }finally{line.close();}
 });
 
 test('usage import is once-only and older clients preserve settings they do not know',async t=>{
@@ -2676,6 +2772,101 @@ test('Cursor exchanges only its own key, retries a refused access token once, an
   await resident.stop();key='fixture-renewed';refuseKey=false;write(auth,JSON.stringify({apiKey:key}));
   resident=box.start();call=box.connect(await resident.ready());
   const replacement=await refresh();assert.equal(replacement.problem,undefined);assert.deepEqual(readings(replacement.windows),readings(first.windows));
+});
+
+test('Cursor plan meters match the shared subscription, team, credit and Grok Bot corpus',async t=>{
+  if(boxBinary().typescript)return t.skip('The isolated TS resident disables Cursor provider reads.');
+  const {readFileSync}=await import('node:fs');
+  const http=await import('node:http');
+  const corpus=JSON.parse(readFileSync(new URL('../../box/test/fixtures/usage/cursor-plan-cases.json',import.meta.url),'utf8')).cases;
+  const now=Date.now(),day=86400000,shift=Math.floor(now/day)*day+30*day-1764892800000;
+  const summaryShift=Math.floor(now/day)*day+30*day-Date.parse('2026-12-01T00:00:00Z');
+  const shiftedSummary=raw=>{
+    const summary=structuredClone(raw??{});
+    for(const key of ['billingCycleStart','billingCycleEnd','startOfMonth'])if(typeof summary[key]==='string'&&Number.isFinite(Date.parse(summary[key])))summary[key]=new Date(Date.parse(summary[key])+summaryShift).toISOString();
+    return summary;
+  };
+  let current,serial=0,bot={};
+  const maker=http.createServer((req,res)=>{
+    const args=current.args;
+    const send=data=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data??{}));};
+    if(req.url==='/cursor/exchange'){
+      const access=['e30',Buffer.from(JSON.stringify({sub:'auth0|cursor-corpus-'+serial,exp:Math.floor(now/1000)+3600})).toString('base64url'),'fixture'].join('.');
+      assert.equal(req.headers.authorization,'Bearer fixture-cursor-'+serial);send({accessToken:access});return;
+    }
+    if(req.url==='/cursor/GetCurrentPeriodUsage'){
+      const usage=structuredClone(current.fn==='mapRequestBasedUsage'?{planUsage:{}}:args.usage??{planUsage:{}});
+      for(const key of ['billingCycleStart','billingCycleEnd'])if(usage[key]!==undefined)usage[key]=Number(usage[key])+shift;
+      send(usage);return;
+    }
+    if(req.url==='/cursor/GetPlanInfo'){send({planInfo:{planName:args.planName}});return;}
+    if(req.url==='/cursor/GetCreditGrantsBalance'){send(args.creditGrants);return;}
+    if(req.url==='/cursor/auth/stripe'){send({customerBalance:-(args.stripeBalanceCents??0)});return;}
+    if(req.url==='/cursor/usage-summary'){send(shiftedSummary(args.summary));return;}
+    if(req.url.startsWith('/cursor/usage?')){send(shiftedSummary(current.fn==='mapRequestBasedUsage'?args.usage:args.requestUsage));return;}
+    if(req.url==='/cursor/GetSandUsageStatus'){send(bot);return;}
+    send({});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('CursorPlanCorpus',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const auth=path.join(box.home,'agents','cursor','auth.json');
+  const call=box.connect(await box.start().ready());
+  const base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{
+    write(auth,JSON.stringify({apiKey:'fixture-cursor-'+ ++serial}));
+    assert.equal((await call('POST',base+'/refresh',{})).status,200);
+    return until(async()=>{const result=(await call('GET',base)).json.data;return !result.refreshPending&&result.accounts.find(a=>a.provider==='cursor'&&a.checked);},'Cursor corpus reading did not settle: '+current.name);
+  };
+  for(const each of corpus.filter(c=>c.fn==='mapUsage')){
+    current=each;const reading=await refresh();const want=each.expected;
+    if(want.error){
+      assert.equal(reading.problem?.kind,each.args.usage.enabled===false?'ended':'failed',each.name);
+      assert.deepEqual(reading.windows,[],each.name);continue;
+    }
+    assert.equal(reading.plan,want.plan,each.name);
+    const windows=want.lines.filter(l=>l.used!==undefined);
+    assert.deepEqual(reading.windows.map(w=>w.name),windows.map(w=>w.label),each.name);
+    for(const [i,line] of windows.entries()){
+      const w=reading.windows[i];assert.equal(w.used,line.used/line.limit,each.name+': '+line.label);
+      assert.deepEqual(w.amount??null,line.format==='dollars'?{used:line.used,limit:line.limit,unit:'usd'}:null,each.name);
+      assert.equal(w.resetsAt,line.resetsAt===null?undefined:line.resetsAt+shift,each.name);
+      assert.equal(w.minutes,line.periodMs===null?undefined:line.periodMs/60000,each.name);
+    }
+    const credits=want.lines.find(l=>l.label==='Credits');assert.deepEqual(reading.balance??null,credits?{left:credits.dollars,unit:'usd'}:null,each.name);
+    const spend=want.lines.find(l=>l.label==='On-demand'&&l.dollars!==undefined);
+    assert.deepEqual(reading.extras??[],spend?[{id:'on_demand',name:'On-demand',kind:'spent',amount:spend.dollars,unit:'usd',resetsAt:Number(each.args.usage.billingCycleEnd)+shift}]:[],each.name);
+  }
+  current=corpus.find(c=>c.fn==='mapUsage'&&!c.expected.error);
+  for(const each of corpus.filter(c=>c.fn==='grokBot')){
+    bot=structuredClone(each.args.usage);
+    const botShift=Math.floor(now/day)*day+7*day-Date.parse('2026-11-17T00:00:00Z');
+    for(const key of ['currentPeriodStart','nextResetTimestampUtc'])if(bot[key])bot[key]=new Date(Date.parse(bot[key])+botShift).toISOString();
+    const reading=await refresh();const w=reading.windows.find(w=>w.id==='grok_bot');const want=each.expected.line;
+    if(!want){assert.equal(w,undefined,each.name);continue;}
+    assert.equal(w.name,want.label,each.name);assert.equal(w.used,want.used/want.limit,each.name);
+    assert.equal(w.minutes,want.periodMs/60000,each.name);assert.equal(w.resetsAt,want.resetsAt===null?undefined:want.resetsAt+botShift,each.name);
+  }
+  bot={};
+  for(const each of corpus.filter(c=>c.fn==='mapSummary'||c.fn==='mapRequestBasedUsage')){
+    current=each;const reading=await refresh();const want=each.expected;
+    if(want.error){assert.equal(reading.problem?.kind,'failed',each.name);assert.deepEqual(reading.windows,[],each.name);continue;}
+    assert.equal(reading.plan,want.plan,each.name);
+    // The route intentionally states request usage once under Total usage.
+    const unique=want.lines.filter(l=>l.used!==undefined&&!(l.label==='Requests'&&want.lines.some(o=>o.label==='Total usage')));
+    const windows=unique.map(l=>({...l,label:l.label==='Requests'?'Total usage':l.label}));
+    assert.deepEqual(reading.windows.map(w=>w.name),windows.map(w=>w.label),each.name);
+    for(const [i,line] of windows.entries()){
+      const w=reading.windows[i];assert.equal(w.used,line.used/line.limit,each.name);
+      const unit=line.format==='dollars'?'usd':line.format==='count:requests'?'requests':null;
+      assert.deepEqual(w.amount??null,unit?{used:line.used,limit:line.limit,unit}:null,each.name);
+      assert.equal(w.resetsAt,line.resetsAt===null?undefined:line.resetsAt+summaryShift,each.name);
+      assert.equal(w.minutes,line.periodMs===null?undefined:line.periodMs/60000,each.name);
+    }
+    const spend=want.lines.find(l=>l.label==='On-demand'&&l.dollars!==undefined);
+    assert.deepEqual(reading.extras??[],spend?[{id:'on_demand',name:'On-demand',kind:'spent',amount:spend.dollars,unit:'usd'}]:[],each.name);
+  }
 });
 
 test('a corrupt saved ring cannot panic the resident or invent fresh usage',async t=>{
