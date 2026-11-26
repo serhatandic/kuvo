@@ -958,9 +958,9 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
     Ok(false)
 }
 
-/// Kept artifacts, as against the empty store every resident opens when it starts:
-/// its key, a disposable index and empty folders.
-fn artifacts_kept(files: &Files) -> Result<bool, Error> {
+/// Kept artifacts, as against an initialized but empty store: its key, a
+/// disposable index and empty folders.
+pub(super) fn artifacts_kept(files: &Files) -> Result<bool, Error> {
     const EMPTY_STORE: &[&str] = &[
         ".DS_Store",
         "key",

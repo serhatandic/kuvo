@@ -1894,7 +1894,9 @@ mod work {
 
     #[tokio::test]
     async fn peers_announce_changes_answer_refreshes_and_repeat_after_ten_minutes() {
-        time::timeout(Duration::from_secs(18), async {
+        // The resident now runs the copy heartbeat once per elapsed minute.
+        // Two explicit 60-second advances leave the original 18-second I/O budget.
+        time::timeout(Duration::from_secs(138), async {
             let listener = relay_socket().await;
             let url = relay_url(&listener);
             let _relay = run_relay(listener);
@@ -1916,6 +1918,9 @@ mod work {
                 }
             }
             now.store(NOW + 60_001, Ordering::Relaxed);
+            time::pause();
+            time::advance(Duration::from_secs(60)).await;
+            time::resume();
             loop {
                 if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
                     && sender == key(1)
@@ -1926,6 +1931,9 @@ mod work {
             }
 
             now.store(NOW + 601_000, Ordering::Relaxed);
+            time::pause();
+            time::advance(Duration::from_secs(60)).await;
+            time::resume();
             loop {
                 if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
                     && sender == key(1)
@@ -1948,7 +1956,7 @@ mod work {
                     && sender == key(1)
                     && let Some(agents) = envelope.0.get("agents")
                     && agents["list"][0]["session"] == LEAD {
-                    assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session"}]));
+                    assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session","project":"Chats"}]));
                     assert_eq!(envelope.0.get("at"), Some(&json!(NOW + 601_000)));
                     break;
                 }

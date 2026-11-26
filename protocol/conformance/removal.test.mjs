@@ -1060,6 +1060,10 @@ test("a released computer enrolls again when its retained work is unchanged", {
   initialize.close();
   const resident = other.start();
   const local = other.connect(await resident.ready());
+  // Opening the storage page is the first actual artifact use in the Rust box.
+  // This case deliberately rewrites an existing disposable index after unlink.
+  const storage = await local("GET", "kuvo/artifacts/storage");
+  assert.equal(storage.status, 200, storage.text);
   const usageFile = path.join(other.home, "agents", "usage", "settings.json");
   const usageScope = () => fs.existsSync(usageFile) && readJSON(usageFile).setup;
   if (applicant.typescript) {
@@ -1132,7 +1136,7 @@ test("a released computer enrolls again when its retained work is unchanged", {
   }
   // The artifact index is disposable. Its store rewriting it, as SQLite does on Windows, is not new work.
   const index = path.join(other.home, "artifacts", "index-v1.sqlite");
-  assert.ok(fs.existsSync(index), "the applicant's resident opened its artifact store");
+  assert.ok(fs.existsSync(index), "the artifact storage route opened its index");
   fs.copyFileSync(index, index + ".rewrite");
   fs.renameSync(index + ".rewrite", index);
   const rejoined = await other.join(next.json.code, { resident: joinWith.typescript, joinWith });
@@ -1231,6 +1235,15 @@ test("a departing member clears credentials and keeps its work before acknowledg
   const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
     ? boxBinary(process.env.KUVO_CONFORMANCE_REJOIN_BIN) : applicant;
   if (!joinWith.typescript) await resident.stop();
+  // Empty artifact infrastructure is not retained work, but actual writes in
+  // that store after unlink still prevent an ordinary rejoin.
+  const lateArtifact = path.join(member.home, "artifacts", "late-output.json");
+  fs.writeFileSync(lateArtifact, '{"title":"Written after unlink"}', { flag: "wx" });
+  try {
+    const changed = await member.join(next.json.code, { resident: joinWith.typescript, joinWith });
+    assert.equal(changed.code, 1, changed.log);
+    assert.match(changed.log, /This computer has setup data/);
+  } finally { fs.unlinkSync(lateArtifact); }
   const rejoined = await member.join(next.json.code, { resident: joinWith.typescript, joinWith });
   assert.equal(rejoined.code, 0, rejoined.log);
   const returned = readJSON(path.join(member.home, "run", "link.json"));

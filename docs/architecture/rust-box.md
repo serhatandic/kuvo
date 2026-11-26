@@ -754,7 +754,13 @@ not open the artifact store or write an empty background inventory; the first re
 use opens it, including a genuine edit baseline. The new conformance cases prove that empty
 resident and followed-page owners park and that an external background record, oversight
 expiry, and disappearing Library source file still update an active view. Existing route
-validation and refusal results are unchanged.
+validation and refusal results are unchanged. A released computer may open empty artifact
+infrastructure for the first time after unlink without that read becoming new retained work.
+Both boxes retain the historical baseline and compare an additional empty-store variant only
+when the store has no real artifacts. The re-enrollment case refuses an actual late artifact
+record, then rejoins after its removal. The disposable-index rewrite case explicitly opens
+storage before unlink; it no longer relies on eager startup. The mixed Rust-departure/TS-rejoin
+case fails on the previous TS binary and passes with this fix.
 
 The [timer inventory](rust-idle-timers.md) gives each owner's actual deadline or event and the
 remaining deliberate compatibility/transport waits. It also identifies the platform
@@ -791,6 +797,17 @@ native watch subscriptions, stacks and tables, not a multi-megabyte eager catalo
 The artifact database and page subscriptions already wait for use; the resident's remaining
 watchers must be ready for external writes. Sharing more native watch handles could reduce
 stack costs in future without restoring polling. All fixture processes exited.
+
+The full Mac sweep passed the Work Queue (148/148), moves (70 passed, one mixed-binary
+skip), engine sessions (81/81), delivery (5/5), and the new resident (5/5) and Library
+checks (20/20). The shell-keeper update case saw the up-to-date row before its peer SHA
+**seen once**, then passed on the focused rerun with the same binary. The inherited
+Auto-mode refusal wording is owned by the wording pass, not a timing regression. The
+peer-announcement unit fixture advances the actual elapsed copy-heartbeat deadline as well as
+its injected wall clock, and checks the announced chat project already present in the contract.
+The stale first-inventory conformance still requires exactly two reads on Rust; TypeScript can
+filter its in-flight page using the deletion fence and reread only the affected ID, so it may
+complete in one or two whole reads. Both assert the same no-resurrection answer.
 
 ## 7. Release decisions
 

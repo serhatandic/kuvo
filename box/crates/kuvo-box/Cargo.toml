@@ -45,5 +45,5 @@ http-body-util = "0.1"
 tokio-util = "0.7"
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }
-tokio = { version = "1", features = ["macros", "process"] }
+tokio = { version = "1", features = ["macros", "process", "test-util"] }
 tokio-tungstenite = "0.29"
