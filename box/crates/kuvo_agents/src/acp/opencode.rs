@@ -231,6 +231,14 @@ impl Flavour for OpenCode {
         true
     }
 
+    fn answers_usage(&self) -> bool {
+        true
+    }
+
+    fn titles_itself(&self) -> bool {
+        true
+    }
+
     fn select_model<'a>(
         &'a self,
         rpc: &'a Rpc,

@@ -315,7 +315,15 @@ describe("OpenCode conversations", { skip }, () => {
       }, "Insights never finished reading.", 60000, 500);
       return read.totals;
     };
-    const before = await totals();
+    // (Once what earlier cases ran is all counted: two readings alike.)
+    let before = await totals();
+    await until(async () => {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const again = await totals();
+      const same = JSON.stringify(again) === JSON.stringify(before);
+      before = again;
+      return same;
+    }, "Insights kept changing.", 30000, 0);
     script.push({ text: "Counted." });
     const id = await begin();
     await send(id, "Count me.");
@@ -328,5 +336,22 @@ describe("OpenCode conversations", { skip }, () => {
     }, "Its turn was never counted.", 30000, 1000);
     assert.deepEqual({ sessions: grew("sessions"), calls: grew("calls"), input: grew("input"), output: grew("output") },
       { sessions: 1, calls: 1, input: 100, output: 10 }, JSON.stringify({ before, after }));
+  });
+
+  test("it's titled as OpenCode titles it, and its turn's tokens are what the model said", { timeout: 90000 }, async () => {
+    script.push({ text: "Titled." });
+    const id = await begin();
+    await send(id, "Name this.");
+    const rows = await answered(id, "Titled.");
+    const reply = rows.filter(row => role(row) === "assistant").at(-1);
+    const tokens = reply.info?.tokens ?? reply.tokens;
+    assert.deepEqual({ input: tokens?.input, output: tokens?.output }, { input: 100, output: 10 }, JSON.stringify(reply).slice(0, 800));
+    const at = await prefix(id);
+    const titled = await until(async () => {
+      const read = await call("GET", `${at}api/session/${id}`);
+      const session = read.json?.data ?? read.json;
+      return session?.title === "Scripted title" && session;
+    }, async () => `Never titled: ${(await call("GET", `${at}api/session/${id}`)).text.slice(0, 600)}`, 30000, 500);
+    assert.equal(titled.title, "Scripted title");
   });
 });

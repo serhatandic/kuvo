@@ -431,6 +431,7 @@ impl Projection {
             TurnEvent::Context { .. }
             | TurnEvent::ContextCleared
             | TurnEvent::RanOn(_)
+            | TurnEvent::Titled(_)
             | TurnEvent::ReplayCaughtUp => Vec::new(),
         }
     }
@@ -595,6 +596,7 @@ impl Projection {
             TurnEvent::Context { .. }
                 | TurnEvent::ContextCleared
                 | TurnEvent::RanOn(_)
+                | TurnEvent::Titled(_)
                 | TurnEvent::Finished(_)
         ) {
             return Ok(());
@@ -623,6 +625,12 @@ impl Projection {
                 }
                 TurnEvent::ContextCleared => {
                     header.remove("context");
+                }
+                TurnEvent::Titled(title) => {
+                    let untitled = header.get("title").and_then(Value::as_str).is_none_or(str::is_empty);
+                    if untitled {
+                        header.insert("title".into(), json!(title));
+                    }
                 }
                 TurnEvent::RanOn(name) if !name.trim().is_empty() => {
                     let kuvo = object(object(header, "metadata"), "kuvo");

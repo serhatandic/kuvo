@@ -420,6 +420,8 @@ pub enum TurnEvent {
         succeeded: bool,
     },
     ReplayCaughtUp,
+    /// The title its agent gave the conversation, for one still without one.
+    Titled(String),
     Finished(TurnResult),
 }
 

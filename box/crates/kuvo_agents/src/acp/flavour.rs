@@ -164,6 +164,14 @@ pub(crate) trait Flavour: Send + Sync + 'static {
     fn reads_own_servers(&self) -> bool {
         false
     }
+    /// Its answer to a prompt says what the turn used (`usage`): its tokens, not its context's.
+    fn answers_usage(&self) -> bool {
+        false
+    }
+    /// Titles its own sessions, as `session/list` says.
+    fn titles_itself(&self) -> bool {
+        false
+    }
     /// The way it signs in when asked to (`authenticate`).
     fn auth_method(&self, capabilities: &Capabilities) -> Option<String>;
     /// Signs in before its first session, not only when it asks.
