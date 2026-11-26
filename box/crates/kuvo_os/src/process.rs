@@ -233,7 +233,24 @@ impl Spawn {
         self.launch(Some(recovery_name), resident)
     }
 
+    #[cfg(unix)]
+    pub fn spawn_debug_pipe(
+        &self,
+    ) -> io::Result<(
+        ChildGroup,
+        tokio::net::unix::pipe::Sender,
+        tokio::net::unix::pipe::Receiver,
+    )> {
+        self.validate()?;
+        sys::spawn_debug_pipe(self)
+    }
+
     fn launch(&self, recovery_name: Option<&str>, resident: bool) -> io::Result<ChildGroup> {
+        self.validate()?;
+        sys::spawn(self, recovery_name, resident)
+    }
+
+    fn validate(&self) -> io::Result<()> {
         let valid = |value: &OsStr| !value.as_encoded_bytes().contains(&0);
         if !self.executable.path().is_absolute()
             || self.cwd.as_deref().is_some_and(|path| !path.is_absolute())
@@ -250,7 +267,7 @@ impl Spawn {
                 "process requires an absolute executable and valid arguments, directory and environment",
             ));
         }
-        sys::spawn(self, recovery_name, resident)
+        Ok(())
     }
 }
 

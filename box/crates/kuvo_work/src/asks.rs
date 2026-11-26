@@ -33,6 +33,7 @@ pub struct Asks {
     /// own aren't named.
     machine: Option<String>,
     engine: Engine,
+    browser: Option<kuvo_services::browser::manager::BrowserAsks>,
     /// The conversation each asking session goes to, and its name, as the engine said them.
     conversations: Arc<Mutex<HashMap<String, Conversation>>>,
 }
@@ -194,8 +195,14 @@ impl Asks {
             run: home.join("run"),
             machine,
             engine,
+            browser: None,
             conversations: Arc::default(),
         }
+    }
+
+    pub fn with_browser(mut self, browser: kuvo_services::browser::manager::BrowserAsks) -> Self {
+        self.browser = Some(browser);
+        self
     }
 
     /// The conversation an ask goes to: a subagent's is the one it works for, which shows it and
@@ -341,7 +348,8 @@ impl Asks {
                         },
                     ));
                 };
-                if !give(&asks.run, &id, answer).await {
+                let taken = asks.browser.as_ref().is_some_and(|browser| browser.answer(&id, answer.clone()));
+                if !taken && !give(&asks.run, &id, answer).await {
                     return Err(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, ""));
                 }
                 Ok(RouteReply::json::<200>(typed(json!({}))?))

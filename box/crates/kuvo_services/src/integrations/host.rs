@@ -112,6 +112,23 @@ impl HostInterface {
         Ok(Some(answer.and_then(|v| v.as_object().cloned()).unwrap_or_default()))
     }
 
+    pub async fn open_browser_app(&self, bundle: &str) -> Result<(), String> {
+        let couldnt = |why: &str| format!("Kuvo Code couldn't be opened in the background on this Mac for its browser ({why}). Ask the user to open Kuvo Code, then try again.");
+        let missing = || couldnt("nothing that opens it is running on this Mac");
+        let host = self.app_host().ok().flatten().ok_or_else(missing)?;
+        self.prove_host(&host).await.map_err(|_| missing())?;
+        let response = self.client.post(format!("{}/app/open", host.url)).bearer_auth(&host.password)
+            .timeout(Duration::from_secs(25)).json(&json!({"bundle":bundle})).send().await
+            .map_err(|e| if e.is_timeout() {couldnt("macOS didn't open it in time")} else {missing()})?;
+        let status = response.status();
+        if status.is_success() {return Ok(());}
+        if status.as_u16() == 410 {return Err("Kuvo Code isn't where it was installed on this Mac any more (it was moved or deleted), so its browser can't be opened. Ask the user to open Kuvo Code, then try again.".into());}
+        if status.as_u16() == 404 {return Err(couldnt("Kuvo on this Mac can't open it yet"));}
+        let response = response.json::<Value>().await.ok();
+        let why = response.as_ref().and_then(|v|v["message"].as_str()).filter(|s|!s.trim().is_empty()).map(|s|s.chars().take(300).collect::<String>()).unwrap_or_else(||format!("it said {}",status.as_u16()));
+        Err(couldnt(&why))
+    }
+
     pub async fn site_sign_ins(&self) -> Option<Map<String, Value>> {
         self.ask_host(&self.open_app_host()?, "sites/signed-in", &json!({}), false).await.ok()??.get("sites")?.as_object().cloned()
     }

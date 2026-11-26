@@ -20,6 +20,7 @@ struct Definitions {
 pub struct ToolServer {
     definitions: Definitions,
     dispatcher: OnceLock<WeakDispatcher>,
+    browser: OnceLock<super::manager::Browser>,
     home: PathBuf,
     mac: bool,
     version: String,
@@ -42,16 +43,20 @@ impl ToolServer {
         Ok(Self {
             definitions,
             dispatcher: OnceLock::new(),
+            browser: OnceLock::new(),
             home,
             mac,
             version,
             client,
         })
     }
+    pub fn set_browser(&self, browser: super::manager::Browser) {
+        let _ = self.browser.set(browser);
+    }
     pub fn attach(&self, dispatcher: &Dispatcher) {
         let _ = self.dispatcher.set(dispatcher.downgrade());
     }
-    async fn route(
+    pub(super) async fn route(
         &self,
         method: Method,
         path: &str,
@@ -163,57 +168,99 @@ impl ToolServer {
         cancel: CancellationToken,
     ) -> Value {
         if !self.mac {
-            return text("The browser couldn't start.", true);
+            return match self.browser.get() {
+                Some(browser) => browser.call(self, session, params, cancel).await,
+                None => text("The browser couldn't start.", true),
+            };
         }
-        let Some(tools) = crate::mac_app::read(&self.home.join("run")).and_then(|r| r.tools) else {
-            return text(
-                "Kuvo Code on this Mac didn't take the browser's call. Ask the user to open Kuvo Code, then try again.",
-                true,
-            );
-        };
-        let id = fresh();
-        let client_id = fresh();
-        let send = |message: Value| {
-            let mut request = self
-                .client
-                .post(&tools.url)
-                .bearer_auth(&tools.token)
-                .header("accept", "application/json, text/event-stream")
-                .header("mcp-session-id", &client_id);
-            if let Some(session) = session {
-                request = request.header("x-kuvo-session", session);
-            }
-            request.json(&message)
-        };
-        let request =
-            send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":params})).send();
-        let mut pending = AppCall(Some(send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}})).timeout(Duration::from_secs(5))));
-        let result = tokio::select! {
-            answer = async { let answer = request.await?; answer.json::<Value>().await } => answer,
-            () = cancel.cancelled() => {
-                return text("The call was stopped.",true);
-            }
-        };
-        match result {
-            Ok(answer) if answer["jsonrpc"] == "2.0" && answer["id"] == id => {
-                pending.0.take();
-                answer.get("result").cloned().unwrap_or_else(|| {
-                    text(
-                        format!(
-                            "Kuvo Code's browser said: {}",
-                            answer["error"]["message"]
+        let run = self.home.join("run");
+        let mut gone: Option<String> = None;
+        for _ in 0..2 {
+            let mut tools = if gone.is_none() {
+                crate::mac_app::read(&run).and_then(|r| r.tools)
+            } else {
+                None
+            };
+            if tools.is_none() {
+                let body = gone
+                    .as_ref()
+                    .map_or_else(|| json!({}), |token| json!({"gone":token}));
+                let opened = tokio::select! {
+                    ()=cancel.cancelled()=>return text("The call was stopped.",true),
+                    result=self.route(Method::POST,"kuvo/box/app/open",Some(body),cancel.clone())=>result,
+                };
+                match opened {
+                    Some((200, _)) => tools = crate::mac_app::read(&run).and_then(|r| r.tools),
+                    Some((_, answer)) => {
+                        return text(
+                            answer["message"]
                                 .as_str()
-                                .unwrap_or("The call didn't finish.")
+                                .unwrap_or(crate::mac_app::NEEDS_APP),
+                            true,
+                        );
+                    }
+                    None => return text(crate::mac_app::NEEDS_APP, true),
+                }
+            }
+            let Some(tools) = tools else {
+                break;
+            };
+            let id = fresh();
+            let client_id = fresh();
+            let send = |message: Value| {
+                let mut request = self
+                    .client
+                    .post(&tools.url)
+                    .bearer_auth(&tools.token)
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-session-id", &client_id);
+                if let Some(session) = session {
+                    request = request.header("x-kuvo-session", session);
+                }
+                request.json(&message)
+            };
+            let request =
+                send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":params})).send();
+            let mut pending=AppCall(Some(send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}})).timeout(Duration::from_secs(5))));
+            let result = tokio::select! {
+                answer=request=>answer,
+                ()=cancel.cancelled()=>return text("The call was stopped.",true),
+            };
+            let answer = match result {
+                Ok(answer) => answer,
+                Err(error) if error.is_connect() => {
+                    pending.0.take();
+                    gone = Some(tools.token);
+                    continue;
+                }
+                Err(error) => return text(format!("The call didn't finish: {error}"), true),
+            };
+            let status = answer.status();
+            let parsed = tokio::select! {
+                result=answer.json::<Value>()=>result.ok(),
+                ()=cancel.cancelled()=>return text("The call was stopped.",true),
+            };
+            pending.0.take();
+            if let Some(answer) = parsed
+                && answer["jsonrpc"] == "2.0"
+                && answer["id"] == id
+            {
+                return answer.get("result").cloned().unwrap_or_else(|| {
+                    text(
+                        answer["error"]["message"].as_str().map_or_else(
+                            || format!("Kuvo Code's browser said {}.", status.as_u16()),
+                            |message| format!("Kuvo Code's browser said: {message}"),
                         ),
                         true,
                     )
-                })
+                });
             }
-            _ => text(
-                "Kuvo Code on this Mac didn't take the browser's call. Ask the user to open Kuvo Code, then try again.",
-                true,
-            ),
+            gone = Some(tools.token);
         }
+        text(
+            "Kuvo Code on this Mac didn't take the browser's call. Ask the user to open Kuvo Code, then try again.",
+            true,
+        )
     }
 }
 struct AppCall(Option<reqwest::RequestBuilder>);
@@ -231,7 +278,7 @@ fn fresh() -> String {
     let _ = getrandom::fill(&mut bytes);
     hex::encode(bytes)
 }
-fn text(words: impl Into<String>, error: bool) -> Value {
+pub(super) fn text(words: impl Into<String>, error: bool) -> Value {
     json!({"content":[{"type":"text","text":words.into()}],"isError":error})
 }
 impl NativeTools for ToolServer {

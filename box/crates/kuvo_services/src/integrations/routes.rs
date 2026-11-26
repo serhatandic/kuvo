@@ -111,12 +111,13 @@ pub struct IntegrationsService {
     engine: EngineClient,
     catalog_file: PathBuf,
     integration_data: PathBuf,
+    browser: crate::browser::manager::Sites,
 }
 
 impl IntegrationsService {
-    pub fn new(home: &Path, config: ConfigPaths, keys: Arc<KeyStore>) -> Self {
+    pub fn new(home: &Path, config: ConfigPaths, keys: Arc<KeyStore>, browser: crate::browser::manager::Sites) -> Self {
         let integration_data = crate::config::box_env(home, "KUVO_INTEGRATIONS").map(PathBuf::from).unwrap_or_else(|| home.join("integrations"));
-        Self { catalog_file: integrations_file_for(home, config.is_mac), config, keys, engine: EngineClient::for_home(home), integration_data }
+        Self { catalog_file: integrations_file_for(home, config.is_mac), config, keys, engine: EngineClient::for_home(home), integration_data, browser }
     }
 
     fn health(&self, entry: &CatalogIntegration, srv: Option<&EngineServer>, off: bool, signed_in: Option<&HashSet<String>>) -> &'static str {
@@ -150,7 +151,7 @@ impl IntegrationsService {
         }
         let engine_down = servers.is_none();
         let names = self.keys.key_names().await.ok();
-        let sites = if catalog.iter().any(|e| e.way == "browser") && self.config.is_mac { self.keys.host().site_sign_ins().await } else { None };
+        let sites = if !catalog.iter().any(|e| e.way == "browser") { None } else if self.config.is_mac { self.keys.host().site_sign_ins().await } else { self.browser.signed_in(catalog).await };
         let list = catalog.iter().map(|e| {
             let mut shown = e.raw.clone();
             for hidden in ["settings", "variables", "signInFile", "signInCookie"] { shown.shift_remove(hidden); }

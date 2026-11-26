@@ -211,6 +211,10 @@ fn fold(folder: &Path) -> io::Result<History> {
     }
     Ok(history)
 }
+pub(super) fn fold_journal(folder: &Path) -> io::Result<()> {
+    let _lock = OwnedLock::acquire(&folder.join(".history.lock"), Duration::from_secs(3))?;
+    fold(folder).map(|_| ())
+}
 #[derive(Default)]
 enum Action {
     #[default]
