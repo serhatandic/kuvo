@@ -885,8 +885,9 @@ engine sessions 81/81, workspace test-target and Bun checks clean. The seeded
 history differential matches 12/13 answers exactly (only the actual coverage
 scan timestamp differs); the two-answer native corpus matches exactly.
 Stored inventory/projection-format differences remain as documented above.
-The Windows and static-musl cross-builds succeeded. Remote execution is
-pending the shared test computers' current runs. Non-test size: 620,278
+Native Windows, WSL static musl and capped Lokum static musl each passed
+91/91 applicable usage cases. Remote scratch and cross-target folders were
+removed, and the Windows/WSL process lists were clear. Non-test size: 620,278
 characters without leading indentation (0.902× the TS baseline).
 Eleven A1 entries are covered in this slice; 169 remain.
 
