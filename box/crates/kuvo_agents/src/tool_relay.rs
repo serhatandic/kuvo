@@ -10,15 +10,13 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
-mod settings_servers;
 mod places;
 mod servers;
+mod settings_servers;
 
-pub use settings_servers::{EngineApi, Sandbox, SettingsServers};
 pub use places::{TOOL_SERVER_NAME, ToolPlaces};
-pub use servers::{
-    ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
-};
+pub use servers::{ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind};
+pub use settings_servers::{EngineApi, Sandbox, SettingsServers};
 
 use futures_util::{StreamExt, future::join_all};
 use http::{HeaderValue, Method, Request, Response, StatusCode, header, request::Parts};
@@ -40,8 +38,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     ffi::OsString,
+    future::Future,
     io::{self, BufRead, Write},
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Mutex, MutexGuard, Weak},
     time::Duration,
 };
@@ -70,6 +70,21 @@ pub struct Tools {
 pub trait ToolSource: Send + Sync + 'static {
     fn tools(&self, session: &str) -> Option<Tools>;
 }
+
+/// An in-process tool server. Only the relay establishes the conversation
+/// identity; the server receives an already attributed request.
+pub trait NativeTools: Send + Sync + 'static {
+    fn request<'a>(
+        &'a self,
+        session: Option<&'a str>,
+        message: Value,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Value> + Send + 'a>>;
+}
+
+const NATIVE_KEY: &str = "native";
+const NATIVE_TIMEOUT: Duration = Duration::from_secs(960);
+const ENGINE_SESSION: &str = "@engine";
 
 /// What reaches a conversation's tools through the relay: an agent's thread,
 /// say. The key stays while any holds it.
@@ -206,6 +221,8 @@ struct State {
     /// The box's program, whose `mcp` forwards an agent's tools to the
     /// relay and waits for it through an update.
     forwarder: Option<PathBuf>,
+    native: Option<Arc<dyn NativeTools>>,
+    native_calls: HashMap<(String, String, String), CancellationToken>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -279,25 +296,79 @@ impl ToolRelay {
         self.state().forwarder = program;
     }
 
+    pub fn set_native(&self, native: Arc<dyn NativeTools>) {
+        self.state().native = Some(native);
+    }
+
+    fn native(&self) -> Option<Arc<dyn NativeTools>> {
+        self.state().native.clone()
+    }
+
+    fn available(&self, session: &str) -> Option<(String, Duration)> {
+        if self.native().is_some() {
+            Some((NATIVE_KEY.into(), NATIVE_TIMEOUT))
+        } else {
+            self.0
+                .source
+                .tools(session)
+                .map(|tools| (tools.key, tools.timeout))
+        }
+    }
+
+    /// The engine is an internal process serving many conversations. Other
+    /// keys are never allowed to name a different conversation in metadata.
+    pub async fn engine_tools(&self) -> io::Result<Option<RelayedTools>> {
+        if self.native().is_none() {
+            return Ok(None);
+        }
+        self.relayed_tools(ENGINE_SESSION, 0).await
+    }
+
     /// Kuvo Code's tools as `session`'s agent is given them, held by
     /// `holder`: through the relay for one in the sandbox (`fenced`), and by
     /// the forwarder where the box keeps agents through its updates; as
     /// they are otherwise. None until the box knows where they are.
-    pub async fn agent_tools(&self, session: &str, holder: Holder, fenced: bool) -> io::Result<Option<AgentTools>> {
-        let Some(Tools { key, command, args, env, timeout }) = self.0.source.tools(session) else {
+    pub async fn agent_tools(
+        &self,
+        session: &str,
+        holder: Holder,
+        fenced: bool,
+    ) -> io::Result<Option<AgentTools>> {
+        let Some((key, timeout)) = self.available(session) else {
             return Ok(None);
         };
-        if !fenced {
-            return Ok(Some(AgentTools::Stdio { key, command, args, env, timeout }));
+        if !fenced && self.native().is_none() {
+            let Some(Tools {
+                command, args, env, ..
+            }) = self.0.source.tools(session)
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(AgentTools::Stdio {
+                key,
+                command,
+                args,
+                env,
+                timeout,
+            }));
         }
         let forwarder = self.state().forwarder.clone();
         let Some(relayed) = self.relayed_tools(session, holder).await? else {
             return Ok(None);
         };
-        let RelayedTools { url, authorization, timeout } = relayed;
+        let RelayedTools {
+            url,
+            authorization,
+            timeout,
+        } = relayed;
         let Some(command) = forwarder else {
             let headers = vec![("Authorization".into(), authorization)];
-            return Ok(Some(AgentTools::Http { key, url, headers, timeout }));
+            return Ok(Some(AgentTools::Http {
+                key,
+                url,
+                headers,
+                timeout,
+            }));
         };
         let env = [
             ("KUVO_TOOL_RELAY", url),
@@ -308,21 +379,38 @@ impl ToolRelay {
             key: format!("forward:{key}"),
             command,
             args: vec!["mcp".into()],
-            env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
+            env: env
+                .into_iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
             timeout: timeout + FORWARDER_WAITS,
         }))
     }
 
     /// Kuvo Code's tools for a conversation straight from the relay, over HTTP (an agent with
     /// one process for every conversation, where a program per conversation would be many).
-    pub async fn http_tools(&self, session: &str, holder: Holder) -> io::Result<Option<AgentTools>> {
-        let Some(Tools { key, .. }) = self.0.source.tools(session) else {
+    pub async fn http_tools(
+        &self,
+        session: &str,
+        holder: Holder,
+    ) -> io::Result<Option<AgentTools>> {
+        let Some((key, _)) = self.available(session) else {
             return Ok(None);
         };
-        let Some(RelayedTools { url, authorization, timeout }) = self.relayed_tools(session, holder).await? else {
+        let Some(RelayedTools {
+            url,
+            authorization,
+            timeout,
+        }) = self.relayed_tools(session, holder).await?
+        else {
             return Ok(None);
         };
-        Ok(Some(AgentTools::Http { key, url, headers: vec![("Authorization".into(), authorization)], timeout }))
+        Ok(Some(AgentTools::Http {
+            key,
+            url,
+            headers: vec![("Authorization".into(), authorization)],
+            timeout,
+        }))
     }
 
     /// The relay's port, listening from then on: the one it had before when
@@ -391,11 +479,10 @@ impl ToolRelay {
         session: &str,
         holder: Holder,
     ) -> io::Result<Option<RelayedTools>> {
-        let Some(tools) = self.0.source.tools(session) else {
+        let Some((_, timeout)) = self.available(session) else {
             return Ok(None);
         };
         let key = self.hold(session, holder).await?;
-        let timeout = tools.timeout;
         Ok(Some(RelayedTools {
             url: format!("http://127.0.0.1:{}/mcp", self.port().await?),
             authorization: format!("Bearer {key}"),
@@ -574,9 +661,15 @@ impl ToolRelay {
                 Ok(name) => Target::Server(name.into_owned()),
                 Err(_) => return text(StatusCode::NOT_FOUND, "No such server here."),
             },
+            None if self.native().is_some() => Target::Native,
             None => match self.0.source.tools(&session) {
                 Some(tools) => Target::Tools(tools),
-                None => return text(StatusCode::SERVICE_UNAVAILABLE, "Kuvo Code's tools aren't here now."),
+                None => {
+                    return text(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Kuvo Code's tools aren't here now.",
+                    );
+                }
             },
         };
         let forwarded = request
@@ -594,8 +687,77 @@ impl ToolRelay {
         };
         match target {
             Target::Server(name) => self.answer_server(parts, body, &session, &name).await,
-            Target::Tools(tools) => self.answer_tools(parts, body, &session, forwarded, tools).await,
+            Target::Tools(tools) => {
+                self.answer_tools(parts, body, &session, forwarded, tools)
+                    .await
+            }
+            Target::Native => self.answer_native(parts, body, &session, forwarded).await,
         }
+    }
+
+    async fn answer_native(
+        &self,
+        parts: Parts,
+        body: Option<Bytes>,
+        session: &str,
+        forwarded: bool,
+    ) -> Response<Body> {
+        let Some(native) = self.native() else {
+            return text(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Kuvo Code's tools aren't here now.",
+            );
+        };
+        let body = match body.map(|bytes| serde_json::from_slice::<Value>(&bytes)) {
+            Some(Ok(body)) => own_session(body, session, forwarded),
+            Some(Err(_)) => return parse_error(),
+            None => return text(StatusCode::METHOD_NOT_ALLOWED, ""),
+        };
+        let messages = servers::messages(Some(&body));
+        let starts = messages
+            .iter()
+            .any(|message| message["method"] == "initialize");
+        let connection = if starts {
+            fresh(12)
+        } else {
+            connection_of(&parts)
+        };
+        let answers = join_all(messages.into_iter().map(|message| {
+            let native = native.clone();
+            let connection = &connection;
+            async move {
+                if message["method"] == "notifications/cancelled" {
+                    let key = (session.to_owned(), connection.clone(), message["params"]["requestId"].to_string());
+                    if let Some(cancel) = self.state().native_calls.get(&key) { cancel.cancel(); }
+                    return None;
+                }
+                let id = message.get("id").filter(|id| !id.is_null())?.clone();
+                let key = (session.to_owned(), connection.clone(), id.to_string());
+                let cancel = CancellationToken::new();
+                {
+                    let mut state = self.state();
+                    if state.native_calls.contains_key(&key) { return Some(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32600,"message":"Already running."}})); }
+                    state.native_calls.insert(key.clone(), cancel.clone());
+                }
+                let _guard = NativeCall { relay: self.clone(), key, cancel: cancel.clone() };
+                let caller = if session == ENGINE_SESSION { message["params"]["_meta"]["ai.opencode/sessionID"].as_str().filter(|id| id.strip_prefix("ses_").is_some_and(|rest| (1..=60).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric()))).map(str::to_owned) } else { Some(session.to_owned()) };
+                let answer = native.request(caller.as_deref(), message, cancel.clone());
+                tokio::pin!(answer);
+                tokio::select! {
+                    result = &mut answer => (!cancel.is_cancelled()).then_some(result),
+                    () = cancel.cancelled() => {
+                        let _ = tokio::time::timeout(Duration::from_secs(5), &mut answer).await;
+                        None
+                    },
+                    () = tokio::time::sleep(NATIVE_TIMEOUT) => {
+                        cancel.cancel();
+                        let _ = tokio::time::timeout(Duration::from_secs(5), &mut answer).await;
+                        Some(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"Kuvo Code's tool timed out."}}))
+                    },
+                }
+            }
+        })).await;
+        servers::replies(&body, answers, starts.then_some(connection.as_str()))
     }
 
     async fn answer_tools(
@@ -683,7 +845,9 @@ impl ToolRelay {
             Some(deadline) => tokio::time::timeout_at(deadline, request.send()).await.ok(),
             None => Some(request.send().await),
         };
-        let Some(Ok(response)) = sent else { return Answer::failed() };
+        let Some(Ok(response)) = sent else {
+            return Answer::failed();
+        };
         Answer {
             status: response.status().as_u16(),
             headers: ["content-type", "mcp-session-id"]
@@ -695,9 +859,22 @@ impl ToolRelay {
     }
 }
 
+struct NativeCall {
+    relay: ToolRelay,
+    key: (String, String, String),
+    cancel: CancellationToken,
+}
+impl Drop for NativeCall {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.relay.state().native_calls.remove(&self.key);
+    }
+}
+
 /// What a request is for: one of the computer's servers, or Kuvo Code's tools.
 enum Target {
     Server(String),
+    Native,
     Tools(Tools),
 }
 
@@ -742,17 +919,23 @@ fn own_session(body: Value, session: &str, forwarded: bool) -> Value {
         let Some(params) = message["params"].as_object_mut().filter(|_| call) else {
             return message;
         };
-        let meta = params.entry("_meta").or_insert_with(|| Value::Object(Map::new()));
+        let meta = params
+            .entry("_meta")
+            .or_insert_with(|| Value::Object(Map::new()));
         if !meta.is_object() {
             *meta = Value::Object(Map::new());
         }
         let operation = meta["kuvo.operation"].as_str().filter(|operation| {
             forwarded
                 && operation.len() == 36
-                && operation.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+                && operation
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
         });
         let operation = operation.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-        meta["ai.opencode/sessionID"] = json!(session);
+        if session != ENGINE_SESSION {
+            meta["ai.opencode/sessionID"] = json!(session);
+        }
         meta["kuvo.operation"] = json!(operation);
         message
     };
@@ -872,7 +1055,9 @@ impl Program {
         let reading = Arc::downgrade(&program);
         tokio::spawn(async move {
             while let Some(line) = read.recv().await {
-                let Some(program) = reading.upgrade() else { return };
+                let Some(program) = reading.upgrade() else {
+                    return;
+                };
                 program.heard(&line);
             }
             if let Some(program) = reading.upgrade() {
@@ -915,7 +1100,9 @@ impl Program {
             }
             return;
         }
-        let Some(id) = message["id"].as_i64() else { return };
+        let Some(id) = message["id"].as_i64() else {
+            return;
+        };
         let Some((original, done)) = self.calls().waiting.remove(&id) else {
             return;
         };
@@ -927,11 +1114,18 @@ impl Program {
     /// A connection's message; a request's answer (none for a notification).
     async fn send(&self, mut message: Value, timeout: Duration, connection: &str) -> Option<Value> {
         self.calls().used = Some(Instant::now());
-        if let Some(changed) = &self.idle_changed { changed.notify_one(); }
+        if let Some(changed) = &self.idle_changed {
+            changed.notify_one();
+        }
         let Some(original) = message.get("id").cloned().filter(|id| !id.is_null()) else {
             // A cancel names the request as the program knows it.
             let request = message["params"].get("requestId");
-            let ours = request.and_then(|request| self.calls().ours.get(&format!("{connection} {request}")).copied());
+            let ours = request.and_then(|request| {
+                self.calls()
+                    .ours
+                    .get(&format!("{connection} {request}"))
+                    .copied()
+            });
             match ours {
                 Some(ours) => message["params"]["requestId"] = json!(ours),
                 None if message["method"] == "notifications/cancelled" => return None,

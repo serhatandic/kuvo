@@ -32,6 +32,7 @@ const areas = new Map([
   ["compat-shim", "./compat-shim.test.mjs"],
   ["compat-stays", "./compat-stays.test.mjs"],
   ["clock", "./clock.test.mjs"],
+  ["browser", "./browser.test.mjs"],
   ["settings", "./settings.test.mjs"],
   ["engine-steering", "./engine-steering.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
