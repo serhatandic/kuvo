@@ -152,6 +152,21 @@ test('a hidden limit learns a new baseline without a stale warning when shown ag
     await codex.stop();
   }
 });
+test('turn notice toggles suppress the disabled warning without consuming it',async t=>{
+  if(boxBinary().typescript)return t.skip('The fixture uses the Rust accepted-turn path.');
+  for(const other of [false,true]){
+    const {sample,setting,codex}=await noticeFixture(t);
+    await setting({notifications:{underTenPercent:false,healthyToClose:other,closeToRunningOut:other}});
+    await sample(89);
+    assert.equal((await sample(91)).notices.length,0);
+    await setting({notifications:{underTenPercent:true,healthyToClose:other,closeToRunningOut:other}});
+    const shown=(await sample(92)).notices;
+    assert.deepEqual(shown.map(n=>n.milestone),['underTenPercent']);
+    await sample(93);
+    assert.deepEqual((await sample(94)).notices.map(n=>n.id),shown.map(n=>n.id));
+    await codex.stop();
+  }
+});
 test('a retained usage alert catches up after restart with the maker time, not the restart time',async t=>{
   if(boxBinary().typescript)return t.skip('The fixture exercises the Rust retained facts and shared notice history.');
   const fs=await import('node:fs');
@@ -249,10 +264,13 @@ test('usage import is once-only and older clients preserve settings they do not 
   const box=await computer('Import',undefined,isolated);
   const resident=box.start();
   const call=box.connect(await resident.ready());
-  const first=await call('POST',route+'/import',{totalSpend:{show:true,futureField:'kept'},codexFallback:'not-a-real-model'});
+  const notifications={underTenPercent:true,healthyToClose:false,closeToRunningOut:false};
+  assert.equal((await call('PUT',route,{notifications})).status,200);
+  const first=await call('POST',route+'/import',{totalSpend:{show:true,futureField:'kept'},notifications:{...notifications,underTenPercent:false},codexFallback:'not-a-real-model'});
   assert.equal(first.status,200,first.text);
   assert.deepEqual(first.json.data.took,['totalSpend']);
   assert.equal(first.json.data.imported,true);
+  assert.deepEqual(first.json.data.settings.notifications,notifications);
   const again=await call('POST',route+'/import',{totalSpend:{show:false}});
   assert.equal(again.status,200,again.text);
   assert.deepEqual(again.json.data.took,[]);
@@ -382,6 +400,10 @@ test('the empty limits answer states every service and refresh state in the cont
   assert.equal(data.refreshPending,false);
   assert.deepEqual(data.accounts,[]);
   assert.deepEqual(data.rows,[]);
+  const settings=await request(listener,'GET',route);assert.equal(settings.status,200,settings.text);
+  const availability=[{provider:'devin',available:false,message:'Devin alerts are unavailable because Devin is not connected to Kuvo Code’s background service.'}];
+  assert.deepEqual(data.notificationAvailability,availability);
+  assert.deepEqual(settings.json.data.notificationAvailability,availability);
 });
 
 test('an unreadable accepted-limit cache cannot prevent the resident from opening or be overwritten (Rust reader)',async t=>{
@@ -3303,4 +3325,109 @@ test('a retained peer reading from a newer computer keeps its service and bounde
   await resident.stop();await start();assert.deepEqual((await kept()).extras,row.extras);
   const removed=await call('DELETE','kuvo/computers/'+encodeURIComponent(member.key),{wipe:false},{'x-kuvo-from':'mac'});assert.equal(removed.status,200,removed.text);
   await until(async()=>!(await read()).rows.some(row=>row.service==='kimi-code'),'Removed computer retained a limits row',30000,250);
+});
+
+test('old fallback preferences count as a choice and survive a newer settings edit',async t=>{
+  const {computer}=await bench(t);const box=await computer('OldFallback',undefined,isolated);
+  const file=path.join(box.home,'agents','usage','settings.json');
+  write(file,JSON.stringify({codex:{fallback:null}}));
+  let resident=box.start(),call=box.connect(await resident.ready());
+
+  const usage='kuvo/agents/api/kuvo/usage?zone=UTC';
+  const read=async()=>{const result=await call('GET',route);assert.equal(result.status,200,result.text);return result.json.data;};
+  const price=async()=>{const result=await call('GET',usage);assert.equal(result.status,200,result.text);return result.json.data.pricing.codex;};
+  const before=await read();assert.deepEqual(before.settings,{codexFallback:null});assert.match(before.versions.codexFallback,/\/i$/);
+  const choices=await price();assert.equal(choices.fallback,null);assert.equal(choices.chosen,true);assert.ok(choices.choices.length);
+  const choice=choices.choices[0];
+  const importing={codexFallback:choice,totalSpend:{show:true}};
+  let imported=await call('POST',route+'/import',importing);
+  // The TS authority seeds its kept file while handling the first save. A
+  // client refreshes the newly accepted revision before submitting again.
+  if(boxBinary().typescript&&imported.status===409){
+    assert.equal(imported.json.message,'The setup changed before this could be saved.');
+    assert.deepEqual((await read()).settings,before.settings);
+    imported=await call('POST',route+'/import',importing);
+  }
+  assert.equal(imported.status,200,imported.text);
+  assert.deepEqual(imported.json.data.took,['totalSpend']);assert.equal(imported.json.data.settings.codexFallback,null);
+  const changed=await call('PUT',route,{codexFallback:choice});assert.equal(changed.status,200,changed.text);
+  assert.equal(changed.json.data.settings.codexFallback,choice);assert.equal((await price()).fallback,choice);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  assert.deepEqual((await read()).settings,{codexFallback:choice,totalSpend:{show:true}});
+  assert.equal((await price()).chosen,true);
+});
+
+test('valid future preference parts survive an older client edit without making malformed parts visible',{timeout:120000},async t=>{
+  const fs=await import('node:fs');
+  const {computer,leases}=await bench(t);const box=await computer('FutureSettings',undefined,isolated);
+  const file=path.join(box.home,'agents','usage','settings.json'),stamp={v:1000,by:'fixture'};
+  const future={present:true,values:[1,'two']},notifications={underTenPercent:true,healthyToClose:false,closeToRunningOut:false,dailyDigest:true};
+  write(file,JSON.stringify({kuvo:1,units:{theme:{value:future,stamp},notifications:{value:notifications,stamp},totalSpend:{value:{show:'not boolean'},stamp},providers:{value:{enabled:[]},stamp:{v:'not a version',by:'fixture'}}}}));
+  let resident=box.start(),call=box.connect(await resident.ready());
+
+  const get=async()=>{const result=await call('GET',route);assert.equal(result.status,200,result.text);return result.json.data;};
+  const before=await get();assert.deepEqual(before.settings,{notifications});
+  const stale=await call('PUT',route,{notifications:{underTenPercent:false,healthyToClose:false,closeToRunningOut:false},based:{notifications:null}});
+  assert.equal(stale.status,200,stale.text);assert.deepEqual(stale.json.data.stale,['notifications']);
+  const editing={notifications:{underTenPercent:false,healthyToClose:false,closeToRunningOut:false},based:{notifications:before.versions.notifications}};
+  let changed=await call('PUT',route,editing);
+  if(boxBinary().typescript&&changed.status===409){
+    assert.equal(changed.json.message,'The setup changed before this could be saved.');
+    assert.deepEqual((await get()).settings,before.settings);
+    changed=await call('PUT',route,editing);
+  }
+  assert.equal(changed.status,200,changed.text);const wanted={...notifications,underTenPercent:false};
+  assert.deepEqual(changed.json.data.settings,{notifications:wanted});
+  // Accepted setup-wide state or the independent preferences file owns the units.
+  const link=JSON.parse(fs.readFileSync(path.join(box.home,'run','link.json'),'utf8'));
+  const kept=link.shared?.setupUsageDisplay?.value??JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.deepEqual(kept.units.theme,{value:future,stamp});
+  assert.equal(kept.units.totalSpend,undefined);assert.equal(kept.units.providers,undefined);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  assert.deepEqual((await get()).settings,{notifications:wanted});
+  const setup=await call('GET','kuvo/setup');
+  const invite=await call('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'The preference authority did not obtain its lease');
+  const peer=await computer('FutureReader',undefined,isolated);
+  const joined=await peer.join(invite.json.code);assert.equal(joined.code,0,joined.log);
+  const peerResident=peer.start(),peerCall=peer.connect(await peerResident.ready());
+  await until(async()=>{
+    const result=await peerCall('GET',route);return result.status===200&&result.json.data.settings.notifications?.dailyDigest===true;
+  },'The returning computer did not receive accepted preferences',30000,250);
+  const received=JSON.parse(fs.readFileSync(path.join(peer.home,'run','link.json'),'utf8')).shared.setupUsageDisplay.value;
+  assert.deepEqual(received.units.theme,{value:future,stamp});
+  assert.deepEqual(received.units.notifications.value,wanted);
+  assert.equal(received.units.totalSpend,undefined);assert.equal(received.units.providers,undefined);
+});
+
+test('a new setup does not adopt settings marked as belonging to another setup or no setup',async t=>{
+  const {computer}=await bench(t);
+  const notifications={underTenPercent:true,healthyToClose:false,closeToRunningOut:false};
+  for(const [name,scope] of [['PreviouslyShared','set_previous'],['PreviouslyIndependent',null]]){
+    const box=await computer(name,undefined,isolated);
+    write(path.join(box.home,'agents','usage','settings.json'),JSON.stringify({kuvo:1,setup:scope,imported:true,units:{notifications:{value:notifications,stamp:{v:1000,by:'fixture'}}}}));
+    const resident=box.start(),call=box.connect(await resident.ready());
+    const setup=await call('GET','kuvo/setup');assert.notEqual(setup.json.setup,scope);
+    const get=async()=>{const result=await call('GET',route);assert.equal(result.status,200,result.text);return result.json.data;};
+    await until(async()=>{const value=await get();return value.imported===false&&Object.keys(value.settings).length===0;},'Other setup preferences became visible');
+    const imported=await call('POST',route+'/import',{totalSpend:{show:true}});assert.equal(imported.status,200,imported.text);
+    assert.deepEqual(imported.json.data.settings,{totalSpend:{show:true}});
+  }
+});
+
+test('a temporarily unreadable setup record does not turn accepted preferences into an empty panel',async t=>{
+  const fs=await import('node:fs');const {computer}=await bench(t);const box=await computer('RememberSettings',undefined,isolated);
+  const call=box.connect(await box.start().ready());
+  const changed=await call('PUT',route,{totalSpend:{show:true}});assert.equal(changed.status,200,changed.text);
+  const file=path.join(box.home,'run','link.json');
+  const original=fs.readFileSync(file);
+  assert.ok(JSON.parse(original).setup.id,'Setup owns the preference');
+  try {
+    // A file briefly replaced underneath a running resident does not mean
+    // this computer left the setup or chose different settings.
+    write(file,'{}');
+    const reply=await call('GET',route);assert.equal(reply.status,200,reply.text);
+    assert.deepEqual(reply.json.data.settings,{totalSpend:{show:true}});
+    assert.deepEqual(reply.json.data.versions,changed.json.data.versions);
+  } finally { write(file,original); }
 });
