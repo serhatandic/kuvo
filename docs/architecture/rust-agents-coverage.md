@@ -1001,9 +1001,26 @@ Non-test characters without indentation, against main (`01bf21c8e`):
 
 ### Verification
 
-| Platform | agents-opencode, Rust | agents-opencode, TypeScript | agents-opencode-live |
+| Platform | agents-opencode, Rust | agents-opencode, TypeScript | agents-grok, agents-antigravity, agents (Rust) |
 |---|---:|---:|---:|
-| macOS | 14/14 | 12/12, 2 skipped (Rust-only) | 1/1 |
+| macOS | 14/14 | 12/12, 2 skipped (Rust-only) | 10/10, 11/11, 12/12 |
+| Linux x86-64, lokum (musl, 1 CPU, 1 GB) | 14/14 | — | 10/10, 11/11, 12/12 |
+| WSL2, Ubuntu 24.04 (musl) | 14/14 | — | 10/10, 11/11, 12/12 |
+| Native Windows x64 | 14/14 | — | 10/10, 11/11, 12/12 |
+
+Each platform ran the pinned OpenCode of its own (2.2.6, from the engine pin). `agents-opencode-live`
+passed once on the Mac with a real OpenCode Go turn. Also on the Mac, Rust: engine-sessions 81/81,
+engine-models 19/19, engine-asks 9/9, agents-codex 100/100, agents-claude 20/20,
+agents-claude-turns 59 and 1 todo (4.6), bots 40/40, usage 53/54 (1 skipped), agent-tools 3/3.
+`work-elsewhere` fails one case ("a lead on another computer lists, stops…", the "asks first for
+now" wording) on main's Rust box too.
+
+The slower runners found two races in the cases, both fixed:
+
+- A message sent while a stopped turn was still ending waited in line, as it should. The Stop
+  case now sends once the turn has ended.
+- A conversation just made wasn't on the list yet: its location answers 503 until it is, and the
+  app asks again. The cases ask again too.
 
 ## Codex (4.2)
 
