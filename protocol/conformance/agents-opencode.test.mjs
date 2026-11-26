@@ -304,4 +304,29 @@ describe("OpenCode conversations", { skip }, () => {
     assert.ok(JSON.stringify(model.requests.at(-1).messages).includes("Look again."), "It didn't hear its note.");
     assert.ok(!engineStarted(), "Its wake-ups started OpenCode's server.");
   });
+
+  test("its usage is counted once", { timeout: 120000 }, async () => {
+    // (Insights' totals over the last week, once it read what changed.)
+    const totals = async () => {
+      await call("POST", "kuvo/agents/api/kuvo/insights/refresh", {});
+      const read = await until(async () => {
+        const answer = await call("GET", "kuvo/agents/api/kuvo/insights?period=7");
+        return answer.status === 200 && answer.json?.data && !answer.json.data.scanning && answer.json.data;
+      }, "Insights never finished reading.", 60000, 500);
+      return read.totals;
+    };
+    const before = await totals();
+    script.push({ text: "Counted." });
+    const id = await begin();
+    await send(id, "Count me.");
+    await answered(id, "Counted.");
+    // (OpenCode keeps its turns; the agent's own record of them isn't counted again.)
+    const grew = field => (after[field] ?? 0) - (before[field] ?? 0);
+    const after = await until(async () => {
+      const read = await totals();
+      return read.calls > (before.calls ?? 0) && read;
+    }, "Its turn was never counted.", 30000, 1000);
+    assert.deepEqual({ sessions: grew("sessions"), calls: grew("calls"), input: grew("input"), output: grew("output") },
+      { sessions: 1, calls: 1, input: 100, output: 10 }, JSON.stringify({ before, after }));
+  });
 });
