@@ -144,6 +144,7 @@ pub async fn refresh(
         {
             continue;
         }
+        let started = limits::now();
         match entry.agent.read_plan_limits(explicit).await {
             Ok(Some(reading)) => {
                 let Some((mark, identity)) = entry.agent.plan_sign_in().await else {
@@ -162,7 +163,7 @@ pub async fn refresh(
                     if only_resets {
                         service.observe_reset_facts(account, facts, at)
                     } else {
-                        service.observe_confirmed_facts(account, windows, facts, at)
+                        service.observe_confirmed_facts(account, windows, facts, started, at)
                     }
                 })
                 .await
@@ -202,12 +203,18 @@ fn direct_facts(
         ),
         ..Default::default()
     };
-    if direct.no_plan {
-        facts.problem = Some(Problem::new(
+    use kuvo_agents::session::DirectPlanStatus;
+    facts.problem = match direct.status {
+        DirectPlanStatus::Ready => None,
+        DirectPlanStatus::Failed => Some(Problem::new(
+            ProblemKind::Failed,
+            format!("{} didn't answer about its plan.", kind.display_name()),
+        )),
+        DirectPlanStatus::NoPlan => Some(Problem::new(
             ProblemKind::None,
             "Not signed in to a plan here.",
-        ));
-    }
+        )),
+    };
     if let Some(spend) = &direct.extra_usage {
         let (id, name) = ("extra_usage".to_owned(), "Extra Usage".to_owned());
         facts.extras.push(if let Some(limit) = spend.limit {

@@ -306,6 +306,14 @@ pub struct PlanLimitReading {
     pub sign_in: Option<String>,
 }
 
+/// Whether the maker could supply a plan reading for this sign-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectPlanStatus {
+    Ready,
+    NoPlan,
+    Failed,
+}
+
 /// Facts available from a direct account read, not a turn notification.
 #[derive(Clone, Debug)]
 pub struct DirectPlanReading {
@@ -315,7 +323,7 @@ pub struct DirectPlanReading {
     pub credits: Option<f64>,
     pub resets: Option<ResetInventory>,
     pub reset_unreadable: Option<String>,
-    pub no_plan: bool,
+    pub status: DirectPlanStatus,
     pub only_resets: bool,
 }
 impl DirectPlanReading {
@@ -327,7 +335,7 @@ impl DirectPlanReading {
             credits: None,
             resets: None,
             reset_unreadable: None,
-            no_plan: false,
+            status: DirectPlanStatus::Ready,
             only_resets: false,
         }
     }

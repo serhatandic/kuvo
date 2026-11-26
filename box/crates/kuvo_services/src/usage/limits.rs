@@ -523,9 +523,15 @@ impl Service {
                 })
             });
             if fresh {
-                if let Err(error) =
-                    self.observe_facts_inner(account.clone(), vec![window], None, now, true, false)
-                {
+                if let Err(error) = self.observe_facts_inner(
+                    account.clone(),
+                    vec![window],
+                    None,
+                    now,
+                    true,
+                    false,
+                    None,
+                ) {
                     eprintln!("Couldn't keep logged plan limits: {error}");
                 }
             }
@@ -569,7 +575,7 @@ impl Service {
         facts: Option<super::plan_facts::Facts>,
         now: u64,
     ) -> std::io::Result<()> {
-        self.observe_facts_inner(account, windows, facts, now, false, false)
+        self.observe_facts_inner(account, windows, facts, now, false, false, None)
     }
     /// A reader admitted the account before asking its maker. If a sign-out
     /// was published while it waited, that answer can no longer resurrect it.
@@ -578,9 +584,18 @@ impl Service {
         account: Account,
         windows: Vec<Window>,
         facts: super::plan_facts::Facts,
+        started: u64,
         now: u64,
     ) -> std::io::Result<()> {
-        self.observe_facts_inner(account, windows, Some(facts), now, true, false)
+        self.observe_facts_inner(
+            account,
+            windows,
+            Some(facts),
+            now,
+            true,
+            false,
+            Some(started),
+        )
     }
     pub fn observe_reset_facts(
         &self,
@@ -588,16 +603,17 @@ impl Service {
         facts: super::plan_facts::Facts,
         now: u64,
     ) -> std::io::Result<()> {
-        self.observe_facts_inner(account, vec![], Some(facts), now, true, true)
+        self.observe_facts_inner(account, vec![], Some(facts), now, true, true, None)
     }
     fn observe_facts_inner(
         &self,
         account: Account,
-        windows: Vec<Window>,
+        mut windows: Vec<Window>,
         facts: Option<super::plan_facts::Facts>,
         now: u64,
         require_current: bool,
         only_resets: bool,
+        maker_started: Option<u64>,
     ) -> std::io::Result<()> {
         use super::plan_facts::ProblemKind;
         let heard = facts.is_none()
@@ -674,6 +690,18 @@ impl Service {
             }
         }
         entry.account = account;
+        if let Some(started) = maker_started {
+            // A turn can hear a new quota while a maker request is in flight.
+            // An answer to the earlier request cannot supersede that window.
+            windows.retain(|window| {
+                !equivalent_trail(&entry.trails, window)
+                    .and_then(|id| entry.trails.get(&id))
+                    .is_some_and(|trail| {
+                        trail.current.source == super::readings::Source::Turn
+                            && trail.current.read >= started
+                    })
+            });
+        }
         let mut window_order = if facts
             .as_ref()
             .is_some_and(|facts| !only_resets && facts.problem.is_none())
