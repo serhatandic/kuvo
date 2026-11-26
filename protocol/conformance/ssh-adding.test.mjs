@@ -1139,9 +1139,21 @@ test("uninstall from a saved SSH address commits a signed wipe and waits for con
   const route = `kuvo/computers/${member.key}/uninstall`;
   const missing = await primary("POST", route, {}, headers);
   assert.equal(missing.status, 404, missing.text);
+  const row = async key => (await primary("GET", "kuvo/computers")).json.computers.find(each => each.key === key);
+  const offered = async key => (await row(key))?.actions.find(action => action.id === "uninstall");
+  // (Lab has never been heard from: its row still offers what works from here.)
+  const down = await row(member.key);
+  assert.equal(down.reach, "away");
+  assert.ok(down.actions.some(action => action.id === "remove"), JSON.stringify(down.actions));
+  assert.equal(await offered(member.key), undefined, "a computer with no saved address offers no uninstall");
   save("phone-link.json", { machines: {
     "test-lab": { key: member.key, name: member.name, address: member.address },
     "test-spare": { key: spare.key, name: spare.name, address: spare.address },
+  } });
+  assert.deepEqual(await offered(member.key), { id: "uninstall", label: "Unlink and wipe", confirm: {
+    title: `Unlink and wipe ${member.name}?`,
+    message: `${member.name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`,
+    label: "Unlink and wipe",
   } });
   const result = await primary("POST", route, {}, headers);
   assert.equal(result.status, 202, result.text);

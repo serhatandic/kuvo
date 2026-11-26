@@ -47,6 +47,7 @@ the races that span removal, backup, moves, and an authority change.
 | C37 | [Each computer offers what can be done with it from here](../../protocol/conformance/two-boxes.test.mjs) | Both boxes offer Rename and Remove for the same rows, with the same words, removal choices and hand-over sentence. A lone main offers only Rename where its folder can't be wiped from here. |
 | C38 | [A rename on a beta.1 machine is handed to the Mac that keeps its records](../../protocol/conformance/compat.test.mjs) | A stand-in beta.1 Mac on the relay seals its mail with the release wire format. A rename of the Mac itself is refused, a Mac without `computers.manage` is asked to update, and once it announces the feature the rename travels to it and its answer comes back. Nothing is saved on the machine. |
 | C39 | [A conversation on another computer is read live, and from its last copy while that computer is away](../../protocol/conformance/two-boxes.test.mjs) | Both boxes follow another computer's conversation over peer mail: where it is, the conversation itself and its newest page come from the computer that owns it, and that computer reads its own the same way. Once it stops, the newest page is answered from the copy kept as it was carried, marked away. A follow listens only while someone follows. |
+| C40 | [Uninstall from a saved SSH address commits a signed wipe and waits for confirmation](../../protocol/conformance/ssh-adding.test.mjs) | The member has never been heard from: both boxes list it as away with Remove. Once its SSH address is saved, both offer Unlink and wipe with the same confirmation, and that action completes. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -298,6 +299,37 @@ older layout is kept for the move.
   0.7.2, beta.1) is in a setup to send one, and later TypeScript betas never
   share a setup with Rust, so Rust members reach the main through the setup's
   own messages instead.
+- **A row offers Unlink and wipe, never Uninstall alone.** TypeScript offers
+  Uninstall over SSH in a setup that isn't checkpointed. Rust's uninstall runs
+  only as a signed wipe, so its row offers it only in a checkpointed setup,
+  which every setup Rust starts is.
+
+## Routes not served
+
+Each has no caller that can reach a Rust box.
+
+- **`POST computers/add/merge-code`, `GET` and `POST setup/merge`.** The desktop
+  app has client methods for them (`gpui/kuvo_box/src/setup.rs`), but no view
+  calls them. The TypeScript box only serves them; none of its own flows asks
+  for them, apart from a member passing a client's merge-code request to its
+  main.
+- **`POST computers/:key/update`, keep-up rounds and `run/keep-up.json`.**
+  TypeScript offers Update only through `keepingUp`, which it skips whenever
+  the box follows a setup, and every Rust box does. Its rounds skip every
+  computer that says `kuvo` in its report, which every setup member does
+  (Rust always, TypeScript since its fleet updater, after beta.1). Neither
+  released Mac (v0.7.2, v0.8.0-beta.1) asks a machine for this route: they keep
+  their machines up over SSH from their own side, as a Rust main does (updates
+  U25 and U73).
+- **`POST computers/:key/setup` (Set Up Again), deferred.** TypeScript offers it
+  for a machine it set up over SSH whose report has no `kuvo`, so in a setup only
+  for a member never heard from or down. It copies the files again, restarts the
+  box and joins with the same key. A Rust computer repairs itself through its
+  keeper (rows 7.3 and 8.1), and Rust's SSH install and enrollment refuse an
+  account that has Kuvo Code already, so a second repair over SSH would need a
+  remote path of its own. The row leaves it out, so no action leads nowhere: a
+  member that's down still offers Remove, and Unlink and wipe once its address
+  is saved (C40).
 
 ## Home inventory verdicts
 

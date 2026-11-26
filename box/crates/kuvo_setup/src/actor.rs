@@ -169,11 +169,23 @@ impl SetupHandle {
     /// What the computers list needs from the setup: its pending wipes, and who keeps the
     /// machines' records.
     pub fn computers_listing(&self) -> kuvo_peers::manage::Listing {
-        let view = self.views.borrow();
-        kuvo_peers::manage::Listing {
-            wipe_pending: view.pending_wipes.clone(),
-            manage: view.manage.clone(),
+        let (mut manage, wipe_pending) = {
+            let view = self.views.borrow();
+            (view.manage.clone(), view.pending_wipes.clone())
+        };
+        if manage.ssh.is_some() {
+            manage.ssh = manage_facts::set_up_over_ssh(&self.files).map(|saved| {
+                let uninstalling = self
+                    .ssh_routes
+                    .borrow()
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .map(|adding| adding.uninstalling())
+                    .unwrap_or_default();
+                kuvo_peers::manage::SshFacts { saved, uninstalling }
+            });
         }
+        kuvo_peers::manage::Listing { wipe_pending, manage }
     }
 
     pub async fn phone_activity(&self) {
@@ -936,6 +948,32 @@ fn versioned_marker(files: &Files, path: &str) -> Result<bool, Error> {
     Ok(entry.is_some())
 }
 
+/// Whether this computer may change its setup now: it's the main computer, signed as itself and
+/// not set aside, and nothing it waits on (an installer, a rotation, a merge, a wipe, its relay
+/// lease) holds it back.
+fn writable(link: &Link, own: &Identity, lease: &lease::Client) -> Result<(), Error> {
+    let setup = link.setup()?;
+    let roster = link.member_list()?;
+    if link.disabled(&roster, &own.public)
+        || setup.role != Role::Primary
+        || setup.position.primary != own.public
+        || setup.sign != own.sign
+    {
+        return Err(Error::Conflict);
+    }
+    let relay_roster_dirty =
+        roster.boxes.len() == 1 && !roster.left.is_empty() && !lease.roster_current(link);
+    if installer_pending(link)
+        || ["macRotation", "setupMerge", "localWipe"]
+            .iter()
+            .any(|field| link.extra.get(*field).is_some_and(|v| !v.is_null()))
+        || ((roster.boxes.len() > 1 || relay_roster_dirty) && !lease.holds(link))
+    {
+        return Err(Error::Fenced);
+    }
+    Ok(())
+}
+
 fn installer_pending(link: &Link) -> bool {
     link.extra.get("installerClaim").is_some_and(|claim| {
         let adopted = claim.get("adopted").and_then(Value::as_bool) == Some(true);
@@ -1109,7 +1147,7 @@ fn make_view(
             .map(|value| model_stars::list(Some(value))),
         local_wipe: crate::wipe::ready_for_shutdown(files.root(), link),
         pending_wipes: removal::pending_wipes(link),
-        manage: manage_facts::manage_facts(files, link, own, kind),
+        manage: manage_facts::manage_facts(files, link, own, lease, kind),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -1370,26 +1408,7 @@ impl Owner {
     }
 
     fn can_write(&self) -> Result<(), Error> {
-        let setup = self.link.setup()?;
-        let own = self.own()?;
-        let roster = self.roster()?;
-        if self.link.disabled(&roster, &own.public)
-            || setup.role != Role::Primary
-            || setup.position.primary != own.public
-            || setup.sign != own.sign
-        {
-            return Err(Error::Conflict);
-        }
-        if installer_pending(&self.link)
-            || ["macRotation", "setupMerge", "localWipe"]
-                .iter()
-                .any(|field| self.link.extra.get(*field).is_some_and(|v| !v.is_null()))
-            || ((roster.boxes.len() > 1 || self.relay_roster_dirty())
-                && !self.lease.holds(&self.link))
-        {
-            return Err(Error::Fenced);
-        }
-        Ok(())
+        writable(&self.link, self.own()?, &self.lease)
     }
 
     async fn commit(&mut self, mut next: Link) -> Result<(), Error> {
