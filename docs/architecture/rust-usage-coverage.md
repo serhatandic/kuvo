@@ -798,9 +798,18 @@ rate, and a five-transcript 12 MiB backfill with 50 known tokens (Cursor's
 context size is not API usage). The old Rust results were null and zero
 respectively, TS passed, and the correction uses the existing nullable peer
 buckets and total helper for both native engine and portable projections. A
-one-time projection checkpoint revision repairs old retained incomplete records;
-subsequent unchanged restarts leave checkpoints identical. An explicit seeded
-old projection regression verifies the repair.
+one-time portable and engine projection checkpoint revision repairs old retained
+incomplete records; subsequent unchanged restarts leave checkpoints identical.
+Explicit seeded old projection regressions verify both repairs. The engine
+fixture also keeps its reported processed total separate from known buckets.
+An incomplete bucket is null, with the indexed aggregate marked partial; the
+record's explicit `partial` flag is reserved for a missing token object, as
+TS does. The mixed partial/complete fixture verifies exact model, agent and
+provider breakdown order using the reference SQL alias ordering. The old
+Rust resident failed those order and per-call detail assertions. The exact
+new seeded differential matches 4/5 usage answers, with only the real coverage
+scan time in the fifth; session-list preflight establishes the same owner
+and only its unrelated generated revision differs. No floating tolerance.
 
 The current TS and Rust wire contract in a checkpointed setup is a shared
 authority: writes to a member are refused with the same 409 response. The new

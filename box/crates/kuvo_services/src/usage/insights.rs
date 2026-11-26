@@ -536,11 +536,7 @@ impl Service {
                 } else {
                     tokens(&message["tokens"])
                 };
-                let partial = !human
-                    && tokens
-                        .as_ref()
-                        .and_then(super::insight_mail::Buckets::complete)
-                        .is_none();
+                let partial = !human && tokens.is_none();
                 let model_id = model["id"].as_str();
 
                 let input = tokens.as_ref().and_then(|t| t.input);
@@ -1239,11 +1235,7 @@ impl Service {
                 processed = Some(total);
                 body["reportedTotal"] = json!(total);
             }
-            if buckets
-                .as_ref()
-                .and_then(super::insight_mail::Buckets::complete)
-                .is_none()
-            {
+            if buckets.is_none() {
                 body["partial"] = json!(true);
             }
         } else {
@@ -1461,6 +1453,19 @@ fn save_event(
     let field = |name: &str| body[name].as_str();
     let key = field("key").ok_or("missing usage event key")?;
     let encoded = serde_json::to_string(&body)?;
+    // Explicit absence belongs in the record; incomplete buckets belong in
+    // the indexed aggregate flag. The wire retains the known/null buckets.
+    let partial = body["human"] != true
+        && (body["partial"] == true
+            || [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite5m",
+                "cacheWrite1h",
+            ]
+            .iter()
+            .any(|field| body["tokens"][*field].as_u64().is_none()));
     let previous: Option<(String, Option<String>, Option<u64>)> = db
         .query_row(
             "SELECT body,sender,seq FROM event WHERE key=?",
@@ -1478,7 +1483,7 @@ fn save_event(
     db.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
         ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,sender=NULL,received=MIN(event.received,excluded.received),at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,skills=excluded.skills,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
         WHERE (event.computer=excluded.computer OR (json_extract(excluded.body,'$.attributed')=1 AND COALESCE(json_extract(event.body,'$.attributed'),0)=0)) AND (event.partial=1 OR excluded.partial=0)",
-        params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,serde_json::to_string(body.get("skills").unwrap_or(&json!([])))?,encoded,field("supersedes"),processed])?;
+        params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),partial,cost,count,input,cached,creation,output,serde_json::to_string(body.get("skills").unwrap_or(&json!([])))?,encoded,field("supersedes"),processed])?;
     Ok(())
 }
 fn estimate_body(body: &Value, pricing: &Pricing, now: i64) -> Option<f64> {
@@ -1772,7 +1777,7 @@ struct Metrics {
     unpriced: u64,
     partial: u64,
 }
-const METRICS: &str = "SUM(cost),SUM(tokens),SUM(cache_read),SUM(input),SUM(cache_write),SUM(output),COALESCE(SUM(human),0),COUNT(*) FILTER(WHERE human=0),SUM(processed),COUNT(*) FILTER(WHERE human=0 AND cost IS NULL),COUNT(*) FILTER(WHERE human=0 AND partial=1)";
+const METRICS: &str = "SUM(cost) AS cost,SUM(tokens) AS tokens,SUM(cache_read) AS cached,SUM(input) AS input,SUM(cache_write) AS creation,SUM(output) AS output,COALESCE(SUM(human),0) AS messages,COUNT(*) FILTER(WHERE human=0) AS calls,SUM(processed) AS processed,COUNT(*) FILTER(WHERE human=0 AND cost IS NULL) AS unpriced,COUNT(*) FILTER(WHERE human=0 AND partial=1) AS partial";
 fn metrics(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<Metrics> {
     Ok(Metrics {
         cost: row.get(start)?,
@@ -1975,7 +1980,7 @@ impl Service {
             daily.push(value);
         }
         let grouped = |name: &str, extra: &str, group: &str| -> Result<Vec<Value>> {
-            let mut query=db.prepare(&format!("SELECT {name} AS name,MIN(provider),{METRICS} FROM event {extra} WHERE {where_sql} AND human=0 GROUP BY {group} ORDER BY COALESCE(SUM(cost),0) DESC,COALESCE(SUM(tokens),0) DESC,name LIMIT 2000"))?;
+            let mut query=db.prepare(&format!("SELECT {name} AS name,MIN(provider) AS provider,{METRICS} FROM event {extra} WHERE {where_sql} AND human=0 GROUP BY {group} ORDER BY COALESCE(cost,0) DESC,COALESCE(tokens,0) DESC,name LIMIT 2000"))?;
             let rows = query.query_map(filter.args(), |row| {
                 Ok((
                     row.get::<_, String>(0)?,

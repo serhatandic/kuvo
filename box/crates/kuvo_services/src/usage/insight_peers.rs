@@ -580,7 +580,7 @@ impl Service {
             None
         };
         db.execute("INSERT OR REPLACE INTO event VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",params![
-            record.key,event_seq,source,received,record.at,record.session,record.computer,record.bot,record.bot_name,record.title,record.provider,record.account,record.model,record.agent,record.human,record.partial,estimate_body(&body,pricing,now),count,input,cache,creation,output,serde_json::to_string(record.skills.as_deref().unwrap_or(&[]))?,serde_json::to_string(&body)?,record.supersedes,processed
+            record.key,event_seq,source,received,record.at,record.session,record.computer,record.bot,record.bot_name,record.title,record.provider,record.account,record.model,record.agent,record.human,record.is_partial(),estimate_body(&body,pricing,now),count,input,cache,creation,output,serde_json::to_string(record.skills.as_deref().unwrap_or(&[]))?,serde_json::to_string(&body)?,record.supersedes,processed
         ])?;
         Ok(())
     }

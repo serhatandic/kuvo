@@ -3152,6 +3152,8 @@ test('portable usage retains each known token bucket without pricing an incomple
   assert.equal(overview.json.data.totals.processed,46);
   assert.equal(summary.json.data.totals.tokens,46);
   assert.equal(summary.json.data.totals.cacheRate,9/40);
+  const detail=await call('GET','kuvo/agents/api/kuvo/insights/sessions/'+id+'?period=7&zone=UTC');assert.equal(detail.status,200,detail.text);
+  for(const item of detail.json.data.calls)assert.equal(item.partial,undefined,'A body with token buckets leaves the explicit absence flag unset');
   const {DatabaseSync}=await import('node:sqlite');
   const index=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
   try{
@@ -3232,9 +3234,44 @@ test('engine usage keeps known partial buckets and the maker’s reported total 
     source.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_engine_partial','Partial engine',null,'{}');
     source.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('first','ses_engine_partial','assistant',at,at,JSON.stringify({time:{completed:at},model:{providerID:'openai',id:'gpt-5.5'},tokens:{input:'10',output:'2',reasoning:3,total:100}}));
   }finally{source.close();}
-  const call=box.connect(await box.start().ready());
+  let resident=box.start(),call=box.connect(await resident.ready());
   const summary=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');assert.equal(summary.status,200,summary.text);
   const overview=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(overview.status,200,overview.text);
   assert.equal(overview.json.data.totals.tokens,15);assert.equal(overview.json.data.totals.processed,100);assert.equal(overview.json.data.totals.cost,null);
   assert.equal(summary.json.data.totals.tokens,100);
+  const detail=await call('GET','kuvo/agents/api/kuvo/insights/sessions/ses_engine_partial?period=7&zone=UTC');assert.equal(detail.status,200,detail.text);assert.equal(detail.json.data.calls[0].partial,undefined);
+  if(!boxBinary().typescript){
+    await resident.stop();
+    const old=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'));
+    try{
+      old.prepare("UPDATE event SET tokens=0,input=NULL,output=NULL,body=json_set(body,'$.tokens.input',NULL,'$.tokens.output',NULL,'$.partial',json('true')) WHERE session='ses_engine_partial'").run();
+      old.prepare("UPDATE state SET body=json_set(body,'$.token_version',0) WHERE key LIKE 'scan/rust-engine-v1/%' AND key NOT LIKE '%/decoded'").run();
+    }finally{old.close();}
+    resident=box.start();call=box.connect(await resident.ready());
+    const refreshed=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');assert.equal(refreshed.status,200,refreshed.text);
+    const repaired=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(repaired.json.data.totals.tokens,15);assert.equal(repaired.json.data.totals.processed,100);
+  }
+});
+
+test('Insights breakdown order and detail agree for mixed priced and partial calls',async t=>{
+  const fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);const box=await computer('MixedBuckets',undefined,isolated);
+  const at=Date.now()-1000,id='ses_mixed_buckets',folder=path.join(box.home,'agents','sessions',id),model={providerID:'claude-code',id:'claude-opus-4-6'};
+  write(path.join(folder,'session.json'),JSON.stringify({id,title:'Mixed buckets',model,agent:'build',projectID:'fixture',time:{created:at-1000,updated:at},location:{directory:box.home}}));
+  write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
+  const counts=[{input:10,output:1},{input:20,output:5,cache:{read:7,write:1}},{cache:{read:2}}];
+  write(path.join(folder,'messages.json'),JSON.stringify(counts.map((tokens,i)=>({id:'call_'+i,type:'assistant',time:{created:at-500,completed:at},model,agent:'build',tokens,content:[]}))));
+  const engineFolder=path.join(box.home,'data','opencode');fs.mkdirSync(engineFolder,{recursive:true});const db=new DatabaseSync(path.join(engineFolder,'opencode.db'));
+  try{
+    db.exec('CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT)');
+    db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_engine_mixed','Engine buckets',null,'{}');
+    db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('first','ses_engine_mixed','assistant',at,at,JSON.stringify({time:{completed:at},model:{providerID:'openai',id:'gpt-5.5'},tokens:{input:10,output:5,total:100}}));
+  }finally{db.close();}
+  const call=box.connect(await box.start().ready());
+  const summary=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');assert.equal(summary.status,200,summary.text);
+  const data=await until(async()=>{const result=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(result.status,200,result.text);return result.json.data.totals.tokens===52&&result.json.data;},'Both sources were not counted');
+  assert.deepEqual(data.providers.map(row=>row.name),['openai','claude']);
+  assert.deepEqual(data.breakdowns.model.map(row=>row.name),['gpt-5.5','claude-opus-4-6']);
+  assert.deepEqual(data.breakdowns.agent.map(row=>row.name),['openai','build']);
+  assert.deepEqual(data.providers.map(row=>[row.tokens,row.processed,row.partial]),[[15,100,1],[37,46,2]]);
 });
