@@ -1,9 +1,6 @@
 //! Insights' portable transcript index. The SQLite schema is the same as the old service;
 //! only changed transcripts are decoded, on demand, never in an idle background process.
-use super::{
-    native_index,
-    pricing::{Pricing, Tokens},
-};
+use super::{native_index, pricing::Pricing};
 use http::StatusCode;
 use jiff::{Span, Timestamp, tz::TimeZone};
 use kuvo_protocol::{
@@ -473,7 +470,7 @@ impl Service {
                 bot,
                 bot_name,
                 line.own,
-                "skills-v1",
+                "skills-v1-buckets-v2",
                 threads
             ]));
             if before
@@ -539,17 +536,21 @@ impl Service {
                 } else {
                     tokens(&message["tokens"])
                 };
-                let partial = !human && tokens.is_none();
+                let partial = !human
+                    && tokens
+                        .as_ref()
+                        .and_then(super::insight_mail::Buckets::complete)
+                        .is_none();
                 let model_id = model["id"].as_str();
 
-                let count = tokens
+                let input = tokens.as_ref().and_then(|t| t.input);
+                let output = tokens.as_ref().and_then(|t| t.output);
+                let cached = tokens.as_ref().and_then(|t| t.cache_read);
+                let creation = tokens
                     .as_ref()
-                    .map(|t| t.input + t.output + t.cache_write_5m + t.cache_write_1h);
-                let processed = count.zip(tokens.as_ref()).map(|(n, t)| n + t.cache_read);
-                let input = tokens.as_ref().map(|t| t.input);
-                let cached = tokens.as_ref().map(|t| t.cache_read);
-                let creation = tokens.as_ref().map(|t| t.cache_write_5m + t.cache_write_1h);
-                let output = tokens.as_ref().map(|t| t.output);
+                    .and_then(|t| super::insight_mail::total([t.cache_write_5m, t.cache_write_1h]));
+                let count = super::insight_mail::total([input, output, creation]);
+                let processed = super::insight_mail::total([count, cached]);
                 let mut body = json!({"key":key,"at":at,"session":id,"call":call,"computer":computer,"provider":provider,"account":account});
                 let mut put = |name: &str, value: Option<&str>| {
                     if let Some(value) = value {
@@ -569,7 +570,7 @@ impl Service {
                     put("agent", message["agent"].as_str());
                     body["skills"] = json!(super::insight_skills::portable(&message));
                     if let Some(t) = tokens.as_ref() {
-                        body["tokens"] = json!({"input":t.input,"output":t.output,"cacheRead":t.cache_read,"cacheWrite5m":t.cache_write_5m,"cacheWrite1h":t.cache_write_1h});
+                        body["tokens"] = json!(t);
                     }
                     if partial {
                         body["partial"] = json!(true);
@@ -1224,27 +1225,25 @@ impl Service {
         if human {
             body["human"] = json!(true);
         } else if let Some(raw) = record.usage {
-            input = raw["input"].as_u64();
-            output = raw["output"]
-                .as_u64()
-                .map(|n| n.saturating_add(raw["reasoning"].as_u64().unwrap_or(0)));
-            cached = raw["cache"]["read"].as_u64();
-            creation = raw["cache"]["write"].as_u64();
-            count = [input, output, creation]
-                .into_iter()
-                .flatten()
-                .reduce(u64::saturating_add);
-            processed = raw["total"].as_u64().or_else(|| {
-                [count, cached]
-                    .into_iter()
-                    .flatten()
-                    .reduce(u64::saturating_add)
-            });
-            body["tokens"] = json!({"input":input,"output":output,"cacheRead":cached,"cacheWrite5m":creation,"cacheWrite1h":0});
-            if let Some(total) = raw["total"].as_u64() {
+            let buckets = tokens(&raw);
+            if let Some(t) = buckets.as_ref() {
+                input = t.input;
+                output = t.output;
+                cached = t.cache_read;
+                creation = super::insight_mail::total([t.cache_write_5m, t.cache_write_1h]);
+                count = super::insight_mail::total([input, output, creation]);
+                processed = super::insight_mail::total(t.fields());
+                body["tokens"] = json!(t);
+            }
+            if let Some(total) = token_count(&raw["total"]) {
+                processed = Some(total);
                 body["reportedTotal"] = json!(total);
             }
-            if tokens(&raw).is_none() {
+            if buckets
+                .as_ref()
+                .and_then(super::insight_mail::Buckets::complete)
+                .is_none()
+            {
                 body["partial"] = json!(true);
             }
         } else {
@@ -1521,16 +1520,27 @@ fn provider_name(provider: &str) -> &str {
         other => other,
     }
 }
-fn tokens(raw: &Value) -> Option<Tokens> {
-    Some(Tokens {
-        input: raw["input"].as_u64()?,
-        output: raw["output"]
-            .as_u64()?
-            .saturating_add(raw["reasoning"].as_u64().unwrap_or(0)),
-        cache_read: raw["cache"]["read"].as_u64()?,
-        cache_write_5m: raw["cache"]["write"].as_u64()?,
-        cache_write_1h: 0,
+fn token_count(raw: &Value) -> Option<u64> {
+    super::engine_readers::number(raw)
+        .filter(|n| *n >= 0. && *n <= 9_007_199_254_740_991. && n.fract() == 0.)
+        .map(|n| n as u64)
+}
+fn tokens(raw: &Value) -> Option<super::insight_mail::Buckets> {
+    if !raw.is_object() {
+        return None;
+    }
+    // The reference exposes unknown buckets as null. Known counts still
+    // contribute to totals; a partial observation never estimates spend.
+    let count = token_count;
+    Some(super::insight_mail::Buckets {
+        input: count(&raw["input"]),
+        output: count(&raw["output"])
+            .map(|n| n.saturating_add(count(&raw["reasoning"]).unwrap_or(0))),
+        cache_read: count(&raw["cache"]["read"]),
+        cache_write_5m: count(&raw["cache"]["write"]),
+        cache_write_1h: Some(0),
         fast: false,
+        ultrafast: false,
     })
 }
 
@@ -2231,6 +2241,40 @@ async fn read_view(
 #[cfg(test)]
 mod price_cache {
     use super::*;
+
+    #[test]
+    fn day_bounds_follow_civil_midnight_across_dst_and_fractional_offsets() {
+        let epoch = |time: &str| time.parse::<Timestamp>().unwrap().as_millisecond();
+        let zone = TimeZone::get("America/New_York").unwrap();
+        let bounds = time_bounds(epoch("2026-03-09T12:00:00Z"), &zone, 7).unwrap();
+        assert_eq!(
+            bounds[5],
+            ("2026-03-08".into(), epoch("2026-03-08T05:00:00Z"))
+        );
+        assert_eq!(
+            bounds[6],
+            ("2026-03-09".into(), epoch("2026-03-09T04:00:00Z"))
+        );
+        let fall = time_bounds(epoch("2026-11-02T12:00:00Z"), &zone, 7).unwrap();
+        assert_eq!(
+            fall[5],
+            ("2026-11-01".into(), epoch("2026-11-01T04:00:00Z"))
+        );
+        assert_eq!(
+            fall[6],
+            ("2026-11-02".into(), epoch("2026-11-02T05:00:00Z"))
+        );
+        let nepal = time_bounds(
+            epoch("2026-11-18T12:00:00Z"),
+            &TimeZone::get("Asia/Kathmandu").unwrap(),
+            7,
+        )
+        .unwrap();
+        assert_eq!(
+            nepal[6],
+            ("2026-11-18".into(), epoch("2026-11-17T18:15:00Z"))
+        );
+    }
 
     #[test]
     fn a_price_book_is_shared_until_a_catalog_file_changes() {

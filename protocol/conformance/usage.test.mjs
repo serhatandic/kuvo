@@ -3015,3 +3015,226 @@ test('a corrupt saved ring cannot panic the resident or invent fresh usage',asyn
   assert.ok(!reply.json.data.rows.find(r=>r.provider==='openai')?.rings.short,'Invalid kept evidence cannot look like a fresh 0% ring');
   assert.equal(seen.length,1,'Recovery did not call a maker on an idle startup');
 });
+
+test('usage settings converge part by part on three computers and survive an away computer’s return',{timeout:120000},async t=>{
+  const {isDeepStrictEqual}=await import('node:util');
+  const {computer,leases}=await bench(t);
+  const air=await computer('UsageAir',undefined,isolated), pro=await computer('UsagePro',undefined,isolated), lab=await computer('UsageLab',undefined,isolated);
+  const main=air.connect(await air.start().ready());
+  const setup=await main('GET','kuvo/setup');
+  const callFor=async box=>{
+    const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
+    assert.equal(invite.status,201,invite.text);
+    await until(()=>leases.leaseFor(setup.json.setup),'Air has no relay lease');
+    const joined=await box.join(invite.json.code);assert.equal(joined.code,0,joined.log);
+    const resident=box.start();return {resident,call:box.connect(await resident.ready())};
+  };
+  const get=async call=>{const response=await call('GET',route);assert.equal(response.status,200,response.text);return response.json.data;};
+  const put=async (call,value)=>{const response=await call('PUT',route,value);assert.equal(response.status,200,response.text);return response.json.data;};
+  const importSettings=async (call,value)=>{const response=await call('POST',route+'/import',value);assert.equal(response.status,200,response.text);return response.json.data;};
+  const wait=async(call,expected)=>until(async()=>{const observed=await get(call);return Object.entries(expected).every(([key,value])=>isDeepStrictEqual(observed.settings[key],value))&&observed;},'Usage settings did not converge',30000,250);
+  const layout=placed=>({placed,providerOrder:[],metricOrder:{},pinned:[],expanded:[],expandOnEnable:[],seeded:[]});
+  const notifications={underTenPercent:true,healthyToClose:false,closeToRunningOut:false};
+  const first={layout:layout(['claude.session','codex.weekly']),notifications};
+  const imported=await importSettings(main,first);assert.deepEqual(imported.took.sort(),['layout','notifications']);
+  const secondary=await callFor(pro),third=await callFor(lab);
+  await wait(secondary.call,first);await wait(third.call,first);
+  const ignored=await secondary.call('POST',route+'/import',{layout:layout(['codex.session'])});
+  assert.equal(ignored.status,409,ignored.text);
+  assert.equal(ignored.json.message,"Change your setup's usage settings on its main computer.");
+  const newNotices={...notifications,underTenPercent:false};
+  const refused=await secondary.call('PUT',route,{notifications:newNotices});assert.equal(refused.status,409,refused.text);
+  await put(main,{notifications:newNotices});
+  const modified={layout:first.layout,notifications:newNotices};
+  await wait(main,modified);await wait(third.call,modified);
+  const stale=(await get(third.call)).versions.layout;
+  await third.resident.stop();
+  const nextLayout=layout(['codex.weekly']);
+  await put(main,{layout:nextLayout});
+  const newer={layout:nextLayout,notifications:newNotices};
+  await wait(secondary.call,newer);
+  const returning=lab.start(),returnCall=lab.connect(await returning.ready());
+  await wait(returnCall,newer);
+  const rejected=await put(main,{layout:layout(['claude.session']),based:{layout:stale}});
+  assert.deepEqual(rejected.stale,['layout']);assert.deepEqual(rejected.settings.layout,nextLayout);
+  const finalLayout=layout(['claude.weekly']);await put(main,{layout:finalLayout});
+  for(const call of [main,secondary.call,returnCall])await wait(call,{layout:finalLayout,notifications:newNotices});
+  await returning.stop();const again=lab.connect(await lab.start().ready());
+  await wait(again,{layout:finalLayout,notifications:newNotices});
+});
+
+test('older clients preserve newer usage cards and meters until a whole layout is explicitly changed',async t=>{
+  const {computer}=await bench(t);
+  const box=await computer('OldPanel',undefined,isolated);
+  const call=box.connect(await box.start().ready());
+  const layout=(placed,pinned=[])=>({placed,providerOrder:[],metricOrder:{},pinned,expanded:[],expandOnEnable:[],seeded:[]});
+  const newer={...layout(['claude.session','grok.weekly'],['grok.weekly']),metricOrder:{claude:['claude.session'],grok:['grok.weekly']},providerOrder:['grok','claude','codex']};
+  const providers={enabled:['claude','grok'],known:['claude','codex','grok']};
+  const put=async value=>{const response=await call('PUT',route,value);assert.equal(response.status,200,response.text);return response.json.data.settings;};
+  await put({layout:newer,providers});
+  const knows={cards:['claude','codex'],meters:['claude.session','claude.weekly','codex.session','codex.weekly']};
+  const older={...layout(['claude.session'],['codex.session']),metricOrder:{claude:['claude.session']},providerOrder:['claude','codex']};
+  const kept=await put({layout:older,providers:{enabled:['claude'],known:['claude','codex']},knows});
+  assert.deepEqual(kept.layout.placed,['claude.session','grok.weekly']);assert.deepEqual(kept.layout.pinned,['grok.weekly','codex.session']);
+  assert.deepEqual(kept.layout.providerOrder,['grok','claude','codex']);assert.deepEqual(kept.layout.metricOrder.grok,['grok.weekly']);assert.deepEqual(kept.providers,providers);
+  assert.deepEqual((await put({layout:older})).layout,older);
+});
+
+test('a future usage-preference format is refused rather than replaced by this resident',async t=>{
+  if(boxBinary().typescript)return t.skip('The TS unit fixture validates the unsupported format when constructing the settings store.');
+  const fs=await import('node:fs');
+  const {computer}=await bench(t);const box=await computer('FuturePreferences',undefined,isolated);
+  const file=path.join(box.home,'agents','usage','settings.json'),future=JSON.stringify({kuvo:2,units:{something:{data:['keep']}}});
+  write(file,future);
+  const call=box.connect(await box.start().ready());
+  const read=await call('GET',route);assert.equal(read.status,409,read.text);
+  const changed=await call('PUT',route,{totalSpend:{show:true}});assert.equal(changed.status,409,changed.text);
+  assert.equal(fs.readFileSync(file,'utf8'),future);
+});
+
+test('a large portable backfill counts every call and keeps its completed checkpoints after restart',{timeout:120000},async t=>{
+  const fs=await import('node:fs');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);
+  const box=await computer('Backfill',undefined,isolated);
+  const now=Date.now()-2000;
+  const block='X'.repeat(1024*1024);
+  const providers=['claude-code','codex','antigravity','grok','cursor'];
+  for(const [n,providerID] of providers.entries()){
+    const id='ses_batch_'+n,folder=path.join(box.home,'agents','sessions',id),model={providerID,id:'fixture-model'};
+    write(path.join(folder,'session.json'),JSON.stringify({id,title:'Batch '+n,model,agent:'build',projectID:'fixture',time:{created:now-1000,updated:now},location:{directory:box.home}}));
+    write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
+    const handle=fs.openSync(path.join(folder,'messages.json'),'w');
+    try{
+      const message={id:'call_'+n,type:'assistant',time:{created:now-1000,completed:now},model,agent:'build',tokens:{input:n+10,output:1},content:[]};
+      fs.writeSync(handle,'['+JSON.stringify(message).slice(0,-1)+',"unused":"');
+      for(let i=0;i<12;i++)fs.writeSync(handle,block);
+      fs.writeSync(handle,'"}]');
+    }finally{fs.closeSync(handle);}
+  }
+  let resident=box.start(),call=box.connect(await resident.ready());
+  const summary='kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1';
+  const read=async()=>{const response=await call('GET',summary,undefined,{},60000);assert.equal(response.status,200,response.text);return response.json.data;};
+  const checkpoint=()=>{const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});try{db.exec('PRAGMA busy_timeout=5000');return db.prepare("SELECT key,body FROM state WHERE key LIKE 'scan/%transcript-v1/ses_batch_%' ORDER BY key").all();}finally{db.close();}};
+  const result=await read();assert.equal(result.totals.tokens,50); // Cursor reports context size, not API tokens.
+  const overview=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(overview.status,200,overview.text);assert.equal(overview.json.data.totals.calls,5);
+  const before=checkpoint();assert.equal(before.length,5);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  const after=await read();assert.deepEqual(after.totals,result.totals);
+  assert.deepEqual(checkpoint(),before,'Completed backfill checkpoints must not change on an unchanged restart');
+  if(!boxBinary().typescript){
+    // The previous projection dropped every bucket when a cache field was
+    // absent. An unchanged source must be repaired once on upgrade.
+    await resident.stop();
+    const old=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'));
+    try{
+      old.prepare("UPDATE event SET tokens=NULL,input=NULL,cache_read=NULL,cache_write=NULL,output=NULL,processed=NULL,cost=NULL,partial=1,body=json_remove(body,'$.tokens') WHERE session='ses_batch_0'").run();
+      old.prepare("UPDATE state SET body=json_set(body,'$.header','previous-projection') WHERE key='scan/rust-transcript-v1/ses_batch_0'").run();
+    }finally{old.close();}
+    resident=box.start();call=box.connect(await resident.ready());
+    assert.deepEqual((await read()).totals,result.totals);
+  }
+});
+
+test('portable usage retains each known token bucket without pricing an incomplete call',async t=>{
+  const {computer}=await bench(t);
+  const box=await computer('PartialBuckets',undefined,isolated);
+  const now=Date.now()-2000,id='ses_partial_buckets',model={providerID:'claude-code',id:'claude-opus-4-6'},folder=path.join(box.home,'agents','sessions',id);
+  write(path.join(folder,'session.json'),JSON.stringify({id,title:'Partial buckets',model,agent:'build',projectID:'fixture',time:{created:now-1000,updated:now},location:{directory:box.home}}));
+  write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
+  const entries=[{input:10,output:1},{input:'20.0',output:'2',reasoning:'3',cache:{read:'7',write:'1'}},{input:-1,output:4.5,cache:{read:'2',write:null}}];
+  write(path.join(folder,'messages.json'),JSON.stringify(entries.map((tokens,i)=>({id:'call_'+i,type:'assistant',time:{created:now-500,completed:now},model,agent:'build',tokens,content:[]}))));
+  const call=box.connect(await box.start().ready());
+  const summary=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');assert.equal(summary.status,200,summary.text);
+  const overview=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(overview.status,200,overview.text);
+  assert.equal(overview.json.data.totals.calls,3);
+  assert.equal(overview.json.data.totals.tokens,37);
+  assert.equal(overview.json.data.totals.processed,46);
+  assert.equal(summary.json.data.totals.tokens,46);
+  assert.equal(summary.json.data.totals.cacheRate,9/40);
+  const {DatabaseSync}=await import('node:sqlite');
+  const index=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+  try{
+    index.exec('PRAGMA busy_timeout=5000');
+    const records=index.prepare("SELECT json_extract(body,'$.call') AS call,cost,partial,input,output,cache_read FROM event WHERE session=? ORDER BY call").all(id);
+    assert.deepEqual(records.map(({call,partial,input,output,cache_read})=>({call,partial,input,output,cache_read})),[
+      {call:'call_0',partial:1,input:10,output:1,cache_read:null},{call:'call_1',partial:0,input:20,output:5,cache_read:7},{call:'call_2',partial:1,input:null,output:null,cache_read:2}
+    ]);
+    assert.equal(records[0].cost,null);assert.ok(records[1].cost>0);assert.equal(records[2].cost,null);
+  }finally{index.close();}
+});
+
+
+test('Insights daily totals follow the viewer’s civil day rather than the computer’s zone',async t=>{
+  const {computer}=await bench(t);const box=await computer('ViewerDays',undefined,isolated);
+  const midnight=Math.floor((Date.now()-86400000)/86400000)*86400000;
+  const id='ses_viewer_days',folder=path.join(box.home,'agents','sessions',id),model={providerID:'claude-code',id:'claude-opus-4-6'};
+  write(path.join(folder,'session.json'),JSON.stringify({id,title:'Viewer days',model,agent:'build',projectID:'fixture',time:{created:midnight-1000,updated:midnight},location:{directory:box.home}}));
+  write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
+  write(path.join(folder,'messages.json'),JSON.stringify([midnight-1,midnight].map((at,i)=>({id:'call_'+i,type:'assistant',time:{created:at-100,completed:at},model,agent:'build',tokens:{input:100,output:50,cache:{read:500,write:2}},content:[]}))));
+  const call=box.connect(await box.start().ready());
+  const read=async zone=>{const response=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone='+encodeURIComponent(zone)+'&refresh=1');assert.equal(response.status,200,response.text);return response.json.data;};
+  const utc=await read('UTC'),nepal=await read('Asia/Kathmandu');
+  const contributing=data=>data.daily.filter(day=>day.tokens>0).map(day=>day.tokens);
+  assert.deepEqual(contributing(utc),[152,152]);assert.deepEqual(contributing(nepal),[304]);
+  assert.deepEqual(utc.totals,nepal.totals);
+});
+
+test('Insights names at most three distinct standout sessions for cost, cache and subagents',async t=>{
+  const fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);const box=await computer('Standouts',undefined,isolated);
+  const folder=path.join(box.home,'data','opencode'),at=Date.now()-1000;
+  fs.mkdirSync(folder,{recursive:true});const db=new DatabaseSync(path.join(folder,'opencode.db'));
+  try{
+    db.exec('CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT)');
+    for(const [name,calls,cached,parent] of [['costly',6,500,null],['cold',3,0,null],['fanout',1,500,null],['sub1',1,500,'fanout'],['sub2',1,500,'fanout'],['sub3',1,500,'fanout'],['quiet',2,500,null],['plain',2,500,null]]){
+      const id='ses_'+name,model=['costly','cold'].includes(name)?'claude-opus-4-6':'claude-sonnet-4-6';
+      db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run(id,name,parent&&'ses_'+parent,'{}');
+      for(let i=0;i<calls;i++)db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run(id+'-'+i,id,'assistant',at,at,JSON.stringify({time:{completed:at},model:{providerID:'opencode-go',id:model},tokens:{input:100,output:50,cache:{read:cached,write:2}},cost:0.001}));
+    }
+  }finally{db.close();}
+  const call=box.connect(await box.start().ready());
+  const read=async suffix=>{const response=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1'+suffix);assert.equal(response.status,200,response.text);return response.json.data;};
+  const all=await read('');
+  assert.deepEqual(all.standouts.map(({id,reason,kind})=>({id,reason,kind})),[{id:'ses_costly',reason:'Highest cost',kind:'cost'},{id:'ses_cold',reason:'Low cache',kind:'cache'},{id:'ses_fanout',reason:'3 subagents',kind:'subagents'}]);
+  assert.deepEqual((await read('&model=opus-4.6')).standouts,[]);
+});
+
+test('Insights uses cached input over all input at every ranked level, and keeps an unknown rate null',async t=>{
+  const {computer}=await bench(t);const box=await computer('CacheRates',undefined,isolated);
+  const at=Date.now()-1000;
+  for(const [name,providerID,modelId,cached] of [['warm','claude-code','claude-opus-4-6',900],['cold','codex-cli','gpt-5.5',0],['unknown','claude-code','claude-opus-4-6',null]]){
+    const id='ses_'+name,folder=path.join(box.home,'agents','sessions',id),model={providerID,id:modelId};
+    write(path.join(folder,'session.json'),JSON.stringify({id,title:name,model,agent:'build',projectID:'fixture',time:{created:at-1000,updated:at},location:{directory:box.home}}));
+    write(path.join(folder,'agent.json'),JSON.stringify({threads:{}}));
+    write(path.join(folder,'messages.json'),JSON.stringify([{id:'call_'+name,type:'assistant',time:{created:at-500,completed:at},model,agent:'build',...(cached===null?{}:{tokens:{input:100,output:50,cache:{read:cached,write:2}}}),content:[]}]));
+  }
+  const call=box.connect(await box.start().ready());
+  const read=async suffix=>{const response=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1'+suffix);assert.equal(response.status,200,response.text);return response.json.data;};
+  const summary=await read(''),rows=key=>summary.lists.find(list=>list.key===key).rows;
+  assert.equal(summary.totals.cacheRate,900/1104);
+  assert.equal(rows('providers').find(row=>row.id==='claude').cacheRate,900/1002);
+  assert.equal(rows('providers').find(row=>row.id==='codex').cacheRate,0);
+  assert.equal(rows('models').find(row=>row.id==='opus-4.6').cacheRate,900/1002);
+  const cold=rows('bots').find(row=>row.id==='ses_cold'),warm=rows('bots').find(row=>row.id==='ses_warm');
+  assert.equal(cold.cacheRate,0);assert.equal(cold.lowCache,true);assert.equal(warm.lowCache,undefined);
+  assert.equal(rows('computers').length,1);assert.equal(rows('computers')[0].cacheRate,summary.totals.cacheRate);
+  assert.equal((await read('&session=ses_unknown')).totals.cacheRate,null);
+});
+
+test('engine usage keeps known partial buckets and the maker’s reported total without inventing missing counts',async t=>{
+  const fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);const box=await computer('PartialEngine',undefined,isolated);
+  const folder=path.join(box.home,'data','opencode'),at=Date.now()-1000;fs.mkdirSync(folder,{recursive:true});
+  const source=new DatabaseSync(path.join(folder,'opencode.db'));
+  try{
+    source.exec('CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT); CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT)');
+    source.prepare('INSERT INTO session_v2 VALUES (?,?,?,?)').run('ses_engine_partial','Partial engine',null,'{}');
+    source.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('first','ses_engine_partial','assistant',at,at,JSON.stringify({time:{completed:at},model:{providerID:'openai',id:'gpt-5.5'},tokens:{input:'10',output:'2',reasoning:3,total:100}}));
+  }finally{source.close();}
+  const call=box.connect(await box.start().ready());
+  const summary=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1');assert.equal(summary.status,200,summary.text);
+  const overview=await call('GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');assert.equal(overview.status,200,overview.text);
+  assert.equal(overview.json.data.totals.tokens,15);assert.equal(overview.json.data.totals.processed,100);assert.equal(overview.json.data.totals.cost,null);
+  assert.equal(summary.json.data.totals.tokens,100);
+});

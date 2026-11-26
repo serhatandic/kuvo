@@ -786,6 +786,46 @@ targets removed; no test processes remain.
 Cumulative non-test size: 573,825 new-module characters plus 40,355 added
 existing production characters (614,180 total, 0.893× the 687,546 TS characters).
 
+## Sixteenth slice: nullable Insights buckets, shared settings and summary edges
+
+A portable usage observation without one cache bucket still contains real known
+input/output counts. The reference retains each safe nonnegative integral
+number (including numeric strings), using null for the unknown buckets. Its
+summary keeps those known tokens but does not estimate the cost of an incomplete
+call. Previously the Rust portable index dropped all its buckets when any was
+absent. Shared fixtures prove exact 37 known/46 processed tokens and 9/40 cache
+rate, and a five-transcript 12 MiB backfill with 50 known tokens (Cursor's
+context size is not API usage). The old Rust results were null and zero
+respectively, TS passed, and the correction uses the existing nullable peer
+buckets and total helper for both native engine and portable projections. A
+one-time projection checkpoint revision repairs old retained incomplete records;
+subsequent unchanged restarts leave checkpoints identical. An explicit seeded
+old projection regression verifies the repair.
+
+The current TS and Rust wire contract in a checkpointed setup is a shared
+authority: writes to a member are refused with the same 409 response. The new
+three-computer fixture checks part-by-part convergence, refused member imports
+and writes, return after being away, stale client versions and another restart.
+Legacy direct-settings mail remains a separate compatibility gap because those
+older TS unit cases deliberately do not install the shared authority.
+
+Further exact scoped mapper and accepted-window matrices cover Argon ambiguity,
+legacy exclusions, exact 10% threshold, direct red projection, window jitter
+and rollover, missing readings, and level-only windows. Fixed civil-day bounds
+cover both DST transitions and fractional offsets. The shared real routes
+check viewer-zone grouping, per-level cache rates and unknown rate, and exact
+three distinct standout reasons (or none when not enough candidates).
+
+First Mac gates: TS 32/32 applicable; Rust 82/83 applicable with a single
+fixture-only `database is locked` reading a checkpoint during restart
+(seen once, 5s SQLite busy timeout added to the direct fixture, immediate
+focused rerun passes). Engine sessions 81/81, workspace test check and Bun
+check, exact expanded seeded differential 12/13 (only real scan timestamp)
+and native corpus 2/2. Scoped decoder/mapper 7/7, accepted-window 12/12 and
+civil bounds 1/1. Final cross-platform verification pending.
+Cumulative non-test size: 574,092 new-module characters plus 40,355 added
+existing production characters (614,447 total, 0.894× the TS baseline).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity credential/profile races (running-profile fallback, missing token, CSRF and bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -820,7 +860,7 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 - L11: Insights checkpoints local history and counts only changed transcripts after restart — partial — startup/file-change portable index, compact mutation cursor, native Claude append/rewrite/restart scenario; exact all-source case remains open.
 - L41: Insights adds engine updates without replaying the older calls in the same database — covered by changed native engine channel scenario with decoded-row count and retained checkpoint.
 - L74: learning the box's peer name leaves its unchanged local history checkpoint in place — open — related portable checkpoint scenario above; this exact case not yet ported.
-- L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — open.
+- L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — covered by both-box five-transcript 12 MiB backfill, exact counts and unchanged restart checkpoints; Rust uses a blocking index worker rather than releasing separate processes.
 
 ### `box/test/usage/insights-kept.test.ts`
 
@@ -837,19 +877,19 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 - L123: Bots includes all unowned sessions after the old ranked-list limit — covered by 201-session native SQLite scenario on both boxes.
 - L133: a refresh attributes retained calls through engine sessions without changing their usage or origin — covered by scoped real SQLite retained-call repair test (zero decoded maker rows).
 - L188: each model has one name however its id was written, and narrows by it — covered by named model aliases and filter scenario.
-- L215: the cache rate is cached input over all input, at every level — partial — named summary fixture checks total cache rate; all ranked levels open.
+- L215: the cache rate is cached input over all input, at every level — covered by both-box ranked-level fixture, exact ratios for providers, models, computers and sessions and null unknown rate.
 - L234: the change is against the period of the same length just before — covered by named summary fixture with a prior-period call.
-- L253: at most three sessions stand out, each for one reason, once there are enough — partial — highest-cost standout verified; low-cache/subagent standouts open.
+- L253: at most three sessions stand out, each for one reason, once there are enough — covered by both-box cost, low-cache and three-subagent route fixture, including insufficient candidates filtered by model.
 - L267: Insights waits for a new computer’s first complete copy and counts kept usage after it goes away — partial — connected peer coverage and retained-away restart scenario; exact first-page loading states open.
 
 ### `box/test/usage/insights.test.ts`
 
-- L49: an Insights worker exit rejects requests and the bridge reopens the persisted index — open.
-- L85: closing the Insights index is idempotent and later requests reject — open.
+- L49: an Insights worker exit rejects requests and the bridge reopens the persisted index — deliberate in-process design replacement; the restart/catch-up and kept summary cases exercise reopening the retained index without a separate worker process.
+- L85: closing the Insights index is idempotent and later requests reject — deliberate in-process design replacement; connection ownership is scoped to each blocking operation, resident shutdown closes handles and restart reopens the index. The actual WAL/backfill restart cases test retained data.
 - L93: copies merge before filters, resumed sessions count once, and moved bot calls retain their origin — open.
 - L114: a peer account observation enriches the matching local copy and keeps its counts — open.
 - L132: a newly available provider call replaces its saved placeholder across filters — open.
-- L142: day bounds use the viewer's time zone, including DST transitions — open.
+- L142: day bounds use the viewer's time zone, including DST transitions — covered by fixed-clock production bounds for spring/fall DST and Kathmandu, plus both-box exact daily totals crossing UTC midnight.
 - L154: a cold yearly query and repricing both leave the bridge event loop responsive — open.
 - L186: a session page computes shares of the whole filtered snapshot after a scan — covered by both-box 51-session two-page scenario, plus detail and exact invalid-page refusals.
 - L207: resume peer pages, reject vouched computers, and price incoming records locally — partial — peer live cursor/delta, mixed version and unadmitted-origin filter; per-peer pricing fixture and multiple-page malformed-record matrix open.
@@ -1045,10 +1085,10 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 
 - L24: shared legacy and plan-name parity fixtures — partial — scoped Rust checks all legacy and name pairs; OAuth defaults assertion remains open.
 - L29: shared Swift parity fixtures — covered by all seven shared summary cases through the production normalizer.
-- L32: exact pools, first usable wins, clamp and Swift rounding — partial — named Antigravity pool reader and fake-refill scenario, plus shared summary corpus; exact standalone input variant open.
+- L32: exact pools, first usable wins, clamp and Swift rounding — covered by new exact mapper input and shared corpus.
 - L38: all three pools retain independent windows in client rows — open.
-- L48: Argon is separate and unambiguous — open.
-- L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — open.
+- L48: Argon is separate and unambiguous — covered by exact production mapper cases for unique enabled weekly pool, duplicate, disabled/invalid flag and ambiguous standard bucket.
+- L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — covered by exact production mapper case.
 - L60: the usage account reads its running profile's local quotas when cloud endpoints fail — partial — local-only profile fixture; cloud-failure fallback combination not separately exercised.
 - L115: Linux /proc maps only own profile and owned listening socket inodes — covered by synthetic process/socket and local TLS route fixture.
 - L133: Mac own profile can contain spaces and regex punctuation — open.
@@ -1158,16 +1198,16 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 
 - L22: healthy to close fires once — covered by fixed-clock accepted current-window projection crossing test (#990 current-window rather than old elapsed-window projection).
 - L23: close to running out — covered by the same healthy/close/critical sample matrix.
-- L24: healthy straight to red fires only critical — open.
-- L25: under ten once per window — open.
+- L24: healthy straight to red fires only critical — covered by fixed-clock accepted-window direct projection crossing.
+- L25: under ten once per window — covered by accepted current-window level warning matrix and repeated crossing route.
 - L26: cold start records bad baseline — covered by cold almost-out/unknown-cadence accepted reading test.
-- L27: reset rollover re-arms — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L28: reset jitter does not re-arm — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L27: reset rollover re-arms — covered by fixed-clock accepted real new-window level warning test.
+- L28: reset jitter does not re-arm — covered by same fixed-clock real rollover versus jitter scene.
 - L29: recovery then worsening re-fires — covered by scoped accepted-reading test with corroborated recovery.
 - L30: under ten recovery re-arms — partial — corroborated current-window recovery and distinct occurrence test; exact threshold fixture open.
-- L31: no data never fires — open.
-- L32: level fires almost out only — open.
-- L33: no data preserves previous signals — open.
+- L31: no data never fires — covered by fixed-clock invalid-window rejection preserving baseline.
+- L32: level fires almost out only — covered by fixed-clock reset-less/unknown-period threshold scenario.
+- L33: no data preserves previous signals — covered by invalid read between accepted samples and subsequent crossing.
 - L34: disabled toggles never fire — open.
 - L35: per trigger off suppresses only it — open.
 - L36: off toggle does not consume edge — covered by scoped accepted-reading off-toggle test.
@@ -1186,7 +1226,7 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 - L71: large notice history cannot evict the current limits account from peer mail — open.
 - L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — open.
 - L96: visibility mappings cover model-specific Codex and Antigravity windows — partial — corrected Spark alias and existing Antigravity mappings; exact multi-window layout fixture open.
-- L102: exact ten percent remaining does not trigger Almost Out — open.
+- L102: exact ten percent remaining does not trigger Almost Out — covered by exact 0.90 accepted level sample, then 0.92 crossing.
 - L108: parallel readers use the same occurrence IDs and recovery receives a new one — partial — scoped test checks the distinct rearmed occurrence; simultaneous parallel readers open.
 - L116: peer handoff timestamps are normalized to the receiver clock — open.
 - L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
@@ -1212,17 +1252,17 @@ existing production characters (614,180 total, 0.893× the 687,546 TS characters
 - L193: the Codex fallback model a box chose before it kept these counts as chosen, and gives way to a change — open.
 - L207: come in once: the parts no box has set, never again, never over a part changed since; a fallback model the box can't price with is left out — partial — settings route scenarios above.
 - L227: two Macs' imports: the one made first stays on both, a later Mac's first-run defaults never go over it; a change made since goes over both — open.
-- L246: three boxes: a change on any reaches the others, the newest change wins on all, part by part; one with a clock behind still counts on from what it has seen — open.
-- L287: a box that was off catches up once it says what it holds; settings came from another computer stay through its restart — open.
+- L246: three boxes: a change on any reaches the others, the newest change wins on all, part by part; one with a clock behind still counts on from what it has seen — partial — actual current shared-authority route: both boxes refuse member writes (409) and converge main-computer changes part by part; legacy decentralized clock/tie fixture open.
+- L287: a box that was off catches up once it says what it holds; settings came from another computer stay through its restart — partial — actual both-box authoritative setup fixture across three computers and returning/restarted member; legacy digest mail case open.
 - L310: settings ignore obsolete directory entries and wait for peer membership — open.
 - L353: usage settings mail requires a known matching setup — open.
 - L385: a box that leaves your setup for another starts over: none of your settings go there, and its own Mac's come in again — open.
-- L427: a client of an older app sends the cards and meters it knows: the box keeps a newer app's — open.
+- L427: a client of an older app sends the cards and meters it knows: the box keeps a newer app's — covered by both-box layout/known-meter matrix, including explicit whole replacement.
 - L449: two boxes of different versions hold the same: a part or field one doesn't know is kept as it came, so they agree and stop telling each other — open.
-- L474: a change made from a version of a part that has changed since (another computer's came meanwhile) is turned away, and the client shows the box's; a field a newer box added stays whatever the client sends — partial — settings route scenarios above.
+- L474: a change made from a version of a part that has changed since (another computer's came meanwhile) is turned away, and the client shows the box's; a field a newer box added stays whatever the client sends — partial — three-computer authority scene checks stale version from returning member; prior local unknown-field preservation case; legacy peer-merge variant open.
 - L496: a box that followed no setup and joins one starts over: its old settings stay local — open.
 - L509: a box whose link doesn't say its setup (its keys not read yet, or a link from before setups, met for a moment as the box updates) keeps its settings: nothing's recorded as no setup, nothing goes, and the setup it names next is taken as theirs — open.
-- L529: usage settings reject a future disk format without saving over it — open.
+- L529: usage settings reject a future disk format without saving over it — covered by Rust route refusal and byte-identical retained future fixture (TS original unit test throws in constructor).
 
 ### `box/test/usage/usage.test.ts`
 
