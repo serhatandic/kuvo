@@ -17,7 +17,7 @@ one small program on each computer.
 **Where it lives.** `box/` becomes a Cargo workspace (`box/Cargo.toml`, `box/crates/*`) with its
 own `Cargo.lock` and the same toolchain file as `gpui/`. The TypeScript stays in `box/src` until
 it's removed, so the folder never moves. It isn't a member of the `gpui` workspace. That workspace
-pins Zed's GPUI, and joining it would make every box build resolve and compile GPUI. Two small
+pins GPUI, and joining it would make every box build resolve and compile GPUI. Two small
 crates will be shared by path. `gpui/kuvo_box` will depend on `box/crates/kuvo_protocol` and
 `box/crates/kuvo_wire`. Both are sans-IO: no runtime, and only serde, serde_json and the crypto crates
 `kuvo_box` already uses. That keeps them resolvable under either lockfile. A change to them also
