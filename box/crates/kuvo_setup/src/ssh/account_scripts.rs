@@ -4,7 +4,7 @@ use std::io;
 
 pub(in crate::ssh) const BUSY: i32 = 8;
 pub(in crate::ssh) const LOST: i32 = 73;
-const BAD_ACCOUNT: i32 = 74;
+pub(in crate::ssh) const BAD_ACCOUNT: i32 = 74;
 
 pub(in crate::ssh) fn new_token() -> io::Result<String> {
     Ok(format!(
@@ -13,8 +13,9 @@ pub(in crate::ssh) fn new_token() -> io::Result<String> {
     ))
 }
 
-pub(in crate::ssh) fn claim_script(token: &str, preflight: &str) -> String {
+pub(in crate::ssh) fn claim_script(root: &str, token: &str, preflight: &str) -> String {
     locked_script(
+        root,
         0,
         &format!(
             r#"{preflight}
@@ -24,8 +25,9 @@ ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#
     )
 }
 
-pub(in crate::ssh) fn release_script(token: &str) -> String {
+pub(in crate::ssh) fn release_script(root: &str, token: &str) -> String {
     locked_script(
+        root,
         5,
         &format!(
             r#"
@@ -37,9 +39,21 @@ fi"#
     )
 }
 
-pub(in crate::ssh) fn locked_script(wait: u8, script: &str) -> String {
+pub(in crate::ssh) fn locked_script(root: &str, wait: u8, script: &str) -> String {
+    let (marker, prepare) = if root == ".kuvo-code" {
+        (".kuvo-code-adding".to_owned(), String::new())
+    } else {
+        (
+            format!("{root}/run/ssh-adding"),
+            format!(
+                r#"[ ! -L "$HOME/{root}" ] && [ ! -L "$HOME/{root}/run" ] || exit {BAD_ACCOUNT}
+(umask 077; mkdir -p "$HOME/{root}/run") || exit {BAD_ACCOUNT}"#
+            ),
+        )
+    };
     format!(
-        r#"A="$HOME/.kuvo-code-adding"
+        r#"{prepare}
+A="$HOME/{marker}"
 claimed() {{ [ -e "$A" ] || [ -L "$A" ]; }}
 if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
   echo 'The Kuvo Code account lock must be a regular file.' >&2

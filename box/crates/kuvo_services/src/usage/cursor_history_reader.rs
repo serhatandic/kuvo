@@ -85,6 +85,9 @@ impl Readers {
                     .map_err(|e| e.to_string())
             })
             .await;
+            if index.cursor_held(&source.account, at) {
+                continue;
+            }
             if let Err(error) = self.read_cursor_history(index, &source, key, at).await {
                 eprintln!(
                     "Couldn't keep {}'s account-wide usage: {error}",

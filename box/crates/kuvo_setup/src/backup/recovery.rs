@@ -634,10 +634,11 @@ pub(super) fn restore(
         }
         let base = roots.get(root);
         let parts: Vec<_> = rest.split('/').collect();
-        if kind == "queueFiles" && parts.get(3).is_some_and(|id| manifests.contains_key(*id)) {
-            if parts.len() != 5 || !manifests[parts[3]].contains_key(parts[4]) {
-                continue;
-            }
+        if kind == "queueFiles"
+            && parts.get(3).is_some_and(|id| manifests.contains_key(*id))
+            && (parts.len() != 5 || !manifests[parts[3]].contains_key(parts[4]))
+        {
+            continue;
         }
         if kind == "queueItems" {
             let mut queue = json_at(&file)?.ok_or(Error::Message(

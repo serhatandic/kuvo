@@ -183,7 +183,7 @@ pub async fn follow_limits(
                         let from=encode(key);
                         if let Some(answer)=given.answer {resets.take_answer(&from,answer);}
                         else if let Some(decision)=given.always {if resets.take_decision(&from,decision).await.is_err(){eprintln!("Couldn't keep peer reset permission.");}}
-                        else if let Some(ask)=given.ask {if let Some(host)=member.host(){let resets=resets.clone();let relay=relay.clone();tokio::spawn(async move{let answer=resets.take_ask(&from,ask).await;send_reset(&relay,host,ResetMail::answer(answer)).await;});}}
+                        else if let Some(ask)=given.ask && let Some(host)=member.host(){let resets=resets.clone();let relay=relay.clone();tokio::spawn(async move{let answer=resets.take_ask(&from,ask).await;send_reset(&relay,host,ResetMail::answer(answer)).await;});}
                         continue;
                     }
                     let Some(value)=envelope.0.get("limits") else {continue;};
@@ -193,15 +193,13 @@ pub async fn follow_limits(
                     let id=encode(key);
                     let ask=reading.ask;
                     service.take_peer(&id,&member.name,reading,now);
-                    if ask && answered.get(&id).is_none_or(|at|now.saturating_sub(*at)>=60_000) {
-                        if let Some(host)=member.host() {
-                            let snapshot=service.peer_snapshot(scope.clone(),now);
-                            let contents=json!([snapshot.accounts,snapshot.notice_setup]);
-                            let checked=snapshot.accounts.iter().map(|a|a.facts.checked).collect();
-                            if send(&relay,host,snapshot).await {
-                                answered.insert(id.clone(),now);
-                                told.insert(id,Told{at:now,contents,checked,scope});
-                            }
+                    if ask && answered.get(&id).is_none_or(|at|now.saturating_sub(*at)>=60_000) && let Some(host)=member.host() {
+                        let snapshot=service.peer_snapshot(scope.clone(),now);
+                        let contents=json!([snapshot.accounts,snapshot.notice_setup]);
+                        let checked=snapshot.accounts.iter().map(|a|a.facts.checked).collect();
+                        if send(&relay,host,snapshot).await {
+                            answered.insert(id.clone(),now);
+                            told.insert(id,Told{at:now,contents,checked,scope});
                         }
                     }
                 },

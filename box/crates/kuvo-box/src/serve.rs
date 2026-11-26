@@ -7,7 +7,7 @@ mod usage_history_peers;
 mod usage_peers;
 
 use kuvo_os::timer_fires::{self, Timer};
-use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
+use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
 use kuvo_peers::{
@@ -46,11 +46,10 @@ pub async fn run(
         std::env::vars_os().collect(),
         Timing::default(),
     )?;
-    let kind = match fs::read_to_string(home.join("box/kind")) {
-        Ok(kind) if kind.trim() == "mac" => ComputerKind::Mac,
-        Ok(_) => ComputerKind::Machine,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => ComputerKind::Machine,
-        Err(error) => return Err(error.into()),
+    let kind = if kuvo_setup::is_mac_home(home)? {
+        ComputerKind::Mac
+    } else {
+        ComputerKind::Machine
     };
     #[cfg(target_os = "macos")]
     let helper_watch =
@@ -72,7 +71,7 @@ pub async fn run(
     let authenticated_helper = prepared.has_mac_identity();
     let bootstrap = Devices::load(home, name, kind).await?;
     let accepted_roster = prepared.peer_roster();
-    let managed = accepted_roster.is_some();
+    let managed = accepted_roster.is_some() || prepared.is_set_aside();
     let roster = accepted_roster.unwrap_or(bootstrap.roster);
     let relay = prepared
         .relay_config()?
@@ -718,7 +717,10 @@ pub async fn run(
         Some(vault.clone()),
         Some(work_queue.queue_review()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    let removal = setup.handle();
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), peers.reach_again(), move || {
+        removal.computers_listing()
+    });
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();

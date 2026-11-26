@@ -244,10 +244,10 @@ struct Pending {
 
 impl Pending {
     fn finish(self, files: &Files, result: Response) {
-        if let Some(path) = self.spool {
-            if let Err(error) = files.remove(&path) {
-                eprintln!("clearing installer request: {error}");
-            }
+        if let Some(path) = self.spool
+            && let Err(error) = files.remove(&path)
+        {
+            eprintln!("clearing installer request: {error}");
         }
         let _ = self.reply.send(Ok(result));
     }
@@ -361,8 +361,6 @@ impl Owner {
                 Some(refused(400, "Send a valid removal request."))
             } else if decode_exact::<32>(key).is_none() {
                 Some(refused(404, "That isn’t one of your computers."))
-            } else if request.requests_wipe() {
-                Some(refused(409, "Wipe preparation is unavailable."))
             } else if self.link.disabled(&self.roster()?, &self.own()?.public) {
                 Some(refused(409, CHANGED))
             } else {

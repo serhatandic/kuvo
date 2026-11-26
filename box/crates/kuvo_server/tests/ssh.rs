@@ -95,10 +95,31 @@ struct Entry {
 
 impl Entry {
     fn start(home: &Path, command: Command) -> Self {
+        Self::start_with_pairings(home, command, None)
+    }
+
+    fn start_with_pairings(
+        home: &Path,
+        command: Command,
+        pairings: Option<Arc<dyn Pairings>>,
+    ) -> Self {
         let (stdin, from) = tokio::io::duplex(65536);
         let (into, stdout) = tokio::io::duplex(65536);
         let home = home.to_owned();
-        let task = tokio::spawn(async move { pipe(&home, command, from, into).await });
+        let task = tokio::spawn(async move {
+            if let Some(pairings) = pairings {
+                kuvo_server::ssh::pipe_with_transient_add(
+                    &home,
+                    command,
+                    from,
+                    into,
+                    std::future::ready(Some(pairings)),
+                )
+                .await
+            } else {
+                pipe(&home, command, from, into).await
+            }
+        });
         Self {
             stdin,
             stdout: BufReader::new(stdout),
@@ -130,6 +151,99 @@ impl Entry {
         assert!(self.rest().await.is_empty());
         (&mut self.task).await.unwrap().unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn transient_addressed_add_refuses_only_after_pairing_and_request_authentication() {
+    let home = tempfile::tempdir().unwrap();
+    let grants = Arc::new(Grants::default());
+    async fn expired(home: &Path, grants: Arc<Grants>) -> Entry {
+        let entry = Entry::start_with_pairings(home, Command::RouteTo, Some(grants));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(81)).await;
+        entry
+    }
+    for (method, path) in [
+        ("POST", "kuvo/computers/add"),
+        ("POST", "kuvo/computers/add/add_fixture/answer"),
+        ("DELETE", "kuvo/computers/add/add_fixture"),
+    ] {
+        let mut entry = expired(home.path(), grants.clone()).await;
+        addressed(&mut entry, json!({"method": method, "path": path})).await;
+        let reply = entry.read().await;
+        assert_eq!(reply["status"], 409);
+        assert_eq!(reply["computer"], URL_SAFE_NO_PAD.encode(public(BOX)));
+        assert_eq!(
+            serde_json::from_str::<Value>(reply["body"].as_str().unwrap()).unwrap(),
+            json!({"message": "Ask this through Kuvo running on this computer: a single request can’t stay to do it."})
+        );
+        entry.finish().await;
+    }
+    let mut entry = expired(home.path(), grants.clone()).await;
+    // An otherwise valid Noise opener from an unpaired key is answered just
+    // as it was before the fallback, without a greeting or a route reply.
+    let (reply, transport) = hello(&mut entry, [7; 32], &URL_SAFE_NO_PAD.encode(public(BOX))).await;
+    assert!(transport.is_none());
+    assert_eq!(
+        reply,
+        json!({"status":503, "routeVersion":"1", "body":"{\"message\":\"Kuvo on this computer is starting. Connect again in a moment.\"}"})
+    );
+    entry.finish().await;
+
+    let mut entry = expired(home.path(), grants.clone()).await;
+    let (head, _) = hello(&mut entry, DEVICE, &URL_SAFE_NO_PAD.encode(public(BOX))).await;
+    assert_eq!(head, json!({"allowed":true}));
+    let unsealed = br#"{"method":"POST","path":"kuvo/computers/add"}"#;
+    entry
+        .send(json!({"request":URL_SAFE_NO_PAD.encode(unsealed)}))
+        .await;
+    assert_eq!(entry.read().await, reply);
+    entry.finish().await;
+
+    let mut entry = expired(home.path(), grants.clone()).await;
+    let (head, transport) = hello(&mut entry, DEVICE, &URL_SAFE_NO_PAD.encode(public(BOX))).await;
+    assert_eq!(head, json!({"allowed":true}));
+    grants.removed.store(true, Ordering::Relaxed);
+    let sealed = transport.unwrap().seal(unsealed);
+    entry
+        .send(json!({"request":URL_SAFE_NO_PAD.encode(sealed)}))
+        .await;
+    assert_eq!(entry.read().await, reply);
+    entry.finish().await;
+    grants.removed.store(false, Ordering::Relaxed);
+
+    let mut entry = expired(home.path(), grants).await;
+    addressed(
+        &mut entry,
+        json!({"method":"GET", "path":"kuvo/computers/add"}),
+    )
+    .await;
+    assert_eq!(entry.read().await, reply);
+    entry.finish().await;
+}
+
+#[tokio::test]
+async fn addressed_requests_still_wait_for_and_reach_the_resident() {
+    let home = tempfile::tempdir().unwrap();
+    let grants = Arc::new(Grants::default());
+    let mut entry = Entry::start_with_pairings(home.path(), Command::RouteTo, Some(grants.clone()));
+    let waiting = tokio::spawn(async move {
+        addressed(&mut entry, json!({"path":"api/echo"})).await;
+        let reply = entry.read().await;
+        entry.finish().await;
+        reply
+    });
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(!waiting.is_finished());
+    let mut routes = Registry::new();
+    routes.engine(|request, _| async move {
+        assert_eq!(request.path, "api/echo");
+        assert_eq!(request.caller.pairing().unwrap().id, "box-test-grant");
+        Reply::json(StatusCode::OK, json!({"reached":true}))
+    });
+    let server = Server::start(home.path(), routes, grants).await;
+    assert_eq!(waiting.await.unwrap()["status"], 200);
+    server.stop().await;
 }
 
 impl Drop for Entry {

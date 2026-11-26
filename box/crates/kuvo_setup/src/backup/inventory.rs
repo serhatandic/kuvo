@@ -376,12 +376,12 @@ fn queue_snapshot(home: &Home, roots: &Roots, scratch: &Path) -> Result<Vec<Entr
         Ok(())
     };
     for (data, _, name, path) in files {
-        if data.kind != "queueFiles" {
-            stage(name, &path, Expected::default())?;
-        } else if name
-            .strip_prefix(QUEUE_FILES)
-            .and_then(|suffix| suffix.split('/').next())
-            .is_some_and(|id| !manifests.contains_key(id))
+        // Queue files listed in a manifest are staged with their expected hashes below.
+        if data.kind != "queueFiles"
+            || name
+                .strip_prefix(QUEUE_FILES)
+                .and_then(|suffix| suffix.split('/').next())
+                .is_some_and(|id| !manifests.contains_key(id))
         {
             stage(name, &path, Expected::default())?;
         }

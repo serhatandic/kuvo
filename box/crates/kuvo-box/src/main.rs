@@ -2,6 +2,8 @@
 mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
+#[cfg(target_os = "macos")]
+mod mac_wipe;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod install_released;
 mod bot_setup;
@@ -14,6 +16,8 @@ mod session_ownership;
 mod setup_search;
 #[cfg(target_os = "macos")]
 mod sign_ins;
+#[cfg(unix)]
+mod ssh_copy;
 mod updates;
 mod vault_asks;
 
@@ -128,6 +132,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("ssh-enroll"), Some(name), 2) => Some(name),
         _ => None,
     };
+    let ssh_seed = cfg!(unix)
+        && args.len() == 1
+        && matches!(word(0), Some("ssh-copy-seed" | "ssh-rollback-seed"));
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
     let wipe = (word(0), args.len()) == (Some("wipe-member"), 1);
     let helper_resident = (word(0), word(1), args.len()) == (Some("serve"), Some("--resident"), 2);
@@ -193,6 +200,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         _ if serve || wipe => None,
         _ if join
             || ssh_enroll.is_some()
+            || ssh_seed
             || seed
             || recovery.is_some()
             || identity
@@ -231,11 +239,6 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         environment.retain(|key, _| !key.eq_ignore_ascii_case("USERPROFILE"));
         Home::resolve(&account, Platform::Windows, &environment)?
     };
-    #[cfg(windows)]
-    kuvo_os::windows::private_home(
-        home.root(),
-        !wipe && uninstall.is_none() && startup != Some(false),
-    )?;
     #[cfg(not(windows))]
     let home = env::var_os("KUVO_HOME")
         .map(PathBuf::from)
@@ -243,11 +246,35 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     #[cfg(not(windows))]
     let home = Home::new(home)?;
+    let enrollment_code = if join || ssh_enroll.is_some() {
+        Some(read_installer_input(4098)?)
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    {
+        if let Some(code) = &enrollment_code {
+            kuvo_setup::installer::validate_join_code(code)?;
+        }
+        kuvo_os::windows::private_home(
+            home.root(),
+            !wipe && uninstall.is_none() && startup != Some(false),
+        )?;
+    }
     #[cfg(windows)]
     if wipe {
         kuvo_setup::wipe::wait_for_hand_over();
     }
+    #[cfg(target_os = "macos")]
+    if (serve && kuvo_setup::wipe::launch_app_wipe(home.root())?)
+        || (wipe && mac_wipe::finish(home.root())?)
+    {
+        return Ok(ExitCode::SUCCESS);
+    }
     if wipe || serve {
+        if kuvo_setup::wipe::headless_member_pending(home.root())? {
+            return finish_headless_member(&home);
+        }
         match kuvo_setup::wipe::finish(home.root())? {
             // A new installation at the path starts after the old one's erase.
             true if wipe || !home.root().exists() => return Ok(ExitCode::SUCCESS),
@@ -272,6 +299,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 windows_task: None,
             })
         };
+        #[cfg(unix)]
+        let outcome = if check {
+            kuvo_setup::uninstall::run(&home, true, startup)
+        } else {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime
+                .block_on(kuvo_setup::uninstall::stop_live(&home))
+                .unwrap_or_else(|| kuvo_setup::uninstall::run(&home, false, startup))
+        };
+        #[cfg(not(unix))]
         let outcome = kuvo_setup::uninstall::run(&home, check, startup);
         #[cfg(windows)]
         if !check
@@ -335,6 +374,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     if !join
         && ssh_enroll.is_none()
+        && !ssh_seed
         && !seed
         && recovery.is_none()
         && keeper.is_none()
@@ -359,6 +399,21 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         } else {
             None
         };
+        #[cfg(unix)]
+        if ssh_seed {
+            let worked = if word(0) == Some("ssh-copy-seed") {
+                match ssh_copy::apply(&home).await {
+                    Ok(report) => {
+                        println!("{}", serde_json::to_string(&report)?);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                ssh_copy::rollback(&home).await
+            };
+            return worked.map_err(Into::into);
+        }
         #[cfg(windows)]
         if let Some(install) = startup {
             if install {
@@ -400,8 +455,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             }
             Ok(())
-        } else if join || ssh_enroll.is_some() {
-            let code = read_installer_input(4098)?;
+        } else if let Some(code) = enrollment_code {
             let name = match ssh_enroll {
                 Some(name) => name.to_owned(),
                 None => hostname::get()?.to_string_lossy().into_owned(),
@@ -411,6 +465,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
                 #[cfg(not(windows))]
                 start_ssh_resident(&home, &identity).await?;
+                #[cfg(unix)]
+                if let Err(error) = kuvo_engine::Engine::finish_install_engine(home.root()) {
+                    eprintln!("retiring the staged engine receipt: {error}");
+                }
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;
@@ -419,7 +477,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(())
         } else if let Some(command) = command {
             tokio::select! {
-                result = ssh::pipe(home.root(), command, tokio::io::stdin(), tokio::io::stdout()) => result?,
+                result = ssh::pipe_with_transient_add(
+                    home.root(), command, tokio::io::stdin(), tokio::io::stdout(),
+                    kuvo_setup::transient_ssh_pairings(home.root()),
+                ) => result?,
                 () = shutdown() => {},
             }
             Ok(())
@@ -447,6 +508,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             serve::run(home.root(), launch, helper_ended, resident_shutdown(home.root(), supervised)).await
         }
     });
+    #[cfg(target_os = "macos")]
+    if serve && result.is_ok() && kuvo_setup::wipe::launch_app_wipe(home.root())? {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if serve && result.is_ok() && kuvo_setup::wipe::headless_member_pending(home.root())? {
+        drop(runtime);
+        return finish_headless_member(&home);
+    }
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
         // Let resident tasks and blocking file writers finish before detaching their home.
         drop(runtime);
@@ -461,6 +530,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
     runtime.shutdown_background();
     result.map(|()| ExitCode::SUCCESS)
+}
+
+fn finish_headless_member(home: &Home) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let finished = runtime.block_on(kuvo_setup::wipe::finish_headless_member(home.root()))?;
+    Ok(ExitCode::from(u8::from(!finished)))
 }
 
 #[cfg(windows)]
@@ -491,6 +568,7 @@ async fn start_ssh_resident(home: &Home, identity: &str) -> io::Result<()> {
     // They are not process environment variables and the child gets an explicit cwd.
     let environment = env::vars_os()
         .filter(|(name, _)| !name.as_encoded_bytes().starts_with(b"="))
+        .filter(|(name, _)| name != "KUVO_SSH_ACCOUNT_TOKEN")
         .collect();
     let mut spawn = Spawn::new(env::current_exe()?, environment);
     spawn.args.push("serve".into());
@@ -559,9 +637,16 @@ fn here(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Err
 }
 
 async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
+    let uninstall = async {
+        #[cfg(unix)]
+        kuvo_setup::uninstall::wait_for_stop(home).await;
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    };
     tokio::select! {
         () = shutdown() => {},
         () = kuvo_keeper::wait_for_stop(home), if supervised => {},
+        () = uninstall => {},
     }
 }
 
@@ -772,14 +857,17 @@ fn refused_install_attempt(home: &Home) -> bool {
 
 const WIPE_WAIT: &str = "This computer’s wipe hasn’t finished.";
 
-fn wipe_waiting_status(home: &Home) -> serde_json::Value {
-    serde_json::json!({"verdict":"waits", "verb":null, "message":WIPE_WAIT,
+fn wipe_waiting_status(home: &Home, message: &str) -> serde_json::Value {
+    serde_json::json!({"verdict":"waits", "verb":null, "message":message,
         "status":kuvo_move::rehome_status(home)})
 }
 
-fn install_wipe_offer(reply: &mut serde_json::Value, wipe: &kuvo_setup::wipe::InstallerWipe) {
+fn install_wipe_offer(
+    reply: &mut serde_json::Value,
+    receipt: Option<&kuvo_setup::wipe::ReinstallReceipt>,
+) {
     if reply["verdict"] == "fresh"
-        && let Some(receipt) = wipe.receipt()
+        && let Some(receipt) = receipt
     {
         reply["verb"] = serde_json::Value::Null;
         reply["offer"] = "reinstall-local".into();
@@ -866,8 +954,15 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         return Ok(ExitCode::FAILURE);
     }
     let wipe = kuvo_setup::wipe::installer_wipe(home.root(), true)?;
-    if wipe.waiting() {
-        println!("{}", wipe_waiting_status(&home));
+    #[cfg(target_os = "macos")]
+    let app_wipe = match &source {
+        Some(source) => mac_wipe::installer_wipe(source, &folder)?,
+        None => kuvo_setup::wipe::InstallerWipe::None,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let app_wipe = kuvo_setup::wipe::InstallerWipe::None;
+    if let Some(message) = app_wipe.pending_message().or(wipe.pending_message()) {
+        println!("{}", wipe_waiting_status(&home, message));
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(media) = media {
@@ -909,7 +1004,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         return Ok(ExitCode::FAILURE);
     }
     let mut reply = serde_json::to_value(judge)?;
-    install_wipe_offer(&mut reply, &wipe);
+    install_wipe_offer(&mut reply, wipe.receipt().or(app_wipe.receipt()));
     if reply["verdict"] == "two" {
         reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }

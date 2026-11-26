@@ -69,6 +69,24 @@ impl RecordEdits for Routes {
                         value: entry.recovered(),
                     }
                 }
+                ReleasedRename {
+                    mac,
+                    computer,
+                    named,
+                    key,
+                    name,
+                } => RecordEditAnswer {
+                    status: 200,
+                    value: writer
+                        .forward
+                        .released_rename(
+                            mac,
+                            computer,
+                            (named, key, name),
+                            matches!(caller, Caller::Paired { .. }),
+                        )
+                        .await?,
+                },
                 _ => return Ok(None),
             };
             Ok(Some(answer))

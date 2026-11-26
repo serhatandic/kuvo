@@ -249,10 +249,7 @@ impl RestorePlan {
                             symlink(Path::new(&link), &target)?;
                         }
                         Some(info)
-                            if info.is_symlink() && fs::read_link(&target)? == Path::new(&link) =>
-                        {
-                            ()
-                        }
+                            if info.is_symlink() && fs::read_link(&target)? == Path::new(&link) => {}
                         _ => return Err(Error::Message("Conflicting recovered project link.")),
                     }
                     kuvo_store::files::sync_parent(&target)?;

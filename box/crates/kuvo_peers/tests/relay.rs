@@ -1431,7 +1431,7 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
             .unwrap()
             .devices;
         let mut routes = Registry::new();
-        kuvo_peers::routes::register(&mut routes, resident.reader(), devices);
+        kuvo_peers::routes::register(&mut routes, resident.reader(), devices, resident.reach_again(), Default::default);
         let dispatcher = routes.build(LineTiming::default());
         let line = dispatcher
             .dispatch(
@@ -1969,7 +1969,8 @@ async fn switch_retry_survives_wall_clock_changes() {
 
     tokio::time::timeout(Duration::from_secs(20 * 60), async {
         let home = tempfile::tempdir().unwrap();
-        let (relay, mut wire) = TestRelay::connect().await;
+        // The resident reads the relay's welcome itself, as when serving starts.
+        let (relay, mut wire, _) = TestRelay::welcome(|_| {}).await;
         let here = public(RUST_KEY);
         let peer = public(PEER_KEY);
         let clock = Arc::new(AtomicI64::new(1_000_000));

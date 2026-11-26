@@ -4,16 +4,23 @@
 mod account_scripts;
 mod address;
 mod connect;
+mod fresh;
+mod local_reservation;
 mod saved_machine;
 mod transport;
+mod uninstall;
 
+#[cfg(unix)]
+pub(crate) use connect::is_reservation_token;
+pub(crate) use fresh::finish as finish_seed_for_member;
+pub(crate) use local_reservation::LocalReservation;
 pub use saved_machine::{SavedMachine, SavedOutput, with_saved_machine};
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -31,8 +38,11 @@ use crate::{
     edits::Submitter,
     preferences,
     routes::{response_refusal, submitter, typed},
+    seed::source::Selection,
     storage::Files,
 };
+
+const PHONE_LINK: &str = "phone-link.json";
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -69,6 +79,62 @@ struct Failure {
     again: bool,
 }
 
+struct AddError {
+    title: Option<String>,
+    message: String,
+    outcome: FailureOutcome,
+    again: bool,
+}
+
+enum FailureOutcome {
+    Operation,
+    AccountOccupied,
+    RollbackUnconfirmed,
+    ReservationCleanup(Option<Completed>),
+}
+
+impl AddError {
+    fn titled(title: String, message: String) -> Self {
+        Self {
+            title: Some(title),
+            ..Self::from(message)
+        }
+    }
+
+    fn occupied(name: &str) -> Self {
+        Self {
+            outcome: FailureOutcome::AccountOccupied,
+            ..Self::permanent(format!(
+                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
+            ))
+        }
+    }
+
+    fn permanent(message: String) -> Self {
+        Self {
+            again: false,
+            ..Self::from(message)
+        }
+    }
+}
+
+impl From<String> for AddError {
+    fn from(message: String) -> Self {
+        Self {
+            title: None,
+            message,
+            outcome: FailureOutcome::Operation,
+            again: true,
+        }
+    }
+}
+
+impl From<&str> for AddError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct Computer {
     key: String,
@@ -78,6 +144,16 @@ struct Computer {
 enum Completed {
     New(Computer),
     Known(Computer),
+    Uninstalled,
+}
+
+impl Completed {
+    fn computer(self) -> Option<Computer> {
+        match self {
+            Self::New(computer) | Self::Known(computer) => Some(computer),
+            Self::Uninstalled => None,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -90,6 +166,8 @@ struct Attempt {
     title: String,
     steps: Vec<Step>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    credentials: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<Failure>,
@@ -97,6 +175,8 @@ struct Attempt {
     computer: Option<Computer>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     known: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save: Option<crate::Receipt>,
 }
 
 impl Attempt {
@@ -125,23 +205,63 @@ impl Attempt {
             title: format!("Adding {name}…"),
             name,
             steps,
+            credentials: None,
             state: State::Working,
             question: None,
             failure: None,
             computer: None,
             known: false,
+            save: None,
         }
     }
 
-    fn fail(&mut self, message: String) {
+    fn uninstall(id: String, target: &uninstall::Target) -> Self {
+        Self {
+            id,
+            kind: "uninstall".into(),
+            destination: target.destination.as_str().into(),
+            name: target.name.clone(),
+            state: State::Working,
+            title: format!("Uninstalling Kuvo Code from {}…", target.name),
+            steps: [
+                ("checking", "Reaching it"),
+                ("removing", "Stopping and removing Kuvo Code"),
+                ("forgetting", "Taking it off your computers"),
+            ]
+            .into_iter()
+            .map(|(id, title)| Step {
+                id: id.into(),
+                title: title.into(),
+                state: StepState::Waiting,
+                detail: None,
+            })
+            .collect(),
+            credentials: None,
+            question: None,
+            failure: None,
+            computer: None,
+            known: false,
+            save: None,
+        }
+    }
+
+    fn fail(&mut self, error: AddError) {
         self.state = State::Failed;
         self.question = None;
-        self.title = format!("Couldn’t add {}", self.name);
+        self.title = if self.kind == "uninstall" {
+            format!("Couldn’t uninstall from {}", self.name)
+        } else {
+            format!("Couldn’t add {}", self.name)
+        };
         self.failure = Some(Failure {
-            title: self.title.clone(),
-            message,
-            again: true,
+            title: error.title.unwrap_or_else(|| self.title.clone()),
+            message: error.message,
+            again: error.again,
         });
+        if let FailureOutcome::ReservationCleanup(Some(completed)) = error.outcome {
+            self.known = matches!(completed, Completed::Known(_));
+            self.computer = completed.computer();
+        }
         for step in &mut self.steps {
             if step.state == StepState::Now {
                 step.state = StepState::Failed;
@@ -152,8 +272,23 @@ impl Attempt {
 
 struct Active {
     seen: Attempt,
+    selection: Option<[u8; 32]>,
     stop: Arc<AtomicBool>,
     answer: Option<oneshot::Sender<()>>,
+    done: watch::Receiver<()>,
+    committed: bool,
+}
+
+impl Active {
+    fn cancel(&mut self) {
+        if self.committed || self.stop.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.answer = None;
+        self.seen.question = None;
+        self.seen.state = State::Stopping;
+        self.seen.title = "Stopping…".into();
+    }
 }
 
 impl Drop for Active {
@@ -217,7 +352,8 @@ impl Action {
 }
 
 enum Change {
-    Start(Address, Submitter, WindowsMode),
+    Start(Address, Submitter, WindowsMode, Selection),
+    Uninstall(uninstall::Target, Submitter),
     Answer(String, Value),
     Cancel(String),
 }
@@ -231,9 +367,19 @@ enum WindowsMode {
 enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
-    HostKey(Vec<HostKey>, oneshot::Sender<()>),
-    Done(Result<Completed, String>),
+    ChosenCredentials(Vec<String>),
+    HostKey(Vec<HostKey>, bool, oneshot::Sender<()>),
+    RecoverAccount(String, oneshot::Sender<()>),
+    UninstallCommitted(Option<crate::Receipt>),
+    Done(Result<Completed, AddError>),
 }
+
+enum Work {
+    Add(Address, RemovalRevisions, Selection),
+    Uninstall(uninstall::Target, Option<watch::Receiver<()>>),
+}
+
+pub(crate) type RemovalRevisions = BTreeMap<String, u64>;
 
 enum Message {
     Client(Change, oneshot::Sender<Result<Value, Denied>>),
@@ -291,6 +437,25 @@ impl SetupHandle {
                         typed::<post_kuvo_computers_add::Spec, 202>(response.value)
                     } else {
                         Err(response_refusal(response))
+                    }
+                }
+            },
+        );
+        let route = adding.clone();
+        routes.register::<post_kuvo_computers_key_uninstall::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let route = route.clone();
+                async move {
+                    let key = call.param("key").unwrap_or_default();
+                    let by = submitter(&call.request.caller)?;
+                    let result = route.begin_uninstall(key, by).await;
+                    match result {
+                        Ok(value) => typed::<post_kuvo_computers_key_uninstall::Spec, 202>(value),
+                        Err(error) => Err(response_refusal(Response {
+                            status: error.status,
+                            value: error.value,
+                        })),
                     }
                 }
             },
@@ -354,6 +519,7 @@ impl Adding {
             files: files.clone(),
             changed,
             asks: 0,
+            reservations: Arc::default(),
         };
         for attempt in &mut owner.finished {
             if matches!(
@@ -373,7 +539,7 @@ impl Adding {
         }
     }
 
-    async fn allowed(&self, by: Submitter) -> Result<(), Denied> {
+    async fn allowed(&self, by: Submitter) -> Result<Vec<Value>, Denied> {
         let answer = self
             .setup
             .request_command(Command::SshAdmission(by))
@@ -385,16 +551,8 @@ impl Adding {
                 value: answer.value,
             });
         }
-        let home = self.files.root();
-        if !connect::has_release(home) {
-            let view = self.setup.views.borrow();
-            let name = view.setup["computers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|peer| peer["key"] == view.setup["you"]["key"])
-                .and_then(|peer| peer["name"].as_str())
-                .unwrap_or("This computer");
+        let name = local_name(&self.setup);
+        if !connect::has_release(self.files.root()) {
             return Err(Denied::new(
                 503,
                 format!(
@@ -402,23 +560,25 @@ impl Adding {
                 ),
             ));
         }
-        Ok(())
+        saved_machines(&self.files).map_err(|_| {
+            refuse(
+                503,
+                format!("{name}’s list of machines can’t be read right now."),
+            )
+        })
     }
 
     async fn page(&self) -> Value {
         let tries = self.views.borrow().clone();
-        if let Err(reason) = self.allowed(Submitter::Computer).await {
-            return json!({"can": false, "why": reason.value["message"], "hosts": [], "tries": tries});
-        }
+        let saved = match self.allowed(Submitter::Computer).await {
+            Ok(saved) => saved,
+            Err(reason) => {
+                return json!({"can": false, "why": reason.value["message"], "hosts": [], "tries": tries});
+            }
+        };
         let env = std::env::vars_os().collect();
         let account = kuvo_os::platform::Account::current()
             .and_then(|user| user.home_folder(kuvo_os::platform::Platform::current(), &env));
-        let saved = self
-            .files
-            .read::<Vec<Value>>("machines.json")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
         let taken = saved
             .iter()
             .flat_map(|record| {
@@ -496,6 +656,12 @@ impl Adding {
             .map_err(|_| unavailable())?;
         result.await.map_err(|_| unavailable())?
     }
+
+    async fn begin_uninstall(&self, key: &str, by: Submitter) -> Result<Value, Denied> {
+        let saved = self.allowed(by.clone()).await?;
+        let target = uninstall::Target::read(&self.files, &saved, key)?;
+        self.change(Change::Uninstall(target, by)).await
+    }
 }
 
 struct Owner {
@@ -505,6 +671,7 @@ struct Owner {
     setup: SetupHandle,
     changed: watch::Sender<Vec<Attempt>>,
     asks: u64,
+    reservations: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Owner {
@@ -541,41 +708,143 @@ impl Owner {
         self.changed.send_replace(next);
     }
 
+    fn spawn(
+        &mut self,
+        seen: Attempt,
+        by: Submitter,
+        windows: WindowsMode,
+        out: &mpsc::WeakSender<Message>,
+        work: Work,
+    ) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ended, done) = watch::channel(());
+        let selection = match &work {
+            Work::Add(_, _, selection) => Some(selection.ssh_hash()),
+            Work::Uninstall(_, _) => None,
+        };
+        self.active.push(Active {
+            seen: seen.clone(),
+            selection,
+            stop: stop.clone(),
+            answer: None,
+            done,
+            committed: false,
+        });
+        let job = Job {
+            id: seen.id,
+            messages: out.clone(),
+            stop,
+            files: self.files.clone(),
+            setup: self.setup.clone(),
+            by,
+            windows,
+            reservations: self.reservations.clone(),
+        };
+        tokio::spawn(async move {
+            let result = match work {
+                Work::Add(destination, revisions, selection) => {
+                    job.add(destination, revisions, selection).await
+                }
+                Work::Uninstall(target, after) => {
+                    if let Some(mut after) = after {
+                        let _ = after.changed().await;
+                    }
+                    uninstall::run(&job, target).await
+                }
+            };
+            let _ = job.send(Progress::Done(result)).await;
+            drop(ended);
+        });
+    }
+
     fn change(&mut self, change: Change, out: &mpsc::WeakSender<Message>) -> Result<Value, Denied> {
         match change {
-            Change::Start(destination, by, windows) => {
+            Change::Start(destination, by, windows, selection) => {
                 if let Some(now) = self
                     .active
                     .iter()
+                    .rev()
                     .find(|now| now.seen.destination == destination.as_str())
                 {
+                    if now.seen.kind == "uninstall" {
+                        return Err(refuse(
+                            409,
+                            format!(
+                                "Kuvo Code is being uninstalled from {} now. Add it again once that’s done.",
+                                now.seen.name
+                            ),
+                        ));
+                    }
+                    if now
+                        .selection
+                        .is_some_and(|saved| saved != selection.ssh_hash())
+                    {
+                        return Err(refuse(
+                            409,
+                            "An add with a different choice of sign-ins and keys is already in progress for this computer.",
+                        ));
+                    }
                     return Ok(json!({"try": now.seen}));
                 }
                 let id = format!(
                     "add_{}",
                     hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
                 );
-                let seen = Attempt::new(id.clone(), &destination);
-                let stop = Arc::new(AtomicBool::new(false));
-                let active = Active {
-                    seen: seen.clone(),
-                    stop: stop.clone(),
-                    answer: None,
-                };
-                self.active.push(active);
-                let job = Job {
-                    id,
-                    messages: out.clone(),
-                    stop,
-                    files: self.files.clone(),
-                    setup: self.setup.clone(),
+                let mut seen = Attempt::new(id, &destination);
+                seen.credentials = self
+                    .finished
+                    .iter()
+                    .find(|attempt| {
+                        attempt.kind == "add"
+                            && attempt.state == State::Failed
+                            && attempt.destination == destination.as_str()
+                    })
+                    .and_then(|attempt| attempt.credentials.clone())
+                    .or_else(|| Some(selection.ids().to_vec()));
+                let revisions = self
+                    .files
+                    .read::<crate::model::Link>(crate::actor::LINK)
+                    .ok()
+                    .flatten()
+                    .and_then(|link| link.member_list().ok())
+                    .and_then(|mut roster| roster.extra.remove("removalRevisions"))
+                    .and_then(|revisions| serde_json::from_value(revisions).ok())
+                    .unwrap_or_default();
+                self.spawn(
+                    seen.clone(),
                     by,
                     windows,
-                };
-                tokio::spawn(async move {
-                    let result = job.add(destination).await;
-                    let _ = job.send(Progress::Done(result)).await;
-                });
+                    out,
+                    Work::Add(destination, revisions, selection),
+                );
+                Ok(json!({"try": seen}))
+            }
+            Change::Uninstall(target, by) => {
+                let mut after = None;
+                if let Some(now) = self
+                    .active
+                    .iter_mut()
+                    .rev()
+                    .find(|now| now.seen.destination == target.destination.as_str())
+                {
+                    if now.seen.kind == "uninstall" {
+                        return Ok(json!({"try": now.seen}));
+                    }
+                    now.cancel();
+                    after = Some(now.done.clone());
+                }
+                let id = format!(
+                    "add_{}",
+                    hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
+                );
+                let seen = Attempt::uninstall(id, &target);
+                self.spawn(
+                    seen.clone(),
+                    by,
+                    WindowsMode::Wsl,
+                    out,
+                    Work::Uninstall(target, after),
+                );
                 Ok(json!({"try": seen}))
             }
             Change::Answer(id, input) => {
@@ -588,29 +857,28 @@ impl Owner {
                             && now.seen.question.as_ref().is_some_and(|question| {
                                 question["at"].as_u64().is_some()
                                     && question["at"].as_u64() == input["at"].as_u64()
+                                    && input["answer"].as_str().is_some_and(|id| {
+                                        question["answers"].as_array().is_some_and(|answers| {
+                                            answers.iter().any(|answer| answer["id"] == id)
+                                        })
+                                    })
                             })
-                            && matches!(input["answer"].as_str(), Some("trust" | "cancel"))
                     })
                     .ok_or_else(|| refuse(409, "It isn’t asking that now."))?;
                 now.seen.question = None;
-                if input["answer"] == "trust" {
+                if input["answer"] != "cancel" {
                     if let Some(answer) = now.answer.take() {
                         let _ = answer.send(());
                     }
                     now.seen.state = State::Working;
                 } else {
-                    now.stop.store(true, Ordering::Release);
-                    now.answer = None;
-                    now.seen.state = State::Stopping;
+                    now.cancel();
                 }
                 Ok(json!({"try": now.seen}))
             }
             Change::Cancel(id) => {
                 if let Some(now) = self.active.iter_mut().find(|now| now.seen.id == id) {
-                    now.stop.store(true, Ordering::Release);
-                    now.answer = None;
-                    now.seen.question = None;
-                    now.seen.state = State::Stopping;
+                    now.cancel();
                 } else if let Some(index) = self.finished.iter().position(|seen| seen.id == id) {
                     self.finished.remove(index);
                 } else {
@@ -626,7 +894,12 @@ impl Owner {
             return;
         };
         let now = &mut self.active[index];
-        if now.stop.load(Ordering::Acquire) && !matches!(progress, Progress::Done(_)) {
+        if now.stop.load(Ordering::Acquire)
+            && !matches!(
+                progress,
+                Progress::Done(_) | Progress::UninstallCommitted(_)
+            )
+        {
             return;
         }
         match progress {
@@ -634,6 +907,7 @@ impl Owner {
                 now.seen.title = format!("Adding {name}…");
                 now.seen.name = name;
             }
+            Progress::ChosenCredentials(ids) => now.seen.credentials = Some(ids),
             Progress::Step(id, state, detail) => {
                 for step in &mut now.seen.steps {
                     if step.id == id {
@@ -644,12 +918,9 @@ impl Owner {
                     }
                 }
             }
-            Progress::HostKey(keys, answer) => {
+            Progress::HostKey(keys, changed, answer) => {
                 self.asks += 1;
-                let here = self.setup.views.borrow().setup["you"]["name"]
-                    .as_str()
-                    .unwrap_or("This computer")
-                    .to_owned();
+                let here = local_name(&self.setup);
                 let name = &now.seen.name;
                 let mut facts = vec![json!({"label": "Address", "value": now.seen.destination})];
                 facts.extend(
@@ -661,25 +932,61 @@ impl Owner {
                     "value": key.fingerprint, "code": true})
                         }),
                 );
+                let (id, title, message, label, kind) = if changed {
+                    ("hostKeyChanged", format!("{name}’s host key changed"),
+                     "It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.".to_owned(),
+                     "Trust New Key", "danger")
+                } else {
+                    (
+                        "hostKey",
+                        format!("Is this {name}?"),
+                        format!(
+                            "{here} hasn’t connected to {name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it."
+                        ),
+                        "Trust",
+                        "primary",
+                    )
+                };
                 now.seen.question = Some(json!({
-                    "id": "hostKey", "title": format!("Is this {name}?"),
-                    "message": format!("{here} hasn’t connected to {name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it."),
+                    "id": id, "title": title, "message": message,
                     "at": self.asks, "facts": facts,
-                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"trust","label":"Trust","kind":"primary"}],
+                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"trust","label":label,"kind":kind}],
                 }));
                 now.seen.state = State::Asking;
                 now.answer = Some(answer);
             }
+            Progress::RecoverAccount(name, answer) => {
+                self.asks += 1;
+                now.seen.question = Some(json!({
+                    "id": "recoverAccount", "title": format!("Continue adding {name}?"),
+                    "message": format!("An earlier attempt to add {name} didn't finish, and it's no longer running. Kuvo can clear it and start again."),
+                    "at": self.asks, "facts": [],
+                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"recover","label":"Clear and Continue","kind":"primary"}],
+                }));
+                now.seen.state = State::Asking;
+                now.answer = Some(answer);
+            }
+            Progress::UninstallCommitted(save) => {
+                now.committed = true;
+                now.stop.store(false, Ordering::Release);
+                now.seen.save = save;
+                now.seen.state = State::Working;
+                now.seen.title = format!("Uninstalling Kuvo Code from {}…", now.seen.name);
+            }
             Progress::Done(result) => {
                 let mut now = self.active.remove(index);
-                if now.stop.load(Ordering::Acquire) && result.is_err() {
+                if now.stop.load(Ordering::Acquire)
+                    && result
+                        .as_ref()
+                        .is_err_and(|error| matches!(error.outcome, FailureOutcome::Operation))
+                {
                     return;
                 }
                 match result {
                     Ok(completed) => {
                         now.seen.state = State::Done;
                         now.seen.question = None;
-                        let computer = match completed {
+                        now.seen.computer = match completed {
                             Completed::Known(computer) => {
                                 now.seen.known = true;
                                 now.seen.name.clone_from(&computer.name);
@@ -687,17 +994,23 @@ impl Owner {
                                     "{} is {}, already one of your computers",
                                     now.seen.destination, computer.name
                                 );
-                                computer
+                                Some(computer)
                             }
                             Completed::New(computer) => {
                                 now.seen.title =
                                     format!("{} is one of your computers", now.seen.name);
-                                computer
+                                Some(computer)
+                            }
+                            Completed::Uninstalled => {
+                                now.seen.title =
+                                    format!("{} no longer has Kuvo Code running", now.seen.name);
+                                None
                             }
                         };
-                        now.seen.computer = Some(computer);
                         for step in &mut now.seen.steps {
-                            step.state = StepState::Done;
+                            if step.state == StepState::Now || now.seen.kind == "add" {
+                                step.state = StepState::Done;
+                            }
                         }
                     }
                     Err(message) => now.seen.fail(message),
@@ -712,6 +1025,7 @@ impl Owner {
     }
 }
 
+#[derive(Clone)]
 struct Job {
     id: String,
     messages: mpsc::WeakSender<Message>,
@@ -720,6 +1034,7 @@ struct Job {
     files: Files,
     by: Submitter,
     windows: WindowsMode,
+    reservations: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Job {
@@ -741,13 +1056,73 @@ impl Job {
         self.send(Progress::Step(id, state, detail.into())).await
     }
 
-    async fn add(&self, destination: Address) -> Result<Completed, String> {
+    async fn admit(&self) -> Result<(), String> {
+        let reply = self
+            .setup
+            .request_command(Command::SshAdmission(self.by.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+        if self.stop.load(Ordering::Acquire) {
+            return Err("The Add was stopped.".into());
+        }
+        match reply.status {
+            200 => Ok(()),
+            403 => Err(
+                "The device that started this add is no longer paired. Start a new add from one of your devices."
+                    .into(),
+            ),
+            _ => Err(reply.value["message"]
+                .as_str()
+                .unwrap_or("The Add was stopped.")
+                .into()),
+        }
+    }
+
+    async fn add(
+        &self,
+        destination: Address,
+        revisions: RemovalRevisions,
+        selection: Selection,
+    ) -> Result<Completed, AddError> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
             .await?;
         let remote = Destination::inspect(self, destination.clone(), &name).await?;
+        self.admit().await?;
+        let mut account = remote.reserve(self).await?;
+        let result = self
+            .add_at(
+                &remote,
+                &destination,
+                account.as_mut(),
+                revisions,
+                &selection,
+            )
+            .await;
+        if let Some(account) = account
+            && let Err(message) = account.release(result.as_ref().err()).await
+        {
+            return Err(AddError {
+                title: None,
+                message,
+                outcome: FailureOutcome::ReservationCleanup(result.ok()),
+                again: true,
+            });
+        }
+        result
+    }
+
+    async fn add_at(
+        &self,
+        remote: &Destination,
+        destination: &Address,
+        mut account: Option<&mut connect::Reservation<'_>>,
+        revisions: RemovalRevisions,
+        selection: &Selection,
+    ) -> Result<Completed, AddError> {
         let name = remote.name();
-        if let Some(existing) = remote.existing() {
+        let state = remote.inspect_account(account.as_deref_mut()).await?;
+        if let Some(existing) = state.existing {
             if let Some(identity) = &existing.identity {
                 let result = self
                     .setup
@@ -755,6 +1130,8 @@ impl Job {
                         identity: identity.clone(),
                         key: existing.key.clone(),
                         destination: destination.as_str().into(),
+                        name: name.into(),
+                        revisions,
                         by: self.by.clone(),
                     })
                     .await
@@ -772,38 +1149,91 @@ impl Job {
                     return Err(result.value["message"]
                         .as_str()
                         .unwrap_or("Couldn’t keep the SSH address.")
-                        .to_owned());
+                        .into());
                 }
             }
-            return Err(format!(
-                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-            ));
+            return Err(AddError::occupied(name));
         }
+        let copy = if let Some(account) = account.as_deref_mut() {
+            let (setup_id, primary) = {
+                let view = self.setup.views.borrow();
+                (
+                    view.setup["setup"].as_str().unwrap_or_default().to_owned(),
+                    view.setup["primary"]["key"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            };
+            let mut fresh = fresh::Fresh::new(&setup_id, &primary, selection);
+            if let Some(before) = &state.fresh {
+                if !before.same_scope(&fresh) {
+                    return Err("This OS account still has an interrupted add. Finish that attempt or remove the interrupted installation first.".into());
+                }
+                if before.phase == fresh::Phase::Copying && !before.same_selection(&fresh) {
+                    return Err("The interrupted add had a different choice of sign-ins and keys. Resume with that choice or remove the interrupted installation first.".into());
+                }
+                fresh.phase = before.phase;
+            }
+            if state.pristine || state.fresh.is_some() {
+                let seed = crate::seed::source::capture_ssh(&self.files, selection).await
+                    .map_err(|(_, message)| if message == crate::seed::source::MISSING {
+                        "Some selected sign-ins or keys are no longer available. Open the checklist again and retry."
+                    } else { message })?;
+                self.admit().await?;
+                self.send(Progress::ChosenCredentials(selection.ids().to_vec()))
+                    .await?;
+                remote
+                    .stage_fresh(account, state.fresh.as_ref(), &fresh)
+                    .await?;
+                Some((fresh, seed))
+            } else {
+                None
+            }
+        } else if !selection.empty() {
+            return Err("The release has no engine for this machine.".into());
+        } else {
+            None
+        };
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
         }
+        self.admit().await?;
         self.step("files", StepState::Now, "").await?;
-        remote.install(self).await?;
-        self.step("engine", StepState::Done, "").await?;
-        self.step("starting", StepState::Done, "").await?;
-        self.step("seeding", StepState::Done, "Nothing to copy.")
+        remote
+            .install(self, account.as_deref_mut(), state.fresh.is_some())
             .await?;
-        self.step("joining", StepState::Now, "").await?;
-        let invite = self
-            .setup
-            .request_command(Command::InstallerCode(None, self.by.clone()))
-            .await
-            .map_err(|error| error.to_string())?;
-        let code = invite.value["code"].as_str().ok_or_else(|| {
-            invite.value["message"]
-                .as_str()
-                .unwrap_or("Your main computer could not issue an installer code.")
-                .to_owned()
-        })?;
-        let invitation = crate::installer::Code::read(code)
-            .map(|(code, _)| crate::installer::hash(&code.token))
-            .ok_or("Your main computer could not issue an installer code.")?;
-        let (computer, identity) = remote.enroll(self, name, code).await?;
+        let mut started = None;
+        let enrolled = self
+            .finish_enrollment(remote, account.as_deref_mut(), copy, &mut started)
+            .await;
+        let (computer, identity, invitation) = match enrolled {
+            Ok(enrolled) => enrolled,
+            Err(mut error) => {
+                if !matches!(error.outcome, FailureOutcome::AccountOccupied)
+                    && let (Some(fresh), Some(account)) = (started, account)
+                {
+                    let settled = account.can_cleanup();
+                    let cleaned = settled && remote.rollback_seed(account, &fresh).await;
+                    let stopped = self.stop.load(Ordering::Acquire);
+                    if stopped && !cleaned {
+                        error = AddError {
+                            title: Some(format!("{name} is still running Kuvo Code")),
+                            message: format!(
+                                "This was stopped after Kuvo Code had started on {name}, and it couldn’t be stopped there again. Kuvo Code may still be running on {name}, with the keys and sign-ins copied there. Add {name} again, then uninstall it from its page."
+                            ),
+                            outcome: FailureOutcome::RollbackUnconfirmed,
+                            again: true,
+                        };
+                    } else if cleaned && !stopped {
+                        error.message.push_str(&format!(" Kuvo Code was stopped on {name} again, and the keys and sign-ins copied there were deleted."));
+                    } else if settled && !cleaned {
+                        error.message.push_str(&format!(" Kuvo Code may still be running on {name}, with the keys and sign-ins copied there. Add {name} again, then uninstall it from its page."));
+                    }
+                }
+                return Err(error);
+            }
+        };
         let done = self
             .setup
             .request_command(Command::SshAddress {
@@ -824,6 +1254,182 @@ impl Job {
         }
         Ok(Completed::New(computer))
     }
+
+    async fn finish_enrollment(
+        &self,
+        remote: &Destination,
+        mut account: Option<&mut connect::Reservation<'_>>,
+        copy: Option<(fresh::Fresh, crate::seed::source::SshSeed)>,
+        started: &mut Option<fresh::Fresh>,
+    ) -> Result<(Computer, String, String), AddError> {
+        let name = remote.name();
+        self.admit().await?;
+        if let Some((mut fresh, seed)) = copy {
+            let account = account
+                .as_deref_mut()
+                .ok_or("The SSH account is no longer reserved.")?;
+            self.step("starting", StepState::Now, "").await?;
+            let previous = fresh.clone();
+            fresh.phase = fresh::Phase::Copying;
+            remote.stage_fresh(account, Some(&previous), &fresh).await?;
+            self.admit().await?;
+            *started = Some(fresh.clone());
+            let renewing = seed.renewing;
+            let copied = remote.copy_seed(self, account, &fresh, seed).await?;
+            self.admit().await?;
+            self.step("seeding", StepState::Done, &copied.detail(name, renewing))
+                .await?;
+        } else {
+            self.step("engine", StepState::Done, "").await?;
+            self.step("starting", StepState::Done, "").await?;
+            let detail = if account.is_some() {
+                "It keeps its own"
+            } else {
+                "Nothing to copy."
+            };
+            self.step("seeding", StepState::Done, detail).await?;
+        }
+        self.step("joining", StepState::Now, "").await?;
+        let invite = self
+            .setup
+            .request_command(Command::InstallerCode(None, self.by.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+        let code = invite.value["code"].as_str().ok_or_else(|| {
+            invite.value["message"]
+                .as_str()
+                .unwrap_or("Your main computer could not issue an installer code.")
+                .to_owned()
+        })?;
+        let invitation = crate::installer::Code::read(code)
+            .map(|(code, _)| crate::installer::hash(&code.token))
+            .ok_or("Your main computer could not issue an installer code.")?;
+        self.admit().await?;
+        let (computer, identity) = remote.enroll(self, account, name, code).await?;
+        Ok((computer, identity, invitation))
+    }
+}
+
+fn local_name(setup: &SetupHandle) -> String {
+    let view = setup.views.borrow();
+    view.setup["computers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|peer| peer["key"] == view.setup["you"]["key"])
+        .and_then(|peer| peer["name"].as_str())
+        .unwrap_or("This computer")
+        .to_owned()
+}
+
+pub(crate) fn saved_machines(files: &Files) -> Result<Vec<Value>, crate::Error> {
+    let unreadable = || crate::Error::Invalid("saved list of machines");
+    if let Some(records) = files.read::<Vec<Value>>("machines.json")? {
+        if records.iter().all(|row| row["destination"].is_string()) {
+            return Ok(records);
+        }
+        return Err(unreadable());
+    }
+    if let Some(links) =
+        kept_hosts_files(files).read::<serde_json::Map<String, Value>>(PHONE_LINK)?
+        && let Some(machines) = links.get("machines").filter(|value| !value.is_null())
+        && !machines.as_object().is_some_and(|items| items.is_empty())
+    {
+        return Err(unreadable());
+    }
+    Ok(Vec::new())
+}
+
+fn kept_hosts_files(files: &Files) -> Files {
+    if cfg!(target_os = "macos")
+        && std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac")
+        && let Some(parent) = files.root().parent()
+    {
+        Files::new(parent.to_owned())
+    } else {
+        files.clone()
+    }
+}
+
+pub(crate) fn keep_ssh_host(
+    files: &Files,
+    destination: &str,
+    peer: &crate::model::Peer,
+) -> Result<(), crate::Error> {
+    let files = kept_hosts_files(files);
+    let path = files.path("phone-link.json.lock");
+    let _lock = kuvo_store::locks::OwnedLock::acquire(&path, std::time::Duration::from_secs(2))
+        .map_err(|source| crate::Error::File {
+            action: "locking the saved SSH hosts at",
+            path,
+            source,
+        })?;
+    let mut whole = files
+        .read::<serde_json::Map<String, Value>>(PHONE_LINK)?
+        .unwrap_or_default();
+    let mut machines = whole
+        .remove("machines")
+        .and_then(|value| match value {
+            Value::Object(machines) => Some(machines),
+            _ => None,
+        })
+        .unwrap_or_default();
+    machines.insert(
+        destination.into(),
+        json!({
+            "name": peer.name, "address": peer.address, "key": peer.key,
+            "sign": peer.sign, "anotherMac": false, "peers": true,
+        }),
+    );
+    whole.insert("machines".into(), Value::Object(machines));
+    files.write(PHONE_LINK, &whole)
+}
+
+pub(crate) fn saved_ssh_destination(
+    files: &Files,
+    saved: &[Value],
+    link: &crate::model::Link,
+    peer: &crate::model::Peer,
+) -> Result<Option<String>, crate::Error> {
+    let kept = kept_hosts_files(files)
+        .read::<Value>(PHONE_LINK)?
+        .unwrap_or_default();
+    Ok(saved.iter().find_map(|row| {
+        let destination = row["destination"].as_str()?;
+        if let Some(bound) = kept["machines"][destination]["key"].as_str() {
+            return (bound == peer.key).then(|| destination.to_owned());
+        }
+        // Earlier Rust enrollments kept their address on the roster. The local
+        // issuer's retained claim ties that record to the same peer.
+        (peer.extra.get("id").and_then(Value::as_str) == Some(destination)
+            && link.installer_invites.values().any(|invite| {
+                invite
+                    .claim
+                    .as_ref()
+                    .is_some_and(|claim| claim.matches(peer))
+            }))
+        .then(|| destination.to_owned())
+    }))
+}
+
+pub(crate) fn forget_ssh_destination(
+    files: &Files,
+    link: &crate::model::Link,
+    destination: &str,
+) -> Result<(), crate::Error> {
+    let mut saved = saved_machines(files)?;
+    if let Some(kept) = kept_hosts_files(files).read::<Value>(PHONE_LINK)?
+        && let Some(key) = kept["machines"][destination]["key"].as_str()
+        && link.member_list()?.boxes.iter().any(|peer| peer.key == key)
+    {
+        return Ok(());
+    }
+    let before = saved.len();
+    saved.retain(|row| row["destination"] != destination);
+    if saved.len() != before {
+        files.write("machines.json", &saved)?;
+    }
+    Ok(())
 }
 
 struct Denied {
@@ -871,19 +1477,13 @@ fn start(value: Value, by: Submitter) -> Result<Change, Denied> {
     }
     let destination = Address::read(value["destination"].as_str().unwrap_or(""))
         .map_err(|message| refuse(400, message))?;
-    let selection = crate::seed::source::Selection::read(value.get("credentials").cloned())
+    let selection = Selection::read(value.get("credentials").cloned())
         .ok_or_else(|| refuse(400, "Choose sign-ins and keys by their checklist IDs."))?;
-    if !selection.empty() {
-        return Err(refuse(
-            503,
-            "Some selected sign-ins or keys are no longer available. Open the checklist again.",
-        ));
-    }
     let windows = match value.get("windows") {
         None => WindowsMode::Wsl,
         Some(value) if value == "native" => WindowsMode::Native,
         Some(value) if value == "wsl" => WindowsMode::Wsl,
         Some(_) => return Err(refuse(400, "Choose native Windows or WSL.")),
     };
-    Ok(Change::Start(destination, by, windows))
+    Ok(Change::Start(destination, by, windows, selection))
 }

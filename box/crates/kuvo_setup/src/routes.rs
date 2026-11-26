@@ -1,4 +1,6 @@
 mod record_edits;
+mod released_rename;
+pub(crate) use released_rename::given_name;
 
 pub use record_edits::{RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
 
@@ -259,10 +261,12 @@ impl SetupHandle {
             }
         });
         let setup = self.clone();
+        let released = records.clone();
         routes.register::<patch_kuvo_computers_key::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
                 let setup = setup.clone();
+                let released = released.clone();
                 async move {
                     let by = submitter(&call.request.caller)?;
                     let key = call.param("key").unwrap_or_default().to_owned();
@@ -270,6 +274,12 @@ impl SetupHandle {
                         .ok()
                         .and_then(|body| body["name"].as_str().map(ToOwned::to_owned))
                         .unwrap_or_default();
+                    if let Some(answer) = setup
+                        .released_rename(&key, &name, &call.request.caller, released.as_ref())
+                        .await?
+                    {
+                        return respond(answer);
+                    }
                     let answer = setup
                         .request(Command::RenameComputer(key, name, by))
                         .await?;
@@ -312,6 +322,23 @@ impl SetupHandle {
                         })?
                         .unwrap_or_default()
                 };
+                if !request.valid() {
+                    return Err(Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Send a valid removal request.",
+                    ));
+                }
+                if kuvo_wire::keys::decode_exact::<32>(&key).is_none() {
+                    return Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "That isn’t one of your computers.",
+                    ));
+                }
+                if request.requires_local_app()
+                    && (wipe != Some(true) || !matches!(&by, Submitter::Computer))
+                {
+                    return Err(Refusal::new(StatusCode::FORBIDDEN, Unlink::LOCAL_APP_ONLY));
+                }
                 request.on_route(wipe);
                 respond(
                     setup

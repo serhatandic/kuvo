@@ -58,8 +58,15 @@ impl ManagedDevices for SetupHandle {
             let removing = matches!(change, DeviceChange::Revoke(_));
             let main = {
                 let view = self.views.borrow();
-                if !removing && view.access.disabled {
-                    return Err(devices::Error::Disabled);
+                if !removing {
+                    if let Some(main) = view.access.aside_main.as_deref() {
+                        return Err(devices::Error::Authority(format!(
+                            "{main} doesn't list this computer in its setup now. Re-add this computer from {main} to pair this app."
+                        )));
+                    }
+                    if view.access.disabled {
+                        return Err(devices::Error::Disabled);
+                    }
                 }
                 (view.setup["you"]["role"] == "member")
                     .then(|| view.setup["primary"]["name"].as_str().map(str::to_owned))

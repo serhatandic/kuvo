@@ -3,6 +3,9 @@
 mod here;
 pub use here::locate;
 
+pub(crate) const OWN_BOX_RAN: &[&str] =
+    &["setup-card.json", "link.json", "serve.json", "keeper.json"];
+
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;

@@ -16,7 +16,10 @@ use serde_json::{Value, json};
 use super::{Applicant, CLAIM_LIFETIME, Cancellation, Code, credentials, hash};
 use crate::{
     Error,
-    actor::{LINK, new_setup, project_membership, remember_link_key, validate_disk, write_link},
+    actor::{
+        LINK, bootstrap, new_setup, project_membership, remember_link_key, validate_disk,
+        write_link,
+    },
     document, lease,
     model::{
         ComputerKind, Entry, Identity, Link, Membership, Position, Role, SharedKind, safe_token,
@@ -24,6 +27,7 @@ use crate::{
     },
     random,
     storage::Files,
+    wipe,
 };
 
 const KIND: ComputerKind = ComputerKind::Machine;
@@ -109,7 +113,7 @@ pub fn cancellation_receipts(home: &Home) -> Result<Vec<String>, Error> {
         && let Some(receipt) = claim.cancellation()
         && (claim.cancel_pending
             || claim.until <= lease::wall()
-            || has_work(&files, &link).unwrap_or(true))
+            || has_work(&files, &link, false).unwrap_or(true))
     {
         if !claim.cancel_pending {
             claim.cancel_pending = true;
@@ -156,6 +160,8 @@ struct Reply {
     copy_credentials: bool,
     #[serde(default)]
     credential_complete: bool,
+    #[serde(default)]
+    cancelled: bool,
     credential_until: Option<u64>,
     credential_problem: Option<String>,
     seed: Option<Value>,
@@ -173,6 +179,7 @@ struct Docs {
 
 enum Exchange {
     Enroll,
+    Cancel,
     Activate { portable: bool },
     AcknowledgeCredentials,
 }
@@ -190,14 +197,33 @@ struct CredentialCopy {
 }
 
 pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
-    join_at(home, name, input, false).await
+    join_and_reinstall(home, name, input, false).await
 }
 
 pub async fn join_ssh(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
-    join_at(home, name, input, true).await
+    join_and_reinstall(home, name, input, true).await
 }
 
-async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
+async fn join_and_reinstall(
+    home: &Home,
+    name: String,
+    input: &str,
+    staged: bool,
+) -> Result<Joined, Error> {
+    let (joined, prior) = join_at(home, name, input, staged).await?;
+    if let Some(receipt) = prior.receipt()
+        && let Err(error) = wipe::finish_reinstall(home.root(), receipt)
+    {
+        eprintln!("clearing the former installation’s wipe receipt: {error}");
+    }
+    Ok(joined)
+}
+
+pub fn validate_join_code(input: &str) -> Result<(), Error> {
+    read_join_code(input).map(|_| ())
+}
+
+fn read_join_code(input: &str) -> Result<(Code, Host), Error> {
     let text = input.trim();
     if text.len() <= 4096
         && let Some((version, _)) = text
@@ -225,10 +251,33 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             "Use Merge Setups on the setup this code was made for.",
         ));
     }
+    Ok((code, primary))
+}
+
+async fn join_at(
+    home: &Home,
+    name: String,
+    input: &str,
+    staged: bool,
+) -> Result<(Joined, wipe::InstallerWipe), Error> {
+    let (code, primary) = read_join_code(input)?;
+    let prior = wipe::installer_wipe(home.root(), true).map_err(|source| Error::File {
+        action: "checking the earlier wipe at",
+        path: home.root().to_owned(),
+        source,
+    })?;
+    if let Some(message) = prior.pending_message() {
+        return Err(refused(message));
+    }
+    let ssh_account = if staged {
+        crate::ssh::LocalReservation::inherited(home.root())?
+    } else {
+        None
+    };
     // Opening for enrollment never starts a move. A fresh applicant can
     // initialize its layout here, after the code is validated.
     if staged {
-        open_staged_home(home)?;
+        open_staged_home_at(home, ssh_account.as_ref())?;
     } else {
         layout::open(home)?;
     }
@@ -278,16 +327,44 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     if blocked {
         return Err(refused(IN_USE));
     }
+    let mut cancellation = None;
     if !already_joined {
-        check_join(&files, &link, &code, &id, claim.as_ref())?;
-        if link.extra.get("codeIdentity").and_then(Value::as_str) != Some(&id)
+        link.name
+            .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
+        let pending_claim = claim.as_ref().filter(|held| {
+            held.invite == id
+                && !held.adopted
+                && link
+                    .setup
+                    .as_ref()
+                    .is_none_or(|setup| setup.role != Role::Member)
+        });
+        if pending_claim.is_some_and(|held| {
+            held.cancel_pending || (held.recovery.is_some() && held.until <= lease::wall())
+        }) {
+            cancellation = Some(refused("This computer could not join."));
+        } else if let Err(problem) = check_join(
+            &files,
+            &link,
+            &code,
+            &id,
+            claim.as_ref(),
+            ssh_account.as_ref(),
+        ) {
+            if pending_claim.is_none() {
+                return Err(problem);
+            }
+            cancellation = Some(problem);
+        }
+        if cancellation.is_none()
+            && link.extra.get("codeIdentity").and_then(Value::as_str) != Some(&id)
             && !claim.as_ref().is_some_and(|claim| claim.invite == id)
         {
+            let standalone = link.setup.take();
             link.key = Some(encode(&random::<32>()?));
             link.sign = Some(encode(&random::<32>()?));
             link.secret = Some(encode(&random::<32>()?));
             // The old bootstrap certificate belongs to the old signer.
-            link.setup = None;
             link.leadership.clear();
             link.shared_setup = None;
             link.shared.clear();
@@ -305,9 +382,18 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             }
             claim = None;
             link.extra.insert("codeIdentity".into(), json!(id));
+            if let Some(standalone) = standalone {
+                let released = link.extra.get("releasedSetup").and_then(Value::as_str)
+                    == Some(&standalone.position.id);
+                let own = Identity::read(&link)?;
+                bootstrap(&files, &mut link, &own, KIND)?;
+                if released {
+                    let setup = link.setup()?;
+                    link.extra
+                        .insert("releasedSetup".into(), json!(setup.position.id));
+                }
+            }
         }
-        link.name
-            .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
         link.extra.entry("phones").or_insert_with(|| json!([]));
     }
     if already_joined
@@ -317,13 +403,16 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                 && !claim.credentials_ack_pending
         })
     {
-        return Ok(Joined {
-            setup: code.setup,
-            primary: code.primary,
-        });
+        return Ok((
+            Joined {
+                setup: code.setup,
+                primary: code.primary,
+            },
+            prior,
+        ));
     }
     let identity = Identity::read(&link)?;
-    if !already_joined {
+    if !already_joined && cancellation.is_none() {
         remember_link_key(&mut link, &identity, KIND);
         saved_link.write(&link)?;
     }
@@ -360,6 +449,20 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         merging: false,
         credential_ack: false,
     };
+    if let Some(problem) = cancellation {
+        let claim = claim.as_mut().ok_or(Error::Conflict)?;
+        return cancel_join(
+            &mut saved_link,
+            &mut link,
+            claim,
+            &mut relay,
+            &primary,
+            &mut given,
+            problem,
+        )
+        .await
+        .map(|joined| (joined, prior));
+    }
     let mut copy = None;
     if !already_joined {
         let accepted = exchange(
@@ -368,7 +471,14 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             &mut given,
             Exchange::Enroll,
             |recovery_capable| {
-                check_join(&files, &link, &code, &id, claim.as_ref())?;
+                check_join(
+                    &files,
+                    &link,
+                    &code,
+                    &id,
+                    claim.as_ref(),
+                    ssh_account.as_ref(),
+                )?;
                 if !claim.as_ref().is_some_and(|claim| claim.invite == id) {
                     let recovery = if recovery_capable {
                         Some(Recovery {
@@ -400,9 +510,24 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                     .map(|recovery| hash(&recovery.secret)))
             },
         )
-        .await?
-        .ok_or(Error::Invalid("installer membership"))?;
-        check_join(&files, &link, &code, &id, claim.as_ref())?;
+        .await;
+        if let Some(held) = claim.as_mut()
+            && let Err(problem) =
+                check_join(&files, &link, &code, &id, Some(held), ssh_account.as_ref())
+        {
+            return cancel_join(
+                &mut saved_link,
+                &mut link,
+                held,
+                &mut relay,
+                &primary,
+                &mut given,
+                problem,
+            )
+            .await
+            .map(|joined| (joined, prior));
+        }
+        let accepted = accepted?.ok_or(Error::Invalid("installer membership"))?;
         adopt(&mut link, &identity, &code, accepted.doc)?;
         let saved = claim.as_mut().ok_or(Error::Conflict)?;
         saved.adopted = true;
@@ -495,13 +620,61 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         claim.credentials_ack_pending = false;
         saved_link.keep_claim(&mut link, claim)?;
     }
-    Ok(Joined {
-        setup: code.setup,
-        primary: code.primary,
-    })
+    Ok((
+        Joined {
+            setup: code.setup,
+            primary: code.primary,
+        },
+        prior,
+    ))
+}
+
+async fn cancel_join(
+    saved: &mut SavedLink<'_>,
+    link: &mut Link,
+    claim: &mut LocalClaim,
+    relay: &mut relay::Relay,
+    primary: &Host,
+    given: &mut Applicant,
+    problem: Error,
+) -> Result<Joined, Error> {
+    const RECOVERY: &str = "Run installer-recovery issue on this computer and installer-recovery apply on the setup’s current main computer.";
+    if !claim.cancel_pending {
+        claim.cancel_pending = true;
+        saved.keep_claim(link, claim)?;
+    }
+    if claim.recovery.is_some() && claim.until <= lease::wall() {
+        return Err(Error::Installer(format!(
+            "{problem} The installer claim expired. {RECOVERY}"
+        )));
+    }
+    if let Err(error) = exchange(relay, primary, given, Exchange::Cancel, |_| Ok(None)).await {
+        let detail = if claim.recovery.is_some() {
+            RECOVERY.to_owned()
+        } else {
+            format!(
+                "{error} Run the installer again with the original code to finish cancelling the enrollment."
+            )
+        };
+        return Err(Error::Installer(format!("{problem} {detail}")));
+    }
+    let key = Identity::read(link)?.public;
+    link.extra.insert("departedKey".into(), json!(key));
+    link.extra.shift_remove("installerClaim");
+    saved.write(link)?;
+    Err(Error::Installer(format!(
+        "{problem} The enrollment was cancelled. This computer kept its own setup."
+    )))
 }
 
 pub fn open_staged_home(home: &Home) -> Result<(), Error> {
+    open_staged_home_at(home, None)
+}
+
+pub(crate) fn open_staged_home_at(
+    home: &Home,
+    ssh_account: Option<&crate::ssh::LocalReservation>,
+) -> Result<(), Error> {
     use std::fs;
 
     if layout::inspect(home)? != layout::Layout::Unmarked {
@@ -520,7 +693,14 @@ pub fn open_staged_home(home: &Home) -> Result<(), Error> {
             }
             match entry.file_name().to_str()? {
                 ".folder-upgrade.lock" => (),
-                "run" if fs::read_dir(entry.path()).ok()?.next().is_none() => (),
+                "run"
+                    if fs::read_dir(entry.path()).ok()?.all(|file| {
+                        file.is_ok_and(|file| {
+                            ssh_account.is_some_and(|account| {
+                                account.owns_layout_file(home.root(), &file.path())
+                            })
+                        })
+                    }) => {}
                 "bin"
                     if fs::read_dir(entry.path()).ok()?.all(|file| {
                         file.is_ok_and(|file| {
@@ -529,10 +709,8 @@ pub fn open_staged_home(home: &Home) -> Result<(), Error> {
                                 Some("kuvo-box" | "kuvo-box.exe" | "Kuvo.exe" | "libunwind.dll")
                             ) && file.file_type().is_ok_and(|kind| kind.is_file())
                         })
-                    }) =>
-                {
-                    ()
-                }
+                    }) => {}
+                "engine" if ssh_account.is_some() && only_cached_engine(&entry.path()) => (),
                 _ => return None,
             }
         }
@@ -544,6 +722,32 @@ pub fn open_staged_home(home: &Home) -> Result<(), Error> {
         ));
     }
     Ok(layout::publish(home)?)
+}
+
+fn only_cached_engine(folder: &std::path::Path) -> bool {
+    std::fs::read_dir(folder).is_ok_and(|mut versions| {
+        versions.all(|version| {
+            version.is_ok_and(|version| {
+                let name = version.file_name();
+                version.file_type().is_ok_and(|kind| kind.is_dir())
+                    && name.to_str().is_some_and(|name| {
+                        name.split('.').count() == 3
+                            && name.split('.').all(|number| {
+                                !number.is_empty()
+                                    && number.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+                    && std::fs::read_dir(version.path()).is_ok_and(|mut files| {
+                        files.all(|file| {
+                            file.is_ok_and(|file| {
+                                file.file_name() == "opencode"
+                                    && file.file_type().is_ok_and(|kind| kind.is_file())
+                            })
+                        })
+                    })
+            })
+        })
+    })
 }
 
 struct SavedLink<'a> {
@@ -584,6 +788,7 @@ fn check_join(
     code: &Code,
     id: &str,
     claim: Option<&LocalClaim>,
+    ssh_account: Option<&crate::ssh::LocalReservation>,
 ) -> Result<(), Error> {
     if link
         .setup
@@ -609,35 +814,44 @@ fn check_join(
     {
         return Err(refused("This computer is already your main computer."));
     }
-    if has_work(files, link).unwrap_or(true) {
+    let staged = if let Some(ssh_account) = ssh_account {
+        ssh_account.check()?;
+        ssh_account.copying_for(files.root(), &code.setup, &code.primary)
+    } else {
+        let adding = files.path("../.kuvo-code-adding");
+        match adding.symlink_metadata() {
+            Ok(_) => {
+                return Err(refused(
+                    "An SSH setup is already in progress on this computer.",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(source) => {
+                return Err(Error::File {
+                    action: "reading",
+                    path: adding,
+                    source,
+                });
+            }
+        }
+        false
+    };
+    if has_work(files, link, staged).unwrap_or(true) {
         return Err(refused(HAS_WORK));
-    }
-    let adding = files.path("../.kuvo-code-adding");
-    match adding.symlink_metadata() {
-        Ok(_) => {
-            return Err(refused(
-                "An SSH setup is already in progress on this computer.",
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-        Err(source) => {
-            return Err(Error::File {
-                action: "reading",
-                path: adding,
-                source,
-            });
-        }
     }
     let now = lease::wall();
     if let Some(claim) = claim {
-        if !claim.adopted && !claim.cancel_pending && claim.until > now && claim.invite != id {
+        if !claim.adopted && claim.until > now && claim.invite != id {
             return Err(refused(
                 "An installer enrollment is already in progress. Retry with its original code.",
             ));
         }
-        if claim.invite == id && (claim.cancel_pending || claim.until <= now) {
+        if claim.invite == id && claim.cancel_pending {
+            return Err(refused("This computer could not join."));
+        }
+        if claim.invite == id && claim.until <= now && claim.recovery.is_some() {
             return Err(refused(
-                "The installer claim expired or was cancelled. Finish recovering it before enrolling again.",
+                "The installer did not finish before the claim expired.",
             ));
         }
     }
@@ -651,7 +865,7 @@ fn check_join(
 
 // Until the move reader is available, conservatively keep homes with existing
 // work in place. The installer only replaces an empty setup's identity.
-fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
+fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
     let now = lease::wall();
     if link.installer_invites.values().any(|entry| entry.live(now))
         || (!link.shared.is_empty() && !bootstrap_only(link))
@@ -678,20 +892,32 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
         "agents/sessions",
         "chats",
         "groups",
-        "artifacts",
         "attachments",
         "wakes",
-        "run/work",
-        "run/work-queue",
+        "run/work/notes",
+        "run/work-queue/files",
         "run/owned-data/outbox",
         "run/owned-data/edit-outbox",
-        "run/outbox",
         "data/opencode/storage/session",
     ] {
         if files
             .names(directory)?
             .iter()
             .any(|name| name != ".DS_Store")
+        {
+            return Ok(true);
+        }
+    }
+    if artifacts_kept(files)? || super::queue_work::has_queue_or_session_work(files, now)? {
+        return Ok(true);
+    }
+    // Starting the letter worker creates these folders and a writer lock.
+    // Only queued records keep an otherwise unused setup from joining.
+    for (directory, failed) in [("run/outbox", false), ("run/outbox/sending", true)] {
+        if files
+            .names(directory)?
+            .iter()
+            .any(|name| name.ends_with(".json") || (failed && name.ends_with(".failed")))
         {
             return Ok(true);
         }
@@ -717,10 +943,47 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
             return Ok(true);
         }
     }
-    Ok(files
-        .names("data/opencode")?
+    let databases = files.names("data/opencode")?;
+    for name in databases {
+        if name.starts_with("opencode")
+            && name.ends_with(".db")
+            && (!staged
+                || !super::released::staged_database_has_no_sessions(
+                    &files.path("data/opencode").join(name),
+                ))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Kept artifacts, as against the empty store every resident opens when it starts:
+/// its key, a disposable index and empty folders.
+fn artifacts_kept(files: &Files) -> Result<bool, Error> {
+    const EMPTY_STORE: &[&str] = &[
+        ".DS_Store",
+        "key",
+        "log",
+        "copies",
+        "index-v1.sqlite",
+        "index-v1.sqlite-wal",
+        "index-v1.sqlite-shm",
+        "index-v1.sqlite-journal",
+    ];
+    if files
+        .names("artifacts")?
         .iter()
-        .any(|name| name.starts_with("opencode") && name.ends_with(".db")))
+        .any(|name| !EMPTY_STORE.contains(&name.as_str()))
+    {
+        return Ok(true);
+    }
+    for folder in ["artifacts/log", "artifacts/copies"] {
+        if files.names(folder)?.iter().any(|name| name != ".DS_Store") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn bootstrap_only(link: &Link) -> bool {
@@ -773,7 +1036,9 @@ async fn exchange(
     given.nonce = encode(&random::<24>()?);
     given.activation_ack = matches!(mode, Exchange::Activate { .. });
     given.credential_ack = matches!(mode, Exchange::AcknowledgeCredentials);
+    given.cancel = matches!(mode, Exchange::Cancel);
     given.confirmed = false;
+    given.recovery_commitment = None;
     // Only one socket exists for this temporary relay address, including the activation round.
     // Subscribing after connect is safe: the timer retries sends until the socket is ready.
     let mut observations = relay.handle().subscribe().ok_or_else(|| refused(OFFLINE))?;
@@ -811,6 +1076,11 @@ async fn exchange(
                 }
                 let Ok(reply) = serde_json::from_slice::<Reply>(payload) else { continue };
                 if reply.nonce != given.nonce {
+                    continue;
+                }
+                if matches!(mode, Exchange::Cancel) {
+                    if reply.cancelled { return Ok(None); }
+                    if let Some(message) = reply.message { return Err(Error::Installer(message)); }
                     continue;
                 }
                 if let Exchange::Activate { portable } = mode {

@@ -112,3 +112,60 @@ test("solo numbers stay unique when another computer joins", { timeout: 90000 },
     assert.ok(leases.leaseFor(setup.setup).high >= beforeRemoval, "The relay floor does not go backwards.");
   }
 });
+
+test("each computer offers what can be done with it from here", { timeout: 120000 }, async t => {
+  const { computer, leases } = await bench(t, { presenceEvents: true });
+  const main = await computer("Studio");
+  const other = await computer("Lab");
+  const primary = main.connect(await main.start().ready());
+  const setup = (await primary("GET", "kuvo/setup")).json;
+  const alone = await primary("GET", "kuvo/computers");
+  assert.equal(alone.status, 200, alone.text);
+  // The only computer can't be unlinked, and a test home isn't one that can be wiped from here.
+  assert.deepEqual(alone.json.computers.map(row => row.actions.map(action => action.id)), [["rename"]]);
+  const invite = await primary("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.setup), "The main computer did not claim a relay lease.");
+  const joined = await other.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const labRun = other.start();
+  const member = other.connect(await labRun.ready());
+  const offered = async (ask, expected) => {
+    let last;
+    return until(async () => {
+      const reply = await ask("GET", "kuvo/computers");
+      assert.equal(reply.status, 200, reply.text);
+      last = reply.json.computers.map(row => [row.name, row.actions]);
+      const rows = Object.fromEntries(last);
+      const ids = Object.fromEntries(last.map(([name, actions]) => [name, actions.map(action => action.id)]));
+      return JSON.stringify(ids) === JSON.stringify(expected) && rows;
+    }, () => `unexpected actions: ${JSON.stringify(last)}`, 30000);
+  };
+  const handOver = "Lab becomes the main computer first. Then your other computers stop reaching Studio. It keeps running, with its sessions, and you can add it again later.";
+  const onMain = await offered(primary, { Studio: ["rename", "remove"], Lab: ["rename", "remove"] });
+  assert.deepEqual(onMain.Studio[1].removal, { choices: ["unlink", "wipe"], handOver });
+  assert.deepEqual(onMain.Lab[1].removal, { choices: ["unlink", "wipe"] });
+  assert.deepEqual(onMain.Lab[1].confirm, { title: "Remove Lab?", label: "Remove",
+    message: "Your other computers stop reaching Lab. It keeps running, with its sessions, and you can add it again later." });
+  // In a managed setup a member can unlink itself too, and the main hands over first.
+  const onMember = await offered(member, { Lab: ["rename", "remove"], Studio: ["rename", "remove"] });
+  assert.equal(onMember.Lab[1].label, "Unlink");
+  assert.deepEqual(onMember.Studio[0], { id: "rename", label: "Rename" });
+  assert.equal(onMember.Studio[1].removal.handOver, handOver);
+  // Connect, on a computer that's away: asked once, it's being reached until it answers.
+  const labKey = (await member("GET", "kuvo/setup")).json.you.key;
+  await labRun.stop();
+  const away = await offered(primary, { Studio: ["rename", "remove"], Lab: ["rename", "connect", "remove"] });
+  assert.deepEqual(away.Lab[1], { id: "connect", label: "Connect" });
+  const connect = () => primary("POST", `kuvo/computers/${labKey}/connect`, {}, { "x-kuvo-from": "mac" });
+  const asked = await connect();
+  assert.equal(asked.status, 202, asked.text);
+  const listed = await primary("GET", "kuvo/computers");
+  assert.equal(listed.json.computers.find(row => row.name === "Lab").reach, "connecting");
+  const again = await connect();
+  assert.equal(again.status, 409, again.text);
+  assert.equal(again.json.message, "Studio is reaching Lab now.");
+  const self = await primary("POST", `kuvo/computers/${setup.you.key}/connect`, {}, { "x-kuvo-from": "mac" });
+  assert.equal(self.status, 409, self.text);
+  assert.equal(self.json.message, "Studio is the computer you're asking.");
+});

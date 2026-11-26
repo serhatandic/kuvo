@@ -41,6 +41,13 @@ pub(crate) struct Record {
 }
 
 impl Record {
+    pub(crate) fn identity(&self) -> Option<ProcessIdentity> {
+        Some(ProcessIdentity {
+            pid: self.pid,
+            start_identity: self.start_identity.clone()?,
+        })
+    }
+
     fn recovery_name(&self) -> Option<String> {
         self.start_identity.as_ref()?;
         let token = self.password.strip_prefix("kuvo-")?;
@@ -68,6 +75,10 @@ enum Process {
 }
 
 impl Worker {
+    pub(crate) fn spawned(&self) -> bool {
+        matches!(self.process, Process::Spawned(_))
+    }
+
     pub fn load(home: &Path) -> io::Result<Option<Self>> {
         let path = home.join("run/engine.json");
         let bytes = match fs::read(&path) {

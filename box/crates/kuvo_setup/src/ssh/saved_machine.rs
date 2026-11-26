@@ -131,7 +131,7 @@ pub async fn with_saved_machine<T>(
             "Could not reach the saved SSH machine with its known host key and identity.",
         )
     })?;
-    let claiming = claim_script(&token, &machine.prove());
+    let claiming = claim_script(ROOT, &token, &machine.prove());
     let claim = run(&connection, &claiming, Vec::new(), PROBE).await?;
     if !claim.status.success() {
         return Err(io::Error::other(
@@ -151,7 +151,7 @@ pub async fn with_saved_machine<T>(
     if reserved.settled {
         let released = run(
             &reserved.connection,
-            &release_script(&reserved.token),
+            &release_script(ROOT, &reserved.token),
             Vec::new(),
             PROBE,
         )
@@ -203,7 +203,7 @@ impl SavedMachine {
         self.settled = false;
         let reply = run(
             &self.connection,
-            &locked_script(5, &checked),
+            &locked_script(ROOT, 5, &checked),
             input,
             timeout,
         )
@@ -311,7 +311,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(&path, "not its machine id").unwrap();
         let token = super::super::account_scripts::new_token().unwrap();
-        let claim = claim_script(&token, &machine.prove());
+        let claim = claim_script(ROOT, &token, &machine.prove());
         assert_eq!(run(&claim).code(), Some(WRONG_MACHINE));
         assert!(marker.symlink_metadata().is_err());
 
@@ -329,6 +329,7 @@ mod tests {
         fs::write(&outside, identity).unwrap();
         symlink(outside, &path).unwrap();
         let check = locked_script(
+            ROOT,
             5,
             &format!(
                 "{} || exit {LOST}\n{}\nexit 0",
@@ -337,7 +338,7 @@ mod tests {
             ),
         );
         assert_eq!(run(&check).code(), Some(WRONG_MACHINE));
-        assert!(run(&release_script(&token)).success());
+        assert!(run(&release_script(ROOT, &token)).success());
         assert!(marker.symlink_metadata().is_err());
     }
 

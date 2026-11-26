@@ -36,7 +36,7 @@ impl Consent {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Selection(Vec<String>);
 
 impl Selection {
@@ -67,6 +67,12 @@ impl Selection {
     pub fn digest(&self) -> String {
         digest(&self.0)
     }
+
+    pub fn ssh_hash(&self) -> [u8; 32] {
+        let mut ids = self.0.clone();
+        ids.sort_unstable();
+        kuvo_wire::json::digest(&json!(ids))
+    }
 }
 
 #[derive(Serialize)]
@@ -75,6 +81,9 @@ enum Kind {
     Key,
     SignIn,
 }
+
+/// A refused selection: the status and the message the route answers.
+type Refused = (u16, &'static str);
 
 #[derive(Serialize)]
 struct Item<'a> {
@@ -155,6 +164,18 @@ impl Inventory {
         files: &Files,
         selection: &Selection,
     ) -> Result<Vec<u8>, (u16, &'static str)> {
+        let (keys, credentials) = self.selected(files, selection)?;
+        let integrations = configured_integrations(files, &keys);
+        encode_seed(
+            json!({"formatVersion": 1, "keys": keys, "credentials": credentials, "integrations": integrations}),
+        )
+    }
+
+    fn selected(
+        self,
+        files: &Files,
+        selection: &Selection,
+    ) -> Result<(Map<String, Value>, Vec<Value>), Refused> {
         let unavailable = self.keys.is_none() || self.accounts.is_none();
         let mut keys = Map::new();
         let mut credentials = Vec::new();
@@ -192,14 +213,49 @@ impl Inventory {
         if credentials.len() + keys.len() < selection.0.len() {
             return Err((if unavailable { 503 } else { 409 }, MISSING));
         }
-        let integrations = configured_integrations(files, &keys);
-        let seed = serde_json::to_vec(&json!({"formatVersion": 1, "keys": keys, "credentials": credentials, "integrations": integrations}))
-            .expect("credential seed serializes");
-        if seed.len() > MAX_BYTES {
-            return Err((409, "The selected sign-ins and keys are too large to copy."));
-        }
-        Ok(seed)
+        Ok((keys, credentials))
     }
+}
+
+fn encode_seed(seed: Value) -> Result<Vec<u8>, (u16, &'static str)> {
+    let seed = serde_json::to_vec(&seed).expect("credential seed serializes");
+    if seed.len() > MAX_BYTES {
+        return Err((409, "The selected sign-ins and keys are too large to copy."));
+    }
+    Ok(seed)
+}
+
+pub(crate) struct SshSeed {
+    pub settings: Vec<u8>,
+    pub sign_ins: Vec<u8>,
+    pub renewing: usize,
+}
+
+pub(crate) async fn capture_ssh(
+    files: &Files,
+    selection: &Selection,
+) -> Result<SshSeed, (u16, &'static str)> {
+    let (keys, credentials, renewing) = if selection.empty() {
+        (Map::new(), Vec::new(), 0)
+    } else {
+        let inventory = Inventory::read(files).await;
+        let renewing = inventory
+            .accounts
+            .as_ref()
+            .map_or(0, |accounts| accounts.renewing);
+        let (keys, credentials) = inventory.selected(files, selection)?;
+        (keys, credentials, renewing)
+    };
+    let (settings, integrations) = starting_settings(files, &keys);
+    let settings = encode_seed(
+        json!({"formatVersion": 1, "settings": settings, "keys": keys, "integrations": integrations}),
+    )?;
+    let sign_ins = encode_seed(json!({"formatVersion": 1, "credentials": credentials}))?;
+    Ok(SshSeed {
+        settings,
+        sign_ins,
+        renewing,
+    })
 }
 
 fn safe_key_names(files: &Files) -> io::Result<Vec<Key>> {
@@ -215,7 +271,7 @@ fn safe_key_names(files: &Files) -> io::Result<Vec<Key>> {
         .filter(|name| portable_key(name))
         .take(200)
         .map(|name| Key {
-            id: digest(&["key", name.as_str()]),
+            id: digest(["key", name.as_str()]),
             name,
         })
         .collect())
@@ -255,7 +311,7 @@ async fn engine_accounts(files: &Files) -> Option<Accounts> {
         } else if result.portable.len() < 100 {
             let label = row["label"].as_str().unwrap_or_default();
             result.portable.push(SignIn {
-                id: digest(&["sign-in", id, row["id"].as_str().unwrap_or(label)]),
+                id: digest(["sign-in", id, row["id"].as_str().unwrap_or(label)]),
                 integration: id.into(),
                 label: label.into(),
                 value: row["value"].clone(),
@@ -272,18 +328,151 @@ fn list(value: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
+fn starting_settings(
+    files: &Files,
+    selected: &Map<String, Value>,
+) -> (Map<String, Value>, Vec<Value>) {
+    let original = files
+        .read::<Value>(SETTINGS)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut settings = Map::new();
+    if let Some(model) = original["model"].as_str().filter(|model| safe_model(model)) {
+        settings.insert("model".into(), json!(model));
+    }
+    let servers = configured_servers(&original);
+    let mcp_catalog = files
+        .read::<Value>("bin/mcp-catalog.json")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mac_only = list(&mcp_catalog["macOnly"]);
+    let mut kept: Map<String, Value> = servers
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(name, _)| !mac_only.iter().any(|entry| entry.as_str() == Some(name)))
+        .filter_map(|(name, entry)| {
+            local_server(entry, selected).map(|config| (name.clone(), config))
+        })
+        .collect();
+    let mut integrations = Vec::new();
+    for entry in selected_integrations(files, selected) {
+        let Some(id) = entry["id"].as_str() else {
+            continue;
+        };
+        if !servers[id].is_object() {
+            continue;
+        }
+        let disabled = servers[id]["disabled"] == true;
+        if !kept.contains_key(id)
+            && let Some(mut config) = entry["settings"].as_object().cloned()
+        {
+            if disabled {
+                config.insert("disabled".into(), json!(true));
+            }
+            kept.insert(id.into(), Value::Object(config));
+        }
+        if kept.contains_key(id) {
+            integrations.push(if disabled {
+                json!({"id": id, "disabled": true})
+            } else {
+                json!({"id": id})
+            });
+        }
+    }
+    if !kept.is_empty() {
+        settings.insert("mcp".into(), Value::Object(kept));
+    }
+    (settings, integrations)
+}
+
+fn safe_model(model: &str) -> bool {
+    fn name(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)
+    }
+    model.split_once('/').is_some_and(|(provider, model)| {
+        !provider.is_empty()
+            && provider.bytes().all(name)
+            && (1..=150).contains(&model.len())
+            && model.bytes().all(|byte| name(byte) || byte == b':')
+    })
+}
+
+fn local_server(entry: &Value, selected: &Map<String, Value>) -> Option<Value> {
+    let command = entry["command"]
+        .as_array()
+        .filter(|command| command.len() == 1)?;
+    if entry["type"] != "local"
+        || !command[0].as_str().is_some_and(|name| {
+            (1..=100).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        })
+    {
+        return None;
+    }
+    let environment = entry["environment"]
+        .as_object()
+        .filter(|env| !env.is_empty())?;
+    let env: Option<Map<String, Value>> = environment
+        .iter()
+        .map(|(name, text)| {
+            let name_ok = (1..=100).contains(&name.len())
+                && name.as_bytes()[0].is_ascii_uppercase()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+            let reference = text.as_str()?.strip_prefix("{file:")?.strip_suffix('}')?;
+            let (folder, key) = reference.rsplit_once('/')?;
+            (name_ok && !folder.contains(['{', '}']) && selected.contains_key(key)).then(|| {
+                (
+                    name.clone(),
+                    json!(format!("{{file:~/.kuvo-code/box/keys/{key}}}")),
+                )
+            })
+        })
+        .collect();
+    let mut config = json!({"type": "local", "command": command, "environment": env?});
+    if entry["disabled"] == true {
+        config["disabled"] = json!(true);
+    }
+    Some(config)
+}
+
+fn configured_servers(settings: &Value) -> &Value {
+    let mcp = &settings["mcp"];
+    if mcp["servers"].is_object() {
+        &mcp["servers"]
+    } else {
+        mcp
+    }
+}
+
 fn configured_integrations(files: &Files, keys: &Map<String, Value>) -> Vec<Value> {
     let settings = files
         .read::<Value>(SETTINGS)
         .ok()
         .flatten()
         .unwrap_or_default();
-    let mcp = &settings["mcp"];
-    let configured = if mcp["servers"].is_object() {
-        &mcp["servers"]
-    } else {
-        mcp
-    };
+    let configured = configured_servers(&settings);
+    selected_integrations(files, keys)
+        .into_iter()
+        .filter_map(|entry| {
+            let id = entry["id"].as_str()?;
+            let saved = configured[id].as_object()?;
+            Some(if saved.get("disabled") == Some(&Value::Bool(true)) {
+                json!({"id": id, "disabled": true})
+            } else {
+                json!({"id": id})
+            })
+        })
+        .collect()
+}
+
+fn selected_integrations(files: &Files, keys: &Map<String, Value>) -> Vec<Value> {
     let catalog = files
         .read::<Value>("bin/integrations.json")
         .ok()
@@ -294,8 +483,6 @@ fn configured_integrations(files: &Files, keys: &Map<String, Value>) -> Vec<Valu
         .into_iter()
         .flatten()
         .filter_map(|entry| {
-            let id = entry["id"].as_str()?;
-            let saved = configured[id].as_object()?;
             let vars = entry["variables"]
                 .as_object()
                 .filter(|vars| !vars.is_empty())?;
@@ -306,11 +493,7 @@ fn configured_integrations(files: &Files, keys: &Map<String, Value>) -> Vec<Valu
             {
                 return None;
             }
-            Some(if saved.get("disabled") == Some(&Value::Bool(true)) {
-                json!({"id": id, "disabled": true})
-            } else {
-                json!({"id": id})
-            })
+            Some(entry.clone())
         })
         .collect()
 }

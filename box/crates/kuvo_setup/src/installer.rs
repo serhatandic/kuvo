@@ -2,6 +2,7 @@
 
 pub(crate) mod credentials;
 mod join;
+mod queue_work;
 pub(crate) mod released;
 
 use std::time::Duration;
@@ -18,7 +19,10 @@ use crate::{
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
-pub use join::{Joined, cancellation_receipts, join, join_ssh, open_staged_home};
+pub(crate) use join::open_staged_home_at;
+pub use join::{
+    Joined, cancellation_receipts, join, join_ssh, open_staged_home, validate_join_code,
+};
 
 pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
     let files = crate::storage::Files::new(home.root().to_owned());
@@ -27,6 +31,9 @@ pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
         return Err(Error::Conflict);
     }
     let own = crate::model::Identity::read(&link)?.public;
+    if let Err(error) = crate::ssh::finish_seed_for_member(home.root(), &link, &own) {
+        eprintln!("retiring the SSH credential copy: {error}");
+    }
     Ok((own, machine_id(&files)?))
 }
 

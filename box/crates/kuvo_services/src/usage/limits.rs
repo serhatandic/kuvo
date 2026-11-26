@@ -1117,6 +1117,31 @@ impl Service {
             .collect()
     }
 
+    /// The Cursor plan and account-wide history share a maker's pause. A
+    /// retained refusal belongs to the credential that received it, not a
+    /// replacement sign-in. Unlike normal freshness, explicit refresh cannot
+    /// override it.
+    pub(super) fn held_cursor(&self, account: &Account, now: u64) -> bool {
+        if account.service != Provider::Cursor {
+            return false;
+        }
+        let state = self.state.lock().expect("limits lock");
+        state.entries.get(&account.provider).is_some_and(|entry| {
+            account.sign_in == entry.account.sign_in
+                && entry.facts.problem.as_ref().is_some_and(|problem| {
+                    use super::plan_facts::ProblemKind;
+                    match problem.kind {
+                        ProblemKind::Expired => true,
+                        ProblemKind::RateLimited => problem
+                            .until
+                            .or(entry.facts.next)
+                            .is_some_and(|until| until > now),
+                        _ => false,
+                    }
+                })
+        })
+    }
+
     /// A connected client need not ask the same maker again while its own
     /// reading is current or an admitted peer just read the same account.
     /// A borrowed reading never becomes a local checked timestamp or notice.
