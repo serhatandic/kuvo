@@ -1116,6 +1116,9 @@ test("Storage asks before keeping less than older versions take, and follows the
   const at=row(await page(),"older-budget");
   const before=await kept();
   assert.ok(before.older>0,JSON.stringify(before));
+  // A warning read when older versions took less is stale: nothing is written or deleted.
+  assert.equal((await ask("POST","kuvo/artifacts/storage",{budget:0,was:before.budget,wasOlder:0,confirmed:true})).status,409);
+  assert.deepEqual(await kept(),before);
   for (const confirmed of [undefined,null,false,"true",1]) {
     const answer=await change(at,0,confirmed===undefined?{}:{confirmed});
     assert.equal(answer.status,400,String(confirmed));
