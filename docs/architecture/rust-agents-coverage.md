@@ -910,7 +910,9 @@ triggers and the `api/…` passthrough) is still to come.
 | bots-opencode (Mac, machine): it's told who it is and where it runs, its conversation marked as its | yes | from `bots.json`; Rust: on the agent |
 
 Verified on the Mac: both areas on both boxes; bots 36/36, agents-opencode 14/14 and
-engine-sessions 81/81 on Rust. The reference makes the older home, so these run where it runs
+engine-sessions 81/81 on Rust; `agents-opencode-live` passed with a real OpenCode Go turn (its
+location is now asked again while the new conversation isn't listed yet, as the app does: the
+first run met that 503 before any turn). The reference makes the older home, so these run where it runs
 (Mac and Linux).
 
 Left: removing an older conversation lists it again from OpenCode's database (it needs a
