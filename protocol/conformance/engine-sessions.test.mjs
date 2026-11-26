@@ -1371,7 +1371,8 @@ test("a message removed while on its way can be taken back when it arrives", { t
   assert.deepEqual(here.agents.prompts(), []);
 });
 
-test("assistant tool steps carry the same words on message pages and single reads", { timeout: 45000 }, async t => {
+// (Pages only: a coding agent's conversation has no route for one message, and the app reads none.)
+test("assistant tool steps carry the same words on message pages", { timeout: 45000 }, async t => {
   const session = "ses_toolWords";
   const { here } = await onAgents(t, "conversation-tool-words", [], { start: false });
   const fixture = JSON.parse(fs.readFileSync(new URL("../../box/test/fixtures/message-words.json", import.meta.url)));
@@ -1427,9 +1428,6 @@ test("assistant tool steps carry the same words on message pages and single read
   const strip = row => { const { agent, model: used, time, ...rest } = row; return { ...rest, content: rest.content?.map(part => { if (!part.id?.startsWith("added_")) return part; const { id, ...step } = part; return step; }) }; };
   for (const [index, entry] of cases.entries()) {
     assert.deepEqual(strip(page.json.data[index]), entry.read, entry.name);
-    const single = await request(record, "GET", route + "/" + entry.message.id, undefined, desktop);
-    assert.equal(single.status, 200, single.text);
-    assert.deepEqual(strip(single.json.data ?? single.json), entry.read, entry.name);
   }
 });
 

@@ -9,6 +9,20 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
 
+impl crate::Engine {
+    /// Rows of a conversation (a page's `data`) as clients are shown them: its summaries titled
+    /// and each step in words, as the engine's pages are.
+    pub async fn shown_rows(&self, rows: Vec<Value>) -> Vec<Value> {
+        let mut page = json!({ "data": rows });
+        compaction_page(&mut page);
+        self.tool_words.fill_page(self, &mut page).await;
+        match page["data"].take() {
+            Value::Array(rows) => rows,
+            _ => Vec::new(),
+        }
+    }
+}
+
 pub(crate) fn compaction_page(page: &mut Value) {
     match page.get_mut("data") {
         Some(Value::Array(messages)) => messages.iter_mut().for_each(compaction_message),

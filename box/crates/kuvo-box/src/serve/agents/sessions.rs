@@ -571,6 +571,7 @@ impl AgentSessionSource for Inventory {
 pub(crate) fn register(
     sessions: SessionStore,
     opencode: Option<OpenCodeHistory>,
+    engine: kuvo_engine::Engine,
     routes: &mut Registry,
 ) {
     let stops = sessions.clone();
@@ -609,7 +610,7 @@ pub(crate) fn register(
         }
     });
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {
-        let (sessions, opencode) = (sessions.clone(), opencode.clone());
+        let (sessions, opencode, engine) = (sessions.clone(), opencode.clone(), engine.clone());
         async move {
             let given = call.param("id").unwrap_or_default();
             let id = percent_decode_str(given)
@@ -650,7 +651,7 @@ pub(crate) fn register(
                     }
                 });
             Ok(RouteReply::json::<200>(transcript::Status200 {
-                data: page.messages,
+                data: engine.shown_rows(page.messages).await,
                 cursor: Cursor { next },
             }))
         }

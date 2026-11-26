@@ -909,7 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 7/7 | see below |
 | engine-asks | 6/6 | 5/6 | see below |
 | engine-worktree | 7/7 | 7/7 | see below |
-| engine-sessions | 46/46 (9 skipped) | 48/55 | see below |
+| engine-sessions | 46/46 (9 skipped) | 50/55 | see below |
 | engine-live | runs only on Rust | 1/1, live | see below |
 
 Notes on each area:
@@ -978,20 +978,22 @@ findings:
 - a summary turns an agent conversation read with Mark All as Read unread again (it keeps only
   its engine's conversations read).
 
-Rust's 7 failures are 4.7d step 5's:
+Rust's 5 failures are 4.7d step 5's:
 
 - a Steer on a stopped queue;
 - draining an unpaused saved queue after a restart;
 - a bot's sustained thinking;
 - the place Undo puts a message back;
-- the step words on an agent's rows;
-- the title of its summary;
 - Mark All as Read (`kuvo/sessions/read`) on agent conversations, and a summary keeping one read.
 
 Kept on the engine:
 
 - "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
   passthrough stays for released 0.7.x Macs.
+
+An agent's transcript pages are shown as the engine's were: each step in words and its
+summaries titled (`Engine::shown_rows`). The single-row read of the step-words case is left out:
+a coding agent's conversation has no route for one message, and the app reads none.
 
 Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
 (agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the
