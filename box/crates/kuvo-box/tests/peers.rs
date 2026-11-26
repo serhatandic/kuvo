@@ -2155,8 +2155,9 @@ mod work {
             let (engine_b, _) = engine(b.path());
             write(b.path(), "run/work/homes.json", json!({"ses_wronghome":{"key":encode(&key(3)), "at":NOW}}));
             let now = Arc::new(AtomicI64::new(NOW));
-            let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
-            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now.clone(), engine_b.clone()).await;
+            // (Each work handle kept: dropped, its computer stops taking work calls.)
+            let (a_box, _a_work) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
+            let (b_box, b_work) = start_work(&url, 2, b.path(), &[1, 3], now.clone(), engine_b.clone()).await;
             ready(&a_box, 2, a.path()).await;
             let given = |id: &str, tool: &str, args: Value, made: i64| json!({
                 "id":id,"tool":tool,"from":LEAD,"as":{"name":"Business","rules":[],"free":true},
@@ -2170,9 +2171,9 @@ mod work {
                 "from":"Computer 2","words":STOPPED,"line":STOPPED,"delivery":"queue","about":[BILLING],
             }));
             let old = peers.lock().await[&member(2).address.unwrap()].clone();
-            drop(b_box);
+            drop((b_box, b_work));
             old.closed().await;
-            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now, engine_b.clone()).await;
+            let (b_box, _b_work) = start_work(&url, 2, b.path(), &[1, 3], now, engine_b.clone()).await;
             ready(&b_box, 1, b.path()).await;
             assert_eq!(send_wire_call(&a_box, call).await, (receipt, answer));
             assert_eq!(fs::read_to_string(engine_b.effects.join(id)).unwrap(), STOPPED);
