@@ -825,15 +825,18 @@ cover both DST transitions and fractional offsets. The shared real routes
 check viewer-zone grouping, per-level cache rates and unknown rate, and exact
 three distinct standout reasons (or none when not enough candidates).
 
-First Mac gates: TS 32/32 applicable; Rust 82/83 applicable with a single
-fixture-only `database is locked` reading a checkpoint during restart
-(seen once, 5s SQLite busy timeout added to the direct fixture, immediate
-focused rerun passes). Engine sessions 81/81, workspace test check and Bun
-check, exact expanded seeded differential 12/13 (only real scan timestamp)
-and native corpus 2/2. Scoped decoder/mapper 7/7, accepted-window 12/12 and
-civil bounds 1/1. Final cross-platform verification pending.
-Cumulative non-test size: 574,092 new-module characters plus 40,355 added
-existing production characters (614,447 total, 0.894× the TS baseline).
+Verification: Rust usage 85/85 applicable on Mac, Lokum (static musl in one
+capped container), WSL and native Windows; TS 34/34 applicable on Mac.
+One fixture-only `database is locked` reading a checkpoint during an earlier
+Mac restart was seen once; a 5s SQLite busy timeout was added to the direct
+fixture, the immediate focused rerun and subsequent full gates pass. Engine
+sessions 81/81, workspace test check and Bun check, exact expanded seeded
+differential 12/13 (only real scan timestamp) and native corpus 2/2. Scoped
+decoder/mapper 7/7, accepted-window 12/12 and civil bounds 1/1. Both remote
+scratch folders and copied Node archive, Lokum scratch and cross targets
+removed; all test processes exited.
+Cumulative non-test size: 574,550 new-module characters plus 40,355 added
+existing production characters (614,905 total, 0.894× the TS baseline).
 
 ## Remaining implementation gaps
 
