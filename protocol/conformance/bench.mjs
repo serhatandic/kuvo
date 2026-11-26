@@ -16,7 +16,7 @@ export async function bench(t, { handover = false, orderedMessages = false, pres
   t.after(async () => {
     for (const child of children.reverse()) await child.stop();
     await Promise.all([relay.close(), ...engines.map(engine => engine.close())]);
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
   return {
     relay, leases,
