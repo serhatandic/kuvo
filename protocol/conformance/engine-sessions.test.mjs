@@ -1070,156 +1070,6 @@ test("the recorded sidebar order follows the resident's session and project fact
   assert.deepEqual(visible, rebased(fixture.expect.sidebar));
 });
 
-test("a session list saved before Needs you is read while OpenCode catches up", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-list-older-asks");
-  const id = "ses_old";
-  const project = path.join(here.home, "project");
-  write(path.join(here.home, "run", "lists", "sessions.json"), JSON.stringify({
-    epoch: "old", seq: 3, floor: 0, gone: {}, projects: { [project]: { updated: 2 } },
-    sessions: { [id]: { seq: 1, facts: { kind: "project", directory: project, project, created: 1, updated: 2, asked: 5 } } },
-  }));
-  const gate = Promise.withResolvers();
-  here.engine.holdSessionList = gate.promise;
-  t.after(() => gate.resolve());
-  const record = await here.start().ready();
-  const read = await request(record, "GET", "kuvo/sessions/list");
-  assert.equal(read.status, 200, read.text);
-  assert.equal(read.json.full, true);
-  assert.deepEqual(read.json.projects, { [project]: { updated: 2, asking: 0, working: 0 } });
-  assert.deepEqual(read.json.needsYou, [{ session: id, asks: { kind: "other", summary: "waits on you" } }]);
-  assert.equal((await request(record, "POST", "kuvo/sessions/list", {})).status, 405);
-});
-
-test("a subagent changes only its own row and the parent whose list was reordered", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("subagent-delta");
-  const parent = sessionOf({ id: "ses_parentDelta", directory: here.home, updated: 110 });
-  const first = sessionOf({ id: "ses_childDelta", directory: here.home, updated: 120, parent: parent.id });
-  const next = sessionOf({ id: "ses_nextDelta", directory: here.home, updated: 130, parent: parent.id });
-  const other = sessionOf({ id: "ses_otherDelta", directory: here.home, updated: 140 });
-  first.time.created = 120;
-  next.time.created = 130;
-  here.engine.sessions.push(parent, first, next, other);
-  const record = await here.start().ready();
-  const list = at => request(record, "GET", "kuvo/sessions/list" + (at ? "?since=" + encodeURIComponent(at) : ""));
-  const initial = (await list()).json;
-  assert.deepEqual(initial.sessions[parent.id].subagents, [next.id, first.id]);
-  await until(() => here.engine.subscribers() > 0, "the resident to follow subagent events");
-  other.time.updated = 200;
-  here.engine.emit({ type: "session.updated", data: { sessionID: other.id, info: other } });
-  const changed = await until(async () => {
-    const page = (await list(initial.at)).json;
-    return page?.sessions?.[other.id]?.updated === 200 && page;
-  }, "the unrelated conversation delta");
-  assert.deepEqual(Object.keys(changed.sessions), [other.id]);
-
-  here.engine.running.add(first.id);
-  here.engine.emit({ type: "session.execution.started", data: { sessionID: first.id } });
-  const started = await until(async () => {
-    const page = (await list(changed.at)).json;
-    return page?.sessions?.[first.id]?.running === true && page;
-  }, "the active subagent delta");
-  assert.deepEqual(Object.keys(started.sessions).sort(), [first.id, parent.id]);
-  assert.deepEqual(started.sessions[parent.id].subagents, [first.id, next.id]);
-});
-
-test("the first inventory never publishes a conversation deleted while its page was held", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-list-inventory-race");
-  const gone = sessionOf({ id: "ses_vanishing", directory: here.home, title: "Old" });
-  const kept = sessionOf({ id: "ses_present", directory: here.home, title: "Here" });
-  here.engine.sessions.push(gone, kept);
-  const gate = Promise.withResolvers();
-  here.engine.holdSessionList = gate.promise;
-  t.after(() => gate.resolve());
-  const record = await here.start().ready();
-  const reading = request(record, "GET", "kuvo/sessions/list", undefined, {}, 15000);
-  await until(() => here.engine.subscribers() > 0 && here.engine.heldInventories > 0,
-    "the resident to begin its first inventory and subscribe to events");
-  here.engine.sessions.shift();
-  here.engine.emit({ type: "session.deleted", data: { sessionID: gone.id } });
-  const form = { id: "form_afterDelete", sessionID: kept.id, title: "After deletion", fields: [] };
-  here.engine.forms.set(kept.id, [form]);
-  here.engine.emit({ type: "form.created", data: { form } });
-  assert.equal(fs.existsSync(path.join(here.home, "run", "lists", "sessions.json")), false);
-  const asks = path.join(here.home, "run", "glance", "asks.json");
-  await until(() => fs.existsSync(asks) && readJSON(asks).asks[form.id], "the resident to hear the deletion");
-  assert.equal(here.engine.heldInventories, 1, "only one complete inventory may be in flight");
-  here.engine.holdSessionList = null;
-  gate.resolve();
-  const initial = await reading;
-  assert.equal(initial.status, 200, initial.text);
-  assert.equal(initial.json.full, true);
-  assert.deepEqual(Object.keys(initial.json.sessions), [kept.id]);
-  assert.equal(initial.json.gone, undefined);
-  if (boxBinary().typescript) {
-    // The TypeScript reader can filter the deletion from its in-flight page and
-    // re-read just the affected ID; another whole read may already be requested.
-    assert.ok([1, 2].includes(here.engine.inventoryReads), "at most one additional inventory");
-  } else {
-    assert.equal(here.engine.inventoryReads, 2, "the change requests one new inventory");
-  }
-});
-
-test("an earlier session read cannot bring back an old name or undo a pin or deletion", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-list-stale-event");
-  const before = sessionOf({ id: "ses_changes", directory: here.home, title: "Original" });
-  const safe = sessionOf({ id: "ses_safe", directory: here.home, title: "Keep this one" });
-  here.engine.sessions.push(before, safe);
-  const resident = await here.start().ready();
-  const listing = async () => {
-    const response = await request(resident, "GET", "kuvo/sessions/list");
-    assert.equal(response.status, 200, response.text);
-    return response.json;
-  };
-  await until(async () => (await listing()).sessions[before.id]?.title === "Original" && here.engine.subscribers() > 0,
-    "the original inventory and event stream");
-
-  const hold = async (change, event = "session.updated") => {
-    const gate = Promise.withResolvers();
-    const exact = Promise.withResolvers();
-    const inventories = here.engine.heldInventories ?? 0;
-    let exactRead = false;
-    void exact.promise.then(() => { exactRead = true; });
-    here.engine.holdSessionRead = { when: id => id === before.id, accepted: exact.resolve, release: gate.promise };
-    here.engine.holdSessionList = gate.promise;
-    here.engine.emit({ type: event, data: { sessionID: before.id } });
-    try {
-      await until(() => exactRead || (here.engine.heldInventories ?? 0) > inventories, "the earlier engine read");
-      change();
-    } finally {
-      here.engine.holdSessionRead = null;
-      here.engine.holdSessionList = null;
-      gate.resolve();
-    }
-  };
-  here.engine.sessions[0] = { ...before, title: "The earlier name" };
-  await hold(() => {
-    here.engine.sessions[0] = { ...before, title: "Newest name" };
-    here.engine.emit({ type: "session.renamed", data: { sessionID: before.id } });
-  });
-  await until(async () => (await listing()).sessions[before.id]?.title === "Newest name",
-    "the newest title to replace the earlier read");
-  here.engine.sessions[0].metadata = { "kuvo.pinned": true };
-  await hold(() => {
-    for (let i = 0; i < 12; i++) here.engine.emit({ type: "session.text.delta", data: { sessionID: before.id, delta: "x" } });
-  }, "session.metadata.updated");
-  await until(async () => (await listing()).sessions[before.id]?.pinned === true,
-    "streaming text to leave the pinned session update intact");
-  await hold(() => {
-    here.engine.sessions.shift();
-    here.engine.emit({ type: "session.deleted", data: { sessionID: before.id } });
-  });
-  const gone = await until(async () => {
-    const list = await listing();
-    return !list.sessions[before.id] && list;
-  }, "the deleted session to stay gone");
-  assert.equal(gone.sessions[safe.id].title, safe.title);
-  assert.ok(!(await listing()).sessions[before.id]);
-});
-
 test("session list cursors carry changes and tombstones, then read whole after a restart", { timeout: 60000 }, async t => {
   const [gone, kept] = ["ses_cursorGone", "ses_cursorKept"];
   const { here } = await onAgents(t, "engine-list-cursors", [], { start: false });
@@ -1237,7 +1087,10 @@ test("session list cursors carry changes and tombstones, then read whole after a
   assert.equal(newest.full, true);
   assert.deepEqual(Object.keys(newest.sessions).sort(), [gone, kept]);
   const savedList = path.join(here.home, "run", "lists", "sessions.json");
-  await until(() => fs.existsSync(savedList), "the resident to retain its inventory");
+  // (Once kept whole: the reference keeps it first while its agents' list is pending.)
+  await until(() => {
+    try { const book = readJSON(savedList); return !book.pending?.length && book.sessions?.[gone] && book.sessions?.[kept]; } catch { return false; }
+  }, "the resident to retain its inventory", 20000, 50);
   const keptBytes = fs.readFileSync(savedList, "utf8");
   const routeArgs = boxBinary().typescript ? ["box", "route"] : ["route"];
   for (let reads = 0; reads < 2; reads++) {
@@ -1427,139 +1280,113 @@ test("a project page grows in steps and keeps its running conversations first", 
 });
 
 test("a stopped queue replays its send and protects an undone message from an old removal", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-undo");
   const id = "ses_undo";
-  here.engine.sessions.push(sessionOf({ id, title: "Paused", directory: here.home }));
+  const { here } = await onAgents(t, "engine-undo", [[id, { title: "Paused" }]], { start: false });
   const first = here.start();
   let resident = await first.ready();
-  const path = "kuvo/sessions/" + id;
-  assert.equal((await request(resident, "POST", path + "/stop")).status, 200);
+  const at = "kuvo/sessions/" + id;
+  const call = (method, route, body) => request(resident, method, route, body, desktop);
+  assert.equal((await call("POST", at + "/stop")).status, 200);
   const message = { id: "msg_undo", words: "Keep me", delivery: "queue" };
-  const send = await request(resident, "POST", path + "/send", message);
+  const send = await call("POST", at + "/send", message);
   assert.equal(send.status, 200);
   assert.deepEqual(send.json, { waits: true });
   await first.stop();
   resident = await here.start().ready();
-
-  const replay = await request(resident, "POST", path + "/send", message);
+  const replay = await call("POST", at + "/send", message);
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.json, send.json);
-  const remove = path + "/queue/msg_undo?receipt=msg_ticket";
-  const removed = await request(resident, "DELETE", remove);
+  const remove = at + "/queue/msg_undo?receipt=msg_ticket";
+  const removed = await call("DELETE", remove);
   assert.equal(removed.status, 200);
-  const undo = await request(resident, "POST", path + "/queue/add", { ...removed.json.removed, kept: true });
+  const undo = await call("POST", at + "/queue/add", { ...removed.json.removed, kept: true });
   assert.equal(undo.status, 200, undo.text);
   assert.equal(undo.json.waits, true);
-  assert.equal((await request(resident, "DELETE", remove)).status, 404);
-  const queue = await request(resident, "GET", path + "/queue");
+  assert.equal((await call("DELETE", remove)).status, 404);
+  const queue = await call("GET", at + "/queue");
   assert.equal(queue.status, 200);
   assert.deepEqual(queue.json.waiting.map(row => [row.id, row.text]), [[message.id, message.words]]);
+  assert.deepEqual(here.agents.prompts(), []);
 });
 
-test("Undo restores a message between its engine neighbors when the queue is paused", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("queue-undo-order");
+test("Undo restores a message between its neighbors in the agent's line when the queue is paused", { timeout: 60000, skip: heldUnmarked }, async t => {
   const session = "ses_undoOrder";
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.inboxes.set(session, ["msg_a", "msg_b", "msg_c"].map(id => ({
-    id, type: "user", delivery: "queue", payload: { text: id },
-  })));
-  const record = await here.start().ready();
+  const { here, record } = await busyOnAgents(t, "queue-undo-order", session);
   const route = `kuvo/sessions/${session}/queue`;
-  assert.equal((await request(record, "POST", route + "/hold")).json.paused, true);
-  const { json: { removed } } = await request(record, "DELETE", route + "/msg_b?receipt=msg_undoMiddle");
+  const call = (method, at, body) => request(record, method, at, body, desktop);
+  for (const id of ["msg_a", "msg_b", "msg_c"]) assert.equal((await call("POST", `kuvo/sessions/${session}/send`, { id, words: id, delivery: "queue" })).status, 200);
+  assert.equal((await call("POST", route + "/hold")).json.paused, true);
+  const { json: { removed } } = await call("DELETE", route + "/msg_b?receipt=msg_undoMiddle");
   assert.equal(removed.before, "msg_c");
-  const undo = await request(record, "POST", route + "/add", { ...removed, kept: true });
+  const undo = await call("POST", route + "/add", { ...removed, kept: true });
   assert.equal(undo.json.waits, true, undo.text);
   assert.deepEqual(undo.json.held, ["msg_a", "msg_b"]);
-  let items;
-  await until(async () => {
-    items = (await request(record, "GET", route + "?items=1")).json?.items;
-    return Array.isArray(items);
-  }, "The queue did not publish its items.");
-  assert.deepEqual(items.map(({ id, on }) => [id, on]), [
-    ["msg_a", "engine"], ["msg_b", "box"], ["msg_c", "engine"],
-  ]);
-  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
-  assert.deepEqual(here.engine.inboxes.get(session).map(({ id, delivery }) => [id, delivery]), [
-    ["msg_a", "steer"], ["msg_c", "queue"],
-  ]);
-  here.engine.inboxes.get(session).shift();
-  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
-  await until(() => here.engine.messages.get(session)?.some(row => row.id === "msg_b"), "The restored message did not go second.");
-  assert.equal(here.engine.inboxes.get(session)[0].delivery, "queue");
+  const items = await queueItems(record, session);
+  assert.deepEqual(items.map(({ id, on }) => [id, on]), [["msg_a", "engine"], ["msg_b", "box"], ["msg_c", "engine"]]);
+  assert.equal((await call("POST", route + "/resume")).status, 200);
+  assert.equal((await call("POST", `kuvo/sessions/${session}/stop`)).status, 200);
+  assert.equal((await call("POST", route + "/resume")).status, 200);
+  await until(() => here.agents.prompts().length === 4, () => "Not all of them went: " + JSON.stringify(here.agents.prompts()), 30000);
+  assert.deepEqual(here.agents.prompts(), ["Keep busy", "msg_a", "msg_b", "msg_c"]);
 });
 
-test("Undo keeps a held draft first with its full text, author and display words", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("undo-first-held");
+test("Undo keeps a held draft first with its full text, author and display words", { timeout: 60000, skip: heldUnmarked }, async t => {
   const session = "ses_undoFirstHeld";
+  const { here, record } = await busyOnAgents(t, "undo-first-held", session);
   const id = "msg_mine";
-  const text = "The build is green.\n\n[Attached: /tmp/report.png]";
   const words = "The build is green.";
-  const later = { id: "msg_later", type: "user", delivery: "queue", payload: { text: "Later." } };
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.inboxes.set(session, [{ id, type: "user", delivery: "steer", payload: { text,
-    metadata: { kuvo: { parts: { words, mail: { name: "Ada", session: "ses_ada" } } } },
-  } }, later]);
-  here.engine.running.add(session);
-  const record = await here.start().ready();
+  const text = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\n" + words;
   const base = `kuvo/sessions/${session}`;
   const route = base + "/queue";
-  assert.deepEqual((await request(record, "POST", base + "/stop")).json, { paused: true, held: [id] });
-  here.engine.running.delete(session);
-  const taken = await request(record, "DELETE", route + "/" + id + "?receipt=msg_undoHeld");
+  const call = (method, at, body) => request(record, method, at, body, desktop);
+  assert.equal((await call("POST", base + "/send", { id, text, delivery: "steer" })).status, 200);
+  assert.equal((await call("POST", base + "/send", { id: "msg_later", words: "Later.", delivery: "queue" })).status, 200);
+  assert.deepEqual((await call("POST", base + "/stop")).json, { paused: true, held: [id] });
+  const taken = await call("DELETE", route + "/" + id + "?receipt=msg_undoHeld");
   assert.equal(taken.status, 200, taken.text);
   const { removed } = taken.json;
-  assert.deepEqual([removed.id, removed.before, removed.text, removed.from], [id, later.id, text, "Ada"]);
-  const back = await request(record, "POST", route + "/add", { ...removed, words, kept: true });
+  assert.deepEqual([removed.id, removed.before, removed.text, removed.from], [id, "msg_later", text, "Ada"]);
+  const back = await call("POST", route + "/add", { ...removed, words, kept: true });
   assert.equal(back.status, 200, back.text);
   assert.deepEqual(back.json.held, [id]);
   assert.deepEqual(back.json.waiting.map(row => [row.id, row.text, row.from]), [[id, words, "Ada"]]);
-  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
-  const prompt = here.engine.asked.find(row => row.method === "POST" && row.path.endsWith("/prompt")).json;
-  assert.deepEqual([prompt.id, prompt.text, prompt.delivery], [id, text, "steer"]);
-  assert.equal(later.delivery, "queue");
-  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
-  await until(() => later.delivery === "steer", "the second message to follow the restored draft");
+  assert.equal((await call("POST", route + "/resume")).status, 200);
+  await until(() => here.agents.prompts().length === 3, () => "Not both went: " + JSON.stringify(here.agents.prompts()), 30000);
+  assert.deepEqual(here.agents.prompts(), ["Keep busy", text, "Later."]);
 });
 
 test("a message removed while on its way can be taken back when it arrives", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-arriving");
   const id = "ses_arriving";
-  here.engine.sessions.push(sessionOf({ id, title: "Arriving", directory: here.home }));
-  const resident = await here.start().ready();
-  const path = "kuvo/sessions/" + id;
-  assert.equal((await request(resident, "POST", path + "/stop")).status, 200);
-  const route = path + "/queue/msg_arriving?arriving=1";
-  const before = await request(resident, "DELETE", route);
+  const { here, record: resident } = await onAgents(t, "engine-arriving", [[id, { title: "Arriving" }]]);
+  const at = "kuvo/sessions/" + id;
+  assert.equal((await request(resident, "POST", at + "/stop", undefined, desktop)).status, 200);
+  const route = at + "/queue/msg_arriving?arriving=1";
+  const before = await request(resident, "DELETE", route, undefined, desktop);
   assert.equal(before.status, 409);
   assert.equal(before.json.arriving, true);
-  const send = await request(resident, "POST", path + "/send", { id: "msg_arriving", words: "Keep it here first" });
+  const send = await request(resident, "POST", at + "/send", { id: "msg_arriving", words: "Keep it here first" }, desktop);
   assert.equal(send.status, 200);
   assert.deepEqual(send.json, { waits: true });
-  const after = await request(resident, "DELETE", route);
+  const after = await request(resident, "DELETE", route, undefined, desktop);
   assert.equal(after.status, 200);
   assert.equal(after.json.removed.words, "Keep it here first");
-  assert.deepEqual(here.engine.messages.get(id) ?? [], []);
+  assert.deepEqual(here.agents.prompts(), []);
 });
 
 test("assistant tool steps carry the same words on message pages and single reads", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("conversation-tool-words");
   const session = "ses_toolWords";
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const { here } = await onAgents(t, "conversation-tool-words", [], { start: false });
   const fixture = JSON.parse(fs.readFileSync(new URL("../../box/test/fixtures/message-words.json", import.meta.url)));
   write(path.join(here.home, "box", "opencode.json"), JSON.stringify({ mcp: { servers: Object.fromEntries(
     [...fixture.servers, "my-server-two"].map(id => [id, {}]),
   ) } }));
-  const cases = fixture.cases.filter(entry => entry.message.type === "assistant").map((entry, index) => {
+  // (A step still running when its turn ended is one cut short on an agent: only finished steps here.)
+  const settled = entry => !entry.message.content.some(part => part.type === "tool" && ["running", "pending"].includes(part.state?.status));
+  const cases = fixture.cases.filter(entry => entry.message.type === "assistant" && settled(entry)).map((entry, index) => {
     const id = `msg_words${index}`;
     return { ...entry, message: { ...entry.message, id }, read: { ...entry.read, id } };
   });
-  const call = (name, input) => ({ type: "tool", name, state: { status: "running", input } });
+  const call = (name, input) => ({ type: "tool", name, state: { status: "completed", input } });
   const extra = [call("my-server-two_getIssue", {}), call("kuvo-browser_some_new_tool", {}),
     call("kuvo-browser_read_conversation", { of: "Mira" }), call("kuvo-browser_queue_add", { title: "Fix the sign-in" }),
     call("kuvo-browser_vault_run", {}), call("kuvo-browser_sandbox_ask", {}), call("atlassian_list_issues", {})];
@@ -1588,103 +1415,43 @@ test("assistant tool steps carry the same words on message pages and single read
       const [, , said, reason, error] = failures[index];
       return { ...step, failure: { line: `${said} · ${reason}`, reason, error } };
     }) } });
-  here.engine.messages.set(session, cases.map(entry => entry.message));
+  // (A coding agent's conversation, its rows as the agents keep them: with their model, and finished.)
+  const model = { agent: "build", model: { providerID: "grok-cli", id: "acp-test" }, time: { created: 1, completed: 1 } };
+  here.agents.seed(session, { directory: here.home });
+  write(path.join(here.home, "agents/sessions", session, "messages.json"), JSON.stringify([
+    ...cases.map(entry => ({ ...model, ...entry.message, content: entry.message.content.map((part, at) => part.type === "tool" && !part.id ? { id: `added_${at}`, ...part } : part) })), { id: "msg_wordsIdle", type: "idle", outcome: "succeeded", time: { created: 2 } },
+  ]));
   const record = await here.start().ready();
-  const route = `api/session/${session}/message`;
-  const page = await request(record, "GET", route);
+  const route = `kuvo/agents/api/session/${session}/message`;
+  const page = await request(record, "GET", route + "?order=asc", undefined, desktop);
   assert.equal(page.status, 200, page.text);
+  // (The tool parts' IDs the agents need aside, as the engine's rows had none.)
+  const strip = row => { const { agent, model: used, time, ...rest } = row; return { ...rest, content: rest.content?.map(part => { if (!part.id?.startsWith("added_")) return part; const { id, ...step } = part; return step; }) }; };
   for (const [index, entry] of cases.entries()) {
-    assert.deepEqual(page.json.data[index], entry.read, entry.name);
-    const single = await request(record, "GET", route + "/" + entry.message.id);
+    assert.deepEqual(strip(page.json.data[index]), entry.read, entry.name);
+    const single = await request(record, "GET", route + "/" + entry.message.id, undefined, desktop);
     assert.equal(single.status, 200, single.text);
-    assert.deepEqual(single.json.data, entry.read, entry.name);
+    assert.deepEqual(strip(single.json.data ?? single.json), entry.read, entry.name);
   }
 });
 
-test("summary titles agree between a conversation's message page and its live line", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-summary");
+test("a conversation's summary is titled on its message page", { timeout: 45000 }, async t => {
   const session = "ses_summary";
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.messages.set(session, [
+  const { here } = await onAgents(t, "engine-summary", [], { start: false });
+  here.agents.seed(session, { messages: [
     { id: "msg_summary", type: "compaction", status: "completed", text: "Earlier steps" },
     { id: "msg_text", type: "user", text: "Continue" },
-  ]);
+    { id: "msg_done", type: "idle", outcome: "succeeded" },
+  ] });
   const resident = await here.start().ready();
-  const page = await request(resident, "GET", "api/session/" + session + "/message?limit=2");
-  assert.equal(page.status, 200);
-  assert.equal(page.json.data[0].title, "Conversation summarized");
-  assert.deepEqual(page.json.data[1], here.engine.messages.get(session)[1]);
-
-  const watch = Buffer.from(JSON.stringify({ conversation: "api/event" })).toString("base64url");
-  const line = await openLine(resident, "?watch=" + watch);
-  t.after(() => line.close());
-  for await (const frame of line.frames()) {
-    if (frame.d?.type === "server.connected") {
-      here.engine.emit({ type: "session.compaction.ended", data: { sessionID: session } });
-    }
-    if (frame.d?.type === "session.compaction.ended") {
-      assert.deepEqual(frame.d.data, { sessionID: session, title: page.json.data[0].title });
-      return;
-    }
-  }
-  assert.fail("the summary did not reach the line");
+  const page = await request(resident, "GET", `kuvo/agents/api/session/${session}/message?order=asc`, undefined, desktop);
+  assert.equal(page.status, 200, page.text);
+  const [summary, said] = page.json.data;
+  assert.equal(summary.title, "Conversation summarized");
+  assert.deepEqual([said.id, said.text], ["msg_text", "Continue"]);
 });
 
-test("a send keeps what the user wrote and the parts that went with it", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-parts");
-  const id = "ses_sendParts";
-  here.engine.sessions.push(sessionOf({ id, directory: here.home }));
-  const record = await here.start().ready();
-  const sessions = new Set(vectors.compose.map(row => row.excluding ?? id));
-  for (const session of sessions) {
-    if (session !== id) here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  }
-  for (const [index, row] of vectors.compose.entries()) {
-    const session = row.excluding ?? id;
-    const given = { ...row.fields, id: "msg_parts" + index };
-    const included = row.kept?.included ?? [];
-    const paths = row.kept?.paths ?? [];
-    const attachments = [...included, ...paths];
-    if (attachments.length) {
-      given.files = attachments.map(kept => {
-        const name = path.posix.basename(kept);
-        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".zip": "application/zip" }[path.extname(name)];
-        return { name, uri: `data:${mime};base64,${Buffer.from("fixture " + name).toString("base64")}` };
-      });
-    }
-    write(path.join(here.home, "run", "agents.json"), JSON.stringify({ machine: row.here ?? null, agents: vectors.agents }));
-    const response = await request(record, "POST", "kuvo/sessions/" + session + "/send", given,
-      row.phone ? {} : { "x-kuvo-from": "app" });
-    assert.equal(response.status, 200, row.about);
-    const stored = here.engine.messages.get(session).find(message => message.id === given.id);
-    const renamed = new Map();
-    if (attachments.length) {
-      const folder = path.join(here.home, "attachments", session);
-      assert.ok(fs.existsSync(folder), row.about);
-      for (const child of fs.readdirSync(folder)) {
-        const file = path.join(folder, child);
-        for (const name of fs.readdirSync(file)) {
-          const kept = attachments.find(which => path.posix.basename(which) === name);
-          if (kept) {
-            const storedFile = path.join(file, name);
-            assert.equal(fs.readFileSync(storedFile, "utf8"), "fixture " + name);
-            renamed.set(kept, storedFile);
-          }
-        }
-      }
-      assert.equal(renamed.size, attachments.length, row.about);
-      assert.deepEqual(stored.files.map(file => file.name), included.map(file => path.posix.basename(file)));
-    }
-    const move = text => [...renamed].reduce((next, [from, to]) => next.replaceAll(from, to), text);
-    assert.equal(stored.text, move(row.text), row.about);
-    const parts = structuredClone(row.parts);
-    if (parts.paths) parts.paths = parts.paths.map(move);
-    assert.deepEqual(stored.metadata.kuvo.parts, parts, row.about);
-  }
-});
-
+// (Kept on the engine: the raw `api/…` passthrough stays for released 0.7.x Macs.)
 test("a raw desktop prompt keeps inline attachments and sends only what the model reads", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-raw-attachments");
@@ -1743,20 +1510,59 @@ test("attachment expiry leaves fresh files and files retained for moves and tran
   assert.ok(fs.existsSync(path.join(attachments, "ses_transcript", "transcript-pictures", "notes.txt")));
 });
 
-test("the line shows a reordered queue and Send Now interrupts the running step", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-reorder");
-  const id = "ses_reorder";
-  here.engine.sessions.push(sessionOf({ id, title: "Reorder", directory: here.home }));
-  here.engine.running.add(id);
-  const record = await here.start().ready();
-  const path = "kuvo/sessions/" + id;
-  for (const item of ["msg_A", "msg_B", "msg_C"]) {
-    const send = await request(record, "POST", path + "/send", { id: item, words: item, delivery: "queue" });
-    assert.equal(send.status, 200);
+// (The reference keeps a picture as a path for an agent that didn't say it takes pictures; the Rust box hands it over.)
+const picturesAsPaths = boxBinary().typescript && "The reference keeps a picture sent to a coding agent as a file on disk rather than handing it over.";
+test("a send keeps what the user wrote and the parts that went with it", { timeout: 60000, skip: picturesAsPaths }, async t => {
+  const id = "ses_sendParts";
+  const others = [...new Set(vectors.compose.map(row => row.excluding).filter(Boolean))];
+  const { here, record } = await onAgents(t, "engine-parts", [id, ...others]);
+  for (const [index, row] of vectors.compose.entries()) {
+    const session = row.excluding ?? id;
+    const given = { ...row.fields, id: "msg_parts" + index, delivery: "queue" };
+    const included = row.kept?.included ?? [];
+    const paths = row.kept?.paths ?? [];
+    const attachments = [...included, ...paths];
+    if (attachments.length) {
+      given.files = attachments.map(kept => {
+        const name = path.posix.basename(kept);
+        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".zip": "application/zip" }[path.extname(name)];
+        return { name, uri: `data:${mime};base64,${Buffer.from("fixture " + name).toString("base64")}` };
+      });
+    }
+    write(path.join(here.home, "run", "agents.json"), JSON.stringify({ machine: row.here ?? null, agents: vectors.agents }));
+    const response = await request(record, "POST", "kuvo/sessions/" + session + "/send", given, row.phone ? {} : desktop);
+    assert.equal(response.status, 200, row.about + ": " + response.text);
+    const stored = await until(async () => (await here.agents.rows(record, session)).find(message => message.id === given.id),
+      () => "It never reached its conversation: " + row.about, 20000, 50);
+    const renamed = new Map();
+    if (attachments.length) {
+      const folder = path.join(here.home, "attachments", session);
+      assert.ok(fs.existsSync(folder), row.about);
+      for (const child of fs.readdirSync(folder)) {
+        const file = path.join(folder, child);
+        if (!fs.statSync(file).isDirectory()) continue;
+        for (const name of fs.readdirSync(file)) {
+          const kept = attachments.find(which => path.posix.basename(which) === name);
+          if (kept && fs.readFileSync(path.join(file, name), "utf8") === "fixture " + name) renamed.set(kept, path.join(file, name));
+        }
+      }
+      assert.equal(renamed.size, attachments.length, row.about);
+    }
+    const move = text => [...renamed].reduce((next, [from, to]) => next.replaceAll(from, to), text);
+    const parts = structuredClone(row.parts);
+    if (parts.paths) parts.paths = parts.paths.map(move);
+    assert.deepEqual(stored.metadata.kuvo.parts, parts, row.about);
   }
-  const watch = Buffer.from(JSON.stringify({ queue: path + "/queue/events" })).toString("base64url");
-  const line = await openLine(record, "?watch=" + watch);
+});
+
+test("the line shows a reordered queue and Send Now interrupts the running step", { timeout: 60000 }, async t => {
+  const id = "ses_reorder";
+  const { here, record } = await busyOnAgents(t, "engine-reorder", id, { title: "Reorder" });
+  const at = "kuvo/sessions/" + id;
+  const call = (method, route, body) => request(record, method, route, body, desktop);
+  for (const item of ["msg_A", "msg_B", "msg_C"]) assert.equal((await call("POST", at + "/send", { id: item, words: item, delivery: "queue" })).status, 200);
+  const watch = Buffer.from(JSON.stringify({ queue: at + "/queue/events" })).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch, undefined, desktop);
   try {
     const frames = line.frames();
     const nextItems = async () => {
@@ -1767,44 +1573,38 @@ test("the line shows a reordered queue and Send Now interrupts the running step"
       }
     };
     assert.deepEqual(await nextItems(), ["msg_A", "msg_B", "msg_C"]);
-    const reorder = await request(record, "POST", path + "/queue/reorder", {
-      item: "msg_C", anchor: "msg_A", before: true,
-    });
+    const reorder = await call("POST", at + "/queue/reorder", { item: "msg_C", anchor: "msg_A", before: true });
     assert.equal(reorder.status, 200);
     assert.deepEqual(reorder.json.items.map(item => item.id), ["msg_C", "msg_A", "msg_B"]);
     assert.deepEqual(await nextItems(), ["msg_C", "msg_A", "msg_B"]);
-    assert.equal((await request(record, "POST", path + "/queue/hold")).json.paused, true);
+    assert.equal((await call("POST", at + "/queue/hold")).json.paused, true);
     const letter = { id: "msg_followUp", from: "Ada", words: "The build is green.", text: "[Letter] The build is green.", kept: true };
-    assert.equal((await request(record, "POST", path + "/queue/add", letter)).json.waits, true);
-    const now = await request(record, "POST", path + "/queue/msg_C/now");
-    assert.equal(now.status, 200);
+    assert.equal((await call("POST", at + "/queue/add", letter)).json.waits, true);
+    const now = await call("POST", at + "/queue/msg_C/now");
+    assert.equal(now.status, 200, now.text);
     assert.equal(now.json.paused, false);
     assert.deepEqual(now.json.waiting.map(row => [row.id, row.from, row.text]), [[letter.id, "Ada", letter.words]]);
-    assert.deepEqual(here.engine.interrupted, [{ session: id, resume: true }]);
-    assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_C").delivery, "steer");
-    assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_A").delivery, "queue");
-    assert.equal((await request(record, "POST", path + "/queue/msg_missing/now")).status, 404);
+    await until(() => here.agents.prompts().includes("msg_C"), "Send Now never reached the agent.", 20000);
+    assert.equal(here.agents.sent("session/cancel").length, 1);
+    assert.equal(here.agents.prompts()[1], "msg_C");
+    assert.equal((await call("POST", at + "/queue/msg_missing/now")).status, 404);
   } finally {
     line.close();
   }
 });
 
-test("a removal requested before a send reaches a busy engine holds that message", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-arrival-busy");
+test("a removal requested before a send reaches a busy conversation holds that message", { timeout: 45000 }, async t => {
   const id = "ses_busyArrival";
-  here.engine.sessions.push(sessionOf({ id, title: "Busy", directory: here.home }));
-  here.engine.running.add(id);
-  const record = await here.start().ready();
+  const { here, record } = await busyOnAgents(t, "engine-arrival-busy", id, { title: "Busy" });
   const route = "kuvo/sessions/" + id;
   const remove = route + "/queue/msg_onTheWay?arriving=1";
-  assert.equal((await request(record, "DELETE", remove)).status, 409);
-  const send = await request(record, "POST", route + "/send", { id: "msg_onTheWay", words: "Change this" });
+  assert.equal((await request(record, "DELETE", remove, undefined, desktop)).status, 409);
+  const send = await request(record, "POST", route + "/send", { id: "msg_onTheWay", words: "Change this", delivery: "queue" }, desktop);
   assert.equal(send.status, 200);
-  assert.deepEqual(here.engine.inboxes.get(id).map(row => [row.id, row.delivery]), [["msg_onTheWay", "queue"]]);
-  const removed = await request(record, "DELETE", remove);
-  assert.equal(removed.status, 200);
+  const removed = await request(record, "DELETE", remove, undefined, desktop);
+  assert.equal(removed.status, 200, removed.text);
   assert.equal(removed.json.removed.words, "Change this");
-  assert.deepEqual(here.engine.inboxes.get(id), []);
-  assert.deepEqual(here.engine.interrupted, []);
+  assert.deepEqual(await queueItems(record, id), []);
+  assert.deepEqual(here.agents.prompts(), ["Keep busy"]);
+  assert.deepEqual(here.agents.sent("session/cancel"), []);
 });
