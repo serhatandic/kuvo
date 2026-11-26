@@ -75,41 +75,6 @@ test("the Box checks the replacement bridge's route version after a handover ref
   }
 });
 
-test("a live draft grant is checked again before a replacement bridge can run its shell action", async () => {
-  let allowed = true;
-  let performed = 0;
-  const old = Bun.serve({
-    hostname: "127.0.0.1", port: 0,
-    fetch() {
-      allowed = false;
-      return new Response(null, { status: 503, headers: { "x-kuvo-bridge-handover": "1", "x-kuvo-route-version": "1" } });
-    },
-  });
-  const next = Bun.serve({
-    hostname: "127.0.0.1", port: 0,
-    fetch() {
-      performed++;
-      return new Response(null, { status: 200, headers: { "x-kuvo-route-version": "1" } });
-    },
-  });
-  try {
-    const path = "api/session/ses_handover/shell";
-    const request = { method: "POST", path, headers: {}, body: Buffer.from('{"command":"test"}') };
-    const json: RouteContext["json"] = (status, value) =>
-      [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }];
-    const reply = await collected(forward(
-      { port: old.port!, password: "old" }, path, request, undefined, () => true, null, undefined, true,
-      () => ({ port: next.port!, password: "next" }), undefined,
-      { json, phone: undefined, admitQueued: () => allowed ? null : { status: 403, value: { message: "This grant was revoked." } } },
-    ));
-    expect(reply.status).toBe(403);
-    expect(performed).toBe(0);
-  } finally {
-    old.stop(true);
-    next.stop(true);
-  }
-});
-
 test("a permission reply cannot attach to an engine that returned after the request began", async () => {
   let dispatched = 0;
   const engine = Bun.serve({

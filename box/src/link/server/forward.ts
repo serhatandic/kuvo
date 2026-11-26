@@ -22,7 +22,7 @@ import { messageID } from "../engine/sessions";
 import { holdArchived } from "../areas/wakes";
 import { MOVING } from "../bots/here";
 import { frozen } from "../moves/records";
-import { dispatchConsent, liveMutationRefusal } from "../ownership/authority";
+import { dispatchConsent } from "../ownership/authority";
 import { inTurnOn } from "../engine/notes";
 import { NOTES_STEP } from "../../shared/session-notes";
 import { pause } from "../../shared/wait";
@@ -187,7 +187,10 @@ async function heldEngineTurn(session: string, kind: string, payload: RequestIni
   return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
 }
 
-const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
+const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|compact|summarize)$/;
+
+// A command or shell typed into a conversation (the retired "/" and "!"): nothing here runs one any more.
+const retiredTurn = /^\/?api\/session\/[^/?]+\/(command|shell)$/;
 
 function liveConsentSession(path: string, method: string) {
   if (method !== "POST" && method !== "DELETE") return;
@@ -211,6 +214,11 @@ export async function* forward(target: Target | null, path: string, request: Lin
     yield { body: Buffer.from("That isn't available over the link.") };
     return;
   }
+  if (method === "POST" && retiredTurn.test(sent.split("?")[0]!)) {
+    yield { head: { status: 404, headers: { "content-type": "application/json" } } };
+    yield { body: Buffer.from(JSON.stringify({ message: "Typed commands in a conversation are gone from Kuvo, so this computer doesn’t run them." })) };
+    return;
+  }
   const url = new URL("http://127.0.0.1/" + sent);
   const consent = liveConsentSession(url.pathname, method);
   const permission = consent && /^(.*\/permission)\/([^/]+)\/reply$/.exec(url.pathname);
@@ -221,10 +229,8 @@ export async function* forward(target: Target | null, path: string, request: Lin
   }
   const context = { request, phone: admission?.phone, admitQueued: admission?.admitQueued };
   const native = method === "POST" ? engineTurn.exec(url.pathname) : null;
-  const command = native && (native[2] === "command" || native[2] === "shell") ? decodeURIComponent(native[1]!) : undefined;
   const authorize = () => {
-    if (command) signal?.throwIfAborted();
-    const veto = admission?.admitQueued?.() ?? (command ? liveMutationRefusal("command", context, command) : null);
+    const veto = admission?.admitQueued?.() ?? null;
     if (veto) throw new ForwardAdmission(veto);
   };
   const dispatch = async (body: RequestInit["body"], signal?: AbortSignal) => {
@@ -258,11 +264,11 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // (These are single headers, never a list.)
   for (const name of REQUEST_HEADERS) if (given[name]) headers[name] = given[name] as string;
   if (toAgents) headers[ROUTE_VERSION_HEADER] = ROUTE_VERSION;
-  // A message or command with files: they're kept here, and the model gets as files what it reads
+  // A message with files: they're kept here, and the model gets as files what it reads
   // (`attachedIn`), from a phone or a Mac alike. A phone's message also says who it names with "&"
   // (`naming`), and that it's from the phone.
-  const sending = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command)$/.exec(url.pathname);
-  const prompt = sending && sending[2] === "prompt" && !request.fromMac ? sending : null;
+  const sending = method === "POST" && /^\/api\/session\/([^/]+)\/prompt$/.exec(url.pathname);
+  const prompt = sending && !request.fromMac ? sending : null;
   // One moving to or from another computer now takes nothing until it's there.
   let moving = false;
   try { moving = Boolean(sending) && frozen().has(decodeURIComponent(sending ? sending[1]! : "")); } catch {}
@@ -272,8 +278,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
     return;
   }
   // The engine being changed (PROTOCOL.md, "A new engine"): a message sent to it straight waits on
-  // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
-  // command or shell, which would run on the engine stopped next, is said to wait.
+  // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does.
   const toEngine = native;
   let heldSession: string | undefined;
   try { if (toEngine && !toAgents) heldSession = decodeURIComponent(toEngine[1]!); } catch { /* let the engine answer an invalid address */ }
@@ -294,11 +299,9 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // A message that's here whole goes on to its conversation even if whoever sent it goes
   // meanwhile (a phone that gave up waiting while a big file was still on its way, #358): its
   // files are kept here by then, and it isn't lost without a word. Sent again under the same id
-  // (as the share sheet and a phone's dropped link do), it goes once (below). A command still stops with its
-  // sender: it has no id, and sent again it would run twice.
+  // (as the share sheet and a phone's dropped link do), it goes once (below).
   const deadline = native ? AbortSignal.timeout(SENDING_PATIENCE.ms) : undefined;
-  const delivering = sending && sending[2] === "prompt" ? deadline
-    : deadline && signal ? AbortSignal.any([signal, deadline]) : deadline ?? signal;
+  const delivering = sending ? deadline : deadline && signal ? AbortSignal.any([signal, deadline]) : deadline ?? signal;
   // What goes to the engine: a message as above, anything else as it came.
   const outgoing = async (): Promise<Buffer | undefined> => {
     if (method === "POST" && /^\/api\/integration\/[^/]+\/connect\/oauth$/.test(url.pathname)) {
@@ -308,12 +311,10 @@ export async function* forward(target: Target | null, path: string, request: Lin
         return Buffer.from(JSON.stringify(oauthStartBody(request, given)));
       }
     }
-    if (command) authorize();
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
-    if (!target && sending[2] !== "prompt") return request.body;
     const holding = heldSession && swapHoldsFor(target, heldSession);
-    if (holding && sending[2] === "prompt") {
+    if (holding) {
       const given = parsed(request.body);
       if (isObject(given) && given.id !== undefined && !isWaitingID(given.id)) return request.body;
     }
@@ -321,8 +322,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
     // fallback whether its record has been removed yet or is still present.
     const input = target && !holding
       ? modelInput(url, headers, delivering, toAgents) : async () => null;
-    const body = await attachedIn(request.body, session, input, request.fromMac === true, toAgents, command ? authorize : undefined);
-    if (sending[2] !== "prompt") return body;
+    const body = await attachedIn(request.body, session, input, request.fromMac === true, toAgents);
     // (The desktop app's over the link: who it names, without the phone's block.)
     const named = prompt ? await namedIn(body, session, naming) : body;
     return withPartsIn(prompt && !request.desktop ? fromPhone(named) : named);
@@ -335,7 +335,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // waits with it, rather than a "busy" sending its words back to be sent again under a new id
   // the engine would take twice. Not answering (the engine started again), a repeat tries again.
   const admittedSession = (consent && consent !== "global" ? consent : undefined)
-    ?? command ?? heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
+    ?? heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
   const admitted = <T>(write: () => Promise<T>): Promise<T> =>
     admittedSession ? admitPrompt(admittedSession, write) : write();
   const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
@@ -343,7 +343,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
     : error instanceof UnsupportedBridgeRouteVersion
       ? { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) }
       : notAnswering();
-  const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]!), request.body) : null;
+  const once = sending ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]!), request.body) : null;
   if (once) {
     const answer = await sentOnce(once, async () => {
       try {

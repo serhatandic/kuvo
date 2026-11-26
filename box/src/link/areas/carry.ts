@@ -18,7 +18,6 @@ import { listOf } from "../files";
 import { BOTS, HERE, SESSION_WAKES } from "../home";
 import { settleAgain } from "./approval";
 import { holdArchived } from "./wakes";
-import { carryDecided, tellAutopilot } from "../work/autopilot";
 import { carryWorkQueue } from "../work-queue/moves";
 import { tellWorktree } from "./worktrees";
 import { foldersFor, PROJECT_FOLDERS_ENTRY, projectFoldersNote } from "./projects";
@@ -170,7 +169,7 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
     // it's made, so nothing takes it for a new conversation of yours.
     const kuvo = bot ? session.metadata?.kuvo ?? { bot: bot.described.id } : {};
     // (Filed under the project it was, in the same folder.)
-    const { approval, applied, autopilot, filed, held, lead, line, call: startedCall, startedBy, wake, by, depth, limits } = session.metadata?.kuvo ?? {};
+    const { approval, applied, filed, held, lead, line, call: startedCall, startedBy, wake, by, depth, limits } = session.metadata?.kuvo ?? {};
     // (One a lead on another computer started keeps what came with it: that lead's Don't Allows,
     // which its rules are made with each time; who started it and where from, its line and its
     // bot's, so its lead's list, Stop All and news still reach it, and its bot's limits count it;
@@ -179,7 +178,7 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
       lead, ...(Array.isArray(held) && held.length ? { held } : {}), ...(Array.isArray(line) ? { line } : {}), ...(typeof startedCall === "string" ? { call: startedCall } : {}),
       ...(typeof startedBy === "string" ? { startedBy } : {}), ...(Array.isArray(wake) ? { wake } : {}), ...(isObject(by) ? { by } : {}), ...(typeof depth === "number" ? { depth } : {}), ...(isObject(limits) ? { limits } : {}),
     } : {};
-    const marks = { kuvo: { ...(approval ? { approval } : {}), ...(applied ? { applied } : {}), ...(autopilot === true ? { autopilot } : {}), ...(filed ? { filed } : {}), ...fromAfar, ...kuvo, carriedFrom: id } };
+    const marks = { kuvo: { ...(approval ? { approval } : {}), ...(applied ? { applied } : {}), ...(filed ? { filed } : {}), ...fromAfar, ...kuvo, carriedFrom: id } };
     let imported: Fields<"id"> | null = null;
     try {
       imported = await call(agents, "POST", "/api/session/import", {
@@ -208,8 +207,6 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
       await call(agents, "PUT", `/api/experimental/session/${encodeURIComponent(moved)}/instructions/entries/${PROJECT_FOLDERS_ENTRY}`, { value: projectFoldersNote(directory, folders) }).catch(() => {});
     }
     await settleAgain(agents, moved, true).catch(() => {});
-    // On Autopilot, its new agent is told so too; the calls it made come along (`carryDecided`).
-    if (autopilot === true) await tellAutopilot(agents, moved, true).catch(() => {});
     if (bot) {
       // The bot's conversation is the new one, told what it is.
       const kit = readKit();
@@ -256,9 +253,8 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
     }
     // At once, before anything it waits for: what follows the conversation goes on in the new one,
     // before a client that heard it archived holds it there. Stopped by you, its queue stays
-    // stopped there, with what waited on the box; Autopilot's calls and its Work Queue come along.
+    // stopped there, with what waited on the box; its Work Queue comes along.
     await carryQueue(id, moved, renamed);
-    carryDecided(id, moved);
     // Its Work Queue too: the new one's, items, links and all.
     try { carryWorkQueue(id, moved); } catch (error) { console.error(`Work Queue: ${id}'s queue wasn't carried to ${moved}: ${(error as Error).message}`); }
     if (!bot) {

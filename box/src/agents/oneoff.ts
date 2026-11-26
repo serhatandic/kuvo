@@ -1,15 +1,9 @@
-// One-off answers for the box's side questions, handoffs, and reviews: a
-// conversation's model asked something outside the conversation, which keeps nothing of it.
+// One-off answers for the box's side questions: a conversation's model asked something outside the
+// conversation, which keeps nothing of it, from inside the conversation's context (a side question
+// about it), without adding to it.
 //
-// Two kinds: `fresh`, apart from the agent's own context (a second pair of eyes:
-// a review), shown only what the prompt holds; and `withContext`, from inside the conversation's
-// context (a side question about it), without adding to it.
-//
-// On the engine, fresh is `/api/experimental/generate` on the session's model. OpenCode's free
-// models don't answer that, so for them it's a session of the engine's own, made for the one
-// answer and deleted after it (hidden from lists as the agents bridge's own runs are,
-// `kuvo.engineFor`), asked through its context, which is empty. With the coding agents, the
-// bridge's one-off answer starts afresh either way: what the conversation said goes in the prompt.
+// On the engine that is its own context; with the coding agents, whose one-off answers start
+// afresh, what the conversation said goes in the prompt.
 
 import type { Requester } from "./groups/api"
 
@@ -40,36 +34,6 @@ export async function sessionInfo(api: Requester, session: string): Promise<Sess
 }
 
 const text = (answer: any) => String(answer?.data?.text ?? "")
-
-/**
- * An answer apart from the agent: on the engine, the model afresh (a session of its own for free
- * models); on the bridge, its one-off answer, another agent answering for one that can't.
- */
-export async function freshAnswer(api: Requester, onEngine: boolean, info: SessionInfo, prompt: string, model = info.model): Promise<string> {
-  if (!onEngine) return text(await api.request("POST", at(info.id) + "/generate", { prompt, orAnother: true }, 180_000))
-  if (model) {
-    // One that took its time and failed isn't asked again another way: that would take as long again.
-    const answer = await api.request("POST", "/api/experimental/generate", { prompt, model: { providerID: model.providerID, id: model.id } }, 180_000).catch((error: any) => {
-      if (error?.name === "TimeoutError") throw new Error("The model took too long to answer.")
-      return undefined
-    })
-    if (text(answer).trim()) return text(answer)
-  }
-  // One of its own, with nothing in it but this.
-  const made = await api.request<{ data?: { id?: string } }>("POST", "/api/session", {
-    title: "Kuvo Code",
-    ...(info.directory ? { location: { directory: info.directory } } : {}),
-    ...(model ? { model: { providerID: model.providerID, id: model.id } } : {}),
-    metadata: { kuvo: { engineFor: info.id } },
-  })
-  const id = made?.data?.id
-  if (!id) throw new Error("The engine didn't start a session for the answer.")
-  try {
-    return text(await api.request("POST", at(id) + "/generate", { prompt }, 180_000))
-  } finally {
-    await api.request("DELETE", at(id)).catch(() => {})
-  }
-}
 
 /**
  * An answer from inside the conversation, kept out of it: on the engine, its own context; with

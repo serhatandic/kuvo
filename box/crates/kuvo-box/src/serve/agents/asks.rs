@@ -103,7 +103,7 @@ pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Regi
         let runs = runs.clone();
         async move {
             let (key, _) = pending(&runs, call.param("id"), call.param("request"), true)?;
-            // Turned down by its box with words (Autopilot): those are what the agent hears.
+            // Turned down by its box with words: those are what the agent hears.
             let reason = call.request.path.split_once('?').and_then(|(_, query)| {
                 query.split('&').find_map(|pair| {
                     let words = pair.strip_prefix("message=")?.replace('+', " ");

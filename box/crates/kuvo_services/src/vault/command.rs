@@ -19,7 +19,7 @@ use zeroize::{Zeroize, Zeroizing};
 use super::{
     Error, Hidden, Item, Kind, Result, Secret,
     activity::Action,
-    broker::{LEFT_UNDONE, UseDenied, Where},
+    broker::{UseDenied, Where},
     fill::text,
     helper::millis,
     identity::Identity,
@@ -105,7 +105,6 @@ impl Resident {
                 .await?
             {
                 Ok(how) => allowed.push((&wanted.item, how)),
-                Err(UseDenied::Autopilot) => return Ok(Answer::spoken(LEFT_UNDONE)),
                 Err(UseDenied::Refused(message)) => return Ok(Answer::failure(message)),
             }
         }

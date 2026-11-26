@@ -289,11 +289,7 @@ impl Work {
         let Ok(id) = self.ask_work(ask, clone, named.as_deref(), root.as_deref()) else {
             return refused("Couldn't ask the user: this computer couldn't keep the ask.");
         };
-        // On Autopilot it doesn't wait for the user: it stays asked, for when they're back.
-        let away = caller.data["metadata"]["kuvo"]["autopilot"] == true;
-        let wait = if away {
-            Duration::ZERO
-        } else {
+        let wait = {
             let given = std::env::var("KUVO_WORK_ASK_WAIT")
                 .ok()
                 .and_then(|wait| wait.parse().ok());
@@ -366,9 +362,7 @@ impl Work {
         let Ok(id) = self.ask_work(ask, None, None, None) else {
             return refused("Couldn't ask the user: this computer couldn't keep the ask.");
         };
-        let wait = if caller.data["metadata"]["kuvo"]["autopilot"] == true {
-            Duration::ZERO
-        } else {
+        let wait = {
             Duration::from_millis(
                 std::env::var("KUVO_WORK_ASK_WAIT")
                     .ok()

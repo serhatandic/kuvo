@@ -41,8 +41,7 @@ const serve = handle => {
 
 // The engine: Mira's conversation.
 const mira = { id: "ses_mira", title: "Mira", location: { directory: home }, permissions: [], time: { created: 1, updated: 5 } };
-let onAutopilot = false;
-const miraNow = () => ({ ...mira, ...(onAutopilot ? { metadata: { kuvo: { autopilot: true } } } : {}) });
+const miraNow = () => ({ ...mira });
 const engine = serve((request, url, _body, reply) => {
   if (url.pathname === "/api/session" && request.method === "GET") return reply({ data: url.searchParams.get("parentID") && url.searchParams.get("parentID") !== "null" ? [] : [miraNow()] });
   if (url.pathname === "/api/session/active") return reply({ data: {} });
@@ -87,7 +86,7 @@ for (const server of [engine, bridge]) {
 }
 
 beforeEach(() => {
-  left = 2; always = false; spent = 0; alwaysSet = []; asked = 0; away = false; onAutopilot = false;
+  left = 2; always = false; spent = 0; alwaysSet = []; asked = 0; away = false;
   for (const each of ["box", "run"]) fs.rmSync(path.join(home, each), { recursive: true, force: true });
   write(path.join(home, "run", "engine.json"), JSON.stringify({ port: engine.address().port, password: "p", version: "0.0.0" }));
 });
@@ -196,20 +195,6 @@ test("without the coding agents' bridge running, nothing can be used, and it say
   const said = await tool({ account: "Codex" });
   assert.equal(said.isError, true);
   assert.match(said.text, /The coding agents aren't running/);
-});
-
-test("on Autopilot the card stays asked for when the user's back, and asking again doesn't add a second", async t => {
-  await bridgeRuns(t);
-  onAutopilot = true;
-  const first = await tool({ account: "Codex" });
-  assert.equal(first.isError, false);
-  assert.match(first.text, /The user hasn't answered yet: it stays asked/);
-  const second = await tool({ account: "Codex" });
-  assert.match(second.text, /The user hasn't answered yet/);
-  const { body } = await route("GET", "kuvo/work/asks");
-  assert.equal(body.asks.length, 1, "one card for the conversation and the account");
-  assert.deepEqual(body.asks[0].words, { title: "Mira asks to use a reset", body: "Codex: 1 of 2" });
-  assert.equal(spent, 0);
 });
 
 test("Always Allow while the computer with the sign-in is away: kept all the same, and the reset waits for it", async t => {

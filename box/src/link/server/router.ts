@@ -72,7 +72,6 @@ import { pluginSearchRoute } from "../areas/plugins";
 import { programsRoute } from "../areas/programs";
 import { backupsRoute } from "../areas/backups";
 import { approvalRoute, SESSION_APPROVAL_ROUTE, SESSION_DECISIONS_ROUTE } from "../areas/approval";
-import { autopilotRoute, SESSION_AUTOPILOT_ROUTE } from "../areas/autopilot";
 import { DRAFT_ROUTE, draftClaimedHere, draftRoute, TYPED_ROUTE, typedRoute } from "../areas/typed";
 import { readSubmissionID, SUBMISSION_FEATURE, SUBMISSION_ROUTE, SUBMIT_ROUTE, submissionsRoute, submissionOwner } from "../ownership/submissions";
 import { followedSetup } from "../setup/record";
@@ -222,7 +221,6 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sessions.actions", when: route => route.match(SESSION_ACTION_ROUTE), answer: sessionActionRoute },
   { feature: "sessions.actions", when: route => route === DELETES_ROUTE, answer: deletesRoute },
   { feature: "approval", when: route => route === "kuvo/approval" || SESSION_APPROVAL_ROUTE.test(route) || SESSION_DECISIONS_ROUTE.test(route), answer: approvalRoute },
-  { feature: "autopilot", when: route => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   // What a typed message means, and what "/" offers (PROTOCOL.md, "What a typed message means").
   { feature: "typed.draft", when: route => route.match(DRAFT_ROUTE), answer: draftRoute },
   { feature: SUBMISSION_FEATURE, when: route => route.match(SUBMIT_ROUTE), answer: draftRoute },

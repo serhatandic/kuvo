@@ -215,7 +215,7 @@ separately where they appear.
 | | 4, 9 | Bot moves and wake-up state owned by 5.1. |
 | | 6 | Group placement owned by 5.3. |
 | | 5 | Covered by a connected destination refusing while its engine is unavailable. The source stays active. |
-| | 10 | Autopilot state, its instruction and its decision history transfer belong to 5.3. |
+| | 10 | Autopilot state and its decision history: Autopilot was cut (11-26), nothing moves. |
 | | 13 | Covered by Stop while the source waits for its active turn and by reading the paused queue on the new owner. |
 | [moves-elsewhere](../../box/bridge-tests/moves-elsewhere.test.js) | 1 | Covered by a third computer observing both authenticated projections and their successive clears over the event stream. |
 | | 2 | Covered by receiver-clock expiry, sender clock rewind, and filtering malformed, local and unauthenticated notices. |
@@ -341,7 +341,7 @@ order and count a parameterized declaration once.
 - Late asks and remote work producers need their 3.2 runtime paths. The live calling paths for
   `send_message` and `read_conversation` belong to the 4.1 tools relay.
 - 4.6 owns native carry and bridge transitions. 5.1 owns bot runtime and session notices.
-  5.3 owns group runtime and Autopilot transfer. They use the shared journals and decisions.
+  5.3 owns group runtime. They use the shared journals and decisions.
 - 5.2 owns Work Queue item and file placement, including the old-reader rejection across a queue
   handoff. 2.3 owns managed wipe preparation and revisions. 2.5 owns the export and recovery
   workflow. The ordinary move, unlink and replacement restore exercise the shared receipt fences.

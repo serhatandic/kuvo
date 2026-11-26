@@ -681,11 +681,11 @@ describe("what the engine asks in a conversation run through the bridge", () => 
       sessions.replyForm(id, sessions.forms(id)[0].id, null)
       await until(() => requests.some((request) => request.method === "DELETE" && request.path === "/api/session/eng_1/form/frm_asked"))
 
-      // Turned down by its box with words (Autopilot): the engine's model hears them too.
+      // Turned down by its box with words: the engine's model hears them too.
       heard!.event({ type: "form.created", data: { sessionID: "eng_1", form: { id: "frm_left", sessionID: "eng_1", title: "Question", metadata: { kind: "question", tool: { id: "call_8" } }, fields } } })
       await until(() => sessions.forms(id).length === 1)
-      sessions.replyForm(id, sessions.forms(id)[0].id, null, "This is on Autopilot: leave it.")
-      await until(() => requests.some((request) => request.method === "DELETE" && request.path === `/api/session/eng_1/form/frm_left?message=${encodeURIComponent("This is on Autopilot: leave it.")}`))
+      sessions.replyForm(id, sessions.forms(id)[0].id, null, "Leave it for now.")
+      await until(() => requests.some((request) => request.method === "DELETE" && request.path === `/api/session/eng_1/form/frm_left?message=${encodeURIComponent("Leave it for now.")}`))
 
       // One the engine names no kind for isn't taken for the agent's question.
       heard!.event({ type: "form.created", data: { sessionID: "eng_1", form: { id: "frm_plain", sessionID: "eng_1", title: "Details", fields } } })

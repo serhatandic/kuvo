@@ -3,7 +3,7 @@ import { ToolCallPending } from "../server/tool-call";
 // A new session started with a task (PROTOCOL.md, "Agents' tools": `POST kuvo/sessions`, and the
 // start_session tool on every box)
 // From a conversation: an agent of its own, in that one's folder (or the one given), on its model,
-// in its mode (Plan stays Plan), with its approval, so Ask First isn't got around; it gets the task as a message from the
+// with its approval, so Ask First isn't got around; it gets the task as a message from the
 // conversation, so it knows who to report to, and its metadata says who started it, for every client
 // to show it beside them. From a client (no `startedBy`): the task as the user's own first message.
 
@@ -47,7 +47,6 @@ import type { Approval } from "../work/approval";
 import { startOfDay } from "../work/clock";
 import { atWorkNow } from "../work/background";
 import { botOfConversation, depthOf, isArchived, lineOf, ofBot, workSessions, worksFor } from "../work/tree";
-import { isAutopilot, tellAutopilot } from "../work/autopilot";
 import type { WorkLimits, WorksFor } from "../../shared/routes/work";
 import type { Target } from "../../shared/records";
 import type { KitRule } from "../bots/kit";
@@ -57,8 +56,8 @@ import { agentsLine, bridgeBack } from "../areas/agents-down";
 import { linkStartedItem } from "../work-queue/start";
 
 /** What a session's start is given: its task, and what's optional: where (a folder, a project by
- * name or folder, a chat), in a worktree, on which model and effort, in which mode, with which
- * approval, on Autopilot (a client's start; a conversation's starts take its own), what its
+ * name or folder, a chat), in a worktree, on which model and effort, with which
+ * approval, what its
  * starter hears of it (`wake`), and whether a bot's is told to review its work (`review`).
  * (Unknown fields are ignored, so a newer client can ask an older box.) */
 export interface StartGiven {
@@ -70,11 +69,11 @@ export interface StartGiven {
   worktree?: unknown;
   model?: unknown;
   effort?: unknown;
+  /** Ignored: it was build or plan, and every session starts in Build now (a caller that still sends it is not refused). */
   mode?: unknown;
-  /** A client's: any of its engine's agents, by name (`mode` is build or plan). */
+  /** A client's: any of its engine's agents, by name. */
   agent?: unknown;
   approval?: unknown;
-  autopilot?: unknown;
   wake?: unknown;
   /** false: a bot's session isn't told to review its work with reviewer subagents, only to report. */
   review?: unknown;
@@ -96,7 +95,7 @@ export interface Starter {
 /** A lead on another of your computers starting a session here (PROTOCOL.md, "Peers", `call`,
  * `as.start`), as its own computer knows it, never from the agent's words: its approval as it comes
  * to there now and the Don't Allows it goes by there (`held`, kept with the session so they hold
- * here too), its mode and model, whether it's on Autopilot, the bot its work is for (`works`;
+ * here too), its model, the bot its work is for (`works`;
  * `own`, the lead is that bot), the new session's depth and line (`line`: its lead's own, then the
  * lead), and the limits you set for that bot. `call`: the call's id, marked on the session so it's
  * made once; `computer` and `key`: the lead's computer, as this one names it. */
@@ -106,9 +105,7 @@ export interface RemoteLead {
   key: string;
   approval: Approval;
   held: KitRule[];
-  agent: "plan" | "build" | null;
   model: { providerID: string; id: string; variant?: string } | null;
-  autopilot: boolean;
   works: WorksFor | null;
   own: boolean;
   depth: number;
@@ -136,12 +133,11 @@ export interface MadeTree {
 
 /** A session about to be made, as it's to be finished: its marks once it's made (`kuvo`), what
  * it's told (`prompt`), whether it's on the coding agents' bridge (else the engine: never the
- * address of either, which changes each time it starts, nor its password) and on Autopilot, its
+ * address of either, which changes each time it starts, nor its password), its
  * project's other folders, and what the start says of it. */
 export interface Making {
   agents: boolean;
   asBefore: boolean;
-  autopilot: boolean;
   kuvo: Record<string, unknown>;
   /** Its task's message; `unheard`, its words should its marks not be on, so its starter doesn't
    * hear it finish (its report goes as a message after all). */
@@ -149,8 +145,6 @@ export interface Making {
   folders: string[];
   folder: string;
   started: Omit<Started, "session">;
-  /** Whether its agent was told how to work on Autopilot, once that's been tried. */
-  autopilotTold?: boolean;
 }
 
 /** An agent's call from no conversation this box has: counted together, its task from "another
@@ -335,7 +329,7 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   if (given.computer !== undefined && given.computer !== null && given.computer !== "" && given.computer !== "here") return no(400, `Starting work on another computer isn't here yet: start it on ${HERE}, or ask the user to start it there.`);
   const remote = by?.remote ?? null;
   // (A lead on another computer: what its own computer says of it, with no folder here.)
-  const parent: Partial<EngineSession> | null = remote ? { permissions: remote.held, ...(remote.agent ? { agent: remote.agent } : {}), ...(remote.model ? { model: remote.model } : {}) } as Partial<EngineSession> : by ? by.place?.data ?? { permissions: ASKS_FIRST } : null;
+  const parent: Partial<EngineSession> | null = remote ? { permissions: remote.held, ...(remote.model ? { model: remote.model } : {}) } as Partial<EngineSession> : by ? by.place?.data ?? { permissions: ASKS_FIRST } : null;
   const parentFolder = parent?.location?.directory ?? parent?.directory;
   let folder = parentFolder ? (isBotFolder(parentFolder) ? CHATS : parentFolder) : null;
   let projectDirectory: string | null = null;
@@ -381,12 +375,8 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
     }
   }
   if (!folder) return no(400, remote ? `Say where it works on ${HERE}: one of its projects (project, from list_projects with this computer), a folder there (folder, a full path), or chat.` : "Give the folder it works in (folder), as a full path.");
-  if (given.mode !== undefined && given.mode !== null && given.mode !== "build" && given.mode !== "plan") return no(400, "mode is build or plan.");
   const requested = approvalGiven(given.approval);
   if (requested === undefined) return no(400, "approval is askFirst, acceptEdits, auto or fullAccess.");
-  // A conversation that plans starts sessions that plan: Build would get round it, as Approve All
-  // would round Ask First.
-  if (given.mode === "build" && parent?.agent === "plan") return no(400, "This conversation is in Plan mode, so the sessions it starts plan too. Start it in plan mode, or ask the user to switch to Build.");
   // The bot this is work for: the conversation itself, or the bot its own starter works for.
   const ownBot = by?.place ? botOfConversation(by.session) : null;
   const bot: WorksFor | null = remote ? remote.works : ownBot ?? (by?.place ? worksFor(by.place.data) : null);
@@ -478,7 +468,6 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
       }
     }
   }
-  if (given.mode === "plan") picked.push("Plan");
   if (!target) return no(503, `The engine on ${HERE} isn't running.`);
   // The limits you set for its bot, if any. This start is noted before they're looked at, so ones
   // asked for at once each count those before them that the engine doesn't show yet.
@@ -583,13 +572,10 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   // off the box's thread first.)
   await askedAbout([...(project?.folders ?? []), ...namedFolders(Array.isArray(parent?.permissions) ? parent.permissions : [])]);
   const rules = rulesFor(applied, parent, project?.folders ?? [], brought);
-  // Its mode: the one asked for, else the conversation's (one that plans starts sessions that plan).
-  // (A client may name any of its engine's agents: `agent`, as its picker has them.)
+  // Its agent: the one a client named (`agent`, as its picker has them), else its starter's, but
+  // never Plan: a conversation stored in Plan mode starts Build sessions.
   const ownAgent = !by && typeof given.agent === "string" && given.agent.trim() ? given.agent.trim() : null;
-  const agent = given.mode === "plan" || given.mode === "build" ? given.mode : ownAgent ?? parent?.agent ?? null;
-  // On Autopilot where its starter is, or where a client asked. An agent's word isn't enough: one
-  // the box can't place starts it asking.
-  const autopilot = remote ? remote.autopilot : by ? Boolean(by.place && isAutopilot(by.place.data)) : given.autopilot === true;
+  const agent = ownAgent ?? (parent?.agent && parent.agent !== "plan" ? parent.agent : null);
   // Its line (the conversations above it, its starter's first: so it's found under a lead whose
   // line crosses computers), and where the bot isn't, the limits it goes by.
   const line = remote ? remote.line : by?.place ? [...lineOf(by.place.data), by.session].slice(-20) : null;
@@ -600,18 +586,18 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   const starter = Boolean(by?.place || remote);
   // (A chat carries its mark from the first, and keeps it as its marks are put on: "Chats".)
   const chat = isChatsFolder(folder) ? { chat: folder } : {};
-  const marks = { ...(starter ? { startedBy: by!.session } : {}), ...(asBefore ? {} : { approval: kept, applied }), ...(autopilot ? { autopilot: true } : {}), ...(filed ? { filed } : {}), ...chat, ...marksOfLine };
+  const marks = { ...(starter ? { startedBy: by!.session } : {}), ...(asBefore ? {} : { approval: kept, applied }), ...(filed ? { filed } : {}), ...chat, ...marksOfLine };
   const waits = given.wait === true && !remote;
   const wakes = wakesFrom(given.wait === true && remote ? given.wake ?? "both" : given.wake, remote ? remote.own : Boolean(ownBot), waits);
   // What its starter hears of it, only once it's marked so: none for an agent outside any
   // conversation here, or for a mark the engine didn't take (it's told to write to it instead).
-  const kuvo = { ...(starter ? { startedBy: by!.session, ...(bot ? { by: bot, depth } : {}), ...(wakes.length ? { wake: wakes } : {}) } : {}), ...(asBefore ? {} : { approval: kept, applied }), ...(autopilot ? { autopilot: true } : {}), ...(filed ? { filed } : {}), ...chat, ...marksOfLine };
+  const kuvo = { ...(starter ? { startedBy: by!.session, ...(bot ? { by: bot, depth } : {}), ...(wakes.length ? { wake: wakes } : {}) } : {}), ...(asBefore ? {} : { approval: kept, applied }), ...(filed ? { filed } : {}), ...chat, ...marksOfLine };
   const from_ = remote ? `${by!.name} on ${remote.computer}` : by?.name ?? "";
   // (Its finish heard by its starter with its last reply: its report isn't sent again as a message.)
   const textFor = (heard: boolean) => by ? composeLetter(from_, by.session, task, waits, heard) + (bot ? `\n\n${sessionNote(bot.name, heard, given.review !== false)}` : "") : task;
   const heard = starter && wakes.includes("finished");
   const text = textFor(heard);
-  const making: Making = { agents, asBefore, autopilot, kuvo, prompt: { id: messageID(), text, ...(heard ? { unheard: textFor(false) } : {}) }, folders: [...(project?.folders ?? [])], folder,
+  const making: Making = { agents, asBefore, kuvo, prompt: { id: messageID(), text, ...(heard ? { unheard: textFor(false) } : {}) }, folders: [...(project?.folders ?? [])], folder,
     started: { title, folder, project: project?.name ?? null, ...(picked.length ? { picked: picked.join(" · ") } : {}), ...(got ? { got } : {}), ...(wakes.length ? { wakes } : {}), ...(warning ? { warning } : {}), ...(modelNote ? { model: modelNote } : {}),
       // (Less than its lead's because of this computer: why, for a lead on another.)
       ...(remote && got && effective.held ? { held: heldThere(wanted, applied, agents) } : {}) } };
@@ -647,13 +633,6 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   // None to give it (a client's new session): the session as it's made now, for the client to show
   // at once, and the worktree made for it.
   if (!task) {
-    // (Asked to start on Autopilot, it doesn't start asking you instead: it goes, and the client
-    // says why.)
-    if (making.autopilotTold === false) {
-      await call(target, "DELETE", `/api/session/${encodeURIComponent(session)}`).catch(() => {});
-      await removeTree();
-      return no(502, `Couldn't start the session in ${folder} on Autopilot: its agent couldn't be told how to work on it.`);
-    }
     const info = await call(target, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, place.signal).catch(() => null);
     noteSessionCreated(session, agents ? "agents" : "engine", folder);
     return { started: { session, ...making.started, ...(isObject(info) ? { info } : {}), ...(treeMade ? { worktree: treeMade } : {}) } };
@@ -717,14 +696,13 @@ export async function heldByLimits(bot: WorksFor, limits: WorkLimits, depth: num
 }
 
 /** A session just made on `target`, finished as it's to be (each step can be taken again): its
- * project's other folders and Autopilot told it, its worktree's branch named, its marks put on, its
+ * project's other folders told it, its worktree's branch named, its marks put on, its
  * rules made for what its approval comes to now, and Full Access noted. Whether its marks are on. */
 export async function markMade(making: Making, target: Target, session: string, signal?: AbortSignal): Promise<boolean> {
   const address = encodeURIComponent(session);
   if (making.folders.length) {
     await call(target, "PUT", `/api/experimental/session/${address}/instructions/entries/${PROJECT_FOLDERS_ENTRY}`, { value: projectFoldersNote(making.folder, making.folders) }).catch(() => {});
   }
-  if (making.autopilot) making.autopilotTold = await tellAutopilot(target, session, true).then(() => true, () => false);
   await settleNewSession(target, session).catch(() => {});
   // (In its turn, onto its notes as they are then: what was written since it was made stays.)
   const marked = await rewriteOn(target, session, now => ({ metadata: withNotes(now.metadata, making.kuvo) })).then(done => Boolean(done), () => false);

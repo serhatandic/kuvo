@@ -47,7 +47,9 @@ pub fn turn_setup(
     } else {
         PermissionMode::AskFirst
     };
-    let plan = header.get("agent").and_then(Value::as_str) == Some("plan");
+    // Plan mode is gone: a conversation stored with agent "plan" (its `agent-switched` rows still
+    // read) runs as Build, as every other conversation does.
+    let plan = false;
     let mut policy = Policy::new(folder, None);
     policy.person_home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

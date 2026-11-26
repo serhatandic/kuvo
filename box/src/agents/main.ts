@@ -24,8 +24,6 @@ import { EngineAgent, EngineLink } from "./engine"
 import { subscribe } from "./events"
 import type { SessionPlaces } from "./session-places"
 import { SideQuestions } from "./btw"
-import { Handoffs } from "./handoff"
-import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
 import { keepRelayKeys, relayPort, setToolRelayRun, usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, onMacBox, takeOwnFolders } from "./machine"
@@ -396,8 +394,6 @@ const places: SessionPlaces = {
   },
 }
 const sideQuestions = new SideQuestions(join(home, "side-questions.json"), places)
-const handoffs = new Handoffs(places)
-const reviews = new Reviews(join(home, "reviews.json"), places)
 const usageFollow = new AbortController()
 roster.observeLimits(agent => {
   if (agent.limits) boxServices.observeTurns(agent.providerID, agent.limits)
@@ -438,7 +434,7 @@ let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
 let transferring = false
-const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, sideQuestions, handoffs, places, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
+const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, sideQuestions, places, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 setInterval(() => {
@@ -482,7 +478,6 @@ void link.whenReady().then(() => {
   sessions.wakeLost()
   sessions.wakeHeld()
   sideQuestions.start()
-  reviews.resume()
   try {
     groups?.runner.start()
     groups?.peers.server?.start()
@@ -558,7 +553,7 @@ let launchSaid: { at: number; lets: boolean } | undefined
 const wholeWork = () => {
   const here = sessions.work()
   const outsideTurns = answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
-  const other = here.other || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting()
+  const other = here.other || sideQuestions.busy() || signInsWaiting()
   return { turns: here.turns || outsideTurns, other, outsideTurns }
 }
 const transferBuilds = new Set<string>()
@@ -755,7 +750,6 @@ function stop(reason: string, handOver = false, startReplacement = true) {
     } catch {}
   }
   sideQuestions.stopAll()
-  reviews.stopAll()
   cancelSignIns()
   // (Unless a newer bridge has put its own there.)
   try {

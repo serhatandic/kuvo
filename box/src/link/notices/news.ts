@@ -10,7 +10,6 @@ import { engineGet } from "../engine/client";
 import { summaryAtEnd } from "../../shared/summaries";
 import { isHiddenRun } from "../engine/sessions";
 import { sessionsWaitingOnServer } from "../work/answers";
-import { isAutopilot } from "../work/autopilot";
 import { isChatsFolder } from "../engine/chats";
 import { masked, showsAll } from "./mask";
 import { oneSentence } from "./sentence";
@@ -207,7 +206,7 @@ const beganWith = (message: EngineMessage): TurnBegan => {
   if (text.startsWith("[Message from ") || text.startsWith("[Work from ")) return "agent";
   if (text.startsWith("[The user ") || text.startsWith("[Decision changed]")) return "you";
   const note = boxNoteOf(text, message.metadata);
-  if (note) return note.from === "Your answer" || note.from === "Autopilot" ? "you" : note.from === "Its sessions" ? "follow" : "own";
+  if (note) return note.from === "Your answer" ? "you" : note.from === "Its sessions" ? "follow" : "own";
   return writtenByYou(text, message.metadata) ? "you" : "own";
 };
 
@@ -277,13 +276,6 @@ export function projectNameOf(directory: string | undefined, session?: Partial<E
 
 // The notification for an engine event, or null for one that isn't news. `get(route)` asks the
 // engine.
-/** Whether the engine still lists `form` as asked: when it can't say, it's taken as asked. */
-export const stillAsked = (form: EngineForm, get: EngineAsk, folder?: string): Promise<boolean> =>
-  get(`api/session/${encodeURIComponent(form.sessionID)}/form`, folder).then(answer => {
-    const forms = (answer as EngineAnswer<EngineForm[]> | null)?.data;
-    return !Array.isArray(forms) || forms.some(each => each?.id === form.id);
-  }, () => true);
-
 export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Notice | null> {
   const data = event.data ?? {};
   // (As the engine answers it: a session it has, whole; one it hasn't is an error.)
@@ -328,8 +320,6 @@ export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Not
       if (!asker) return null;
       const where = await shown(asker);
       if (isHiddenRun(where)) return null;
-      // On Autopilot nothing waits for you, unless it's still asked once the box has looked.
-      if (isAutopilot(where) && !await stillAsked(form, get, event.location?.directory)) return null;
       const full = describeForm(form);
       const body = shortWords(full);
       const choices = (singleQuestion(form)?.options ?? []).map(option => String(option?.label ?? ""));

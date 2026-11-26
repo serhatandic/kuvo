@@ -1192,12 +1192,12 @@ describe("A question Codex asks (request_user_input_async)", () => {
     expect(steps(id).flatMap((step) => step.content.filter((part: any) => part.type === "text").map((part: any) => part.text)).join("\n")).toContain("Writing it in Turkish.")
   })
 
-  test("turned down by its box with words (Autopilot): Codex hears them and goes on", async () => {
+  test("turned down by its box with words: Codex hears them and goes on", async () => {
     const id = start(asking, {}, answered)
     await until(() => sessions.forms(id).length === 1)
-    sessions.replyForm(id, sessions.forms(id)[0].id, null, "This is on Autopilot: leave it.")
+    sessions.replyForm(id, sessions.forms(id)[0].id, null, "Leave it for now.")
     await until(() => ended(id))
-    expect(starts()).toEqual(["go", "This is on Autopilot: leave it."])
+    expect(starts()).toEqual(["go", "Leave it for now."])
   })
 
   /** Turning down what it asks, each once, until its turn's over. */
@@ -1207,7 +1207,7 @@ describe("A question Codex asks (request_user_input_async)", () => {
     while (!ended(id)) {
       for (const form of unanswered()) {
         replied.add(form.id)
-        sessions.replyForm(id, form.id, null, "This is on Autopilot: leave it.")
+        sessions.replyForm(id, form.id, null, "Leave it for now.")
       }
       await until(() => ended(id) || unanswered().length > 0)
     }
@@ -1216,7 +1216,7 @@ describe("A question Codex asks (request_user_input_async)", () => {
   test("asking again and again, each turned down by its box with words, its turn ends", async () => {
     const id = start(asking, {}, asking)
     await turnDownUntilEnded(id)
-    expect(starts()).toEqual(["go", "This is on Autopilot: leave it.", "This is on Autopilot: leave it."])
+    expect(starts()).toEqual(["go", "Leave it for now.", "Leave it for now."])
   })
 
   test("it's told which tool asks you, as the other is refused outside Plan and a model that reached for it said it couldn't ask", async () => {
@@ -1229,9 +1229,9 @@ describe("A question Codex asks (request_user_input_async)", () => {
   test("what it asks in Plan, turned down by its box with words, gets those words as its answer", async () => {
     const id = start([["item/tool/requestUserInput", { itemId: "q1", questions: [{ id: "which", header: "Which", question: "Which one?", options: [{ label: "A" }] }, { id: "key", header: "Key", question: "Your key?", isSecret: true }] }]])
     await until(() => sessions.forms(id).length === 1)
-    sessions.replyForm(id, sessions.forms(id)[0].id, null, "This is on Autopilot: leave it.")
+    sessions.replyForm(id, sessions.forms(id)[0].id, null, "Leave it for now.")
     await until(() => ended(id))
-    expect(answers()).toEqual([{ answers: { which: { answers: ["This is on Autopilot: leave it."] }, key: { answers: [] } } }])
+    expect(answers()).toEqual([{ answers: { which: { answers: ["Leave it for now."] }, key: { answers: [] } } }])
   })
 
   test("a message you type instead answers it: the card goes and Codex gets your words", async () => {
@@ -1284,16 +1284,16 @@ describe("A question Codex asks (request_user_input_async)", () => {
     expect(said(id)).toContain("Writing it in Turkish.")
   })
 
-  test("turned down by its box with words (Autopilot) while it sleeps on it: it hears them, the sleep ends and its turn goes on", async () => {
+  test("turned down by its box with words while it sleeps on it: it hears them, the sleep ends and its turn goes on", async () => {
     const id = start([...asking, sleepsUntilTold, ...answered])
     await cardUpAsleep(id)
-    sessions.replyForm(id, sessions.forms(id)[0].id, null, "This is on Autopilot: leave it.")
+    sessions.replyForm(id, sessions.forms(id)[0].id, null, "Leave it for now.")
     await until(() => ended(id))
-    expect(steered()).toEqual(["This is on Autopilot: leave it."])
+    expect(steered()).toEqual(["Leave it for now."])
     expect(starts()).toEqual(["go"])
   })
 
-  test("settled before it starts to sleep (Autopilot goes ahead at once): the sleep that follows isn't slept, it's told again", async () => {
+  test("settled before it starts to sleep (the box settles it at once): the sleep that follows isn't slept, it's told again", async () => {
     const id = start([...asking, untilTold, sleepsUntilTold, ...answered])
     await until(() => sessions.forms(id).length === 1)
     sessions.replyForm(id, sessions.forms(id)[0].id, { [sessions.forms(id)[0].fields[0].key]: "Turkish" })
@@ -1520,7 +1520,7 @@ describe("A question Codex asks (request_user_input_async)", () => {
     const rounds = [1, 2, 3, 4, 5, 6, 7, 8].flatMap((n) => [askedAway(n), untilTold])
     const id = start([...rounds, untilStopped])
     await turnDownUntilEnded(id)
-    expect(steered().every((text) => text.includes("This is on Autopilot: leave it."))).toBe(true)
+    expect(steered().every((text) => text.includes("Leave it for now."))).toBe(true)
     expect(stoppedIt()).toBe(true)
     expect((sessions.messages(id).find((message: any) => message.type === "idle") as any).outcome).toBe("succeeded")
   })
@@ -1634,42 +1634,11 @@ describe("Codex in the session's modes", () => {
     expect(answers()).toEqual([{ action: "accept", content: null }, { action: "decline", content: null }])
   })
 
-  test("Plan: another server's MCP tool, which may change things, still waits for your yes", async () => {
-    const id = start([mcpAsk("kuvo-browser", "show_in_panel"), mcpAsk("probe", "erase_everything"), ...reply], { agent: "plan" })
-    await until(() => sessions.forms(id).length === 1)
-    expect(sessions.forms(id)[0].fields[0]).toMatchObject({ title: 'Allow the probe MCP server to run tool "erase_everything"?' })
-    sessions.replyForm(id, sessions.forms(id)[0].id, null)
-    await until(() => ended(id))
-    expect(answers()).toEqual([{ action: "accept", content: null }, { action: "decline" }])
-  })
-
-  test("what an MCP server asks in Plan is its form, not the agent's question, so it never counts as one", async () => {
-    const id = start([mcpAsk("probe", "erase_everything"), ...reply], { agent: "plan" })
-    await until(() => sessions.forms(id).length === 1)
-    expect(sessions.forms(id)[0].metadata).toEqual({ kind: "mcp-elicitation", server: "probe" })
-    sessions.replyForm(id, sessions.forms(id)[0].id, null)
-    await until(() => ended(id))
-  })
-
   test("Ask First: it asks before commands and changes, and what it runs can write in the project and reach the network", async () => {
     await run(reply, { permissions: askFirst })
     expect(turnStart()).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "workspaceWrite", networkAccess: true }, collaborationMode: { mode: "default" } })
   })
 
-  test("Plan: it can only read, and a change it asks to make anyway is declined without asking you", async () => {
-    const changes = [{ path: join(root, "src/sum.ts"), kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-a\n+b\n" }]
-    const id = await run(
-      [
-        ["item/started", { item: { type: "fileChange", id: "p1", status: "inProgress", changes } }],
-        ["item/fileChange/requestApproval", { itemId: "p1" }],
-        ["item/completed", { item: { type: "fileChange", id: "p1", status: "declined", changes } }],
-      ],
-      { agent: "plan" },
-    )
-    expect(turnStart()).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly" }, collaborationMode: { mode: "plan" } })
-    expect(answers()).toEqual([{ decision: "decline" }])
-    expect(tools(id)[0].state.status).toBe("error")
-  })
 })
 
 describe.skipIf(!canFence)("Codex in the box's sandbox", () => {
