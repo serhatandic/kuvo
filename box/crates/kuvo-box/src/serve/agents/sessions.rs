@@ -150,6 +150,26 @@ impl AgentSessionSource for Inventory {
         })
     }
 
+    fn worktree_inventory(&self) -> AgentSessionRead<'_> {
+        Box::pin(async move {
+            let mut rows = self.inventory().await?;
+            // A holder may outlive a resident whose native runtime could not
+            // recover the turn. Do not treat the missing runtime as idle.
+            let home = kuvo_store::home::Home::new(self.home.clone())?;
+            let runtime = kuvo_agents::runtime::Runtime::for_home(&home);
+            let mut held = runtime.held_sessions().await?;
+            for row in &mut rows {
+                if row.header.get("id").and_then(Value::as_str).is_some_and(|id| held.remove(id)) {
+                    row.running = true;
+                }
+            }
+            if !held.is_empty() {
+                return Err(io::Error::other("A held coding-agent conversation couldn't be read."));
+            }
+            Ok(rows)
+        })
+    }
+
     fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
         self.running.as_ref().map(SessionRuns::changes)
     }

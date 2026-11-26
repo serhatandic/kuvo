@@ -1,6 +1,7 @@
 //! Worktree and project settings are projections of the owner routes.
 use super::pages::said;
 use super::*;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::path::{Path, PathBuf};
 const TITLE: &str = "Worktrees";
 
@@ -111,7 +112,7 @@ async fn read_inner(ctx: &Context) -> Result<Value, Refusal> {
         let mut words=match tree["uncommitted"].as_bool(){Some(true)=>"Its folder is deleted, with changes in it that aren’t committed.",Some(false)=>"Its folder is deleted. Git sees nothing in it that isn’t committed.",None=>"Its folder and anything in it that isn’t committed are deleted."}.to_owned();
         if let Some(ahead)=tree["ahead"].as_u64().filter(|n|*n>0){words.push_str(&format!(" {branch} keeps its {ahead} {} not merged yet.",if ahead==1{"commit"}else{"commits"}));}
         words.push_str(" Its sessions stay, without a folder to run in.");
-        json!({"id":format!("tree-{path}"),"title":branch,"line":format!("{name} · {sessions} {}",if sessions==1{"session"}else{"sessions"}),"kind":"actions","value":value,"actions":[{"id":"remove","title":"Remove…","style":"destructive","can":can,"confirm":{"title":format!("Remove the worktree for {branch}?"),"body":words,"button":"Remove"}}]})
+        json!({"id":format!("tree-{}", URL_SAFE_NO_PAD.encode(path)),"title":branch,"line":format!("{name} · {sessions} {}",if sessions==1{"session"}else{"sessions"}),"kind":"actions","value":value,"actions":[{"id":"remove","title":"Remove…","style":"destructive","can":can,"confirm":{"title":format!("Remove the worktree for {branch}?"),"body":words,"button":"Remove"}}]})
     }).collect::<Vec<_>>();
     let mut card = group(
         "session-worktrees",
@@ -190,9 +191,11 @@ pub async fn act(ctx: &Context, at: &Value, action: &Value) -> Result<(), Refusa
     if action["id"] != "remove" {
         return Err(no_action());
     }
-    let path = at["id"]
-        .as_str()
-        .and_then(|s| s.strip_prefix("tree-"))
+    // A row ID is a route segment, not a path. Keep the canonical path guard
+    // unchanged and carry the checkout's full native path in the opaque ID.
+    let path = at["id"].as_str().and_then(|s| s.strip_prefix("tree-"))
+        .and_then(|encoded| URL_SAFE_NO_PAD.decode(encoded).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
         .ok_or_else(no_action)?;
     ctx.ask(
         Method::POST,

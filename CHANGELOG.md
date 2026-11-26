@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Removing a worktree from Settings no longer fails because of its folder path.
+
 - Antigravity no longer asks you to sign in again when a command it runs opens a link, or when its sign-in message shows up in a file or a command's output.
 
 - You can choose Antigravity's thinking level (Low to Extra, where a model has them) in the model picker. A conversation keeps the level it started with.

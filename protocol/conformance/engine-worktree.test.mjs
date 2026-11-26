@@ -36,7 +36,7 @@ test("a session started by a subagent is filed under the project of its linked w
     assert.equal(accepted.json.project, "Fixture");
     const made = engine.sessions.find(row => row.id === accepted.json.session);
     assert.equal(fs.realpathSync(made.location.directory), fs.realpathSync(folder));
-    assert.equal(made.agent, "plan");
+    assert.equal(made.agent, undefined, "a session started by a Plan conversation still starts in Build");
     assert.equal(made.metadata.kuvo.startedBy, root.id);
     assert.deepEqual(made.metadata.kuvo.filed, { folder: made.location.directory, project });
     assert.equal(engine.messages.get(made.id).length, 1);

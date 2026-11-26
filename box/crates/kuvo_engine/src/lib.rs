@@ -100,7 +100,7 @@ pub use transcript::{TranscriptError, TranscriptScope, folded};
 pub use waiting::PeerWaiting;
 pub use bot_port::BotEngine;
 pub use wake_port::{BoxMessage, Delivered as WakeDelivered, Unreachable, WAKE_FROM, WAKE_MARKER, WakeEngine};
-pub use worktree_notes::WorktreeConversation;
+pub use worktree_notes::{WorktreeConversation, WorktreeGit};
 
 impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {
