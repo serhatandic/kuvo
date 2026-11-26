@@ -434,7 +434,7 @@ parallel.
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: **done**, ACP: it carries everything the app shows; a message sent mid-turn waits for the turn's end, as for Grok and Antigravity ([decision](opencode-agent.md#1-how-the-box-runs-it-acp-one-process-per-computer)). 4.7b: **done**, new conversations on OpenCode's models run on the OpenCode agent, one process per computer, and opening the app starts no OpenCode ([coverage](rust-agents-coverage.md#opencode-as-a-coding-agent-47b)). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). Bots on OpenCode's models move to the agent in the same switch (new ones still get engine conversations until then); 4.7d rewrites the four `bots` cases that make one ("made from a template waits", "told who it is… marked as its", Mac and machine) on the pinned OpenCode with the stand-in model. | agents | 4.3, 3.2 | 24 | B |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
-| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, Marketplace, session and Settings follow changes; keeper, work and peer idle rounds are event-driven. Setup leases are demand-driven, with fenced shared numbering; cross-platform gates remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
+| 4.8 | **Done.** [Idle work](#48-idle-work): lazy agent discovery, version checks and artifact store; event-driven Library, Marketplace, sessions, Settings, keeper, work and peer services. Demand-driven setup leases with fenced shared numbering. A shared native watcher and lossless relay backpressure. Mac, Linux, WSL and native Windows verified; zero idle application timer callbacks. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
 | 5.1 | **Done.** Bots: making (on the engine and on coding agents, from New Bot and Add Agent), changing, deleting, telling and settling them, held edits for your other computers and those computers' bots; wake-ups and watches fired by the resident, for the engine's conversations and the coding agents'; approvals, work settings, oversight, notices and their holds, the work watcher, Stop and Stop All, work for leads on your other computers, the agents' work tools, wake tools and letters; and the app's routes from the audit (`kuvo/asks`, shell output and Stop, Add Agent). Verified on macOS (both boxes), static Linux musl under WSL2, and native Windows. Not ported: offline bot setting edits, with the record-edit adapters (section 5). Open elsewhere: an engine bot switched to a coding agent's model (4.6) and group chats as a bot is deleted (5.3). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
@@ -915,8 +915,67 @@ Dirty wake tokens are coalescible. The Work Queue exchange, remote work, move dr
 delivery recovery and letter outbox retain actual outstanding retries and rearm on
 receipt/route changes; there is no need to restore their idle rounds. The peer update sender clears its saved request after transport acceptance, so its
 bounded fleet mailbox now coalesces a shared check and the latest retry per peer
-until capacity is available, without blocking pack replies. Final cross verification
-of the relay and Windows fixes remains pending.
+until capacity is available, without blocking pack replies.
+
+**Final relay and watcher gate.** The former WSL retirement failure passed three
+consecutive times after relay backpressure recovery, then three further times with the
+final watcher and inventory corrections. Every sampled resident held at most one
+inotify instance; the final three samples had 16, 14 and 19 observations. The full
+adding, removal, two-computer (including quiet lease and numbering), peers, resident,
+engine-sessions (81/81), delivery, library, Settings, setup judge, SSH adding, receipt
+index, Work Queue follow and update check/retry/wipe gates passed on WSL. Native Windows
+passed those areas plus engine asks and bot/held edits, with the standalone wipe case
+now passing after the removal owner's fix. Native update check/retry had three
+applicable cases and one Unix-only skip. Linux passed the same pressure and setup
+areas; the final resident and engine inventory retests passed on Linux and WSL.
+Mac passed engine-sessions 81/81 on both boxes, the Rust relay tests (28 applicable,
+one live mixed-box test ignored), pressure and pending-check regressions, and the
+final initial-inventory case three additional times.
+
+A rescan of unchanged agent metadata during the *first* in-flight engine page now
+compares against a separately retained, sorted agent projection, shared by reference
+with the complete inventory. The deletion fence still requires exactly two engine
+reads in the initial inventory case. Linux reports a completed in-place write as
+an access notification; the shared watcher preserves this close-write event while
+still ignoring ordinary reads and opens. Its scenario consumes create and modify,
+then requires the completed-write notification. The external-record follow fixture
+also used to overwrite the live engine's place during initial publication; it now
+acts as a separate writer under the same background lock and uses atomic replacement,
+keeping the other places intact. The Work Queue follow fixture waits for the intended
+title change instead of mistaking an intervening numbering/liveness update for it.
+Neither change relaxes the required visible answer. The external-record scenario
+passed three focused Mac Rust runs and its TypeScript reference, and the full final
+resident area passed on both Linux environments.
+
+The final Mac sample repeats the instrumented 65-second conditions:
+
+| Sample | Before RSS KiB | Final RSS KiB | Processes before → final | Timer callbacks before → final | Final callbacks/s |
+|---|---:|---:|---:|---:|---:|
+| Resident, no client | 49,264 | 50,256 | 1 → 1 | 267 → 2 | 0.031 |
+| Resident, one client | 54,144 | 47,216 | 1 → 1 | 283 → 16 | 0.246 |
+| Keeper + resident, no client | 61,936 | 63,808 | 2 → 2 | 267 → 2 | 0.031 |
+| Keeper + resident, one client following hot pages | 66,656 (plain client) | 69,904 | 2 → 2 | 283 → 16 | 0.246 |
+
+The final two idle callbacks are relay keepalives; the line adds thirteen wire
+heartbeats and one connected usage demand. No application-service timer fires, no
+agent starts, and no idle engine. Resident-only unconnected RSS rises 992 KiB in
+this run; the connected resident uses 6,928 KiB less. The shared watcher reduces
+stack regions and private physical footprint as measured above. RSS includes
+shared mapped pages and varies between samples, so it is not a private allocation
+measurement. All owned fixture processes exited; both PC process lists were clear,
+its scratch and the cross target directories were removed, and the Linux test
+container exited.
+
+**Follow-on for 4.9 (background priority).** Most native programs use the common
+`kuvo_os::process::Spawn` and its Unix/Windows platform implementations. Agent entry
+points are `kuvo_agents`' Codex/Claude `program`, ACP `local`, `hold/worker` and
+`hold/client`, `sign_in/command`; version checks and installers enter through
+`program_updates` and `runtime_packages`. Engine processes use `kuvo_engine::launch`.
+These seams distinguish starting a foreground turn from passive discovery: discovery
+no longer launches a native agent, and background version checks have explicit demand
+and daily scheduling. Direct platform-specific child commands, including Codex's
+Keychain/sign-in helpers, should be reviewed separately by 4.9 rather than assuming
+all subprocesses are spawned through the common wrapper.
 
 
 ## 7. Release decisions
