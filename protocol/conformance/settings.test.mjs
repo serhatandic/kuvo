@@ -1433,3 +1433,116 @@ test("Vault answers what agents wait on you for from the page: once from any cli
   // One answered elsewhere meanwhile is gone from the page: refused, nothing answered.
   assert.equal((await v.act(offered,"give",{item:github.id,how:"once"})).status,404);
 });
+
+// Settings › Permissions, on a computer whose engine settings hold one rule of yours.
+const permissionsBox=async(t,name)=>{
+  const {computer}=await bench(t);
+  const box=await computer(name);
+  const file=path.join(box.home,"box/opencode.json");
+  write(file,JSON.stringify({permissions:[{action:"shell",resource:"git push *",effect:"ask"}]}));
+  const record=await box.start().ready();
+  const ask=box.connect(record);
+  const page=async()=>{const r=await ask("GET","kuvo/settings/permissions");assert.equal(r.status,200,r.text);return r.json;};
+  const change=(r,value,was=r.revision)=>ask("PATCH","kuvo/settings/permissions",{row:r.id,value,was});
+  const rules=value=>value===undefined?JSON.parse(readFileSync(file,"utf8")).permissions:write(file,JSON.stringify({permissions:value}));
+  const approval=path.join(box.home,"box/approval.json");
+  const kept=()=>existsSync(approval)?readFileSync(approval,"utf8"):null;
+  return {box,record,ask,page,change,rules,file,approval,kept};
+};
+
+test("Permissions Full Access can't be turned on here and says why, but turns off as kuvo/approval does; other computers keep the old route's file", async t => {
+  const {ask,page,change,kept,approval}=await permissionsBox(t,"Full Access");
+  const off=row(await page(),"full-access");
+  assert.deepEqual([off.kind,off.value],["switch",false]);
+  assert.match(off.can.why,/pick Full Access in its mode menu/);
+  const refused=await change(off,true);
+  assert.equal(refused.status,403);
+  assert.equal(refused.json.message,off.can.why);
+  assert.equal((await ask("GET","kuvo/approval")).json.fullAccess,false);
+  await ask("PATCH","kuvo/approval",{fullAccess:true});
+  await ask("PATCH","kuvo/approval",{fullAccess:false});
+  const byRoute=kept();
+  await ask("PATCH","kuvo/approval",{fullAccess:true});
+  const on=row(await page(),"full-access");
+  assert.deepEqual([on.value,on.can,on.confirm.button],[true,true,"Turn Off"]);
+  assert.equal((await change(on,false)).status,200);
+  assert.equal(kept(),byRoute);
+  rmSync(approval,{force:true});
+  await ask("PATCH","kuvo/approval",{otherComputers:false});
+  const otherByRoute=kept();
+  rmSync(approval,{force:true});
+  const other=row(await page(),"other-computers");
+  assert.deepEqual([other.kind,other.value],["switch",true]);
+  assert.match(other.line,/^Their bots and agents can start sessions on .+\.$/);
+  // The same value through the old route leaves its revision.
+  await ask("PATCH","kuvo/approval",{otherComputers:true});
+  const same=row(await page(),"other-computers");
+  assert.equal(same.revision,other.revision);
+  rmSync(approval,{force:true});
+  const done=await change(other,false);
+  assert.equal(done.status,200,done.text);
+  assert.equal(row(done.json,"other-computers").value,false);
+  assert.equal(kept(),otherByRoute);
+});
+
+test("Permissions writes each choice as a rule for everything, keeps the others, refuses a stale one, and leaves rules it can't list", async t => {
+  const {page,change,rules}=await permissionsBox(t,"Permission Rules");
+  let shown=await page();
+  const shell=row(shown,"when-shell");
+  assert.deepEqual([shell.kind,shell.value],["choice","allow"]);
+  assert.deepEqual(shell.choices.map(c=>c.title),["Allow (Default)","Ask First","Don't Allow"]);
+  assert.deepEqual(row(shown,"when-external_directory").choices.map(c=>c.title),["Allow","Ask First (Default)","Don't Allow"]);
+  shown=(await change(shell,"deny")).json;
+  assert.deepEqual(rules(),[{action:"shell",resource:"*",effect:"deny"},{action:"shell",resource:"git push *",effect:"ask"}]);
+  assert.equal(row(shown,"when-shell").value,"deny");
+  const read=await page();
+  rules([{action:"shell",resource:"*",effect:"deny"},{action:"read",resource:"*.pem",effect:"deny"}]);
+  shown=(await change(row(read,"when-shell"),"allow")).json;
+  assert.deepEqual(rules(),[{action:"read",resource:"*.pem",effect:"deny"}]);
+  assert.equal(row(shown,"when-shell").value,"allow");
+  const before=await page();
+  rules([{action:"shell",resource:"*",effect:"ask"}]);
+  const stale=await change(row(before,"when-shell"),"deny");
+  assert.equal(stale.status,409);
+  assert.equal(row(stale.json.page,"when-shell").value,"ask");
+  assert.equal((await change(row(before,"when-edit"),"ask")).status,200);
+  assert.deepEqual(rules(),[{action:"edit",resource:"*",effect:"ask"},{action:"shell",resource:"*",effect:"ask"}]);
+  rules({shell:"ask"});
+  const unlistedPage=await page();
+  const unlisted=row(unlistedPage,"when-shell");
+  assert.deepEqual([unlisted.kind,unlisted.value],["status","Set in Its Settings File"]);
+  assert.match(unlistedPage.groups.find(g=>g.id==="when").note,/aren't a list of rules/);
+  assert.equal((await change(unlisted,"deny")).status,403);
+  assert.deepEqual(rules(),{shell:"ask"});
+});
+
+test("Permissions picking what applies with no rule writes none, so Plan mode's own rule is never widened; the page follows the file", async t => {
+  const {record,page,change,rules,file}=await permissionsBox(t,"Plan Rule");
+  const untouched=readFileSync(file,"utf8");
+  const edit=row(await page(),"when-edit");
+  assert.equal(edit.value,"allow");
+  assert.equal((await change(edit,"allow")).status,200);
+  assert.equal(readFileSync(file,"utf8"),untouched);
+  rules([{action:"edit",resource:"*",effect:"allow"},{action:"shell",resource:"git push *",effect:"ask"}]);
+  const own=row(await page(),"when-edit");
+  assert.equal(own.value,"allow");
+  assert.deepEqual(own.choices.map(c=>[c.id,c.title]),[["allow","Allow (Your Rule)"],["ask","Ask First"],["deny","Don't Allow"],["default","Allow (Default)"]]);
+  assert.notEqual(own.revision,edit.revision);
+  const kept=readFileSync(file,"utf8");
+  assert.equal((await change(own,"allow")).status,200);
+  assert.equal(readFileSync(file,"utf8"),kept);
+  assert.equal((await change(row(await page(),"when-edit"),"default")).status,200);
+  assert.deepEqual(rules(),[{action:"shell",resource:"git push *",effect:"ask"}]);
+  assert.equal((await change(row(await page(),"when-edit"),"deny")).status,200);
+  assert.deepEqual(rules()[0],{action:"edit",resource:"*",effect:"deny"});
+  assert.equal((await change(row(await page(),"when-edit"),"allow")).status,200);
+  assert.deepEqual(rules(),[{action:"shell",resource:"git push *",effect:"ask"}]);
+  const events=await openLine(record,"","kuvo/settings/permissions/events");
+  try {
+    const frames=events.frames();
+    assert.equal(row((await frames.next()).value,"when-webfetch").value,"allow");
+    rules([{action:"webfetch",resource:"*",effect:"deny"}]);
+    let next;
+    do { next=(await frames.next()).value; } while(row(next,"when-webfetch").value!=="deny");
+  } finally { events.close(); }
+});
