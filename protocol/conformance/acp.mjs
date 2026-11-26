@@ -206,6 +206,44 @@ export function seedAcpSession(home, id, provider, { directory = home, model = "
   if (state) write(path.join(home, "agents/sessions", id, "agent.json"), JSON.stringify({ threads: { [provider]: { state } } }));
 }
 
+/**
+ * The scripted Grok on a computer whose `env` and `home` a harness of its own makes (`bench.mjs`):
+ * what to add to its environment, and its script, gates and what it heard.
+ */
+export function agentsOn(home, env) {
+  const root = env.HOME;
+  const bin = standInAcp(root, ["grok"]);
+  const grokHome = path.join(root, ".grok");
+  seedGrokAuth(grokHome);
+  const system = process.platform === "win32" ? path.join(env.SystemRoot, "System32") : "/usr/bin:/bin";
+  const heardFile = path.join(root, "acp-heard.jsonl");
+  const scripts = {};
+  const agents = {
+    root,
+    env: { GROK_HOME: grokHome, KUVO_ACP_ROOT: root, KUVO_TEST_PATH_ONLY: "1", KUVO_TEST_PRICE_FEEDS: "off", PATH: [bin, system].join(path.delimiter) },
+    /** A conversation on Grok, in `directory`. */
+    seed: (id, options) => seedAcpSession(home, id, providers.grok, options),
+    script(text, steps) {
+      scripts[text] = steps;
+      write(path.join(root, "acp-script.json"), JSON.stringify(scripts));
+    },
+    go: (name) => write(path.join(root, name), ""),
+    heard: () => fs.existsSync(heardFile)
+      ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
+    sent: (method) => agents.heard().filter((line) => line.message?.method === method).map((line) => line.message),
+    /** The words of each prompt the agent was handed, in order. */
+    prompts: () => agents.sent("session/prompt").map((message) => message.params.prompt.filter((part) => part.type === "text").map((part) => part.text).join("\n")),
+    started: () => agents.heard().filter((line) => line.argv && line.argv[0] !== "models"),
+    /** The conversation's rows as `listener` shows them, oldest first. */
+    rows: (listener, id) => transcript(listener, `kuvo/agents/api/session/${id}`),
+    /** The IDs of its messages from the user, in order. */
+    async users(listener, id) {
+      return (await agents.rows(listener, id)).filter((row) => row.type === "user").map((row) => row.id);
+    },
+  };
+  return agents;
+}
+
 /** One resident (and, for the reference, its bridge) on the scripted ACP agents. */
 export async function scriptedAcp({ names = ["grok", "agy"], grok = true, agy = true, grokNative = false } = {}) {
   const binary = boxBinary();

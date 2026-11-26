@@ -33,6 +33,15 @@ fn restore(status: StatusCode, message: &str, text: &str) -> Refusal {
 }
 
 async fn decision(engine: &Engine, session: &str, text: &str) -> Result<Value, Refusal> {
+    // A coding agent's conversation: its agent says whether it runs, when it takes the message.
+    if engine
+        .agent_session(session)
+        .await
+        .map_err(|_| restore(StatusCode::SERVICE_UNAVAILABLE, UNAVAILABLE, text))?
+        .is_some()
+    {
+        return Ok(json!({ "send": { "text": text, "quoted": true } }));
+    }
     let lease = api::start(engine).await.map_err(|_| {
         restore(
             StatusCode::SERVICE_UNAVAILABLE,
