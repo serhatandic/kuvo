@@ -1135,9 +1135,20 @@ test('Antigravity history reads only usable generation stores, follows WAL chang
   const refresh=async()=>{const res=await call('POST',base+'/refresh?zone=UTC',{});assert.equal(res.status,200,res.text);};
   const read=async()=>{const res=await call('GET',base+'?zone=UTC');assert.equal(res.status,200,res.text);return res.json.data.totals.antigravity.reduce((sum,d)=>sum+d.tokens,0);};
   const settle=async n=>{let seen;return until(async()=>{seen=await read();return seen===n;},()=>`Antigravity stores did not settle to ${n}; last total ${seen}\n${resident.log()}`);};
+  const revisions=()=>{
+    const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+    try{return db.prepare("SELECT f.source_order AS source,MAX(n.revision) AS revision FROM native_file f JOIN native_call n ON f.source=n.source WHERE f.kind='antigravity' GROUP BY f.source_order ORDER BY f.source_order").all();}finally{db.close();}
+  };
+  const stamps=()=>{
+    const db=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});
+    try{return {kept:db.prepare("SELECT source_order,cursor FROM native_file WHERE kind='antigravity' ORDER BY source_order").all(),files:['first.db','live.db','live.db-wal'].map(name=>{const s=fs.statSync(path.join(folder,name),{bigint:true});return {name,ino:String(s.ino),mtime:String(s.mtimeNs),ctime:String(s.ctimeNs),bytes:String(s.size)};})};}finally{db.close();}
+  };
   await refresh();await settle(170);
+  const firstReads=boxBinary().typescript?null:revisions();
+  if(firstReads){const before=stamps();await refresh();await settle(170);assert.deepEqual(revisions(),firstReads,'Unchanged stores were decoded again: '+JSON.stringify({before,after:stamps()}));}
   live.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2,generation(30));
   await refresh();await settle(210);
+  if(firstReads){const changed=revisions();for(const prior of firstReads){const next=changed.find(r=>r.source===prior.source);assert.ok(next);if(prior.source.endsWith('live.db'))assert.ok(next.revision>prior.revision);else assert.equal(next.revision,prior.revision);}}
   const legacy=new DatabaseSync(path.join(folder,'legacy.db'));
   legacy.exec('CREATE TABLE steps(idx INTEGER PRIMARY KEY, metadata BLOB)');
   legacy.prepare('INSERT INTO steps VALUES (?,?)').run(1,bytes(1,integer(1,at/1000)));legacy.close();
@@ -1834,16 +1845,16 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   const {spawnSync}=await import('node:child_process');
   const {computer}=await bench(t);
   const at=Date.now(),methods=[],cloudCalls=[];
-  let localStatus=200,localCsrf='fixture-csrf';
+  let localStatus=200,localCsrf='fixture-csrf',cloudStatus=200,cloudRemaining=.5,statusHeld=false,localGroups=true,localRemaining=.2;
   const cloud=http.createServer((req,res)=>{
     cloudCalls.push(req.url);assert.equal(req.headers.authorization,'Bearer fixture-cloud-token');
-    const body=req.url.includes('loadCodeAssist')?{paidTier:{id:'g1-pro-tier'}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.5,resetTime:new Date(at+7200000).toISOString()}))}]};
-    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
+    const body=req.url.includes('loadCodeAssist')?{paidTier:{id:'g1-pro-tier'}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:cloudRemaining,resetTime:new Date(at+7200000).toISOString()}))}]};
+    res.writeHead(cloudStatus,{'Content-Type':'application/json'});res.end(JSON.stringify(cloudStatus===200?body:{}));
   });
   await new Promise(resolve=>cloud.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{cloud.close(resolve);cloud.closeAllConnections();}));
   // Temporary self-signed fixture, never an installed trust root or a real key.
-  const box=await computer('AntigravityOwnedServer',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+cloud.address().port+'/'}));
+  const box=await computer('Antigravity Owned [profile] (fixture)+',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+cloud.address().port+'/'}));
   const key=path.join(box.env.HOME,'fixture-key.pem'),cert=path.join(box.env.HOME,'fixture-cert.pem');
   const made=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-subj','/CN=fixture.invalid','-days','1','-keyout',key,'-out',cert],{stdio:'ignore'});
   assert.equal(made.status,0,'The fixture certificate could not be generated');
@@ -1852,7 +1863,8 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
     assert.equal(req.headers.authorization,undefined);
     assert.equal(req.headers['x-codeium-csrf-token']??'',localCsrf);
     if(localStatus!==200){res.writeHead(localStatus,{'Content-Type':'application/json'});res.end('{}');return;}
-    const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.2,resetTime:new Date(at+7200000).toISOString()}))}]};
+    if(method==='GetUserStatus'&&statusHeld){res.writeHead(429,{'Retry-After':'3600','Content-Type':'application/json'});res.end('{}');return;}
+    const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:localGroups?{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:localRemaining,resetTime:new Date(at+7200000).toISOString()}))}]}:{};
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(answer));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -1902,6 +1914,13 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   localStatus=200;authless=methods.length;
   await refresh(r=>r.rings.short?.used===0.8&&r.problem===undefined);
   assert.ok(methods.length>authless);assert.equal(cloudCalls.length,cloudBefore);
+  // The optional plan status can be held without poisoning usable local quotas.
+  write(path.join(profile,'antigravity-acp','acp_token.json'),JSON.stringify({access_token:'fixture-cloud-token',expires_at:Math.floor(at/1000)+3600}));
+  cloudStatus=503;statusHeld=true;localRemaining=.25;
+  const usable=await refresh(r=>r.rings.short?.used===.75);assert.equal(usable.problem,undefined);
+  const statuses=methods.filter(m=>m==='GetUserStatus').length;localRemaining=.15;
+  await refresh(r=>r.rings.short?.used===.85);assert.equal(methods.filter(m=>m==='GetUserStatus').length,statuses);
+  localGroups=false;cloudStatus=200;cloudRemaining=.1;await refresh(r=>r.rings.short?.used===.9);assert.equal(methods.filter(m=>m==='GetUserStatus').length,statuses);
 });
 
 test('the engine ChatGPT reset credit uses the saved OAuth identity without starting the engine',async t=>{
@@ -4116,4 +4135,118 @@ test('a lost remote reset answer is recovered and two signed-in computers share 
   await until(async()=>!await enabled(source),'Previous account allowance survived the sign-in change',30000,100);
   caller.engine.credentials=sign('fixture-caller');await refresh(call);
   assert.equal(await enabled(call),false);assert.equal(await enabled(source),false);
+});
+
+
+test('Antigravity accepts either cloud host, preserves all three pools, and a held plan lookup does not hold its quotas',async t=>{
+  if(boxBinary().typescript)return t.skip('Reads the Rust account’s local fixture credential, not a real provider.');
+  const http=await import('node:http'),fs=await import('node:fs');const {computer}=await bench(t);
+  const at=Date.now();let mode='primary',used=.25;const calls=[];
+  const buckets=(ids,used)=>({groups:ids.map(id=>id==='argon-weekly'?{displayName:'Gemini 4 Argon',buckets:[{bucketId:'argon',window:'weekly',remainingFraction:.1,resetTime:new Date(at+7*86400000).toISOString()}]}:{buckets:[{bucketId:id,remainingFraction:1-used,resetTime:new Date(at+7200000).toISOString()}]})});
+  const normal=['gemini-5h','gemini-weekly','3p-5h','3p-weekly'],all=[...normal,'argon-weekly'];
+  const maker=http.createServer((req,res)=>{
+    calls.push(req.url);assert.equal(req.headers.authorization,'Bearer fixture-ag-host');
+    const send=(status,value,headers={})=>{res.writeHead(status,{'Content-Type':'application/json',...headers});res.end(JSON.stringify(value));};
+    const main=req.url.includes('/main/');
+    if(req.url.includes('loadCodeAssist')){send(mode==='held'||mode==='partial'||mode==='failed'?429:403,{},mode==='held'?{'Retry-After':'3600'}:{});return;}
+    if(mode==='legacy'){
+      if(main&&req.url.endsWith('retrieveUserQuota'))send(200,{buckets:[{modelId:'gemini-3-pro',remainingFraction:1-used,resetTime:new Date(at+7200000).toISOString()}]});
+      else send(404,{});
+      return;
+    }
+    if(!req.url.includes('retrieveUserQuotaSummary')){send(404,{});return;}
+    if(mode==='primary'){send(main?200:403,main?buckets(['gemini-5h'],used):{});return;}
+    if(mode==='secondary'){send(main?403:200,main?{}:buckets(all,used));return;}
+    if(mode==='held'){send(main?200:503,main?buckets(all,used):{});return;}
+    if(mode==='partial'){send(main?200:503,main?buckets(['gemini-5h','gemini-weekly'],used):{});return;}
+    send(503,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const box=await computer('AntigravityCloudRounds',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const token=path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json');
+  write(token,JSON.stringify({access_token:'fixture-ag-host',expires_at:Math.floor(at/1000)+3600}));
+  let resident=box.start(),call=box.connect(await resident.ready());const base='kuvo/agents/api/kuvo/limits';
+  const read=async()=>{const r=await call('GET',base);assert.equal(r.status,200,r.text);return r.json.data;};
+  const refresh=async()=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=await read();return !d.refreshPending&&d.rows.find(r=>r.provider==='antigravity');},'Antigravity read did not settle');};
+  const first=await refresh();assert.deepEqual(first.windows.map(w=>[w.id,w.used]),[['gemini-5h',used]]);assert.equal(first.problem,undefined);
+  mode='secondary';const second=await refresh();assert.equal(second.problem,undefined);assert.deepEqual(new Set(second.windows.map(w=>w.id)),new Set(all));assert.equal(second.rings.long.window,'argon-weekly');assert.equal(second.rings.long.used,.9);assert.equal(second.rings.short,undefined);
+  assert.ok(calls.every(url=>!url.includes('token')));
+  mode='held';used=.37;const full=await refresh();const planCalls=calls.filter(url=>url.includes('loadCodeAssist')).length;assert.equal(full.problem,undefined);assert.deepEqual(new Set(full.windows.map(w=>w.id)),new Set(all));
+  used=.4;const changed=await refresh();assert.equal(changed.windows.find(w=>w.id==='gemini-5h').used,.4);assert.equal(calls.filter(url=>url.includes('loadCodeAssist')).length,planCalls);
+  mode='legacy';used=.41;const legacy=await refresh();assert.equal(legacy.problem,undefined);assert.ok(Math.abs(legacy.windows.find(w=>w.id==='gemini-5h').used-.41)<1e-12);assert.equal(calls.filter(url=>url.includes('loadCodeAssist')).length,planCalls);
+  mode='partial';used=.42;const partial=await refresh();assert.equal(partial.windows.find(w=>w.id==='gemini-5h').used,.42);assert.ok(partial.windows.some(w=>w.id==='3p-5h'),'First partial reading retains previous pool');
+  mode='failed';const failed=await refresh();assert.equal(failed.problem.kind,'failed');assert.deepEqual(failed.windows,partial.windows);
+  const count=calls.length;write(token,'{');const kept=(await read()).rows.find(r=>r.provider==='antigravity');assert.equal(kept.id,failed.id);assert.deepEqual(kept.windows,failed.windows);assert.equal(calls.length,count);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());const reopened=(await read()).rows.find(r=>r.provider==='antigravity');assert.equal(reopened.id,failed.id);assert.deepEqual(reopened.windows,failed.windows);
+});
+
+test('Antigravity renews a refused access once with its own OAuth metadata and reuses the renewed token',async t=>{
+  if(boxBinary().typescript)return t.skip('Uses the Rust account credential fixture.');
+  const http=await import('node:http'),fs=await import('node:fs');const {computer}=await bench(t);
+  const at=Date.now(),calls=[],forms=[];let serial=0;
+  const maker=http.createServer((req,res)=>{
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    if(req.url==='/antigravity/token'){
+      let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{forms.push(Object.fromEntries(new URLSearchParams(raw)));send(200,{access_token:'fixture-renewed-'+serial,expires_in:3600});});return;
+    }
+    calls.push(req.headers.authorization);
+    if(req.headers.authorization!=='Bearer fixture-renewed-'+serial){send(403,{});return;}
+    if(req.url.includes('loadCodeAssist')){send(200,{paidTier:{id:'g1-pro-tier'}});return;}
+    send(200,{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:.7,resetTime:new Date(at+7200000).toISOString()}))}]});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const corpus=JSON.parse(fs.readFileSync(new URL('../../box/test/fixtures/usage/antigravity-acp-oauth.json',import.meta.url),'utf8'));
+  for(const metadata of [true,false]){
+    ++serial;const box=await computer('AntigravityOAuth'+serial,undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+    const token=path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json');
+    const cred={access_token:'fixture-original-'+serial,refresh_token:'fixture-refresh-'+serial,expires_at:Math.floor(at/1000)+3600};
+    if(metadata){cred.client_id='fixture-client';cred.client_secret='fixture-secret';}
+    write(token,JSON.stringify(cred));const call=box.connect(await box.start().ready());const base='kuvo/agents/api/kuvo/limits';
+    const refresh=async()=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const d=(await call('GET',base)).json.data;return !d.refreshPending&&d.rows.find(r=>r.provider==='antigravity');},'Renewed quota did not arrive');};
+    const full=await refresh();assert.equal(full.plan,'Pro');assert.equal(full.windows.length,4);assert.equal(forms.length,serial);
+    const form=forms.at(-1);assert.equal(form.refresh_token,cred.refresh_token);assert.equal(form.client_id,metadata?cred.client_id:corpus.defaults.clientID);assert.equal(form.client_secret,metadata?cred.client_secret:corpus.defaults.clientSecret);
+    const before=calls.length;await refresh();assert.equal(forms.length,serial);assert.ok(calls.slice(before).every(token=>token==='Bearer fixture-renewed-'+serial));
+    // The source token file can still contain a lapsed original token while
+    // the renewed access is current; its unchanged sign-in uses that cache.
+    cred.expires_at=Math.floor(at/1000)-60;write(token,JSON.stringify(cred));
+    const after=calls.length;await refresh();assert.equal(forms.length,serial);assert.ok(calls.slice(after).every(token=>token==='Bearer fixture-renewed-'+serial));
+  }
+});
+
+
+test('Antigravity generation stores price the shared expected days and ignore older and unowned profiles',async t=>{
+  const fs=await import('node:fs');const {DatabaseSync}=await import('node:sqlite');
+  const corpus=JSON.parse(fs.readFileSync(new URL('../../box/test/fixtures/usage/antigravity-blobs.json',import.meta.url),'utf8'));
+  const {computer}=await bench(t);const box=await computer('AntigravityBlobHistory',undefined,isolated);
+  const day=86400000,shift=Math.floor(Date.now()/day)*day-2*day-Date.parse('2026-11-12T00:00:00Z');
+  const varint=n=>{const out=[];while(n>=128){out.push((n%128)|128);n=Math.floor(n/128);}out.push(n);return Buffer.from(out);};
+  const shifted=(hex,each,offset)=>{
+    const raw=Buffer.from(hex,'hex'),time=each.expected?.timestampSeconds;if(time===undefined)return raw;
+    const from=varint(time),to=varint(time+offset/1000);assert.equal(from.length,to.length);
+    const index=raw.indexOf(from);if(index<0)return raw;to.copy(raw,index);return raw;
+  };
+  const owned=path.join(box.home,'agents','antigravity','profile','antigravity-acp','conversations');
+  const writeStore=(folder,name,cases,offset)=>{
+    fs.mkdirSync(folder,{recursive:true});const file=path.join(folder,name+'.db'),db=new DatabaseSync(file);
+    db.exec('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB);CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB)');
+    for(const [idx,each] of cases.entries()){
+      db.prepare('INSERT INTO gen_metadata VALUES(?,?)').run(idx,shifted(each.hex,each,offset));
+      if(each.stepHex)db.prepare('INSERT INTO steps VALUES(?,?)').run(idx,shifted(each.stepHex,each,offset));
+    }
+    db.close();return file;
+  };
+  const source=writeStore(owned,'shared',corpus.cases,shift);
+  writeStore(owned,'old',[corpus.cases[0]],shift-40*day);
+  writeStore(path.join(box.env.HOME,'other-profile','antigravity-acp','conversations'),'foreign',[corpus.cases[0]],shift);
+  write(path.join(box.home,'agents','usage','pricing','litellm.json'),JSON.stringify({models:{'gemini-3.6-flash':{i:1,o:4,cw:1,cr:.25,longThreshold:200000}}}));
+  write(path.join(box.home,'agents','usage','pricing','supplement.json'),JSON.stringify({pricing:{},alias_rules:[],updated_at:'2099-01-01'}));
+  const before=fs.statSync(source),bytes=fs.readFileSync(source);
+  const call=box.connect(await box.start().ready()),base='kuvo/agents/api/kuvo/usage';
+  assert.equal((await call('POST',base+'/refresh?zone=UTC',{})).status,200);
+  const days=async()=>{const r=await call('GET',base+'?zone=UTC');assert.equal(r.status,200,r.text);return r.json.data.totals.antigravity?.filter(d=>d.tokens||d.unknown)??[];};
+  const expected=corpus.days.map(d=>({date:new Date(Date.parse(d.date)+shift).toISOString().slice(0,10),tokens:d.tokens,cost:d.cost,models:[d.model],unknown:d.unknown}));
+  const got=await until(async()=>{const rows=await days();return rows.reduce((n,d)=>n+d.tokens,0)===expected.reduce((n,d)=>n+d.tokens,0)&&rows;},'The shared generation days did not arrive');
+  assert.deepEqual(got.map(d=>({date:d.date,tokens:d.tokens,cost:d.cost,models:d.models.map(m=>m.model),unknown:d.unknown})),expected);
+  assert.deepEqual(await days(),got);
+  const after=fs.statSync(source);assert.equal(after.mtimeMs,before.mtimeMs);assert.equal(after.size,before.size);assert.deepEqual(fs.readFileSync(source),bytes);
 });

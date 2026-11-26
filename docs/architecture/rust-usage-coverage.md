@@ -1095,9 +1095,57 @@ corpus 2/2; storage-format differences remain documented. Engine sessions
 81/81 on the unchanged full retry. Seen once on the first run: the unrelated
 project-file refiling case reported 2 engine inventory reads rather than its
 baseline 1; its assertion now dumps both counts, fixture requests, and the
-last inventory. Windows/Linux proof to follow. Non-test size: 633,118 characters without
+last inventory. Capped Linux (Lokum) 113/113, container and scratch removed.
+Native Windows and WSL will be checked on the combined slice 23–25 tip.
+Non-test size: 633,118 characters without
 leading indentation (0.921× the 687,546 TS baseline). 13 A1 entries closed;
 71 remain.
+
+### Slice 24: Antigravity owned profiles, quota holds and generation history
+
+The actual account reader now has a fixture matrix for either quota host,
+three independent pools (including Argon), usable local quota during a cloud
+failure, local status and cloud plan holds that do not suppress later quota
+reads, legacy quota fallback, failed and partial responses, and malformed
+credential retention through restart. The access-renewal fixture checks its
+own metadata and the verified defaults, one renewed access and reuse while
+the original source token is lapsed. The Mac process and listening-socket
+selectors use small typed helpers so the actual parsers can be exercised
+with synthetic command records, paths containing spaces and punctuation,
+wrong profiles, listener vs established sockets, and agy without CSRF.
+
+The shared generation SQLite corpus matches expected days, model labels,
+counts and prices on both boxes, excludes a generation outside the history
+window and an unowned profile, and leaves the actual databases unchanged.
+The multi-store route compares source revisions, confirming that an unchanged
+store is not decoded again, only the changed WAL store advances, and an
+unreadable known store keeps its last good events. The scoped actual WAL test
+commits during a snapshot read and checks that the next read sees the new
+stamp and both events; its later cutoff returns no old observations. Machine
+place hashing distinguishes the same canonical folder on different computers.
+
+The first capped Linux run caught a real unnecessary live-WAL rescan:
+115/116 applicable, with the new unchanged-store assertion failing (revision
+4 to 7; the independent store stayed at 2). A focused repeat on the same
+binary showed the WAL inode, write time and size unchanged, but metadata
+change time advanced on every read. The WAL stamp now tracks content-related
+identity, write time and length, not read-touched metadata. The main database
+and authorization-file stamp rules stay unchanged. A focused stamp case and
+the actual WAL commit-during-read case cover both no change and a real write.
+
+Corrected Mac Rust usage 116/116 applicable, engine sessions 81/81, scoped
+four cases (Mac selector, WAL snapshot, place identity and WAL stamp) pass;
+focused new routes 5/5, holder 12/12, Codex 100/100, workspace and Bun checks
+clean. TS 41/41 on the exact full retry; the initial TS run repeated the
+previous Grok restart discrepancy, 0.0044502 to 0.00445 with 1,000,000,003,372
+tokens and unchanged 2,989/869-byte source files (third observation).
+Adjacent Claude turns initial 58 passing plus the prior TODO and one unrelated
+exit-127 instead of exit-1 message fixture; the exact focused retry passes,
+and its assertion now includes the fixture resident log on failure. The seeded
+differential matches 12/13 exact answers (actual scan clock only), native
+corpus 2/2. Corrected capped Linux proof to follow before the combined tip.
+Non-test size 633,641 characters without indentation (0.922× the TS baseline);
+19 A1 entries have Mac proof, 52 remain.
 
 ## Remaining implementation gaps
 
@@ -1381,60 +1429,60 @@ does not block completion of the row.
 ### `box/test/usage/usage-antigravity-history.test.ts`
 
 - L37: shared blob fixtures decode exactly as Swift, including fallback time and malformed messages — covered by 16-case scoped Rust decoder corpus (normalized current model naming).
-- L42: read-only SQLite batches and pricing match Swift's shared expected days — partial — Antigravity metadata scenario with fixture SQLite; shared expected-day matrix open.
-- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — partial — both-box multi-store fixture includes live WAL-only writes; cutoff-specific case open.
+- L42: read-only SQLite batches and pricing match Swift's shared expected days — covered by the shared actual generation SQLite corpus through both routes, with the expected prices, days, tokens, model labels and byte-identical read-only databases.
+- L61: WAL-only changes invalidate a cached scan, and a later cutoff prunes it — covered by both-box multi-store history, scoped WAL commit/read snapshot and stamp change, and the shared actual older-than-window generation cutoff.
 - L72: legacy databases without steps, then gaining metadata, are re-read — covered by multi-store history scenario on both boxes.
 - L84: oversized blobs are skipped, and an unreadable new database is logged once and left out while the others count — duplicate — the both-box multi-store route checks malformed new and oversized stores, other stores’ exact totals, repair and retention of an unreadable known store. The leftover TS diagnostic log-count assertion is not a displayed, retained or wire result.
 - L116: ACP databases count, and empty stores and stores without generation metadata are skipped quietly — covered by both-box multi-store history scenario (unrelated empty table).
 - L143: a conversations folder that can't be listed is logged once and left out while the others count — later (rare) — a deliberately unlistable conversations path alongside usable stores and exact log-once counting.
 - L158: missing stores are empty and symlinked stores count only once — covered by both-box multi-store history scenario, symlink variant on Unix.
-- L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — open.
+- L170: own profiles alone, machine-hashed places, and an unreadable new database leaves the rest of the account counted — covered by the shared owned-profile actual route ignores an unowned profile and the multi-store route retains readable totals alongside a broken database; scoped production place hashing distinguishes the same folder on different computer identities.
 - L202: deleted databases leave the total after restart and do not block the remaining stores — covered by both-box multi-store history scenario.
-- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — partial — both-box multi-store fixture proves live WAL changes and retaining last good rows when temporarily unreadable; idle aging and decoded-store counts open.
+- L226: per-database cache reads only changed stores, ages out idle ones, counts changing stores' fresh reads and keeps unreadable stores' last events — covered by the extended actual multi-store route proves unchanged source revisions stay unchanged, only a WAL-changed store gets a new revision, and temporarily unreadable stores retain original counts. The shared cutoff corpus and deletion/restart cover pruning.
 - L266: blob bounds match Swift: skip oversized generations and absent step timing, retain embedded timing and the inclusive cap — covered by shared bounded-row corpus, exact count and processed tokens.
 - L284: shared missing/empty profile fixtures contain no history, as Swift — duplicate — the both-box empty-history route asserts the empty Antigravity row, and the multi-store route includes an empty/unrelated schema that cannot contribute tokens. This covers missing and empty stores without a parallel empty-fixture-only decoder test.
 - L295: an Antigravity database that can't be read never holds up forgetting the other services' deleted logs — later (rare) — an unreadable Antigravity database coincides with removal of another provider’s native history.
-- L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — open.
+- L326: a new database written to while it's read counts what was read, is read again next round, and never saves $0 — covered by the scoped actual read-only WAL database opens a snapshot, commits a second generation from another connection during the callback, sees the first snapshot once and then both on the new stamp; the shared route proves exact prices and cutoff, no invented zero.
 - L367: a busy database read before still moves every round though it's written to during every read, and isn't logged — later (rare) — the same busy database changes during every repeated scan, with exact diagnostic suppression.
 
 ### `box/test/usage/usage-antigravity-plan.test.ts`
 
-- L24: shared legacy and plan-name parity fixtures — partial — scoped Rust checks all legacy and name pairs; OAuth defaults assertion remains open.
+- L24: shared legacy and plan-name parity fixtures — covered by the existing scoped legacy/name corpus plus actual OAuth metadata and verified default form inputs in the shared renewal test.
 - L29: shared Swift parity fixtures — covered by all seven shared summary cases through the production normalizer.
 - L32: exact pools, first usable wins, clamp and Swift rounding — covered by new exact mapper input and shared corpus.
-- L38: all three pools retain independent windows in client rows — open.
+- L38: all three pools retain independent windows in client rows — covered by the actual cloud-host matrix with Gemini, Claude/GPT and Argon named windows and the Argon-only tightest ring.
 - L48: Argon is separate and unambiguous — covered by exact production mapper cases for unique enabled weekly pool, duplicate, disabled/invalid flag and ambiguous standard bucket.
 - L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — covered by exact production mapper case.
-- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — partial — local-only profile fixture; cloud-failure fallback combination not separately exercised.
+- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — covered by extended owned profile TLS route, successful local quotas during cloud outage and later cloud fallback when the local summary has no groups.
 - L115: Linux /proc maps only own profile and owned listening socket inodes — covered by synthetic process/socket and local TLS route fixture.
-- L133: Mac own profile can contain spaces and regex punctuation — open.
-- L140: Mac agy stand-in permits no CSRF and language_server still requires it — open.
+- L133: Mac own profile can contain spaces and regex punctuation — covered by scoped production Mac process-record selector and actual loopback profile fixture with spaces, brackets, parentheses and plus signs.
+- L140: Mac agy stand-in permits no CSRF and language_server still requires it — covered by scoped production Mac socket endpoint selector permits agy without CSRF but not language_server; existing actual loopback TLS route also verifies a CSRF-less agy response.
 - L148: Linux agy own-profile stand-in permits no CSRF — superseded — the old stand-in gave an advertised extension port with no owned listening socket; the current discovery only uses owned listeners. The extended owned-loopback route exercises authless agy, retries after an authless refusal, and no cloud request.
-- L158: Mac ps/lsof stand-ins require own profile — open.
+- L158: Mac ps/lsof stand-ins require own profile — covered by scoped production Mac process and listener parser with own and wrong profile, listening IPv4/IPv6 vs established socket, exact CSRF admission; native Windows and Unix fixtures cover their process seams.
 - L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — covered by local-only profile route fixture.
 - L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — covered by extended owned loopback route fixture.
 - L211: the overview shows heavy use of the tightest available pool without mixing pools — duplicate — the actual Antigravity menu route changes which pool is tightest, checks both rings from the same pool, and matches Helper menu percentages. The fixed-clock ring matrix also verifies one pool per pair.
-- L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
+- L256: one host refusing and optional plan refusing cannot poison usable quotas — covered by the cloud-host matrix asks secondary after main refuses and uses primary when the optional host refuses, while optional plan failure never discards usable quota.
 - L278: legacy project-plan 403 still permits quota retrieval — later (rare) — an old project-plan endpoint responds with a specific legacy 403 while quota remains available.
-- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
+- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — covered by actual renewal test checks either supplied own OAuth metadata or exact verified default form inputs, and the existing refresh-only credential refusal route.
 - L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — later (rare) — deliberately redirected profile/refusal state paths and refusal-state cleanup in the same fixture; normal sign-out still required.
 - L334: agy with no CSRF is retried after an authless endpoint 403 — covered by extended owned loopback route fixture.
 - L347: missing windows without resets survive only one partial round across restart — covered by Antigravity partial-pool restart route.
-- L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
-- L380: malformed and unreadable sign-in retain known identity and windows — open.
+- L360: refused access refreshes once, valid refresh cache survives expired source expiry — covered by actual OAuth renewal test refuses original access, renews exactly once, reuses the renewed access through repeat reads and an expired original source credential.
+- L380: malformed and unreadable sign-in retain known identity and windows — covered by actual cloud-host matrix preserves the last identity and windows when its own token file is malformed, including after resident restart.
 - L404: access refusal persists through failed refresh and restart without resending old bearer — covered by refusal/restart fixture.
 - L423: unwritable or unreadable refusal journal stops further sends — later (rare) — a refusal state journal is unreadable or unwritable just as a maker refuses the existing credential.
 - L443: restart never sends a refused token returned unchanged by refresh — duplicate — the actual refused-bearer/restart route returns the same refused credential from renewal and asserts the new process sends only renewal, never that bearer to a quota host.
 - L459: refused refresh is not retried after access disappears or changes — later (rare) — a refused refresh credential is retained through removal or replacement of its access credential; disappearance/restart already has a fixture. Existing evidence: refusal survives restart; changed access cases open.
 - L477: local CSRF refusal survives restart — covered by extended owned loopback route fixture; the rejected token is not resent.
 - L491: persisted refusal survives restart and metadata-only credential rewrites — later (rare) — same refused credential is rewritten only in its metadata after a restart.
-- L510: holds stop further endpoints; a refusal never resends unchanged credential — open.
-- L531: complete read, partial and unreadable reads keep prior known windows — open.
+- L510: holds stop further endpoints; a refusal never resends unchanged credential — covered by the existing independent held-host scenario verifies an ordinary hold stops that host even on manual refresh, while the actual refused access/refresh journal scenario proves a rejected credential is not sent again across restart.
+- L531: complete read, partial and unreadable reads keep prior known windows — covered by the actual cloud matrix moves through complete, partial and failed answers, retaining the compatible known windows; malformed source after restart keeps counts.
 - L560: only the main host's own refusal of the token's call can refuse the sign-in — later (rare) — the main and optional quota hosts give different token-acceptance results; ordinary independent-host hold and renewal are still required.
 - L583: a token a summary just answered is never refused by a later call, which still tries the daily host — later (rare) — a token is accepted by one quota summary but then refused by a later optional request in the same round before querying another host.
 - L603: a daily host's wait keeps the main host's windows, and only that host waits — covered by independent held-host fixture (other quota remains usable).
-- L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — open.
-- L656: the language server's plan status waiting keeps its windows, and only that call waits — open.
+- L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — covered by actual cloud matrix holds the optional plan lookup, continues reading new summary and legacy quota windows, and never retries the held call. The legacy quota request no longer needs the old project lookup.
+- L656: the language server's plan status waiting keeps its windows, and only that call waits — covered by the extended actual owned profile TLS scenario holds only the language server status request while local summary still updates, then asks the cloud when local summary has no groups.
 - L676: with every host waiting, the read waits for the soonest, and says whether a request left — later (rare) — all quota hosts simultaneously have distinct outstanding waits, so the next deadline must be their minimum.
 - L721: A contradicted Gemini reading keeps the other pool readable until Google counts Gemini — later (rare) — local turn evidence conflicts with one Gemini pool while another remains readable until Google catches up.
 - L765: use before Google's window started, or in another pool, leaves Google's unused windows standing — later (rare) — a contradictory quota observation relates to a use before the provider’s window started or a different pool.
