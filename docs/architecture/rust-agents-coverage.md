@@ -909,6 +909,7 @@ its reason. Rust's failures here are what 4.7d step 5 makes pass.
 | engine-typed | 7/7 | 6/7 | see below |
 | engine-asks | 5/5 (1 skipped) | 2/6 | see below |
 | engine-worktree | 7/7 | 5/7 | see below |
+| engine-sessions | 46/46 (7 skipped) | 47/53 | see below |
 
 Notes on each area:
 
@@ -945,6 +946,99 @@ Notes on each area:
   OpenCode's start short), and the held-patch part of the finished-notice case. The reference's
   answer to an agent start has no `worktree` field and names the branch after the title, so the
   cases check the files and records.
+
+### engine-sessions
+
+The queue, its holds, Undo, receipts, the session list and its pages, now on a coding agent's
+line. A conversation at work is one whose turn the scripted Grok holds open. The queue is read
+as the app follows it, on its line (`…/queue/events`). The reference skips 7 cases, for two
+findings:
+
+- it doesn't mark a steer waiting in an agent's line as held, nor name the files on its queue
+  rows (6 cases);
+- it keeps a picture sent to an agent as a file on disk, where the Rust box hands it over (the
+  parts vector).
+
+Rust's 6 failures are 4.7d step 5's:
+
+- a Steer on a stopped queue;
+- draining an unpaused saved queue after a restart;
+- a bot's sustained thinking;
+- the place Undo puts a message back;
+- the step words on an agent's rows;
+- the title of its summary.
+
+Kept on the engine:
+
+- "a raw desktop prompt keeps inline attachments…" and "attachment expiry…": the raw `api/…`
+  passthrough stays for released 0.7.x Macs;
+- "a standalone summary keeps a read conversation read…": still to port, as it needs a summary
+  turn on the stand-in.
+
+Covered elsewhere: "a session reports the latest measured step until a summary supersedes it"
+(agents-grok "a turn: … how full its context is"), and "the next queued prompt waits for the
+engine's previous turn to settle" (now "the next queued message waits for the agent's turn to
+end").
+
+Left out, as only OpenCode's server works that way:
+
+- **OpenCode's handoff confirmation**, where its prompt was held, refused or unconfirmed:
+  - "Send Now keeps the waiting payload until OpenCode confirms the exact message" (what holds
+    for agents is now "Send Now on a stopped queue hands its agent the saved message…");
+  - "Edit protects a queued handoff until OpenCode replies and confirms the inbox";
+  - "Edit requires the exact message lookup after a refused queued handoff";
+  - "a native Send Now keeps settling the handoff after the client waits thirty seconds";
+  - "a delivered message leaves the displayed queue while its handoff backup survives";
+  - "Send Now recovers a confirmed message after the queue index fails to save";
+  - "Stop records messages on their way while it waits for a send in flight";
+  - "Stop holds a named send before its composed attachment reaches OpenCode";
+  - the "before acceptance" and "in the inbox" stages of "the same desktop send recovers a reply
+    lost …".
+- **OpenCode's inbox faults:**
+  - "Edit recovers an inbox draft after the inbox read fails" and "…after the transcript read
+    fails";
+  - "Edit refuses an inbox draft when delivery wins and the exact lookup fails";
+  - the refused-removal part of "Edit distinguishes an already delivered message…" (now "Edit
+    says a message already delivered isn't waiting");
+  - the unreadable-inbox parts of "queue reads keep the last complete inbox…" (now "the queue
+    line follows its agent's line…");
+  - "a limit reset waits for an unfinished removal before advancing the queue";
+  - "Stop only holds the messages still in the inbox after changing delivery".
+- **What OpenCode's own clients and server do:**
+  - "an external Stop holds the queue unless the conversation started again";
+  - "a quick Resume supersedes the external Stop before its delayed hold";
+  - "an idle inbox arrival advances after the grace period unless paused";
+  - "a failed turn drops its waiting summary and a failed summary lets the queue advance"
+    (OpenCode's summary as an inbox item);
+  - "a process exit releases its queue live and again after a resident restart";
+  - "queue recovery leaves an unknown turn alone and resumes an open turn on a replacement
+    engine";
+  - "a timed usage limit retries sending the first waiting message at reset" (an agent's limit
+    says only words; one that says when is "a usage limit that says when it resets shows the
+    time…").
+- **The engine's start-up queue scan** (`run/queues-scanned.json`): "a restart beside the same
+  engine scans its queues and preserves an explicit stop", and the scan part of the limit case
+  (now "a usage limit stops the queue until Resume, which a restart keeps").
+- **The engine's list and its reads:**
+  - "a session list saved before Needs you is read while OpenCode catches up";
+  - "a subagent changes only its own row and the parent whose list was reordered" (OpenCode's
+    subagent events; ACP agents have none);
+  - "the first inventory never publishes a conversation deleted while its page was held";
+  - "an earlier session read cannot bring back an old name or undo a pin or deletion";
+  - the "pending engine" snapshot of the list cursors case;
+  - the read counts of "a project file change refiles the saved inventory…";
+  - the removed worktree read from OpenCode's own database (now "linked worktrees and their
+    subfolders are filed under their project").
+- **Other engine-only parts:**
+  - "a raw session patch waits for the conversation's resident writer" (the passthrough);
+  - "Delete with an earlier revision refuses a session that vanishes during the request" (now a
+    stale revision);
+  - the held and failed writes of the note-writing case;
+  - OpenCode's own archive time in the actions case;
+  - the engine's refusal and slow lookup in the send and Add cases;
+  - the summary's live-line part.
+- **Engine-only by nature:** the running steps of the words fixture (a step still running when its
+  turn ended is cut short on an agent).
 
 ### engine-models
 
