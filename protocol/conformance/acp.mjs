@@ -200,10 +200,10 @@ export function seedAgyAuth(home, { listed = true } = {}) {
  * A conversation on `provider`'s agent, as the box keeps it: its header and, with `messages`, its
  * rows (`{ type: "user", text }`, `{ type: "assistant", content }`; IDs are given where missing).
  */
-export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state, title = "ACP fixture", parent, metadata, updated = 1, messages } = {}) {
+export function seedAcpSession(home, id, provider, { directory = home, model = "acp-test", variant, permissions, state, title = "ACP fixture", parent, metadata, updated = 1, messages, agent = "build" } = {}) {
   const folder = path.join(home, "agents/sessions", id);
   write(path.join(folder, "session.json"), JSON.stringify({
-    id, title, projectID: "fixture", agent: "build", ...(permissions && { permissions }),
+    id, title, projectID: "fixture", agent, ...(permissions && { permissions }),
     ...(parent && { parentID: parent }), ...(metadata && { metadata }),
     location: { directory }, model: { providerID: provider, id: model, ...(variant && { variant }) },
     time: { created: 1, updated }, cost: 0,
