@@ -1621,34 +1621,6 @@ impl RefreshBatch {
     }
 }
 
-#[cfg(test)]
-mod refresh_batch_tests {
-    use super::*;
-
-    #[test]
-    fn busy_publication_coalesces_changes_without_losing_explicit_refreshes() {
-        let mut batch = RefreshBatch::default();
-        let asking = [1; 32];
-        let reaching = [2; 32];
-        let other = [3; 32];
-        batch.merge(Refresh::Peer { key: asking, ask: true });
-        batch.merge(Refresh::Reach { key: reaching });
-        for _ in 0..100 {
-            batch.merge(Refresh::None);
-            batch.merge(Refresh::Peer { key: asking, ask: false });
-        }
-        batch.merge(Refresh::Moves);
-        assert!(batch.forced(&asking));
-        assert!(batch.forced(&reaching));
-        assert!(!batch.forced(&other));
-        assert!(batch.repeat_moves());
-        assert!(batch.moves && batch.plain && !batch.all);
-        assert_eq!(batch.peers.len(), 1);
-        batch.merge(Refresh::All);
-        assert!(batch.forced(&other));
-    }
-}
-
 struct PendingPublication {
     view: View,
     now: Millis,
@@ -2071,4 +2043,32 @@ fn project_name(lists: &lists::Lists, facts: &lists::Facts) -> Option<String> {
     std::path::Path::new(directory)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod refresh_batch_tests {
+    use super::*;
+
+    #[test]
+    fn busy_publication_coalesces_changes_without_losing_explicit_refreshes() {
+        let mut batch = RefreshBatch::default();
+        let asking = [1; 32];
+        let reaching = [2; 32];
+        let other = [3; 32];
+        batch.merge(Refresh::Peer { key: asking, ask: true });
+        batch.merge(Refresh::Reach { key: reaching });
+        for _ in 0..100 {
+            batch.merge(Refresh::None);
+            batch.merge(Refresh::Peer { key: asking, ask: false });
+        }
+        batch.merge(Refresh::Moves);
+        assert!(batch.forced(&asking));
+        assert!(batch.forced(&reaching));
+        assert!(!batch.forced(&other));
+        assert!(batch.repeat_moves());
+        assert!(batch.moves && batch.plain && !batch.all);
+        assert_eq!(batch.peers.len(), 1);
+        batch.merge(Refresh::All);
+        assert!(batch.forced(&other));
+    }
 }

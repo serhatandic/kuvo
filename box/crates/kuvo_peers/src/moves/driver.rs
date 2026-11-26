@@ -444,12 +444,14 @@ impl Driver {
             };
             if let Err(error) = result {
                 eprintln!("Recovering move {}: {error}", row.id);
-                if self.retry.get(&row.id).is_none() {
+                if !self.retry.contains_key(&row.id) {
                     earlier(&mut next, Instant::now() + Duration::from_secs(1));
                 }
             }
-            if super::journal_file(self.run_dir(), &row.id).exists() {
-                if let Some(at) = self.row_deadline(&view, &row) { earlier(&mut next, at); }
+            if super::journal_file(self.run_dir(), &row.id).exists()
+                && let Some(at) = self.row_deadline(&view, &row)
+            {
+                earlier(&mut next, at);
             }
         }
         Ok(next)
@@ -509,8 +511,10 @@ impl Driver {
                     let last = self.heard.get(&row.id).copied().unwrap_or(sending.since);
                     at(sending.since.max(last) + QUIET_BEFORE_SWITCH + Duration::from_millis(1));
                 }
-                if connected && step == Some("parts") {
-                    if let Some(due) = sending.flight.next_due(ticks) { at(due); }
+                if connected && step == Some("parts")
+                    && let Some(due) = sending.flight.next_due(ticks)
+                {
+                    at(due);
                 }
             }
             if connected && matches!(row.step.as_deref(), Some("offer" | "arrive")) {
@@ -1445,11 +1449,11 @@ impl Driver {
                 let due = ran.saturating_add(left::KEEP_FOR);
                 if due > now {
                     earlier(&mut next, ticks + Duration::from_millis(due.saturating_sub(now) as u64));
-                } else if !active.iter().any(|active| active.live() && active.thing == row.thing) {
-                    if let Err(error) = left::expire(self.run_dir(), &row) {
-                        eprintln!("Removing an expired move backup {}: {error}", row.id);
-                        earlier(&mut next, ticks + Duration::from_secs(1));
-                    }
+                } else if !active.iter().any(|active| active.live() && active.thing == row.thing)
+                    && let Err(error) = left::expire(self.run_dir(), &row)
+                {
+                    eprintln!("Removing an expired move backup {}: {error}", row.id);
+                    earlier(&mut next, ticks + Duration::from_secs(1));
                 }
             } else if view.relay_connected
                 && let (Some(peer), Some(session)) = (decode_exact(&row.to), row.sessions.first())

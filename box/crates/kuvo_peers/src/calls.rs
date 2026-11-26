@@ -28,6 +28,9 @@ const ANSWER_LIFE: Millis = 2 * DAY;
 const MAX_RULES: usize = 300;
 pub const FEATURE: &str = "work.elsewhere";
 
+/// Pending outbound work mail and its next retry deadline.
+pub type MailRound = (Vec<(ComputerKey, Envelope)>, Option<Millis>);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
@@ -885,7 +888,7 @@ impl Calls {
         now: Millis,
         online: bool,
         here: &str,
-    ) -> io::Result<(Vec<(ComputerKey, Envelope)>, Option<Millis>)> {
+    ) -> io::Result<MailRound> {
         if self.scan_results || self.prune_at.is_some_and(|at| at <= now) {
             let mut prune_at = None;
             for (id, path, done) in self.records::<Completed>("work/call-results")? {

@@ -267,26 +267,6 @@ impl Flight {
     }
 }
 
-#[cfg(test)]
-mod deadline_tests {
-    use super::*;
-
-    #[test]
-    fn only_missing_parts_have_a_retry_deadline() {
-        let size = BundleSize::new(PART_BYTES + 1, &encode(&[0; 32])).unwrap();
-        let mut flight = Flight::new(&size);
-        let now = Instant::now();
-        let parts = flight.due(now).collect::<Vec<_>>();
-        assert_eq!(parts, vec![0, 1]);
-        for part in parts { flight.sent(part, now); }
-        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
-        assert!(flight.acknowledge(0));
-        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
-        assert!(flight.acknowledge(1));
-        assert_eq!(flight.next_due(now), None);
-    }
-}
-
 impl OutgoingBundle {
     pub fn open(path: &Path, size: BundleSize) -> io::Result<Self> {
         let file = File::open(path)?;
@@ -386,4 +366,24 @@ impl IncomingBundle {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_parts_have_a_retry_deadline() {
+        let size = BundleSize::new(PART_BYTES + 1, &encode(&[0; 32])).unwrap();
+        let mut flight = Flight::new(&size);
+        let now = Instant::now();
+        let parts = flight.due(now).collect::<Vec<_>>();
+        assert_eq!(parts, vec![0, 1]);
+        for part in parts { flight.sent(part, now); }
+        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
+        assert!(flight.acknowledge(0));
+        assert_eq!(flight.next_due(now), Some(now + PART_AGAIN));
+        assert!(flight.acknowledge(1));
+        assert_eq!(flight.next_due(now), None);
+    }
 }

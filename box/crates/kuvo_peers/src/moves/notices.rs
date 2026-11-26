@@ -247,9 +247,7 @@ impl Announcer {
     ) -> Option<tokio::time::Instant> {
         use std::time::Duration;
         use tokio::time::Instant;
-        let Some(current) = announcement(run, waiting) else {
-            return None;
-        };
+        let current = announcement(run, waiting)?;
         let ticks = Instant::now();
         let every = Duration::from_secs(60);
         if let Some((_, at)) = self.sent.filter(|(digest, _)| *digest == current.digest) {

@@ -156,11 +156,10 @@ impl Mail {
                             .1
                             .release_target
                             .is_some()
+                            && checks_open
                         {
-                            if checks_open {
-                                pending.retries.retain(|key, _| view.roster.member(key).is_some());
-                                pending.retries.insert(*key, release);
-                            }
+                            pending.retries.retain(|key, _| view.roster.member(key).is_some());
+                            pending.retries.insert(*key, release);
                         }
                         continue;
                     }
@@ -522,8 +521,7 @@ mod pressure_tests {
     async fn accepted_checks_survive_a_full_update_mailbox() {
         let (checks, mut receiver) = mpsc::channel(1);
         checks.send(Check::Offered).await.unwrap_or_else(|_| panic!("mailbox stopped"));
-        let mut pending = PendingChecks::default();
-        pending.check = true;
+        let mut pending = PendingChecks { check: true, ..PendingChecks::default() };
         let release = |version: &str| PreparedRelease { version: version.into(), sha256: "fixture".into() };
         pending.retries.insert([1; 32], release("1"));
         pending.retries.insert([1; 32], release("2"));

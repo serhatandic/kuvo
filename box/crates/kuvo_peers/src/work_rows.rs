@@ -298,7 +298,7 @@ impl Snapshots {
         view: &View,
         now: Millis,
         home: impl Fn(&str) -> calls::Home,
-    ) -> io::Result<(Vec<(ComputerKey, Envelope)>, Option<Millis>)> {
+    ) -> io::Result<calls::MailRound> {
         let Some(latest) = &self.latest else {
             return Ok((vec![], None));
         };
