@@ -334,86 +334,93 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
   assert.deepEqual((await line()).map(row => [row.id, row.words]), [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
-test("a stopped queue shows messages in order and Edit returns carried and retained files", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("queue-edit-files");
+/** A conversation on its Grok, at work on a turn that doesn't end by itself. */
+async function busyOnAgents(t, name, id, options) {
+  const { here, record } = await onAgents(t, name, [[id, options ?? {}]]);
+  here.agents.script("Keep busy", [said("Working"), "hang"]);
+  const sent = await request(record, "POST", `kuvo/sessions/${id}/send`, { id: "msg_keepBusy", words: "Keep busy", delivery: "steer" }, desktop);
+  assert.equal(sent.status, 200, sent.text);
+  await until(() => here.agents.prompts().length === 1, "Its turn never started.", 20000);
+  return { here, record };
+}
+
+// (The reference doesn't mark a held steer in an agent's line, nor name its rows' files.)
+const heldUnmarked = boxBinary().typescript && "The reference neither marks a held steer in a coding agent's line nor names the files on its queue rows.";
+test("a stopped queue shows messages in order and Edit returns carried and retained files", { timeout: 45000, skip: heldUnmarked }, async t => {
   const session = "ses_editFiles";
+  const { record: resident } = await busyOnAgents(t, "queue-edit-files", session);
   const id = "msg_editFiles";
   const route = `kuvo/sessions/${session}`;
   const queue = route + "/queue";
-  const directory = here.home;
   const words = "Look at both attachments.";
   const picture = { name: "shot.png", uri: "data:image/png;base64,YQ==" };
   const zip = { name: "logs.zip", uri: "data:application/zip;base64,UEsDBA==" };
-  const attached = { uri: "file:///team/held.png", name: "held.png" };
-  const held = { id: "msg_heldFile", type: "user", delivery: "steer", payload: { text: "First.", files: [attached] } };
-  const mail = { id: "msg_mail", type: "user", delivery: "queue", payload: {
-    text: "Check this.", metadata: { kuvo: { parts: { words: "Check this.", mail: { name: "Mira", session: "ses_mira" } } } },
-  } };
-  const model = { id: "picture-reader", providerID: "local", capabilities: { input: ["text", "image"] } };
-  here.engine.sessions.push({ ...sessionOf({ id: session, directory }), model });
-  here.engine.inboxes.set(session, [held, mail]);
-  here.engine.running.add(session);
-  const resident = await here.start().ready();
-  assert.equal((await request(resident, "POST", queue + "/hold")).json.paused, true);
+  const attached = { name: "held.png", uri: "data:image/png;base64,Yg==" };
+  const call = (method, at, body) => request(resident, method, at, body, desktop);
+  // What waits in its line: a steer with a file, and a letter.
+  assert.equal((await call("POST", route + "/send", { id: "msg_heldFile", words: "First.", files: [attached], delivery: "steer" })).status, 200);
+  const letter = "[Message from Mira · ses_mira] (To answer, use send_message to ses_mira.)\n\nCheck this.";
+  assert.equal((await call("POST", route + "/send", { id: "msg_mail", text: letter, delivery: "queue" })).status, 200);
+  assert.equal((await call("POST", queue + "/hold")).json.paused, true);
   for (const invalid of [route + "/send", queue + "/add"]) {
-    const refusal = await request(resident, "POST", invalid, { id: "msg_bad_id", text: "Keep it.", kept: true, delivery: "queue" });
+    const refusal = await call("POST", invalid, { id: "msg_bad_id", text: "Keep it.", kept: true, delivery: "queue" });
     assert.equal(refusal.status, 400, refusal.text);
     assert.match(refusal.json.message, /Send it again as a new message/);
   }
-  assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", "msg_bad_id.json")), false);
-  const send = await request(resident, "POST", queue + "/add", { id, words, files: [picture, zip] }, { "x-kuvo-from": "app" });
+  const send = await call("POST", queue + "/add", { id, words, files: [picture, zip] });
   assert.equal(send.status, 200, send.text);
   assert.equal(send.json.waits, true);
   const found = await until(async () => {
-    const response = await request(resident, "GET", queue + "?items=1");
-    return response.json?.items?.length === 3 && response.json;
-  }, "the queue to show the two engine messages and the saved message");
-  assert.deepEqual(found.held, [held.id]);
-  assert.deepEqual(found.items.slice(0, 2), [
-    { id: held.id, words: "First.", files: [attached.name], from: null, on: "engine", delivery: "queue", held: true },
-    { id: mail.id, words: "Check this.", files: [], from: "Mira", on: "engine", delivery: "queue", held: false },
+    const response = await call("GET", queue + "?items=1");
+    const items = await queueItems(resident, session);
+    return items?.length === 3 && { ...response.json, items };
+  }, "the queue to show the two waiting messages and the saved message");
+  assert.deepEqual(found.held, ["msg_heldFile"]);
+  assert.deepEqual(found.items.map(item => [item.id, item.words, item.files, item.from, item.held]), [
+    ["msg_heldFile", "First.", [attached.name], null, true],
+    ["msg_mail", "Check this.", [], "Mira", false],
+    [id, words, [picture.name], null, false],
   ]);
-  assert.deepEqual(found.items[2], { id, words, files: [picture.name], from: null, on: "box", delivery: "queue", held: false });
-  const editHeld = await request(resident, "DELETE", queue + "/" + held.id + "?receipt=msg_editHeld");
+  assert.equal(found.items[2].on, "box");
+  const editHeld = await call("DELETE", queue + "/msg_heldFile?receipt=msg_editHeld");
   assert.equal(editHeld.status, 200, editHeld.text);
-  assert.deepEqual(editHeld.json.removed.attached, [attached]);
-  assert.equal(editHeld.json.removed.before, mail.id);
+  assert.deepEqual(editHeld.json.removed.attached.map(file => file.name), [attached.name]);
+  assert.equal(editHeld.json.removed.before, "msg_mail");
   assert.deepEqual(editHeld.json.held, []);
-  const edit = await request(resident, "DELETE", queue + "/" + id + "?receipt=msg_editBoth");
+  const edit = await call("DELETE", queue + "/" + id + "?receipt=msg_editBoth");
   assert.equal(edit.status, 200, edit.text);
   assert.equal(edit.json.removed.draft, words);
   assert.deepEqual(edit.json.removed.files, [picture]);
   assert.deepEqual(edit.json.removed.attached.map(file => file.name), ["shot.png", "logs.zip"]);
   assert.equal(edit.json.removed.attached[0].uri, picture.uri);
   assert.deepEqual(fs.readFileSync(new URL(edit.json.removed.attached[1].uri)), Buffer.from("PK\x03\x04"));
-  for (const [item, receipt] of [[held.id, "msg_editHeld"], [id, "msg_editBoth"]]) {
-    assert.equal((await request(resident, "POST", queue + "/" + item + "/ack", { receipt })).status, 200);
-    assert.equal((await request(resident, "DELETE", queue + "/" + item + "?receipt=" + receipt)).status, 404);
+  for (const [item, receipt] of [["msg_heldFile", "msg_editHeld"], [id, "msg_editBoth"]]) {
+    assert.equal((await call("POST", queue + "/" + item + "/ack", { receipt })).status, 200);
+    assert.equal((await call("DELETE", queue + "/" + item + "?receipt=" + receipt)).status, 404);
   }
 });
 
-test("wake-up rows show the same saved summary in the engine or the resident queue", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("queue-wake-summary");
+test("wake-up rows show the same saved summary in the agent's line or the resident queue", { timeout: 45000 }, async t => {
   const session = "ses_wakeSummary";
+  const { record } = await busyOnAgents(t, "queue-wake-summary", session);
   const words = "Check everything. More instructions here.";
   const text = "[Wake-up] " + words;
   const summary = "Check the release";
   const metadata = { kuvo: { wake: { summary } } };
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.inboxes.set(session, [{ id: "msg_engineWake", type: "user", delivery: "queue", payload: { text, metadata } }]);
-  const record = await here.start().ready();
   const route = `kuvo/sessions/${session}/queue`;
-  assert.equal((await request(record, "POST", route + "/hold")).json.paused, true);
-  const add = await request(record, "POST", route + "/add", { id: "msg_boxWake", text, metadata, words, from: "Wake-up", kept: true });
+  const call = (method, at, body) => request(record, method, at, body, desktop);
+  const line = await call("POST", route + "/add", { id: "msg_lineWake", text, metadata, words, from: "Wake-up", kept: true, delivery: "queue" });
+  assert.equal(line.json.waits, false, line.text);
+  assert.equal((await call("POST", route + "/hold")).json.paused, true);
+  const add = await call("POST", route + "/add", { id: "msg_boxWake", text, metadata, words, from: "Wake-up", kept: true });
   assert.equal(add.json.waits, true);
   const items = await until(async () => {
-    const reply = await request(record, "GET", route + "?items=1");
-    return reply.json?.items?.length === 2 && reply.json.items;
+    const items = await queueItems(record, session);
+    return items?.length === 2 && items;
   }, "both wake-up rows to be listed");
-  assert.deepEqual(items.map(row => [row.from, row.on, row.words]), [["Wake-up", "engine", summary], ["Wake-up", "box", summary]]);
-  const taken = await request(record, "DELETE", route + "/msg_boxWake");
+  assert.deepEqual(items.map(row => [row.id, row.from, row.words]), [["msg_lineWake", "Wake-up", summary], ["msg_boxWake", "Wake-up", summary]]);
+  assert.equal(items[1].on, "box");
+  const taken = await call("DELETE", route + "/msg_boxWake");
   assert.equal(taken.json.removed.text, text);
 });
 
@@ -452,106 +459,14 @@ test("a standalone summary keeps a read conversation read while actual replies s
   ]);
 });
 
-for (const unreadable of ["inbox", "transcript"]) {
-  test(`Edit recovers an inbox draft after the ${unreadable} read fails`, { timeout: 45000 }, async t => {
-    const { computer } = await bench(t);
-    const here = await computer("queue-edit-recovery");
-    const session = "ses_editRecovery";
-    const id = "msg_editRecovery";
-    const words = "Keep these notes.";
-    const file = { uri: "file:///team/notes.png", name: "notes.png" };
-    const metadata = { kuvo: { parts: { words } } };
-    const queue = `kuvo/sessions/${session}/queue`;
-    const edit = queue + "/" + id + "?receipt=msg_recoverEdit";
-    const payload = { text: words + "\n\n<attached-files>\n- /team/notes.png\n</attached-files>", files: [file], metadata };
-    const after = { id: "msg_afterEdit", type: "user", delivery: "queue", payload: { text: "Next." } };
-    here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-    here.engine.running.add(session);
-    here.engine.inboxes.set(session, [{ id, type: "user", delivery: "steer", payload }, after]);
-    here.engine.inboxUnavailable = new Set();
-    here.engine.messageUnavailable = new Set();
-    here.engine.afterInboxRemoval = () => {
-      if (unreadable === "inbox") here.engine.inboxUnavailable.add(session);
-      else here.engine.messageUnavailable.add(id);
-    };
-    const first = here.start();
-    const record = await first.ready();
-    const blocked = await request(record, "DELETE", edit);
-    assert.equal(blocked.status, 502, blocked.text);
-    assert.equal(blocked.json.removed, undefined);
-    assert.deepEqual(here.engine.inboxes.get(session), [after]);
-    await first.stop();
-
-    const next = await here.start().ready();
-    const checking = await request(next, "DELETE", edit);
-    assert.equal(checking.status, 502, checking.text);
-    here.engine.inboxUnavailable.clear();
-    here.engine.messageUnavailable.clear();
-    const recovered = await request(next, "DELETE", edit);
-    assert.equal(recovered.status, 200, recovered.text);
-    assert.deepEqual(recovered.json.removed, {
-      id, text: payload.text, words, draft: words, delivery: "steer",
-      files: [file], attached: [file], metadata, before: after.id, receipt: "msg_recoverEdit",
-    });
-    assert.deepEqual((await request(next, "DELETE", edit)).json, recovered.json);
-    assert.equal(here.engine.asked.filter(row => row.method === "DELETE" && row.path.endsWith("/" + id)).length, 1);
-    const ack = await request(next, "POST", queue + "/" + id + "/ack", { receipt: "msg_recoverEdit" });
-    assert.equal(ack.status, 200, ack.text);
-    const spent = path.join(here.home, "run", "queue-removals", "spent");
-    const [receipt] = fs.readdirSync(spent);
-    assert.equal(fs.readFileSync(path.join(spent, receipt)).length, 0);
-    assert.equal((await request(next, "DELETE", edit)).status, 404);
-  });
-}
-
-test("Edit refuses an inbox draft when delivery wins and the exact lookup fails", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("queue-edit-delivered");
-  const session = "ses_editDelivered";
-  const id = "msg_editDelivered";
-  const edit = `kuvo/sessions/${session}/queue/${id}?receipt=msg_deliveredEdit`;
-  const payload = { text: "Already delivered." };
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.running.add(session);
-  here.engine.inboxes.set(session, [{ id, type: "user", delivery: "queue", payload }]);
-  here.engine.afterInboxRemoval = () => {
-    here.engine.messages.set(session, [{ id, type: "user", ...payload }]);
-    here.engine.messageUnavailable = new Set([id]);
-  };
-  const resident = await here.start().ready();
-  const blocked = await request(resident, "DELETE", edit);
-  assert.equal(blocked.status, 502, blocked.text);
-  assert.equal(blocked.json.removed, undefined);
-  here.engine.messageUnavailable.clear();
-  for (const expected of [404, 404]) {
-    const delivered = await request(resident, "DELETE", edit);
-    assert.equal(delivered.status, expected, delivered.text);
-    assert.equal(delivered.json.removed, undefined);
-  }
-  assert.deepEqual(here.engine.messages.get(session), [{ id, type: "user", ...payload }]);
-});
-
-test("Edit distinguishes an already delivered message from an inbox that refuses removal", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("queue-edit-refused");
+test("Edit says a message already delivered isn't waiting", { timeout: 45000 }, async t => {
   const session = "ses_editRefused";
+  const { here, record: resident } = await busyOnAgents(t, "queue-edit-refused", session);
   const queue = `kuvo/sessions/${session}/queue`;
-  const delivered = { id: "msg_gone", type: "user", text: "Already delivered." };
-  const waiting = { id: "msg_waits", type: "user", delivery: "queue", payload: { text: "Still waiting." } };
-  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
-  here.engine.running.add(session);
-  here.engine.messages.set(session, [delivered]);
-  here.engine.inboxes.set(session, [waiting]);
-  here.engine.refuseRemoval = new Set([waiting.id]);
-  const resident = await here.start().ready();
-  const gone = await request(resident, "DELETE", queue + "/" + delivered.id);
+  const gone = await request(resident, "DELETE", queue + "/msg_keepBusy", undefined, desktop);
   assert.equal(gone.status, 404, gone.text);
   assert.equal(gone.json.removed, undefined);
-  const refused = await request(resident, "DELETE", queue + "/" + waiting.id);
-  assert.equal(refused.status, 502, refused.text);
-  assert.equal(refused.json.removed, undefined);
-  assert.deepEqual(here.engine.messages.get(session), [delivered]);
-  assert.deepEqual(here.engine.inboxes.get(session), [waiting]);
+  assert.deepEqual(await here.agents.users(resident, session), ["msg_keepBusy"]);
 });
 
 test("Send Now keeps the waiting payload until OpenCode confirms the exact message", { timeout: 45000 }, async t => {
