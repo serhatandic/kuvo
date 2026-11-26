@@ -222,6 +222,7 @@ pub struct Service {
     told: Arc<Mutex<BTreeMap<String, u64>>>,
     refreshing: Arc<tokio::sync::Mutex<()>>,
     last_refresh: Arc<std::sync::atomic::AtomicU64>,
+    last_turn_save: Arc<std::sync::atomic::AtomicU64>,
     refresh_failed: Arc<std::sync::atomic::AtomicBool>,
     refresh_completed: Arc<std::sync::atomic::AtomicU64>,
     changes: tokio::sync::watch::Sender<u64>,
@@ -305,6 +306,7 @@ impl Service {
             told: Arc::default(),
             refreshing: Arc::default(),
             last_refresh: Arc::default(),
+            last_turn_save: Arc::default(),
             refresh_failed: Arc::default(),
             refresh_completed: Arc::default(),
             changes: tokio::sync::watch::channel(0).0,
@@ -560,6 +562,11 @@ impl Service {
         only_resets: bool,
     ) -> std::io::Result<()> {
         use super::plan_facts::ProblemKind;
+        let heard = facts.is_none()
+            && !windows.is_empty()
+            && windows
+                .iter()
+                .all(|w| w.source == super::readings::Source::Turn);
         if let Some(error) = &self.cache_error {
             return Err(std::io::Error::other(format!(
                 "Accepted limits cache: {error}"
@@ -574,7 +581,6 @@ impl Service {
         {
             return Ok(());
         }
-        let before = state.clone();
         let old = state
             .entries
             .get(&account.provider)
@@ -846,6 +852,27 @@ impl Service {
         window_order.retain(|id| entry.trails.contains_key(id));
         entry.window_order = window_order;
         let provider = entry.account.provider.clone();
+        // The accepted reading is always live. Normal in-window turn samples
+        // need not write the whole cache on each assistant response. Preserve
+        // new windows/sign-ins, dormant scope transitions and new notice facts
+        // immediately; ordinary samples keep TS's thirty-second disk cadence.
+        let critical = state.entries.get(&provider).is_none_or(|old| {
+            !same_sign_in(&old.account, &entry.account)
+                || entry.trails.values().any(|trail| {
+                    old.trails.get(&trail.current.id).is_none_or(|prior| {
+                        prior.current.resets_at != trail.current.resets_at
+                            || prior.notice_is_dormant() != trail.notice_is_dormant()
+                    })
+                })
+        });
+        use std::sync::atomic::Ordering::Relaxed;
+        let last = self.last_turn_save.load(Relaxed);
+        let persist = !heard
+            || critical
+            || !facts.is_empty()
+            || last == 0
+            || now.saturating_sub(last) >= 30_000;
+        let before = persist.then(|| state.clone());
         for sibling in state
             .entries
             .values_mut()
@@ -860,14 +887,19 @@ impl Service {
             state.order.push(provider.clone());
         }
         state.entries.insert(provider, entry);
-        if let Err(err) = kuvo_store::files::write_secret(
-            &self.file,
-            &serde_json::to_vec(&*state).map_err(std::io::Error::other)?,
-        ) {
-            *state = before;
-            return Err(err);
-        }
-        {
+        if persist {
+            if let Err(err) = kuvo_store::files::write_secret(
+                &self.file,
+                &serde_json::to_vec(&*state).map_err(std::io::Error::other)?,
+            ) {
+                if let Some(before) = before {
+                    *state = before;
+                }
+                return Err(err);
+            }
+            if heard {
+                self.last_turn_save.store(now, Relaxed);
+            }
             let book = self.peer_book.lock().expect("peer limits");
             if book.groups.contains_key(&row_id) {
                 self.save_peers(&book);

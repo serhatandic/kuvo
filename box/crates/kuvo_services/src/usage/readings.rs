@@ -402,6 +402,9 @@ impl Trail {
         }
         self.recovering.clear();
     }
+    pub(super) fn notice_is_dormant(&self) -> bool {
+        self.notice_dormant
+    }
     pub fn observe_visible(
         &mut self,
         next: Window,

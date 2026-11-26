@@ -112,6 +112,19 @@ test('a crossing of ten percent remaining is told only once in its current windo
   const repeated=await sample(92,reset+120);
   assert.deepEqual(repeated.notices.map(n=>n.id),crossed.notices.map(n=>n.id));
 });
+test('ordinary turn readings stay live without rewriting the cache, while new warnings are durable immediately',async t=>{
+  if(boxBinary().typescript)return t.skip('The fixture reads the Rust accepted-window journal.');
+  const fs=await import('node:fs');
+  const {sample,codex}=await noticeFixture(t);
+  await sample(89);
+  const file=path.join(codex.home,'agents','usage','accepted-limits.json');
+  const first=fs.readFileSync(file);
+  assert.equal((await sample(90)).rows.find(r=>r.provider==='codex-cli').rings.short.used,0.90);
+  assert.deepEqual(fs.readFileSync(file),first,'Ordinary live turns do not rewrite the retained cache within 30 seconds');
+  const crossing=await sample(91);const fact=crossing.notices.find(n=>n.milestone==='underTenPercent');assert.ok(fact);
+  const saved=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.ok(Object.values(saved.entries).some(entry=>entry.notices?.some(n=>n.id===fact.id)));
+});
 test('usage warnings arrive through the existing in-app notice history (Rust correction)',async t=>{
   if(boxBinary().typescript)return t.skip('The resident notice correction is Rust-only.');
   const {sample,read}=await noticeFixture(t);
@@ -389,20 +402,23 @@ test('an unreadable accepted-limit cache cannot prevent the resident from openin
 test('engine credential plans are read with their own sign-ins and display bounded counts and credits (Rust reader)',async t=>{
   if(boxBinary().typescript)return t.skip('This conformance fixture injects the Rust reader’s provider endpoints.');
   const http=await import('node:http');
+  const crypto=await import('node:crypto');
   const answered=[];
   const now=Date.now();
   const reset=Math.floor(now/1000)+7200;
   const replies={
     '/chatgpt':{plan_type:'plus',rate_limit:{primary_window:{used_percent:30,limit_window_seconds:18000,reset_at:reset}},credits:{has_credits:true,balance:'821.9'},rate_limit_reset_credits:{available_count:0}},
     '/grok':{config:{currentPeriod:{start:new Date(now-3*86400000).toISOString(),end:new Date(now+4*86400000).toISOString()},creditUsagePercent:64}},
-    '/copilot':{login:'fixture',copilot_plan:'individual_pro',quota_reset_date:new Date(now+86400000).toISOString(),quota_snapshots:{premium_interactions:{entitlement:300,remaining:120,percent_remaining:40}}},
+    '/copilot':{login:'Ada-L',copilot_plan:'individual_pro',quota_reset_date:new Date(now+86400000).toISOString(),quota_snapshots:{premium_interactions:{entitlement:300,remaining:120,percent_remaining:40}}},
     '/openrouterKey':{data:{limit:null,is_free_tier:false}},
     '/openrouterCredits':{data:{total_credits:20,total_usage:7.5}},
     '/zai':{data:{limits:[{type:'TOKENS_LIMIT',unit:3,number:5,percentage:12,nextResetTime:reset*1000},{type:'TIME_LIMIT',currentValue:40,usage:100}]}},
     '/opencodeGo':{usage:{rolling:{percent:9,resetsAt:new Date(reset*1000).toISOString()},weekly:{percent:21,resetsAt:new Date(now+4*86400000).toISOString()}}}
   };
+  let rejectRouter=false;
   const provider=http.createServer((req,res)=>{
     answered.push({url:req.url,auth:req.headers.authorization,account:req.headers['chatgpt-account-id']});
+    if(rejectRouter&&req.url==='/openrouterKey'){res.writeHead(401,{'Content-Type':'application/json'});res.end('{}');return;}
     const reply=replies[req.url];
     res.writeHead(reply?200:404,{'Content-Type':'application/json'});res.end(JSON.stringify(reply??{}));
   });
@@ -413,7 +429,7 @@ test('engine credential plans are read with their own sign-ins and display bound
   const sign=(integrationID,value,active=true)=>({integrationID,active,value});
   box.engine.credentials=[
     sign('openai',{type:'oauth',access:'fixture-chatgpt',expires:now+3600000,metadata:{accountID:'fixture-account'}}),
-    sign('xai',{type:'oauth',access:'fixture-xai',expires:now+3600000}),
+    sign('xai',{type:'oauth',access:['e30',Buffer.from(JSON.stringify({sub:'fixture-xai-user'})).toString('base64url'),'fixture'].join('.'),expires:now+3600000}),
     sign('github-copilot',{type:'oauth',refresh:'fixture-github',access:'short-lived',expires:now-1}),
     sign('openrouter',{type:'api',key:'fixture-router'}),
     sign('zai-coding-plan',{type:'api',key:'fixture-zai'}),
@@ -440,6 +456,25 @@ test('engine credential plans are read with their own sign-ins and display bound
   assert.equal(answered.find(r=>r.url==='/copilot').auth,'token fixture-github');
   assert.deepEqual(answered.find(r=>r.url==='/chatgpt'),{url:'/chatgpt',auth:'Bearer fixture-chatgpt',account:'fixture-account'});
   assert.equal(data.refreshFailed,false);
+  const identity=raw=>crypto.createHash('sha256').update('kuvo-code plan limits account v1\n'+raw).digest('hex').slice(0,16);
+  assert.equal(accounts.openrouter.identity,identity('key:fixture-router'));
+  assert.equal(accounts['github-copilot'].identity,identity('github:ada-l'));
+  assert.equal(accounts.xai.identity,identity('xai:fixture-xai-user'));
+  for(const secret of ['Ada-L','ada-l','fixture-router','fixture-github','fixture-xai-user'])assert.ok(!JSON.stringify(data).includes(secret));
+  const base='kuvo/agents/api/kuvo/limits';
+  const refresh=async()=>{assert.equal((await call('POST',base+'/refresh',{})).status,200);return until(async()=>{const response=await call('GET',base);return !response.json.data.refreshPending&&response.json.data;},'Engine fixture refresh did not settle');};
+  // GitHub logins are case-insensitive, including when two sign-ins name the
+  // same account. A changed credential must not inherit another login's ring.
+  replies['/copilot'].login='ada-l';box.engine.credentials=box.engine.credentials.map(c=>c.integrationID==='github-copilot'?sign(c.integrationID,{...c.value,refresh:'fixture-github-other'}):c);
+  const same=(await refresh()).accounts.find(a=>a.provider==='github-copilot');assert.equal(same.identity,accounts['github-copilot'].identity);
+  replies['/copilot'].login='Bob';replies['/copilot'].quota_snapshots.premium_interactions={entitlement:300,remaining:290,percent_remaining:290/300*100};
+  box.engine.credentials=box.engine.credentials.map(c=>c.integrationID==='github-copilot'?sign(c.integrationID,{...c.value,refresh:'fixture-github-bob'}):c);
+  const switched=(await refresh()).accounts.find(a=>a.provider==='github-copilot');
+  assert.equal(switched.identity,identity('github:bob'));assert.deepEqual(switched.windows[0].amount,{used:10,limit:300,unit:'requests'});
+  rejectRouter=true;const denied=(await refresh()).accounts.find(a=>a.provider==='openrouter');assert.equal(denied.problem.kind,'failed');assert.deepEqual(denied.balance,accounts.openrouter.balance);
+  const count=answered.filter(r=>r.url==='/openrouterKey').length;
+  rejectRouter=false;const restored=(await refresh()).accounts.find(a=>a.provider==='openrouter');
+  assert.equal(restored.problem,undefined);assert.equal(restored.identity,accounts.openrouter.identity);assert.equal(answered.filter(r=>r.url==='/openrouterKey').length,count+1);
 });
 
 test('Claude Code answers its plan via its own demand-started control process (Rust reader)',async t=>{
@@ -1016,6 +1051,57 @@ test('Antigravity generation metadata supplies native calls without reading conv
     db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2,generation(50));
     let last;await until(async()=>{last=await tokens();return last===1750;},()=>{const kept=new DatabaseSync(path.join(box.home,'agents','usage','insights.sqlite'),{readOnly:true});try{return 'New Antigravity generation did not reach Insights\n'+last+'\n'+JSON.stringify(kept.prepare('SELECT * FROM native_file').all())+'\n'+resident.log();}finally{kept.close();}});
   }finally{db.close();}
+});
+
+test('Antigravity history reads only usable generation stores, follows WAL changes and forgets removed databases',async t=>{
+  const fs=await import('node:fs');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);
+  const box=await computer('AntigravityStores',undefined,isolated);
+  const at=Math.floor((Date.now()-5000)/1000)*1000,model='gemini-3.6-flash';
+  const varint=n=>{const out=[];while(n>=128){out.push((n%128)|128);n=Math.floor(n/128);}out.push(n);return Buffer.from(out);};
+  const integer=(field,value)=>Buffer.concat([varint(field*8),varint(value)]);
+  const bytes=(field,value)=>Buffer.concat([varint(field*8+2),varint(value.length),value]);
+  const generation=(input,embedded=true)=>bytes(1,Buffer.concat([
+    bytes(19,Buffer.from(model)),bytes(4,Buffer.concat([integer(2,input),integer(3,10)])),
+    ...(embedded?[bytes(9,bytes(4,integer(1,at/1000)))]:[])
+  ]));
+  const folder=path.join(box.home,'agents','antigravity','profile','antigravity-acp','conversations');
+  fs.mkdirSync(folder,{recursive:true});
+  const store=(name,rows=[],wal=false)=>{
+    const db=new DatabaseSync(path.join(folder,name+'.db'));
+    if(wal)db.exec('PRAGMA journal_mode=WAL');
+    db.exec('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)');
+    for(const [i,data] of rows.entries())db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(i+1,data);
+    return db;
+  };
+  store('first',[generation(100)]).close();
+  const live=store('live',[generation(50)],true);t.after(()=>{try{live.close();}catch{}});
+  store('legacy',[generation(20,false)]).close();
+  const empty=new DatabaseSync(path.join(folder,'empty.db'));empty.exec('CREATE TABLE unrelated(id INTEGER)');empty.close();
+  write(path.join(folder,'broken.db'),'not SQLite');
+  store('oversized',[Buffer.alloc(1048577)]).close();
+  if(process.platform!=='win32')fs.symlinkSync(path.join(folder,'first.db'),path.join(folder,'same.db'));
+  write(path.join(box.home,'agents','usage','pricing','litellm.json'),JSON.stringify({models:{[model]:{i:1,o:2,cw:1,cr:0.5}}}));
+  let resident=box.start(),call=box.connect(await resident.ready());
+  const base='kuvo/agents/api/kuvo/usage';
+  const refresh=async()=>{const res=await call('POST',base+'/refresh?zone=UTC',{});assert.equal(res.status,200,res.text);};
+  const read=async()=>{const res=await call('GET',base+'?zone=UTC');assert.equal(res.status,200,res.text);return res.json.data.totals.antigravity.reduce((sum,d)=>sum+d.tokens,0);};
+  const settle=async n=>until(async()=>{const seen=await read();return seen===n;},'Antigravity stores did not settle to '+n);
+  await refresh();await settle(170);
+  live.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2,generation(30));
+  await refresh();await settle(210);
+  const legacy=new DatabaseSync(path.join(folder,'legacy.db'));
+  legacy.exec('CREATE TABLE steps(idx INTEGER PRIMARY KEY, metadata BLOB)');
+  legacy.prepare('INSERT INTO steps VALUES (?,?)').run(1,bytes(1,integer(1,at/1000)));legacy.close();
+  await refresh();await settle(240);
+  fs.rmSync(path.join(folder,'broken.db'));store('broken',[generation(5)]).close();
+  await refresh();await settle(255);
+  fs.rmSync(path.join(folder,'first.db'));
+  if(process.platform!=='win32')fs.rmSync(path.join(folder,'same.db'));
+  await refresh();await settle(145);
+  live.close();await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  await refresh();await settle(145);
 });
 
 test('OpenCode Go limits read the engine’s saved credentials without starting the engine',async t=>{
@@ -1680,18 +1766,28 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   if(process.platform==='win32')return t.skip('The synthetic /proc fixture is Unix-only; the native Windows case exercises actual process ownership.');
   const fs=await import('node:fs');
   const https=await import('node:https');
+  const http=await import('node:http');
   const {spawnSync}=await import('node:child_process');
   const {computer}=await bench(t);
-  const at=Date.now(),methods=[];
+  const at=Date.now(),methods=[],cloudCalls=[];
+  let localStatus=200,localCsrf='fixture-csrf';
+  const cloud=http.createServer((req,res)=>{
+    cloudCalls.push(req.url);assert.equal(req.headers.authorization,'Bearer fixture-cloud-token');
+    const body=req.url.includes('loadCodeAssist')?{paidTier:{id:'g1-pro-tier'}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.5,resetTime:new Date(at+7200000).toISOString()}))}]};
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
+  });
+  await new Promise(resolve=>cloud.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{cloud.close(resolve);cloud.closeAllConnections();}));
   // Temporary self-signed fixture, never an installed trust root or a real key.
-  const box=await computer('AntigravityOwnedServer',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:1/'}));
+  const box=await computer('AntigravityOwnedServer',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_PROC_ROOT:path.join(folder,'account','fixture-proc'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+cloud.address().port+'/'}));
   const key=path.join(box.env.HOME,'fixture-key.pem'),cert=path.join(box.env.HOME,'fixture-cert.pem');
   const made=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-subj','/CN=fixture.invalid','-days','1','-keyout',key,'-out',cert],{stdio:'ignore'});
   assert.equal(made.status,0,'The fixture certificate could not be generated');
   const server=https.createServer({key:fs.readFileSync(key),cert:fs.readFileSync(cert)},(req,res)=>{
     const method=req.url.split('/').at(-1);methods.push(method);
     assert.equal(req.headers.authorization,undefined);
-    assert.equal(req.headers['x-codeium-csrf-token'],'fixture-csrf');
+    assert.equal(req.headers['x-codeium-csrf-token']??'',localCsrf);
+    if(localStatus!==200){res.writeHead(localStatus,{'Content-Type':'application/json'});res.end('{}');return;}
     const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:0.2,resetTime:new Date(at+7200000).toISOString()}))}]};
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(answer));
   });
@@ -1711,10 +1807,37 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   };
   add(101,profile+'-not-ours','wrong-csrf',101,server.address().port);
   add(102,profile,'fixture-csrf',102,server.address().port);
-  const call=box.connect(await box.start().ready());const base='kuvo/agents/api/kuvo/limits';
-  assert.equal((await call('POST',base+'/refresh',{})).status,200);
-  const row=await until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='antigravity'&&r.rings.short?.used===0.8);},'Own local server did not provide quota windows');
+  let resident=box.start(),call=box.connect(await resident.ready());const base='kuvo/agents/api/kuvo/limits';
+  const refresh=async check=>{
+    assert.equal((await call('POST',base+'/refresh',{})).status,200);
+    return until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='antigravity'&&check(r));},'Antigravity local/cloud fixture did not settle');
+  };
+  const row=await refresh(r=>r.rings.short?.used===0.8);
   assert.equal(row.plan,'Pro');assert.ok(methods.includes('RetrieveUserQuotaSummary'));assert.ok(methods.includes('GetUserStatus'));
+  assert.equal(cloudCalls.length,0);
+  fs.rmSync(path.join(proc,'102'),{recursive:true});
+  const stopped=await refresh(r=>r.problem?.kind==='failed');
+  assert.equal(stopped.problem.message,'Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.');
+  assert.equal(cloudCalls.length,0);
+  add(102,profile,'fixture-csrf',102,server.address().port);
+  write(path.join(profile,'antigravity-acp','acp_token.json'),JSON.stringify({access_token:'fixture-cloud-token',expires_at:Math.floor(at/1000)+3600}));
+  localStatus=403;const before=methods.length;
+  const fallback=await refresh(r=>r.rings.short?.used===0.5);assert.equal(fallback.problem,undefined);
+  assert.equal(methods.length,before+1,'Refused local CSRF is not sent to another endpoint');
+  assert.ok(cloudCalls.length>0);
+  const rejected=methods.length;
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  await refresh(r=>r.rings.short?.used===0.5);
+  assert.equal(methods.length,rejected,'The refused CSRF survives restart');
+  // Authless agy has no credential to blacklist. It is retried when the
+  // language server answers again, with no invented sign-in or cloud call.
+  fs.rmSync(path.join(profile,'antigravity-acp','acp_token.json'));
+  write(path.join(proc,'102','cmdline'),'/bin/agy\0');
+  localCsrf='';let authless=methods.length,cloudBefore=cloudCalls.length;
+  await refresh(r=>r.problem?.kind==='failed');assert.ok(methods.length>authless);
+  localStatus=200;authless=methods.length;
+  await refresh(r=>r.rings.short?.used===0.8&&r.problem===undefined);
+  assert.ok(methods.length>authless);assert.equal(cloudCalls.length,cloudBefore);
 });
 
 test('the engine ChatGPT reset credit uses the saved OAuth identity without starting the engine',async t=>{
