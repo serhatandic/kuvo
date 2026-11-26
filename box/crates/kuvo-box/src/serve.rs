@@ -84,7 +84,8 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let tools = agents::tools::relay(home, engine.clone())?;
+    let (tools, browser_tools) =
+        agents::tools::relay(home, engine.clone(), kind == ComputerKind::Mac).await?;
     let feed = kuvo_agents::feed::Feed::default();
     let factories = agents::factories(home, &tools, &feed).await;
     let resident_agents = if factories.is_empty() {
@@ -441,6 +442,9 @@ pub async fn run(
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::terminals::register(&mut routes, home);
     kuvo_services::programs::register(&mut routes, account.clone());
+    kuvo_services::browser::register(&mut routes, home);
+    let browser_install = kuvo_services::browser::install::InstallTask::start(home.to_owned(), kind == ComputerKind::Mac)?;
+    browser_install.register(&mut routes);
     let integration_keys = kuvo_services::integrations::register(
         &mut routes,
         home,
@@ -756,6 +760,9 @@ pub async fn run(
         }
     });
     let dispatcher = routes.build(LineTiming::default());
+    if let Some(browser_tools) = browser_tools {
+        browser_tools.attach(&dispatcher);
+    }
     peers.dispatch_with(dispatcher.clone()).await;
     // What other computers follow of this one's conversations, answered while they keep it.
     let _conversation_follows = peers.relay_handle().and_then(|relay| {
@@ -878,6 +885,7 @@ pub async fn run(
         }
     }
     tools.shutdown().await;
+    browser_install.stop().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1039,6 +1047,7 @@ fn info(
         found::FEATURE,
     ];
     if !is_mac {
+        features.push("browser");
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);

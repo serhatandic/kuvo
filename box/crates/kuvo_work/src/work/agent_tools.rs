@@ -9,6 +9,7 @@ mod limits;
 mod own;
 mod receipts;
 mod sessions;
+mod show;
 mod start;
 
 use http::StatusCode;
@@ -46,14 +47,6 @@ pub const AGENT_TOOLS: &[&str] = &[
     "show_file",
     "mark_final",
     "show_widget",
-];
-
-/// The tools this box doesn't answer yet, and the part of the rewrite each comes with.
-const NOT_YET: &[(&str, &str)] = &[
-    ("show_in_panel", "6.4"),
-    ("show_file", "6.4"),
-    ("mark_final", "6.4"),
-    ("show_widget", "6.4"),
 ];
 
 pub(super) fn said(text: impl Into<String>) -> Said {
@@ -191,7 +184,13 @@ impl Work {
                 let args = given["arguments"].as_object().cloned().unwrap_or_default();
                 let session = given["session"].as_str().filter(|id| session_id(id));
                 let answer = match work
-                    .agent_tool(name, &args, session, operation.as_ref())
+                    .agent_tool(
+                        name,
+                        &args,
+                        session,
+                        operation.as_ref(),
+                        given["inView"].as_bool(),
+                    )
                     .await
                 {
                     Ok(answer) => {
@@ -276,6 +275,7 @@ impl Work {
         args: &Map<String, Value>,
         session: Option<&str>,
         operation: Option<&receipts::Operation>,
+        in_view: Option<bool>,
     ) -> Result<Said, String> {
         if name == "plan_limits" {
             let Some(limits) = self.limits.clone() else {
@@ -286,10 +286,36 @@ impl Work {
                 .await
                 .map_err(|e| e.to_string());
         }
-        if let Some((_, part)) = NOT_YET.iter().find(|(tool, _)| *tool == name) {
-            return Ok(refused(format!(
-                "{name} isn't in this computer's Kuvo Code yet (part {part} of its rewrite). Ask the user to do it in the app."
-            )));
+        if show::is_show(name) {
+            let base = if name == "show_in_panel" {
+                let finder = self.list.engine().work_engine().await;
+                let own = match session {
+                    Some(id) => finder.session_found(id).await.ok().map(|(data, _)| data),
+                    None => None,
+                };
+                let data = match own {
+                    Some(data) => Some(data),
+                    None => self
+                        .root_of(&finder, session)
+                        .await
+                        .map(|(_, data, _)| data),
+                };
+                data.and_then(|data| {
+                    data["location"]["directory"]
+                        .as_str()
+                        .or_else(|| data["directory"].as_str())
+                        .map(std::path::PathBuf::from)
+                })
+            } else {
+                None
+            };
+            let name = name.to_owned();
+            let args = args.clone();
+            return tokio::task::spawn_blocking(move || {
+                show::answer(&name, &args, base.as_deref(), in_view)
+            })
+            .await
+            .map_err(|e| e.to_string());
         }
         let engine = self.list.engine().running_bot_engine().await;
         // (The coding agents' conversations are found while the engine isn't running.)

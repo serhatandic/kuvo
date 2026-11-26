@@ -1,6 +1,7 @@
 //! Usage, Library, artifacts, marketplace, settings, vault and project tools.
 
 pub mod artifacts;
+pub mod browser;
 pub mod config;
 pub mod git_preferences;
 mod config_receipts;
