@@ -1028,9 +1028,12 @@ publishes the expiry. The fixture waits for an expired window from a
 changed event on that same feed, rather than comparing two processes'
 clocks; the fixed-clock regression checks early, on-time and late wakes.
 The full Mac gates above passed again, with the additional scoped deadline
-test. Final cross-platform rerun pending. Non-test size:
+test. Final corrected Rust usage 109/109 applicable on Mac, WSL2, native
+Windows and capped static-musl Linux. Native Windows additionally passed two
+focused expiry repeats. All scratch and the one capped Linux container were
+removed; both PC process lists were clear. Non-test size:
 631,973 characters without leading indentation (0.919× the TS baseline).
-30 A1 entries addressed; 84 remain, subject to the completed gates.
+30 A1 entries closed; 84 remain.
 
 ## Remaining implementation gaps
 
