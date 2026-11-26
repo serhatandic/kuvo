@@ -65,7 +65,8 @@ test("a session started by a subagent is filed under the project of its linked w
     assert.equal(accepted.json.project, "Fixture");
     const made = await header(accepted.json.session);
     assert.equal(fs.realpathSync(made.location.directory), fs.realpathSync(folder));
-    assert.equal(made.agent, "plan");
+    // (A conversation stored in Plan mode starts Build sessions: Plan mode is gone.)
+    assert.equal(made.agent, "build");
     assert.equal(made.metadata.kuvo.startedBy, "ses_lead");
     assert.deepEqual(made.metadata.kuvo.filed, { folder: made.location.directory, project });
     assert.match(await heard(task, "Its task never reached its agent."), /ses_lead/);
