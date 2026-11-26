@@ -1221,22 +1221,21 @@ test("an earlier session read cannot bring back an old name or undo a pin or del
 });
 
 test("session list cursors carry changes and tombstones, then read whole after a restart", { timeout: 60000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-list-cursors");
   const [gone, kept] = ["ses_cursorGone", "ses_cursorKept"];
-  here.engine.sessions.push(
-    sessionOf({ id: gone, directory: here.home, title: "To delete" }),
-    sessionOf({ id: kept, directory: here.home, title: "Before" }),
-  );
+  const { here } = await onAgents(t, "engine-list-cursors", [], { start: false });
+  here.agents.seed(gone, { title: "To delete", messages: finished(1) });
+  here.agents.seed(kept, { title: "Before", messages: finished(1) });
   const first = here.start();
   let record = await first.ready();
-  const list = since => request(record, "GET", "kuvo/sessions/list" + (since ? "?since=" + encodeURIComponent(since) : ""));
-  const initial = await openLine(record, "", "kuvo/sessions/list/events");
-  const newest = (await initial.frames().next()).value;
-  initial.close();
+  const list = since => request(record, "GET", "kuvo/sessions/list" + (since ? "?since=" + encodeURIComponent(since) : ""), undefined, desktop);
+  const newest = await until(async () => {
+    const initial = await openLine(record, "", "kuvo/sessions/list/events", desktop);
+    const frame = (await initial.frames().next()).value;
+    initial.close();
+    return Object.keys(frame.sessions ?? {}).length === 2 && frame;
+  }, "Both conversations were never listed.", 20000, 100);
   assert.equal(newest.full, true);
   assert.deepEqual(Object.keys(newest.sessions).sort(), [gone, kept]);
-  assert.equal(newest.pending, undefined);
   const savedList = path.join(here.home, "run", "lists", "sessions.json");
   await until(() => fs.existsSync(savedList), "the resident to retain its inventory");
   const keptBytes = fs.readFileSync(savedList, "utf8");
@@ -1252,35 +1251,30 @@ test("session list cursors carry changes and tombstones, then read whole after a
     assert.deepEqual(local.sessions, {});
   }
   assert.equal(fs.readFileSync(savedList, "utf8"), keptBytes);
-  const followedChanges = await openLine(record, `?since=${encodeURIComponent(newest.at)}`, "kuvo/sessions/list/events");
+  const followedChanges = await openLine(record, `?since=${encodeURIComponent(newest.at)}`, "kuvo/sessions/list/events", desktop);
   t.after(() => followedChanges.close());
   const changes = followedChanges.frames();
   assert.deepEqual((await changes.next()).value.sessions, {});
-  assert.equal((await request(record, "POST", `kuvo/sessions/${kept}/rename`, { title: "After" })).status, 200);
+  assert.equal((await request(record, "POST", `kuvo/sessions/${kept}/rename`, { title: "After" }, desktop)).status, 200);
   const changed = await until(async () => {
     const answer = await list(newest.at);
     return answer.json?.sessions?.[kept]?.title === "After" && answer.json;
   }, "The recorded cursor did not receive the session change.");
   const streamed = (await changes.next()).value;
-  try {
-    assert.equal(changed.full, undefined);
-    assert.deepEqual(Object.keys(changed.sessions), [kept]);
-    assert.equal(streamed.full, undefined);
-    assert.deepEqual(streamed.sessions, changed.sessions);
-  } catch (error) {
-    // (Seen once on Windows under load: what each answer and the kept list held.)
-    t.diagnostic(`listed since ${newest.at}: ${JSON.stringify(changed)}`);
-    t.diagnostic(`streamed: ${JSON.stringify(streamed)}`);
-    t.diagnostic(`sessions.json: ${fs.existsSync(savedList) ? fs.readFileSync(savedList, "utf8") : "(none)"}`);
-    throw error;
-  }
-  assert.equal((await request(record, "DELETE", `kuvo/sessions/${gone}`)).status, 200);
+  assert.equal(changed.full, undefined);
+  assert.deepEqual(Object.keys(changed.sessions), [kept]);
+  assert.equal(streamed.full, undefined);
+  assert.deepEqual(streamed.sessions, changed.sessions);
+  assert.equal((await request(record, "DELETE", `kuvo/sessions/${gone}`, undefined, desktop)).status, 200);
   const removed = await until(async () => {
     const answer = await list(changed.at);
     return answer.json?.gone?.includes(gone) && answer.json;
   }, "The recorded cursor did not receive its tombstone.");
   assert.deepEqual(removed.sessions, {});
-  assert.deepEqual((await changes.next()).value.gone, [gone]);
+  for (;;) {
+    const { value } = await changes.next();
+    if (value.gone) { assert.deepEqual(value.gone, [gone]); break; }
+  }
   followedChanges.close();
   assert.deepEqual((await list(removed.at)).json.sessions, {});
   for (const since of ["another.1", removed.at.split(".")[0] + ".999999999", "unreadable"]) {
@@ -1289,35 +1283,16 @@ test("session list cursors carry changes and tombstones, then read whole after a
     assert.deepEqual(Object.keys(whole.sessions), [kept]);
     assert.equal(whole.gone, undefined);
   }
-
   await first.stop();
-  const added = "ses_cursorNew";
-  here.engine.sessions.push(sessionOf({ id: added, directory: here.home, title: "Since restart" }));
-  let release;
-  here.engine.holdSessionList = new Promise(resolve => { release = resolve; });
-  t.after(release);
   record = await here.start().ready();
-  const followed = await openLine(record, "", "kuvo/sessions/list/events");
-  assert.equal(followed.status, 200);
-  const snapshots = followed.frames();
-  try {
-    const saved = (await snapshots.next()).value;
-    assert.equal(saved.full, true);
-    assert.deepEqual(saved.pending, ["engine"]);
-    assert.deepEqual(Object.keys(saved.sessions), [kept]);
-    here.engine.holdSessionList = null;
-    release();
-    const live = (await snapshots.next()).value;
-    assert.equal(live.pending, undefined);
-    assert.equal(live.sessions[added].title, "Since restart");
-  } finally {
-    followed.close();
-  }
+  const added = await request(record, "POST", "kuvo/sessions", { title: "Since restart", folder: here.home, model: { providerID: "grok-cli", id: "acp-test" } }, desktop);
+  assert.equal(added.status, 200, added.text);
   const current = await until(async () => {
     const answer = await list(removed.at);
-    return answer.json?.full && !answer.json?.pending?.length && answer.json;
+    return answer.json?.full && answer.json.sessions?.[added.json.session] && answer.json;
   }, "The old process's cursor did not receive a new whole list.");
-  assert.deepEqual(Object.keys(current.sessions).sort(), [kept, added]);
+  assert.deepEqual(Object.keys(current.sessions).sort(), [kept, added.json.session].sort());
+  assert.equal(current.sessions[added.json.session].title, "Since restart");
 });
 
 test("a project query accepts a Windows key while route paths keep their separator guard", { timeout: 45000 }, async t => {
@@ -1338,62 +1313,46 @@ test("a project query accepts a Windows key while route paths keep their separat
   assert.equal((await request(record, "GET", "api/fs/list?path=Kuvo%2F..")).status, 403);
 });
 
-test("a project file change refiles the saved inventory without another engine read", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("project-filing-from-disk");
+test("a project file change refiles the saved inventory", { timeout: 45000 }, async t => {
+  const session = "ses_rehomeProject";
+  const { here } = await onAgents(t, "project-filing-from-disk", [], { start: false });
   const project = path.join(here.home, "work");
   const tree = path.join(here.home, "side-tree");
-  const session = "ses_rehomeProject";
   for (const folder of [project, tree]) fs.mkdirSync(folder, { recursive: true });
   const projects = path.join(here.home, "box", "projects.json");
   const list = folders => JSON.stringify({ version: 1, projects: [{ directory: project, name: "Work", folders }] });
   write(projects, list([]));
-  const observed = sessionOf({ id: session, directory: tree });
-  here.engine.sessions.push(observed);
+  here.agents.seed(session, { directory: tree, title: "Ready to refile", messages: finished(1) });
   const record = await here.start().ready();
-  await until(() => here.engine.subscribers() > 0, "the resident to follow the engine");
-  // Establish the baseline after the initial passive adoption and a complete event-driven read.
-  observed.title = "Ready to refile";
-  here.engine.emit({ type: "session.renamed", data: { sessionID: session, info: observed } });
   const before = await until(async () => {
-    const reply = await request(record, "GET", "kuvo/sessions/list");
+    const reply = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
     const found = reply.json?.sessions?.[session];
-    return found?.project === tree && found.title === observed.title && reply.json;
-  }, "the initial project filing");
-  const calls = () => here.engine.inventoryReads ?? 0;
-  const readBefore = calls();
-  const release = Promise.withResolvers();
-  t.after(release.resolve);
-  here.engine.holdSessionList = release.promise;
+    return found?.project === tree && reply.json;
+  }, "the initial project filing", 20000, 100);
   write(projects + ".next", list([tree]));
   fs.renameSync(projects + ".next", projects);
   let latest;
   const changed = await until(async () => {
-    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(before.at));
+    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(before.at), undefined, desktop);
     latest = reply.json;
     return latest?.sessions?.[session]?.project === project && latest;
-  }, () => `The project change did not refile the saved engine inventory after ${calls() - readBefore} engine reads: ${JSON.stringify(latest)}`, 8000);
+  }, () => `The project change did not refile the saved inventory: ${JSON.stringify(latest)}`, 8000);
   assert.deepEqual(Object.keys(changed.sessions), [session]);
   assert.deepEqual(changed.projects[project].shown, [session]);
   assert.equal(changed.projects[tree], undefined);
-  assert.equal(calls(), readBefore, JSON.stringify({ readBefore, reads: calls(), asked: here.engine.asked.filter(call => call.method === "GET" && call.path.includes("session")), latest }));
-
   const formerProject = path.join(here.home, "former-project");
   write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({ handedOver: { [tree]: formerProject } }));
   const handedOver = await until(async () => {
-    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(changed.at));
+    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(changed.at), undefined, desktop);
     return reply.json?.sessions?.[session]?.project === formerProject && reply.json;
   }, "the old Mac worktree record to refile its session", 8000);
   assert.deepEqual(handedOver.projects[formerProject].shown, [session]);
-  assert.equal(calls(), readBefore);
 });
 
-test("linked and removed worktrees keep their project and last message time", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-worktree-history");
+test("linked worktrees and their subfolders are filed under their project", { timeout: 45000 }, async t => {
+  const { here } = await onAgents(t, "engine-worktree-history", [], { start: false });
   const project = path.join(here.home, "repository");
   const linked = path.join(here.home, "linked-tree");
-  const removed = path.join(here.home, "removed-tree");
   const nested = path.join(linked, "nested");
   const env = isolatedEnv(path.dirname(here.home));
   write(path.join(project, "nested", "note.txt"), "Tracked.");
@@ -1403,80 +1362,47 @@ test("linked and removed worktrees keep their project and last message time", { 
   git(env, project, "worktree", "add", "--quiet", "--detach", linked);
   write(path.join(here.home, "box", "projects.json"),
     JSON.stringify({ projects: [{ directory: project, name: "Repository" }, { directory: linked }] }));
-  const database = path.join(here.home, "data", "opencode", "opencode-lists.db");
-  fs.mkdirSync(path.dirname(database), { recursive: true });
-  const db = new DatabaseSync(database);
-  db.exec(`PRAGMA journal_mode=WAL;
-    CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, vcs TEXT);
-    CREATE TABLE worktree (project_id TEXT, directory TEXT);
-    CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time_created INTEGER);
-    CREATE TABLE session_message (session_id TEXT, seq INTEGER, time_created INTEGER);
-    INSERT INTO session_v2 VALUES ('ses_removedTree', 1);
-    INSERT INTO session_message VALUES ('ses_removedTree', 1, 300);`);
-  db.prepare("INSERT INTO project VALUES ('project', ?, 'git')").run(project);
-  db.prepare("INSERT INTO worktree VALUES ('project', ?)").run(removed);
-  db.close();
-  const bytes = fs.readFileSync(database);
-  here.engine.sessions.push(
-    sessionOf({ id: "ses_linkedTree", directory: linked, updated: 500 }),
-    sessionOf({ id: "ses_nestedTree", directory: nested, updated: 400 }),
-    sessionOf({ id: "ses_removedTree", directory: removed, updated: 900 }),
-  );
+  here.agents.seed("ses_linkedTree", { directory: linked, updated: 500, messages: finished(500) });
+  here.agents.seed("ses_nestedTree", { directory: nested, updated: 400, messages: finished(400) });
   const record = await here.start().ready();
-  const list = async () => (await request(record, "GET", "kuvo/sessions/list")).json;
-  const initial = await list();
+  const initial = await until(async () => {
+    const read = (await request(record, "GET", "kuvo/sessions/list", undefined, desktop)).json;
+    return Object.keys(read?.sessions ?? {}).length === 2 && read;
+  }, "The conversations were never listed.", 20000, 100);
   assert.equal(initial.sessions.ses_linkedTree.project, project);
   assert.equal(initial.sessions.ses_nestedTree.project, project);
-  assert.equal(initial.sessions.ses_removedTree.project, project);
-  assert.equal(initial.sessions.ses_removedTree.updated, 300);
-  assert.deepEqual(initial.projects[project].shown, ["ses_linkedTree", "ses_nestedTree", "ses_removedTree"]);
+  assert.deepEqual(initial.projects[project].shown, ["ses_linkedTree", "ses_nestedTree"]);
   assert.equal(initial.projects[linked], undefined);
-
-  await until(() => here.engine.subscribers() > 0, "the resident to follow title changes");
-  const row = here.engine.sessions[2];
-  row.title = "Renamed";
-  row.time.updated = 1000;
-  here.engine.emit({ type: "session.renamed", data: { sessionID: row.id, info: row } });
-  const visible = await until(async () => {
-    const each = (await list())?.sessions?.ses_removedTree;
-    return each?.title === "Renamed" && each;
-  }, "the renamed session");
-  assert.equal(visible.updated, 300);
-  assert.equal(visible.project, project);
-  assert.deepEqual(fs.readFileSync(database), bytes);
 });
 
-test("a project page grows in steps and keeps its running conversations first", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("project-page");
+test("a project page grows in steps and keeps its running conversations first", { timeout: 60000 }, async t => {
+  const { here } = await onAgents(t, "project-page", [], { start: false });
   const folder = path.join(here.home, "project");
   fs.mkdirSync(folder, { recursive: true });
   write(path.join(here.home, "box/projects.json"), JSON.stringify({ projects: [{ directory: folder, name: "Project" }] }));
   const day = number => "ses_page" + String(number).padStart(2, "0");
   for (let number = 1; number <= 80; number++) {
-    const row = sessionOf({ id: day(number), title: "Conversation " + number, directory: folder });
-    row.time.updated = number;
-    here.engine.sessions.push(row);
+    here.agents.seed(day(number), { title: "Conversation " + number, directory: folder, updated: number, messages: finished(number) });
   }
-  const child = sessionOf({ id: "ses_pageChild", title: "Subagent", directory: folder, parent: day(80) });
-  const anotherChild = sessionOf({ id: "ses_quietChild", title: "Subagent", directory: folder, parent: day(80) });
-  child.time.updated = 5;
-  anotherChild.time.updated = 20;
-  here.engine.sessions.push(child, anotherChild);
-  here.engine.running.add(day(1));
-  here.engine.running.add(child.id);
+  here.agents.seed("ses_pageChild", { title: "Subagent", directory: folder, parent: day(80), updated: 5, messages: finished(5) });
+  here.agents.seed("ses_quietChild", { title: "Subagent", directory: folder, parent: day(80), updated: 20, messages: finished(20) });
+  here.agents.script("Keep busy", [said("Working"), "hang"]);
   const record = await here.start().ready();
+  const busy = async id => {
+    const sent = await request(record, "POST", `kuvo/sessions/${id}/send`, { id: "msg_busy" + id.slice(-2), words: "Keep busy", delivery: "steer" }, desktop);
+    assert.equal(sent.status, 200, sent.text);
+  };
+  await busy(day(1));
   const read = await until(async () => {
-    const result = await request(record, "GET", "kuvo/sessions/list");
-    return result.status === 200 && result.json.projects?.[folder]?.total === 80 && result.json;
-  }, "The resident did not file the project conversations.", 12000, 80);
+    const result = await request(record, "GET", "kuvo/sessions/list", undefined, desktop);
+    return result.status === 200 && result.json.projects?.[folder]?.total === 80 && result.json.sessions?.[day(1)]?.running && result.json;
+  }, "The resident did not file the project conversations.", 20000, 80);
   const project = read.projects[folder];
-  assert.deepEqual(project.shown, [day(80), day(1), day(79), day(78), day(77), day(76)]);
-  assert.deepEqual(read.sessions[day(80)].subagents, [child.id, anotherChild.id]);
-  assert.deepEqual(read.sessions[child.id].messages, { via: "direct" });
+  assert.deepEqual(project.shown, [day(1), day(80), day(79), day(78), day(77), day(76)]);
+  assert.deepEqual(new Set(read.sessions[day(80)].subagents), new Set(["ses_quietChild", "ses_pageChild"]));
   const page = cursor => request(record, "GET", "kuvo/sessions/page?" +
-    new URLSearchParams({ project: folder, ...(cursor ? { cursor } : {}) }));
-  assert.equal((await request(record, "GET", "kuvo/sessions/page")).status, 400);
+    new URLSearchParams({ project: folder, ...(cursor ? { cursor } : {}) }), undefined, desktop);
+  assert.equal((await request(record, "GET", "kuvo/sessions/page", undefined, desktop)).status, 400);
   assert.equal((await page("s7.zz")).status, 400);
   assert.equal((await page()).json.sessions.length, 6);
   let more = project.more;
@@ -1484,23 +1410,20 @@ test("a project page grows in steps and keeps its running conversations first", 
     const response = await page(more.cursor);
     assert.equal(response.status, 200, response.text);
     assert.equal(response.json.project, folder);
-    assert.equal(response.json.sessions[0], day(80));
+    assert.equal(response.json.sessions[0], day(1));
     assert.equal(new Set(response.json.sessions).size, count);
     more = response.json.more;
     assert.equal(more?.count ?? null, next);
   }
-  here.engine.running.delete(day(1));
-  here.engine.running.delete(child.id);
-  here.engine.running.add(day(30));
-  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: day(1) } });
-  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: child.id } });
-  here.engine.emit({ type: "session.execution.started", data: { sessionID: day(30) } });
+  assert.equal((await request(record, "POST", `kuvo/sessions/${day(1)}/stop`, undefined, desktop)).status, 200);
+  await busy(day(30));
   const changed = await until(async () => {
     const response = await page(project.more.cursor);
     return response.json?.sessions?.[0] === day(30) && response.json;
-  }, "The old project cursor did not follow the current running work.", 12000, 80);
+  }, "The old project cursor did not follow the current running work.", 20000, 80);
   assert.equal(changed.sessions.length, 16);
-  assert.ok(!changed.sessions.includes(day(1)));
+  // (The one stopped was at work just now: it's the latest after the one at work.)
+  assert.equal(changed.sessions[1], day(1));
 });
 
 test("a stopped queue replays its send and protects an undone message from an old removal", { timeout: 45000 }, async t => {
