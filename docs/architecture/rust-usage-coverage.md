@@ -1019,8 +1019,17 @@ clean. Scoped service cases 5/5, grant inventory 1/1, and peer transport
 deadline/answer cases 2/2. Seeded history answers match 12/13 exactly
 (only actual coverage scan time differs), native corpus 2/2 exactly;
 stored inventory and projection-format differences remain documented.
-Remote rerun pending. Non-test size:
-631,663 characters without leading indentation (0.919× the TS baseline).
+The first corrected remote gate passed all 109 on WSL and capped Linux.
+Native Windows passed 108/109: the repaired tool worked before reset, but
+one open-feed expiry never arrived. Its timer could wake before the wall
+clock reached the reset, prematurely marking the deadline consumed.
+The resident now retries an early wake until the real deadline, then
+publishes the expiry. The fixture waits for an expired window from a
+changed event on that same feed, rather than comparing two processes'
+clocks; the fixed-clock regression checks early, on-time and late wakes.
+The full Mac gates above passed again, with the additional scoped deadline
+test. Final cross-platform rerun pending. Non-test size:
+631,973 characters without leading indentation (0.919× the TS baseline).
 30 A1 entries addressed; 84 remain, subject to the completed gates.
 
 ## Remaining implementation gaps

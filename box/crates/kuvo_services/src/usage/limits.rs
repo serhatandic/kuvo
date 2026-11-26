@@ -241,6 +241,14 @@ impl Saved {
             .collect()
     }
 }
+fn mark_projection_due(projected_through: &mut u64, deadline: u64, observed: u64) -> bool {
+    if observed < deadline {
+        return false;
+    }
+    *projected_through = observed;
+    true
+}
+
 fn peer_borrow_until(checked: u64, now: u64, every: u64, agreed: Option<u64>) -> Option<u64> {
     let next = checked.saturating_add(every).saturating_add(2 * 60_000);
     // Honor the slack only if a fresh reading already deferred this computer.
@@ -2399,7 +2407,11 @@ where
                                 attempted.insert(provider,at);
                             } else if changes.changed().await.is_err(){return;}
                         } else {
-                            projected_through = now().max(at);
+                            // Timer and wall clocks can disagree by a tick. Never
+                            // consume the deadline until the wall clock reaches it.
+                            if !mark_projection_due(&mut projected_through, at, now()) {
+                                continue;
+                            }
                             let service = deadlines.clone();
                             let _ = tokio::task::spawn_blocking(move || service.answer(projected_through)).await;
                             deadlines.changes.send_modify(|n| *n = n.wrapping_add(1));
@@ -2571,6 +2583,21 @@ mod notice_and_peer_tests {
             sign_in: "fixture".into(),
             notice_card: None,
         }
+    }
+    #[test]
+    fn an_early_timer_wake_does_not_consume_the_real_projection_deadline() {
+        let mut projected = START;
+        let reset = START + MIN;
+        assert!(!mark_projection_due(&mut projected, reset, reset - 1));
+        assert_eq!(projected, START);
+        assert!(mark_projection_due(&mut projected, reset, reset));
+        assert_eq!(projected, reset);
+        assert!(mark_projection_due(
+            &mut projected,
+            reset + MIN,
+            reset + MIN + 5
+        ));
+        assert_eq!(projected, reset + MIN + 5);
     }
     #[test]
     fn a_fresh_peer_defers_only_until_its_agreed_grace_period_ends() {

@@ -3723,7 +3723,7 @@ test('an accepted quota expires on the open limits feed without starting another
   let after;
   try {
     for await(const frame of line.frames()){
-      if(frame.changed){const r=await get();if(r?.rings.short?.used===0&&Date.now()>=reset){after=r;break;}}
+      if(frame.changed){const r=await get();if(r?.rings.short?.used===0&&r.windows.some(w=>w.id==='five_hour'&&w.expired===true)){after=r;break;}}
     }
   } catch(error) {if(!after)throw new Error('The feed never published the expiry', {cause:error});}
   finally {line.close();}
